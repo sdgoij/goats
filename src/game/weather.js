@@ -273,7 +273,6 @@ function drawGround(g, groundCol, tuftCol) {
     const gx = Math.round(g.px / 2) * 2;
     const gz = Math.round(g.pz / 2) * 2;
     rl.drawCube(gx, -0.06, gz, 70, 0.1, 70, groundCol);
-    rl.drawGrid(40, 1.0);
     drawTufts(g, tuftCol, 576, 180);   // cull beyond 24 units, detail inside ~13
 }
 
