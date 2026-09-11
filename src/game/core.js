@@ -1,4 +1,4 @@
-// Part 1/8 of the goat scene: tuning, stats, palette and maths helpers. This
+// Part 1/9 of the goat scene: tuning, stats, palette and maths helpers. This
 // file also carries the scene's overall header comment.
 //
 // A walking, running, jumping goat for the Slag x raylib sandbox.
@@ -15,6 +15,7 @@
 //   sky.js       2.5D procedural cloud shader
 //   audio.js     music streams, weather beds, goat bleats
 //   weather.js   the weather state machine and wind
+//   bots.js      the autonomous bot herd
 //   goat.js      the gait state machine, HUD and the main loop
 //
 // The goat is `goat_animated.glb`, baked from the Blender rig and loaded through
@@ -128,6 +129,15 @@ function hash(n) {
     const s = Math.sin(n * 127.1) * 43758.5453;
     return s - Math.floor(s);
 }
+
+// Two-character hex for every byte, so the texture builders avoid per-pixel
+// string formatting.
+const HEX256 = (function buildHex256() {
+    const d = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
+    const out = [];
+    for (let i = 0; i < 256; i++) out.push(d[Math.floor(i / 16)] + d[i % 16]);
+    return out;
+})();
 
 // Local -> world: yaw about Y, then translate. The goat faces local +X, and
 // `rl.drawModelEx` rotates the model by the same convention (a Y-axis rotation

@@ -58,6 +58,12 @@ cargo run --release
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
+- **A bot herd**: six autonomous goats wander around the player, each with its
+  own procedural mottled fleece, body size and temperament. They graze, stroll,
+  trot and occasionally sprint, steering around the player and turning back once
+  they drift too far. Nearby bots cast into the shadow map; distant ones get a
+  small contact blob. Their AI runs on a private PRNG so the seeded weather the
+  harness asserts on is untouched.
 - Orbit + zoom camera, a procedural grass field that follows the goat so it never
   runs out, and a health/energy HUD.
 - A cube-skeleton fallback (voxel body + 2-bone-IK legs) if the model cannot be
@@ -120,7 +126,7 @@ cargo run             # debug builds work too; see "Troubleshooting"
 | Path | What it is |
 | --- | --- |
 | `src/main.rs` | Rust host: installs the JIT + raylib, embeds the GLB, joins and evaluates the scene |
-| `src/game/*.js` | The scene, split into 8 parts (core, model, world, lighting, sky, audio, weather, goat) |
+| `src/game/*.js` | The scene, split into 9 parts (core, model, world, lighting, sky, audio, weather, bots, goat) |
 | `sfx/` | Music, weather ambience and goat vocalisations (loaded at runtime) |
 | `goat_animated.glb` | Exported model (7 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials (its `.blend1` auto-backup is git-ignored) |

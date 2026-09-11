@@ -1,4 +1,4 @@
-// Part 4/8 of the goat scene: the lit shader, the directional light, and both
+// Part 4/9 of the goat scene: the lit shader, the directional light, and both
 // the planar and shadow-map cast shadows.
 // ---- lighting (M4): directional light and projected cast shadows ---------
 //
@@ -429,6 +429,7 @@ function renderShadowMap() {
     rl.setModelTexture(model, SHADOW_MAP_INDEX, -1);
     setMatrixOn(depthShader, depthUniforms.lightVP, LIGHT_MATRIX);
     drawModelGoat(goat, rl.WHITE);
+    drawBotsShadow();
     rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
     rl.setModelShader(model, litShader);
     rl.endMode3D();

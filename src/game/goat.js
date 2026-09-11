@@ -1,4 +1,4 @@
-// Part 8/8 of the goat scene: the gait state machine, HUD and main loop.
+// Part 9/9 of the goat scene: the gait state machine, HUD and main loop.
 // ---- gait state ----------------------------------------------------------
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
@@ -169,15 +169,6 @@ function makeEyeTextures() {
     xTex = rl.makeTexture(8, 8, x);
 }
 
-// Two-character hex for every byte, so the texture builders avoid per-pixel
-// string formatting.
-const HEX256 = (function buildHex256() {
-    const d = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
-    const out = [];
-    for (let i = 0; i < 256; i++) out.push(d[Math.floor(i / 16)] + d[i % 16]);
-    return out;
-})();
-
 // Procedural moon and glow sprites: the demo stays asset-free, and an alpha moon
 // composites cleanly (a photo would drag a black square along, since the `rl`
 // surface has no additive blend mode yet).
@@ -275,7 +266,8 @@ function drawHud(move) {
     const status = clockText + "   speed " + curSpeed.toFixed(2) + " m/s   phase " +
         goat.phase.toFixed(2) + "   fps " + rl.getFPS() + "   light " + lightingText +
         "   sky " + (useSkyShader && skyShader >= 0 ? "shader" : "billboards") +
-        "   audio " + (audioReady ? (muted ? "muted" : "on") : "off");
+        "   audio " + (audioReady ? (muted ? "muted" : "on") : "off") +
+        "   herd " + BOTS.length;
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
     rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   L light   K shadow   B sky   M audio   A/D turn   P: pause   ESC: quit",
         10, 32, 14, rl.RAYWHITE);
@@ -307,6 +299,8 @@ function run() {
     makeLighting();
     makeSkyShader();
     makeAudio();
+    makeBotTextures();
+    loadBots();
 
     const sw = rl.getScreenWidth();
     const sh = rl.getScreenHeight();
@@ -356,6 +350,7 @@ function run() {
         if (rl.isKeyPressed(rl.KEY_L) && litShader >= 0) {
             useLighting = !useLighting;
             if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+            setBotsShader(useLighting ? litShader : -1);
         }
         if (rl.isKeyPressed(rl.KEY_K) && litShader >= 0) {
             // Cycle shadows: map -> planar -> off. The map needs the engine
@@ -451,6 +446,7 @@ function run() {
             const info = CLIP[curRole];
             curClipName = info !== null ? rl.modelAnimationName(model, info.index) : "";
         }
+        updateBots(dt);
 
         // render
         const ty = 0.85 + goat.py;
@@ -496,6 +492,7 @@ function run() {
                 drawModelGoat(goat, rl.WHITE);
                 drawEyes();
             }
+            drawBots(rl.WHITE);
             if (shadowMode === SHADOW_MAP && shadowStrengthNow > 0.001) lightingText = "lit + shadow map";
             else if (shadowMode === SHADOW_PLANAR && LIGHT_DIR[1] > 0.06) lightingText = "lit + planar shadow";
             else lightingText = "lit";
@@ -509,6 +506,7 @@ function run() {
             } else {
                 drawGoat(goat);
             }
+            drawBots(ambTint);
             lightingText = litShader < 0 ? "cube shader" : "off";
         }
         rl.endMode3D();
@@ -523,6 +521,7 @@ function run() {
     }
 
     console.log("window closed after " + frames + " frames");
+    unloadBots();
     if (haveModel) {
         rl.unloadModel(model);
     }

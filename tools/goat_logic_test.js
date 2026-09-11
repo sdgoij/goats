@@ -25,6 +25,8 @@ const clipFrames = CLIPS.map((c) => Math.round(c.dur * 60) + 1);
 
 let frameIndex = 0;
 let lastPosed = null;
+let modelLoads = 0;
+let botPoses = 0;
 let speedText = '';
 let statsText = '';
 let weatherText = '';
@@ -76,7 +78,7 @@ const constants = {
 const rl = Object.assign({}, constants, {
     color: () => ({}),
     initWindow: () => {}, setTargetFPS: () => {}, closeWindow: () => {},
-    loadModel: () => 0,
+    loadModel: () => { const h = modelLoads; modelLoads += 1; return h; },
     isModelValid: () => true,
     unloadModel: () => {},
     modelBounds: () => ({ minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 1.47, maxZ: 0 }),
@@ -86,7 +88,10 @@ const rl = Object.assign({}, constants, {
     modelAnimationFrameCount: (_m, i) => clipFrames[i],
     modelAnimationDuration: (_m, i) => CLIPS[i].dur,
     updateModelAnimation: (_m, i, frame) => {
-        lastPosed = { clip: CLIPS[i].name, frame: frame };
+        // Only the player's model (handle 0) drives the state-machine checks;
+        // the bots animate their own handles and would otherwise clobber them.
+        if (_m === 0) lastPosed = { clip: CLIPS[i].name, frame: frame };
+        else botPoses += 1;
     },
     drawModelEx: () => {},
     setModelShader: (_m, s) => { modelShaderCalls.push(s); },
@@ -206,6 +211,8 @@ for (const r of timeline) {
 const e20 = statAt(20);
 const e60 = statAt(60);
 const deadStats = deathFrame >= 0 ? statAt(deathFrame) : null;
+const botLine = logs.find((l) => l.indexOf('bot goats') >= 0) || '';
+const botCount = Number((/goat: (\d+) bot goats/.exec(botLine) || [])[1] || 0);
 
 const checks = [
     ['no throw', thrown === null, thrown],
@@ -249,6 +256,8 @@ const checks = [
     ['death clip held while dead', clipAt(deathFrame + 5) === 'GoatDeath', clipAt(deathFrame + 5)],
     ['health is zero at death', deadStats !== null && deadStats.health === 0, deadStats],
     ['R restarts into run', clipAt(4000) === 'GoatRun', clipAt(4000)],
+    ['bot goats load', botCount >= 2, botLine],
+    ['bots animate their own models', botPoses > 0, botPoses],
 ];
 
 const failed = checks.filter((c) => !c[1]);

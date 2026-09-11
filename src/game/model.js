@@ -1,4 +1,4 @@
-// Part 2/8 of the goat scene: the animated model and the cube fallback.
+// Part 2/9 of the goat scene: the animated model and the cube fallback.
 // ---- the model goat ------------------------------------------------------
 
 let model = -1;
@@ -102,15 +102,22 @@ function loadGoat() {
     console.log("goat: model loaded, y " + bounds.minY.toFixed(3) + ".." + bounds.maxY.toFixed(3));
 }
 
-// Pose a clip at `phase` in [0,1] across its keyframes.
-function poseModel(role, phase) {
+// Pose a clip at `phase` in [0,1] across its keyframes, on a specific model.
+// Every bot owns a model handle of its own -- CPU skinning writes deformed
+// vertices into the model's meshes, so two goats cannot share one model and
+// still animate independently -- which is why the handle is explicit.
+function poseModelOn(handle, role, phase) {
     const info = CLIP[role];
     if (info === null || info.frames < 1) return false;
     const last = info.frames - 1;
     let frame = phase * last;
     if (frame > last) frame = last;
-    rl.updateModelAnimation(model, info.index, frame);
+    rl.updateModelAnimation(handle, info.index, frame);
     return true;
+}
+
+function poseModel(role, phase) {
+    return poseModelOn(model, role, phase);
 }
 
 // Draw the model: position, yaw about +Y (degrees), uniform scale, given tint.

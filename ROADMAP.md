@@ -387,10 +387,33 @@ deterministically-rainy frame walks slower than a dry one.
 
 ---
 
+## M7 — Bot herd ✅ Done
+
+Six autonomous goats wander the world around the player. Each has its own
+procedural mottled fleece (a JS-built texture, so no new assets), its own body
+scale, and its own temperament (`bold` biases how fast it moves, `lazy` how often
+it stops). A small state machine picks between grazing, strolling, trotting, the
+occasional sprint and the odd doze, steering to a wander target and turning back
+toward the player once it drifts past a comfortable radius.
+
+Each bot owns a model handle rather than sharing one. That is forced by this
+CPU-skinning build: `updateModelAnimation` writes the deformed vertices into the
+model's own meshes, so two goats can only hold different poses if they have
+different models. Bots inside the shadow map's box are drawn into the depth pass
+and cast real shadows; the rest get a small contact blob so distant goats stay
+grounded. The bots use a private PRNG, so they cannot shift the seeded weather
+stream the harness asserts on.
+
+Cost: seven models loaded and skinned twice per frame in the worst case. Release
+holds 59–60 fps; debug drops to ~43 (the flattened bot AI also keeps the debug
+stack guard happy).
+
+---
+
 ## Cross-cutting work
 
-- **Splitting the scene.** ✅ **Done.** The scene is `src/game/*.js` in eight
-  parts (core, model, world, lighting, sky, audio, weather, goat), joined in the
+- **Splitting the scene.** ✅ **Done.** The scene is `src/game/*.js` in nine
+  parts (core, model, world, lighting, sky, audio, weather, bots, goat), joined in the
   order listed in `src/main.rs`. The host concatenates them and evaluates the
   result as one script, so every part shares a single top-level scope and the
   engine still needs no module system; the headless harness parses the same list
@@ -429,7 +452,7 @@ deterministically-rainy frame walks slower than a dry one.
    slow the goat and drain energy faster.
 5. **Weather determinism:** currently seeded, so a run is reproducible and the
    harness is stable. Keep, or make it random per run?
-6. ~~**Scene splitting?**~~ **Settled:** eight files in `src/game/`, joined in
+6. ~~**Scene splitting?**~~ **Settled:** nine files in `src/game/`, joined in
    the order listed in `src/main.rs`.
 7. ~~**Shadow scope:**~~ **Done:** the goat *and* the grass inside the shadow
    box cast into the depth pass. Tufts outside the box are culled (their shadow
