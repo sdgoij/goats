@@ -447,6 +447,7 @@ function run() {
             curClipName = info !== null ? rl.modelAnimationName(model, info.index) : "";
         }
         updateBots(dt);
+        resolveGoatCollisions();
 
         // render
         const ty = 0.85 + goat.py;
@@ -516,7 +517,7 @@ function run() {
 
         if (frames % 240 === 0) {
             console.log("frame " + frames + " mode " + mode + " phase " + goat.phase.toFixed(2) +
-                " fps " + rl.getFPS());
+                " fps " + rl.getFPS() + " gap " + goatMinGap().toFixed(2));
         }
     }
 

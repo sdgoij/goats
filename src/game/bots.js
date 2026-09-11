@@ -86,6 +86,11 @@ function loadBots() {
             timer: 0.5 + botRnd() * 3,
             tx: 0,
             tz: 0,
+            zoom: 0,       // seconds of "zoomies" left while running
+            jumpTime: 0,
+            jumpDur: 1,
+            jumpSpeed: 0,
+            jumpCool: 0,
         });
     }
     if (BOTS.length > 0) console.log("goat: " + BOTS.length + " bot goats");
@@ -106,6 +111,7 @@ function setBotsShader(shader) {
 
 // The clip role a bot is currently playing, falling back like the player does.
 function botRole(b) {
+    if (b.mode === "jump" && CLIP.jump) return "jump";
     if (b.mode === "sleep" && CLIP.sleep) return "sleep";
     if (b.mode === "run" && CLIP.run) return "run";
     if (b.mode === "trot" && CLIP.trot) return "trot";
@@ -122,11 +128,16 @@ function botNewAction(b) {
     if (r < 0.30 + 0.35 * b.spec.lazy) {
         b.mode = botRnd() < 0.10 ? "sleep" : "idle";
         b.timer = b.mode === "sleep" ? 5 + botRnd() * 6 : 2 + botRnd() * 5;
+        b.zoom = 0;
         return;
     }
     const s = botRnd();
-    b.mode = s < 0.68 ? "walk" : s < 0.92 ? "trot" : "run";
+    b.mode = s < 0.60 ? "walk" : s < 0.90 ? "trot" : "run";
     b.timer = 3 + botRnd() * 9;
+    // A run is a "zoomies" burst: updateBots throws in the odd jump while it
+    // lasts, which is what makes a running bot look like it has the zoomies.
+    b.zoom = b.mode === "run" ? 2.5 + botRnd() * 4 : 0;
+    b.jumpCool = 0.4 + botRnd() * 1.0;
     const reach = b.mode === "run" ? 22 : b.mode === "trot" ? 14 : 7;
     const dist = reach + botRnd() * 14;
     const dx = goat.px - b.x;
@@ -143,46 +154,85 @@ function updateBots(dt) {
     for (let i = 0; i < BOTS.length; i++) {
         const b = BOTS[i];
         b.timer -= dt;
+        if (b.jumpCool > 0) b.jumpCool -= dt;
 
-        // Speed for the current gait, from the same stride/duty the player uses.
-        let role = botRole(b);
-        let info = CLIP[role];
-        let spd = 0;
-        if (b.mode !== "idle" && b.mode !== "sleep") {
-            const g = GAIT[role];
-            const base = (info !== null && info.duration > 0 && g !== undefined)
-                ? g.stride / (g.duty * info.duration)
-                : (2 * V_STRIDE) / V_CYCLE;
-            spd = base * (0.75 + 0.5 * b.spec.bold);
-        }
-
-        if (spd > 0) {
-            const dx = b.tx - b.x;
-            const dz = b.tz - b.z;
-            const d = Math.sqrt(dx * dx + dz * dz);
-            if (d < 1.6 || b.timer <= 0) {
-                b.mode = "idle";
-                b.timer = 1.5 + botRnd() * 4;
-            } else {
-                // Steer toward the target (the goat faces local +X, so heading
-                // `yaw` moves along (cos, -sin) in the XZ plane).
-                const want = Math.atan2(-dz, dx);
-                let diff = want - b.yaw;
-                while (diff > Math.PI) diff -= Math.PI * 2;
-                while (diff < -Math.PI) diff += Math.PI * 2;
-                b.yaw += Math.max(-TURN * dt, Math.min(TURN * dt, diff));
-                b.x += Math.cos(b.yaw) * spd * dt;
-                b.z += -Math.sin(b.yaw) * spd * dt;
+        if (b.mode === "jump") {
+            // Airborne: the jump clip's root motion does the hop, so this only
+            // carries the bot forward along its heading.
+            b.jumpTime += dt;
+            b.x += Math.cos(b.yaw) * b.jumpSpeed * dt;
+            b.z += -Math.sin(b.yaw) * b.jumpSpeed * dt;
+            if (b.jumpTime >= b.jumpDur) {
+                if (b.zoom > 0) {
+                    b.mode = "run";        // still zooming: run on
+                    b.jumpCool = 0.4 + botRnd() * 1.2;
+                } else {
+                    b.mode = "idle";
+                    b.timer = 1.5 + botRnd() * 3;
+                }
             }
-        } else if (b.timer <= 0) {
-            botNewAction(b);
-        }
+        } else {
+            // Speed for the current gait, from the same stride/duty the player uses.
+            const role = botRole(b);
+            const info = CLIP[role];
+            const gait = GAIT[role];
+            let spd = 0;
+            if (b.mode !== "idle" && b.mode !== "sleep") {
+                const base = (info !== null && info.duration > 0 && gait !== undefined)
+                    ? gait.stride / (gait.duty * info.duration)
+                    : (2 * V_STRIDE) / V_CYCLE;
+                spd = base * (0.75 + 0.5 * b.spec.bold);
+            }
 
-        // Advance the clip (re-read the role in case the action just changed).
-        role = botRole(b);
-        info = CLIP[role];
-        const dur = info !== null && info.duration > 0 ? info.duration : V_CYCLE;
-        b.phase = mod1(b.phase + dt / dur);
+            if (spd > 0) {
+                const dx = b.tx - b.x;
+                const dz = b.tz - b.z;
+                const d = Math.sqrt(dx * dx + dz * dz);
+                if (d < 1.6 || b.timer <= 0) {
+                    if (b.mode === "run" && b.zoom > 0) {
+                        // Mid-zoomies: grab a fresh target and keep going.
+                        const a = botRnd() * Math.PI * 2;
+                        const r = 9 + botRnd() * 12;
+                        b.tx = b.x + Math.cos(a) * r;
+                        b.tz = b.z - Math.sin(a) * r;
+                        b.timer = 2 + botRnd() * 3;
+                    } else {
+                        b.mode = "idle";
+                        b.timer = 1.5 + botRnd() * 4;
+                    }
+                } else {
+                    // Steer toward the target (the goat faces local +X, so heading
+                    // `yaw` moves along (cos, -sin) in the XZ plane).
+                    const want = Math.atan2(-dz, dx);
+                    let diff = want - b.yaw;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    b.yaw += Math.max(-TURN * dt, Math.min(TURN * dt, diff));
+                    b.x += Math.cos(b.yaw) * spd * dt;
+                    b.z += -Math.sin(b.yaw) * spd * dt;
+                }
+            } else if (b.timer <= 0) {
+                botNewAction(b);
+            }
+
+            // Zoomies: while a run lasts, hop every second or so.
+            if (b.mode === "run") {
+                b.zoom -= dt;
+                if (b.zoom > 0 && b.jumpCool <= 0 && spd > 0) {
+                    b.mode = "jump";
+                    b.jumpTime = 0;
+                    b.jumpDur = CLIP.jump ? CLIP.jump.duration : FALLBACK_JUMP_TIME;
+                    b.jumpSpeed = spd * 1.15;
+                    b.jumpCool = 0.5 + botRnd() * 1.3;
+                }
+            }
+
+            // Advance the looping clip (jumps pose themselves from jumpTime).
+            if (b.mode !== "jump") {
+                const dur = info !== null && info.duration > 0 ? info.duration : V_CYCLE;
+                b.phase = mod1(b.phase + dt / dur);
+            }
+        }
 
         // A hard backstop: if a bot ever gets really far, pull it back in.
         const px = b.x - goat.px;
@@ -195,6 +245,73 @@ function updateBots(dt) {
     }
 }
 
+// Push apart any goats that overlap, so nobody can walk through anybody else.
+// Bots yield fully to the player (it can shove them) and split the push evenly
+// with each other. Runs after both the player and the bots have moved.
+function resolveGoatCollisions() {
+    const pr = GOAT_RADIUS * MODEL_SCALE;
+    // Two relaxation passes: shoving a bot off the player can push it into
+    // another bot, so a second pass settles the chain.
+    for (let pass = 0; pass < 2; pass++) {
+        for (let i = 0; i < BOTS.length; i++) {
+            const b = BOTS[i];
+            const rr = pr + GOAT_RADIUS * b.spec.scale;
+            const dx = b.x - goat.px;
+            const dz = b.z - goat.pz;
+            const d2 = dx * dx + dz * dz;
+            if (d2 >= rr * rr) continue;
+            if (d2 <= 1e-4) {
+                b.x = goat.px + rr;    // dead centre: shove it out sideways
+            } else {
+                const d = Math.sqrt(d2);
+                const push = (rr - d) / d;
+                b.x += dx * push;
+                b.z += dz * push;
+            }
+            if (b.timer > 0.6) b.timer = 0.6;   // re-think the plan soon
+        }
+        for (let i = 0; i < BOTS.length; i++) {
+            const a = BOTS[i];
+            const ar = GOAT_RADIUS * a.spec.scale;
+            for (let j = i + 1; j < BOTS.length; j++) {
+                const b = BOTS[j];
+                const rr = ar + GOAT_RADIUS * b.spec.scale;
+                const dx = b.x - a.x;
+                const dz = b.z - a.z;
+                const d2 = dx * dx + dz * dz;
+                if (d2 >= rr * rr || d2 <= 1e-4) continue;
+                const d = Math.sqrt(d2);
+                const push = (rr - d) / (2 * d);
+                a.x -= dx * push;
+                a.z -= dz * push;
+                b.x += dx * push;
+                b.z += dz * push;
+            }
+        }
+    }
+}
+
+// Smallest gap between any two goats (negative means they overlap). The frame
+// log reports it so the headless harness can assert collisions actually hold.
+function goatMinGap() {
+    let best = 1e9;
+    for (let i = 0; i < BOTS.length; i++) {
+        const b = BOTS[i];
+        let dx = b.x - goat.px;
+        let dz = b.z - goat.pz;
+        let d = Math.sqrt(dx * dx + dz * dz) - GOAT_RADIUS * (MODEL_SCALE + b.spec.scale);
+        if (d < best) best = d;
+        for (let j = i + 1; j < BOTS.length; j++) {
+            const c = BOTS[j];
+            dx = c.x - b.x;
+            dz = c.z - b.z;
+            d = Math.sqrt(dx * dx + dz * dz) - GOAT_RADIUS * (b.spec.scale + c.spec.scale);
+            if (d < best) best = d;
+        }
+    }
+    return best;
+}
+
 // Draw the herd. Bots outside the shadow map's box get a small contact blob so
 // they stay grounded; inside the box the map shadow covers them instead.
 function drawBots(tint) {
@@ -205,7 +322,7 @@ function drawBots(tint) {
         if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) {
             rl.drawCube(b.x, 0.02, b.z, 1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
         }
-        poseModelOn(b.model, botRole(b), b.phase);
+        poseModelOn(b.model, botRole(b), b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1) : b.phase);
         // Draw directly (no `drawModelAt` wrapper) to keep the JS call depth
         // shallow -- the debug stack guard is tight.
         rl.drawModelEx(b.model, b.x, groundOffset * b.spec.scale, b.z,
@@ -224,7 +341,7 @@ function drawBotsShadow() {
         if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) continue;
         rl.setModelShader(b.model, depthShader);
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, -1);
-        poseModelOn(b.model, botRole(b), b.phase);
+        poseModelOn(b.model, botRole(b), b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1) : b.phase);
         rl.drawModelEx(b.model, b.x, groundOffset * b.spec.scale, b.z,
             0, 1, 0, (b.yaw * 180) / Math.PI,
             b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);

@@ -27,6 +27,7 @@ let frameIndex = 0;
 let lastPosed = null;
 let modelLoads = 0;
 let botPoses = 0;
+let botJumps = 0;
 let speedText = '';
 let statsText = '';
 let weatherText = '';
@@ -91,7 +92,10 @@ const rl = Object.assign({}, constants, {
         // Only the player's model (handle 0) drives the state-machine checks;
         // the bots animate their own handles and would otherwise clobber them.
         if (_m === 0) lastPosed = { clip: CLIPS[i].name, frame: frame };
-        else botPoses += 1;
+        else {
+            botPoses += 1;
+            if (CLIPS[i].name === 'GoatJump') botJumps += 1;
+        }
     },
     drawModelEx: () => {},
     setModelShader: (_m, s) => { modelShaderCalls.push(s); },
@@ -213,6 +217,8 @@ const e60 = statAt(60);
 const deadStats = deathFrame >= 0 ? statAt(deathFrame) : null;
 const botLine = logs.find((l) => l.indexOf('bot goats') >= 0) || '';
 const botCount = Number((/goat: (\d+) bot goats/.exec(botLine) || [])[1] || 0);
+const gapVals = logs.map((l) => /gap (-?[\d.]+)/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
+const minGap = gapVals.length ? Math.min.apply(null, gapVals) : null;
 
 const checks = [
     ['no throw', thrown === null, thrown],
@@ -258,6 +264,8 @@ const checks = [
     ['R restarts into run', clipAt(4000) === 'GoatRun', clipAt(4000)],
     ['bot goats load', botCount >= 2, botLine],
     ['bots animate their own models', botPoses > 0, botPoses],
+    ['goats never overlap', minGap !== null && minGap > -0.12, minGap],
+    ['bots get the zoomies (run + jump)', botJumps > 0, botJumps],
 ];
 
 const failed = checks.filter((c) => !c[1]);
@@ -265,6 +273,7 @@ console.log('--- goat scene logic test ---');
 console.log('model line:', logs.filter((l) => l.indexOf('model handle') >= 0).join(' | '));
 console.log('shadow line:', logs.filter((l) => l.indexOf('shadow map') >= 0).join(' | '));
 console.log('death frame:', deathFrame, 'stats:', JSON.stringify(deadStats));
+console.log('bot herd:', botCount, 'bot poses:', botPoses, 'bot jumps:', botJumps, 'min gap:', minGap);
 for (const [name, ok, got] of checks) {
     console.log((ok ? 'PASS' : 'FAIL') + '  ' + name + (ok ? '' : '  (got ' + JSON.stringify(got) + ')'));
 }

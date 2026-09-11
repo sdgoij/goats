@@ -394,7 +394,11 @@ procedural mottled fleece (a JS-built texture, so no new assets), its own body
 scale, and its own temperament (`bold` biases how fast it moves, `lazy` how often
 it stops). A small state machine picks between grazing, strolling, trotting, the
 occasional sprint and the odd doze, steering to a wander target and turning back
-toward the player once it drifts past a comfortable radius.
+toward the player once it drifts past a comfortable radius. A run is a "zoomies"
+burst: the bot hops every second or so, which reads as a young goat tearing
+about. Goats also collide — every pair is pushed apart (bots yield fully to the
+player, and split the push with each other), so nothing can walk through
+anything else.
 
 Each bot owns a model handle rather than sharing one. That is forced by this
 CPU-skinning build: `updateModelAnimation` writes the deformed vertices into the
@@ -405,8 +409,9 @@ grounded. The bots use a private PRNG, so they cannot shift the seeded weather
 stream the harness asserts on.
 
 Cost: seven models loaded and skinned twice per frame in the worst case. Release
-holds 59–60 fps; debug drops to ~43 (the flattened bot AI also keeps the debug
-stack guard happy).
+holds 59–60 fps; debug drops to ~38-43 (the flattened bot AI also keeps the debug
+stack guard happy). The harness asserts the herd loads, animates, never
+overlaps, and jumps.
 
 ---
 

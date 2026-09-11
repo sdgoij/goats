@@ -65,6 +65,7 @@
 
 const MODEL_PATH = "goat_animated.glb";
 const MODEL_SCALE = 1.0;
+const GOAT_RADIUS = 0.45;  // body collision radius at scale 1, so goats block
 const TURN_RATE = 1.8;     // rad/s
 const FALLBACK_TROT_MULT = 1.3;  // how much faster the cube goat "trots"
 const FALLBACK_RUN_MULT = 1.6;   // how much faster the cube goat "runs"

@@ -60,10 +60,11 @@ cargo run --release
   (`speed = stride / (duty * clipDuration)`).
 - **A bot herd**: six autonomous goats wander around the player, each with its
   own procedural mottled fleece, body size and temperament. They graze, stroll,
-  trot and occasionally sprint, steering around the player and turning back once
-  they drift too far. Nearby bots cast into the shadow map; distant ones get a
-  small contact blob. Their AI runs on a private PRNG so the seeded weather the
-  harness asserts on is untouched.
+  trot, and now and then get the zoomies — a run punctuated by jumps. Goats
+  collide, so nothing walks through anything else (the player can shove bots
+  aside). Nearby bots cast into the shadow map; distant ones get a contact blob.
+  Their AI runs on a private PRNG so the seeded weather the harness asserts on is
+  untouched.
 - Orbit + zoom camera, a procedural grass field that follows the goat so it never
   runs out, and a health/energy HUD.
 - A cube-skeleton fallback (voxel body + 2-bone-IK legs) if the model cannot be
