@@ -27,6 +27,7 @@ let frameIndex = 0;
 let lastPosed = null;
 let speedText = '';
 let statsText = '';
+let weatherText = '';
 const timeline = [];
 const logs = [];
 
@@ -45,6 +46,7 @@ function applyInput(i) {
     if (w) keys[87] = true;
     if (i === 70) pressed[32] = true;                       // SPACE jump
     if (i === 150) pressed[90] = true;                      // Z sleep
+    if (i === 3000 || i === 3100) pressed[67] = true;       // C next weather
     if (i === 3950) pressed[82] = true;                     // R restart
 }
 
@@ -55,6 +57,7 @@ const constants = {
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
     KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90, KEY_T: 84,
+    KEY_C: 67,
     WHITE: {}, RAYWHITE: {},
 };
 
@@ -94,16 +97,19 @@ const rl = Object.assign({}, constants, {
             clip: lastPosed ? lastPosed.clip : null,
             speed: speedText,
             stats: statsText,
+            weather: weatherText,
         });
         frameIndex += 1;
     },
     beginMode3D: () => {}, endMode3D: () => {},
     drawCube: () => {}, drawGrid: () => {},
     drawSphere: () => {}, drawPoint3D: () => {}, drawRectangleGradientV: () => {},
+    drawLine: () => {},
     drawRectangle: () => {}, drawText: (text) => {
         const s = String(text);
         if (s.indexOf('speed ') >= 0) speedText = s;
         else if (s.indexOf('health ') >= 0) statsText = s;
+        else if (s.indexOf('wind ') >= 0) weatherText = s;
     },
 });
 
@@ -121,8 +127,9 @@ try {
     thrown = e && e.stack ? e.stack : String(e);
 }
 
-const row = (i) => timeline.find((r) => r.i === i) || { clip: null, speed: '', stats: '' };
+const row = (i) => timeline.find((r) => r.i === i) || { clip: null, speed: '', stats: '', weather: '' };
 const clipAt = (i) => row(i).clip;
+const weatherAt = (i) => row(i).weather;
 function speedAt(i) {
     const m = /speed ([\d.]+) m\/s/.exec(row(i).speed);
     return m ? Number(m[1]) : null;
@@ -160,6 +167,10 @@ const checks = [
     ['energy drains while running', e20 && e60 && e60.energy < e20.energy, [e20, e60]],
     ['clock advances over time', clockAt(20) !== null && clockAt(1200) > clockAt(20),
         [clockAt(20), clockAt(1200)]],
+    ['weather text is reported', weatherAt(300) !== null && weatherAt(300).length > 0,
+        weatherAt(300)],
+    ['C changes the weather', weatherAt(2999) !== weatherAt(3200),
+        [weatherAt(2999), weatherAt(3200)]],
     ['goat dies of exhaustion', deathFrame > 200 && deathFrame < 3950, deathFrame],
     ['death clip held while dead', clipAt(deathFrame + 5) === 'GoatDeath', clipAt(deathFrame + 5)],
     ['health is zero at death', deadStats !== null && deadStats.health === 0, deadStats],

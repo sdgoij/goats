@@ -60,7 +60,7 @@ shadows and the photoreal cloud shader.
 | **M0** | Engine primitives: 3D shapes, billboards | — | S–M | ✅ **Done** — landed upstream |
 | **M1** | Stats, `sleeping`, `dead` states | — | M | ✅ **Done** |
 | **M2** | Day/night cycle (approximate lighting) | M0 (sun/moon) | M | ✅ **Done** |
-| **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | Builds on the day/night sky |
+| **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | ✅ **Done** (audio deferred to M3b) |
 | **M4** | Shaders: real lighting + cast shadows | M0 | L | Biggest engine lift; changes how everything renders |
 | **M5** | Weather phase 2: shader clouds (photoreal stretch) | M4 | L | Only sensible once shaders exist |
 
@@ -239,28 +239,40 @@ tracks the time of day.
 
 ---
 
-## M3 — Weather phase 1
+## M3 — Weather phase 1 ✅ Done
 
-Goal: believable clouds, rain and wind, with audio.
+Goal: believable clouds, rain and wind. Audio is the remaining piece (M3b).
 
-- **Weather state machine** in JS: `clear → cloudy → rain → clearing`, with
-  weighted random or a seeded sequence, and a smooth intensity value `[0, 1]`
-  that cross-fades everything below.
-- **Clouds**: a large sky dome (a hemisphere model in `sky.glb`) driven by a
-  cloud texture, tinted by the time of day and drifting slowly. A scrolling
-  layer needs either shader UV animation or a slow rotation of the dome — start
-  with drift by rotation, upgrade in M5.
-- **Rain**: start with a 2D streak overlay using `drawLine`, angled to match the
-  wind and denser with intensity, then promote it to `drawLine3D` drops with
-  `drawPoint3D` splashes near the camera.
-- **Wind**: one global vector with gusty noise. It drives rain angle, cloud
-  drift, and **grass sway** — offset each tuft cube by a sine scaled by the gust,
-  which is pure JS against the existing tuft list.
-- **Audio**: looping wind and rain beds (`loadSound` + `playSound` +
-  `setSoundVolume`), volume and pitch tied to intensity; optional thunder.
+Shipped in `goat.js`:
 
-Acceptance: weather transitions blend rather than pop; rain falls at the wind
-angle; grass sways with gusts; audio tracks intensity.
+- **Weather state machine**: a seeded xorshift32 walks `clear → cloudy → rain →
+  clearing` with per-state hold times, targets for cloudiness and rain, and a
+  smooth ease toward the target so transitions cross-fade rather than pop.
+  `C` forces the next state (handy for demos and the harness).
+- **Clouds**: 46 procedural noise-puff billboards (`drawBillboard`, texture made
+  once at startup from value noise) fill a wrapping 100-unit box around the goat,
+  drift with the wind, and are tinted by the time of day. Cloud *cover* gates
+  which puffs appear, so cover rises before rain. Overcast also lerps the sky
+  gradient toward grey. This is lighter than the planned `sky.glb` dome and needed
+  no new assets; the shader dome is deferred to M5.
+- **Rain**: 160 screen-space streaks (`drawLine`) angled along the wind, count
+  scaled by rain intensity. The pool size is the cost knob — 300 drops dropped the
+  debug build to ~30 fps, so it sits at 160 (a full storm holds 59–60 fps in
+  `--release`). 3D drops with splashes will use the M0 primitives if wanted.
+- **Wind**: one global gusty vector (`WIND_BASE` 1.6 m/s plus noise) that drives
+  cloud drift, rain angle and **grass sway** — each tuft cube leans on a sine
+  scaled by the gust, with a second segment up close.
+
+Acceptance met: weather transitions blend rather than pop; rain falls at the
+wind angle; grass sways with gusts. Not yet met: audio (needs generated sound
+assets). Verified code-side via `tools/goat_logic_test.js` (clock, weather text
+and `C` are covered); visual look is **not** machine-verified.
+
+### M3b — Weather audio (remaining)
+
+Looping wind and rain beds (`loadSound` + `playSound` + `setSoundVolume`), volume
+and pitch tied to intensity, optional thunder. Bindings already exist; what is
+missing is the sound assets to embed.
 
 ---
 

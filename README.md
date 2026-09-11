@@ -26,6 +26,11 @@ cargo run --release
 - **Day/night cycle**: a clock drives a gradient sky, the sun and moon arcing
   overhead, a star field, a scene-wide ambient tint and a blob shadow. Hold `T`
   to fast-forward the clock. (True lighting and cast shadows are M4.)
+- **Weather**: a seeded state machine walks `clear → cloudy → rain → clearing`.
+  Procedural noise-puff clouds drift with the wind and overcast greys the sky,
+  rain falls as wind-slanted streaks, and the grass sways with gusty noise.
+  Press `C` to skip to the next state. (Weather audio and shader clouds are
+  deferred to M3b / M5.)
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
@@ -44,6 +49,7 @@ cargo run --release
 | `Z` | sleep / wake |
 | `R` | restart after death |
 | `T` (hold) | fast-forward the clock |
+| `C` | force the next weather state |
 | `A` / `D` | turn left / right |
 | mouse drag | orbit the camera |
 | arrow keys | orbit the camera (keyboard fallback) |

@@ -35,6 +35,12 @@
 // fast-forward the clock. (True lighting and cast shadows need shaders and are
 // still on the roadmap.)
 //
+// Weather runs on a small state machine (clear -> cloudy -> rain -> clearing)
+// with eased cloudiness and rain intensity. Wind gusts drive drifting cloud
+// billboards, the screen-space rain angle and the grass sway; C jumps to the
+// next weather state. Cloud and puff sprites are procedural. (Weather audio
+// and shader clouds are still to come.)
+//
 // The goat has health and energy. Energy drains faster the harder it works; at
 // zero the goat is exhausted -- capped at a walk and slowly losing health -- so
 // it has to sleep to recover. At zero health it dies and needs a restart.
@@ -47,6 +53,7 @@
 //   Z             sleep / wake
 //   R             restart after death
 //   T (hold)      fast-forward the clock
+//   C             next weather state
 //   A / D         turn left / right
 //   mouse drag    orbit the camera        mouse wheel    zoom
 //   P             pause / resume
@@ -368,7 +375,7 @@ const TUFTS = [];
             const a = hash(gx * 3.1 + gz * 7.7);
             if (a < 0.45) continue;
             const b = hash(gx * 11.3 - gz * 5.1);
-            TUFTS.push({ x: gx + (b - 0.5) * 1.8, z: gz + (a - 0.5) * 1.8 });
+            TUFTS.push({ x: gx + (b - 0.5) * 1.8, z: gz + (a - 0.5) * 1.8, p: hash(gx * 5.7 + gz * 2.3) * 6.28 });
         }
     }
     console.log("goat: " + TUFTS.length + " grass tufts");
@@ -521,6 +528,218 @@ function drawShadow() {
     rl.drawCube(goat.px, 0.02, goat.pz, 1.25, 0.012, 1.7, ambShadow);
 }
 
+// ---- weather -------------------------------------------------------------
+
+const WIND_BASE = 1.6;              // m/s
+const CLOUD_DRIFT = 0.35;           // clouds move slower than the ground wind
+const CLOUD_WRAP = 100;             // recycle clouds this far from the goat
+const RAIN_MAX = 160;       // streaks; each is a drawLine, so this is a cost knob
+
+const OVERCAST_TOP = rl.color(96, 102, 116, 255);
+const OVERCAST_BOT = rl.color(150, 154, 162, 255);
+
+const WEATHER_STATES = {
+    clear: { cloud: 0.05, rain: 0.0 },
+    cloudy: { cloud: 0.70, rain: 0.0 },
+    rain: { cloud: 1.00, rain: 1.0 },
+    clearing: { cloud: 0.40, rain: 0.12 },
+};
+const WEATHER_NEXT = {
+    clear: ["cloudy"],
+    cloudy: ["rain", "clear"],
+    rain: ["clearing"],
+    clearing: ["clear", "cloudy"],
+};
+const WEATHER_HOLD = { clear: [22, 45], cloudy: [16, 34], rain: [20, 40], clearing: [8, 16] };
+
+let cloudTex = -1;
+let weatherKind = "clear";
+let weatherTimer = 24;
+let cloudiness = 0.05;      // 0..1, eased toward the state's target
+let rainAmount = 0.0;       // 0..1, eased
+let rainActive = 0;
+let windX = 1.0, windZ = 0.2;
+let windSway = 0.4;
+let swayTime = 0.0;
+let weatherText = "";
+let rngState = 0x9e3779b9;
+
+// Deterministic PRNG (xorshift32) so a run's weather is reproducible and the
+// headless harness stays stable.
+function rnd() {
+    rngState ^= rngState << 13;
+    rngState >>>= 0;
+    rngState ^= rngState >>> 17;
+    rngState ^= rngState << 5;
+    rngState >>>= 0;
+    return rngState / 4294967296;
+}
+
+// Value noise, for the cloud puff sprite.
+function vnoise2(x, y) {
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    const xf = x - xi;
+    const yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf);
+    const v = yf * yf * (3 - 2 * yf);
+    const a = hash(xi * 57.0 + yi * 131.0);
+    const b = hash((xi + 1) * 57.0 + yi * 131.0);
+    const c = hash(xi * 57.0 + (yi + 1) * 131.0);
+    const d = hash((xi + 1) * 57.0 + (yi + 1) * 131.0);
+    return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+
+function lerpColor(a, b, t) {
+    const ar = (a >>> 24) & 255;
+    const ag = (a >>> 16) & 255;
+    const ab = (a >>> 8) & 255;
+    const br = (b >>> 24) & 255;
+    const bg = (b >>> 16) & 255;
+    const bb = (b >>> 8) & 255;
+    return rl.color(
+        Math.round(ar + (br - ar) * t),
+        Math.round(ag + (bg - ag) * t),
+        Math.round(ab + (bb - ab) * t), 255);
+}
+
+const CLOUDS = [];
+(function buildClouds() {
+    for (let i = 0; i < 46; i++) {
+        const a = hash(i * 2.1) * Math.PI * 2;
+        const r = 26 + hash(i * 3.3) * 74;
+        CLOUDS.push({
+            x: Math.cos(a) * r,
+            z: Math.sin(a) * r,
+            y: 26 + hash(i * 5.5) * 22,
+            size: 12 + hash(i * 7.1) * 22,
+            cover: hash(i * 9.9),
+        });
+    }
+})();
+
+const RAIN = [];
+(function buildRain() {
+    for (let i = 0; i < RAIN_MAX; i++) {
+        RAIN.push({ x: hash(i * 1.7), y: hash(i * 2.9), speed: 0.6 + hash(i * 4.3) });
+    }
+})();
+
+// A soft noise-modulated puff, built once at startup.
+function makeWeatherTextures() {
+    const N = 48;
+    let puff = "";
+    for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+            const u = (x + 0.5) / N - 0.5;
+            const v = (y + 0.5) / N - 0.5;
+            const d = Math.sqrt(u * u + v * v) / 0.5;
+            let a = 0;
+            if (d < 1) {
+                const n = 0.55 * vnoise2(x * 0.18, y * 0.18) +
+                    0.30 * vnoise2(x * 0.37 + 11, y * 0.37 + 7) +
+                    0.15 * vnoise2(x * 0.71 + 23, y * 0.71 + 5);
+                a = (1 - d) * (n * 1.8 - 0.32);
+                a = Math.min(1, Math.max(0, a)) * 255;
+            }
+            puff += "ffffff" + HEX256[Math.round(a)];
+        }
+    }
+    cloudTex = rl.makeTexture(N, N, puff);
+}
+
+function updateWind(dt) {
+    swayTime += dt;
+    const gust = 0.55 + 0.35 * Math.sin(swayTime * 0.7) + 0.2 * Math.sin(swayTime * 1.9 + 1.3);
+    const dir = 0.5 * Math.sin(swayTime * 0.23);
+    const speed = WIND_BASE * Math.max(0.2, gust);
+    windX = Math.cos(dir) * speed;
+    windZ = Math.sin(dir) * speed;
+    windSway = Math.min(1.4, speed / WIND_BASE) * (0.55 + 0.45 * cloudiness);
+}
+
+function updateWeather(dt) {
+    weatherTimer -= dt;
+    if (weatherTimer <= 0) {
+        const opts = WEATHER_NEXT[weatherKind];
+        weatherKind = opts[Math.floor(rnd() * opts.length) % opts.length];
+        const hold = WEATHER_HOLD[weatherKind];
+        weatherTimer = hold[0] + rnd() * (hold[1] - hold[0]);
+    }
+    const target = WEATHER_STATES[weatherKind];
+    const k = Math.min(1, dt * 0.6);
+    cloudiness += (target.cloud - cloudiness) * k;
+    rainAmount += (target.rain - rainAmount) * k;
+    weatherText = weatherKind + "   wind " +
+        Math.sqrt(windX * windX + windZ * windZ).toFixed(1) + " m/s";
+    if (rainAmount > 0.02) weatherText = weatherText + "   rain " + Math.round(rainAmount * 100) + "%";
+}
+
+// C jumps to the next state, for previewing the cycle.
+function forceWeather() {
+    weatherKind = WEATHER_NEXT[weatherKind][0];
+    weatherTimer = WEATHER_HOLD[weatherKind][0];
+}
+
+function updateClouds(dt) {
+    const W = CLOUD_WRAP;
+    for (let i = 0; i < CLOUDS.length; i++) {
+        const c = CLOUDS[i];
+        c.x += windX * CLOUD_DRIFT * dt;
+        c.z += windZ * CLOUD_DRIFT * dt;
+        if (c.x - goat.px > W) c.x -= 2 * W;
+        else if (c.x - goat.px < -W) c.x += 2 * W;
+        if (c.z - goat.pz > W) c.z -= 2 * W;
+        else if (c.z - goat.pz < -W) c.z += 2 * W;
+    }
+}
+
+function drawClouds() {
+    if (cloudTex < 0 || cloudiness < 0.04) return;
+    const t = skyLight;
+    const warm = Math.max(0, Math.min(1, 1 - Math.abs(t - 0.3) / 0.34));
+    const cr = Math.min(255, Math.round(118 + 137 * t + 30 * warm));
+    const cg = Math.min(255, Math.round(122 + 133 * t + 8 * warm));
+    const cb = Math.min(255, Math.round(140 + 115 * t - 20 * warm));
+    for (let i = 0; i < CLOUDS.length; i++) {
+        const c = CLOUDS[i];
+        if (c.cover > cloudiness) continue;
+        const grow = Math.min(1, (cloudiness - c.cover) / 0.3 + 0.4);
+        rl.drawBillboard(cloudTex, c.x, c.y, c.z, c.size,
+            rl.color(cr, cg, cb, Math.round(190 * cloudiness * grow)));
+    }
+}
+
+function updateRain(dt) {
+    rainActive = Math.round(RAIN_MAX * rainAmount);
+    for (let i = 0; i < rainActive; i++) {
+        const d = RAIN[i];
+        d.y += (0.7 + d.speed) * dt;
+        d.x += windX * 0.02 * dt;
+        if (d.y > 1.05) {
+            d.y = d.y - 1.1;
+            d.x = hash(i * 13.1 + rngState * 0.0001);
+        }
+        if (d.x > 1.1) d.x = d.x - 1.2;
+        else if (d.x < -0.1) d.x = d.x + 1.2;
+    }
+}
+
+// Screen-space rain overlay: short streaks angled along the wind.
+function drawRain(w, h) {
+    if (rainActive <= 0) return;
+    const slant = windX * 0.035;
+    const col = rl.color(182, 202, 232, 150);
+    for (let i = 0; i < rainActive; i++) {
+        const d = RAIN[i];
+        const sx = d.x * w;
+        const sy = d.y * h;
+        const len = 0.045 * h * (0.6 + d.speed);
+        rl.drawLine(Math.round(sx), Math.round(sy),
+            Math.round(sx + slant * w), Math.round(sy + len), col);
+    }
+}
+
 function drawGround(g) {
     // Snap the slab to a 2-unit grid so it looks pinned down while we travel.
     const gx = Math.round(g.px / 2) * 2;
@@ -530,8 +749,16 @@ function drawGround(g) {
     for (let i = 0; i < TUFTS.length; i++) {
         const tx = TUFTS[i].x - g.px;
         const tz = TUFTS[i].z - g.pz;
-        if (tx * tx + tz * tz > 576) continue; // cull beyond 24 units
-        rl.drawCube(TUFTS[i].x, 0.06, TUFTS[i].z, 0.14, 0.16, 0.14, ambTuft);
+        const d2 = tx * tx + tz * tz;
+        if (d2 > 576) continue; // cull beyond 24 units
+        // Lean each tuft with the gust; nearer ones get a second segment so the
+        // bend reads up close.
+        const off = Math.sin(swayTime * 3.0 + TUFTS[i].p) * 0.11 * windSway;
+        rl.drawCube(TUFTS[i].x + off, 0.06, TUFTS[i].z + off * 0.4, 0.14, 0.16, 0.14, ambTuft);
+        if (d2 < 180) {
+            rl.drawCube(TUFTS[i].x + off * 1.7, 0.20, TUFTS[i].z + off * 0.7,
+                0.11, 0.16, 0.11, ambTuft);
+        }
     }
 }
 
@@ -826,6 +1053,7 @@ function drawHud(move) {
         bx, 50, 14, rl.RAYWHITE);
     if (mode === "sleep") rl.drawText("Z z z", bx, 70, 20, rl.RAYWHITE);
 
+    rl.drawText(weatherText, 10, h - 44, 14, rl.RAYWHITE);
     rl.drawText(status + "   " + state, 10, h - 24, 14, rl.RAYWHITE);
 }
 
@@ -835,6 +1063,7 @@ function run() {
     loadGoat();
     makeEyeTextures();
     makeSkyTextures();
+    makeWeatherTextures();
 
     const sw = rl.getScreenWidth();
     const sh = rl.getScreenHeight();
@@ -848,8 +1077,14 @@ function run() {
         const fast = rl.isKeyDown(rl.KEY_T);
         worldTime = mod24(worldTime + (dt / DAY_LENGTH) * 24 * (fast ? TIME_FAST : 1));
         const sky = skySample(worldTime);
-        skyTop = sky.top;
-        skyBot = sky.bot;
+        updateWind(dt);
+        updateWeather(dt);
+        updateClouds(dt);
+        updateRain(dt);
+        // overcast skies wash the gradient toward grey
+        const grey = Math.min(0.75, cloudiness * 0.75);
+        skyTop = lerpColor(sky.top, OVERCAST_TOP, grey);
+        skyBot = lerpColor(sky.bot, OVERCAST_BOT, grey);
         skyLight = sky.light;
         updateAmbient();
         const hh = Math.floor(worldTime);
@@ -871,6 +1106,7 @@ function run() {
 
         // input
         if (rl.isKeyPressed(rl.KEY_P)) paused = !paused;
+        if (rl.isKeyPressed(rl.KEY_C)) forceWeather();
         let move = 0;
         if (rl.isKeyDown(rl.KEY_W)) move += 1;
         if (rl.isKeyDown(rl.KEY_S)) move -= 1;
@@ -970,6 +1206,7 @@ function run() {
         rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
         drawStars();
         drawCelestial();
+        drawClouds();
         drawGround(goat);
         drawShadow();
         if (haveModel) {
@@ -979,6 +1216,7 @@ function run() {
             drawGoat(goat);
         }
         rl.endMode3D();
+        drawRain(sw, sh);
         drawHud(move);
         rl.endDrawing();
 
