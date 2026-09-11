@@ -14,12 +14,16 @@ const TOTAL = 4050;
 // Clip table the stub model reports (raylib resamples to 60 fps).
 const CLIPS = [
     { name: 'GoatIdle', dur: 6.0 },
+    { name: 'GoatIdle2', dur: 7.0 },
+    { name: 'GoatIdle3', dur: 6.0 },
     { name: 'GoatWalk', dur: 0.91667 },
     { name: 'GoatTrot', dur: 0.58333 },
     { name: 'GoatRun', dur: 0.5 },
     { name: 'GoatJump', dur: 1.16667 },
+    { name: 'GoatJump2', dur: 1.33333 },
     { name: 'GoatSleep', dur: 8.0 },
-    { name: 'GoatDeath', dur: 1.79167 },
+    { name: 'GoatSleep2', dur: 8.0 },
+    { name: 'GoatDeath', dur: 2.33333 },
 ];
 const clipFrames = CLIPS.map((c) => Math.round(c.dur * 60) + 1);
 
@@ -28,6 +32,7 @@ let lastPosed = null;
 let modelLoads = 0;
 let botPoses = 0;
 let botJumps = 0;
+const botClipNames = new Set();
 let speedText = '';
 let statsText = '';
 let weatherText = '';
@@ -94,7 +99,8 @@ const rl = Object.assign({}, constants, {
         if (_m === 0) lastPosed = { clip: CLIPS[i].name, frame: frame };
         else {
             botPoses += 1;
-            if (CLIPS[i].name === 'GoatJump') botJumps += 1;
+            botClipNames.add(CLIPS[i].name);
+            if (CLIPS[i].name.indexOf('GoatJump') === 0) botJumps += 1;
         }
     },
     drawModelEx: () => {},
@@ -182,6 +188,8 @@ try {
 
 const row = (i) => timeline.find((r) => r.i === i) || { clip: null, speed: '', stats: '', weather: '' };
 const clipAt = (i) => row(i).clip;
+// Roles with variants: accept GoatIdle / GoatIdle2 / GoatIdle3, and so on.
+const isClip = (name, base) => name !== null && name.indexOf(base) === 0;
 const weatherAt = (i) => row(i).weather;
 function speedAt(i) {
     const m = /speed ([\d.]+) m\/s/.exec(row(i).speed);
@@ -219,16 +227,18 @@ const botLine = logs.find((l) => l.indexOf('bot goats') >= 0) || '';
 const botCount = Number((/goat: (\d+) bot goats/.exec(botLine) || [])[1] || 0);
 const gapVals = logs.map((l) => /gap (-?[\d.]+)/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
 const minGap = gapVals.length ? Math.min.apply(null, gapVals) : null;
+const botIdles = [...botClipNames].filter((n) => n.indexOf('GoatIdle') === 0);
+const playerIdles = [...new Set(timeline.map((r) => r.clip))].filter((n) => n && n.indexOf('GoatIdle') === 0);
 
 const checks = [
     ['no throw', thrown === null, thrown],
-    ['idle at frame 3', clipAt(3) === 'GoatIdle', clipAt(3)],
+    ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
     ['walk at frame 15', clipAt(15) === 'GoatWalk', clipAt(15)],
     ['trot at frame 40', clipAt(40) === 'GoatTrot', clipAt(40)],
     ['run at frame 60', clipAt(60) === 'GoatRun', clipAt(60)],
-    ['jump starts at frame 70', clipAt(70) === 'GoatJump', clipAt(70)],
-    ['landed to idle by frame 145', clipAt(145) === 'GoatIdle', clipAt(145)],
-    ['sleeping at frame 160', clipAt(160) === 'GoatSleep', clipAt(160)],
+    ['jump starts at frame 70', isClip(clipAt(70), 'GoatJump'), clipAt(70)],
+    ['landed to idle by frame 145', isClip(clipAt(145), 'GoatIdle'), clipAt(145)],
+    ['sleeping at frame 160', isClip(clipAt(160), 'GoatSleep'), clipAt(160)],
     ['woke to walk at frame 190', clipAt(190) === 'GoatWalk', clipAt(190)],
     ['walk speed ~0.87 m/s', Math.abs((speedAt(15) || 0) - 0.873) < 0.01, speedAt(15)],
     ['trot speed ~1.58 m/s', Math.abs((speedAt(40) || 0) - 1.577) < 0.02, speedAt(40)],
@@ -266,6 +276,8 @@ const checks = [
     ['bots animate their own models', botPoses > 0, botPoses],
     ['goats never overlap', minGap !== null && minGap > -0.12, minGap],
     ['bots get the zoomies (run + jump)', botJumps > 0, botJumps],
+    ['bots play several idle variants', botIdles.length >= 2, botIdles],
+    ['the player cycles idle variants', playerIdles.length >= 2, playerIdles],
 ];
 
 const failed = checks.filter((c) => !c[1]);
@@ -274,6 +286,7 @@ console.log('model line:', logs.filter((l) => l.indexOf('model handle') >= 0).jo
 console.log('shadow line:', logs.filter((l) => l.indexOf('shadow map') >= 0).join(' | '));
 console.log('death frame:', deathFrame, 'stats:', JSON.stringify(deadStats));
 console.log('bot herd:', botCount, 'bot poses:', botPoses, 'bot jumps:', botJumps, 'min gap:', minGap);
+console.log('bot idle variants:', botIdles.join(','), '| player idle variants:', playerIdles.join(','));
 for (const [name, ok, got] of checks) {
     console.log((ok ? 'PASS' : 'FAIL') + '  ' + name + (ok ? '' : '  (got ' + JSON.stringify(got) + ')'));
 }

@@ -10,6 +10,7 @@ let jumpDir = 0;         // travel direction (-1/0/1) frozen at take-off
 let sleepTime = 0;       // seconds slept since last awake
 let deathTime = 0;       // seconds since the death started
 let idleTimer = 0;       // seconds spent idle while exhausted
+let lastMode = "idle";   // for cycling the player's idle animation variant
 const stats = { health: MAX_STAT, energy: MAX_STAT };
 let exhausted = false;
 let xTex = -1;           // X-eye sprite texture (made after the window opens)
@@ -40,13 +41,15 @@ function clipRole() {
 }
 
 function jumpDuration() {
-    return CLIP.jump ? CLIP.jump.duration : FALLBACK_JUMP_TIME;
+    const info = playerClip("jump");
+    return info !== null && info !== undefined ? info.duration : FALLBACK_JUMP_TIME;
 }
 
 // Seconds of an idle/walk/run loop (one full cycle), for phase advance.
 function loopDuration() {
     const role = clipRole();
-    if (haveModel && CLIP[role]) return CLIP[role].duration;
+    const info = haveModel ? playerClip(role) : null;
+    if (info !== null && info !== undefined) return info.duration;
     return V_CYCLE;
 }
 
@@ -72,6 +75,7 @@ function groundSpeed() {
 
 function startJump(move, gait) {
     mode = "jump";
+    cyclePlayerVariant("jump");
     jumpTime = 0;
     jumpDir = move;
     if (!haveModel) {
@@ -93,6 +97,7 @@ function startJump(move, gait) {
 
 function startSleep() {
     mode = "sleep";
+    cyclePlayerVariant("sleep");
     sleepTime = 0;
     idleTimer = 0;
     playBleat(0.45);
@@ -403,6 +408,13 @@ function run() {
 
         if (updateStats(dt) === "die") die();
 
+        // The player's idle variant advances each time it settles into idle, so
+        // it cycles through the idle clips instead of always doing the same one.
+        if (mode !== lastMode) {
+            if (mode === "idle") cyclePlayerVariant("idle");
+            lastMode = mode;
+        }
+
         curRole = clipRole();
         curSpeed = groundSpeed();
 
@@ -443,8 +455,8 @@ function run() {
             } else {
                 poseModel(curRole, goat.phase);
             }
-            const info = CLIP[curRole];
-            curClipName = info !== null ? rl.modelAnimationName(model, info.index) : "";
+            const info = playerClip(curRole);
+            curClipName = info !== null && info !== undefined ? rl.modelAnimationName(model, info.index) : "";
         }
         updateBots(dt);
         resolveGoatCollisions();

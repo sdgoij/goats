@@ -74,9 +74,9 @@ def new_action(name):
     return act
 
 
-def key_frame(frame, root_y, root_q, leg_ab, extra):
+def key_frame(frame, root_y, root_q, leg_ab, extra, root_side=0.0):
     root = arm.pose.bones['Root']
-    root.location = (0.0, root_y, 0.0)
+    root.location = (0.0, root_y, root_side)
     root.keyframe_insert('location', frame=frame)
     root.rotation_quaternion = root_q
     root.keyframe_insert('rotation_quaternion', frame=frame)
@@ -150,35 +150,61 @@ def build_sleep(foot_lift):
     set_interp(act)
 
 
-# ---- death: buckle, slump onto the side, hold ------------------------------
+# ---- death: buckle, topple onto the side, hold -----------------------------
+#
+# The goat rolls about the Root's forward axis far enough to actually lie on
+# its side (the old clip only slumped ~10 degrees). The legs stay in the sagittal
+# IK plane, so once the body is over they stick out stiffly -- the classic dead
+# goat silhouette.
 
-DEATH_N = 44                       # ~1.8 s
-D_ROLL = [(1, 0.0), (8, 0.05), (16, 0.12), (24, 0.17), (32, 0.18), (44, 0.18)]
-D_ROOTY = [(1, -0.08), (8, -0.22), (16, -0.30), (24, -0.34), (32, -0.36), (44, -0.36)]
-D_HEAD = [(1, 0), (8, -14), (16, -8), (24, 2), (32, 5), (44, 5)]
-D_NECK = [(1, 0), (8, -8), (16, -5), (24, 1), (32, 3), (44, 3)]
-D_TAIL = [(1, 0), (8, 4), (16, 0), (24, -6), (32, -8), (44, -8)]
-D_FOFF = [(1, 0.0), (8, -0.02), (16, -0.05), (24, -0.06), (32, -0.07), (44, -0.07)]
-D_BOFF = [(1, 0.0), (8, 0.02), (16, 0.05), (24, 0.06), (32, 0.07), (44, 0.07)]
+DEATH_N = 56                       # ~2.3 s
+DEATH_PIVOT = -0.30                # the ground edge (on -Y) it tips over
+D_ROLL = [(1, 0.0), (3, 0.02), (7, 0.10), (12, 0.45), (17, 0.95), (22, 1.30),
+          (28, 1.46), (36, 1.52), (56, 1.53)]
+D_ROOTY = [(1, -0.08), (8, -0.20), (14, -0.16), (24, -0.10), (56, -0.08)]
+D_HEAD = [(1, 0), (7, -14), (14, -6), (22, 10), (30, 16), (56, 16)]
+D_NECK = [(1, 0), (7, -11), (14, -4), (22, 8), (30, 12), (56, 12)]
+D_TAIL = [(1, 0), (7, 5), (14, 0), (22, -9), (30, -12), (56, -12)]
+D_FOFF = [(1, 0.0), (7, -0.05), (14, -0.12), (22, -0.22), (30, -0.28), (56, -0.30)]
+D_BOFF = [(1, 0.0), (7, 0.05), (14, 0.12), (22, 0.24), (30, 0.32), (56, 0.34)]
 
 
-def build_death(root_lift, foot_lift):
+def build_death(residual):
+    # The roll is about the Root's forward axis, but a goat tips over its own
+    # edge, not its centreline. Emulate a pivot at (0, DEATH_PIVOT, 0) on the
+    # ground by rolling about the Root and translating so that edge stays put:
+    #   t = p0 - R*p0  ->  y = -y0*sin(th), side = -y0*(1 - cos(th))
+    # `residual` is a per-frame vertical correction that sweeps up whatever the
+    # legs and the emulation still leave below z = 0.
     act = new_action('GoatDeath')
     for frame in range(1, DEATH_N + 1):
-        root_y = interp(D_ROOTY, frame) + root_lift
+        th = interp(D_ROLL, frame)
+        y0 = DEATH_PIVOT
+        root_y = interp(D_ROOTY, frame) - y0 * math.sin(th) + residual[frame - 1]
+        root_side = -y0 * (1.0 - math.cos(th))
         hz = HIP_Z + root_y
         ab = {}
         for leg in LEGS:
             hx = hip_sign[leg] * HIP_X
             front = leg in ('FrontL', 'FrontR')
             off = interp(D_FOFF if front else D_BOFF, frame)
-            ab[leg] = leg_angles(hx, hz, hx + off, GROUND + foot_lift)
-        key_frame(frame, root_y, qxr(interp(D_ROLL, frame)), ab, {
+            ab[leg] = leg_angles(hx, hz, hx + off, GROUND)
+        key_frame(frame, root_y, qxr(th), ab, {
             'Neck': qx(interp(D_NECK, frame)),
             'Head': qx(interp(D_HEAD, frame)),
             'Tail': qz(interp(D_TAIL, frame)),
-        })
+        }, root_side)
     set_interp(act)
+
+
+def frame_mins(act_name, n):
+    ad.action = bpy.data.actions[act_name]
+    ad.action_slot = bpy.data.actions[act_name].slots[0]
+    out = []
+    for i in range(n):
+        scene.frame_set(i + 1)
+        out.append(mesh_z()[0])
+    return out
 
 
 def clip_min_max(act_name, n):
@@ -202,14 +228,15 @@ if sleep_lift > 0.0:
     build_sleep(sleep_lift)
 sleep_lo, sleep_hi = clip_min_max('GoatSleep', SLEEP_N)
 
-build_death(0.0, 0.0)
-death_min, _ = clip_min_max('GoatDeath', DEATH_N)
-death_lift = round(max(0.0, -death_min), 4)
-build_death(0.0, death_lift)
-death_min2, _ = clip_min_max('GoatDeath', DEATH_N)
-death_root_lift = round(max(0.0, -death_min2), 4)
-if death_root_lift > 0.0:
-    build_death(death_root_lift, death_lift)
+build_death([0.0] * DEATH_N)
+# Three relaxation passes: changing the root height changes the leg IK, which
+# changes what the lowest vertex is, so one pass is not enough to settle.
+death_residual = [0.0] * DEATH_N
+for _ in range(3):
+    build_death(death_residual)
+    for i, m in enumerate(frame_mins('GoatDeath', DEATH_N)):
+        death_residual[i] += max(0.0, -m)
+build_death(death_residual)
 death_lo, death_hi = clip_min_max('GoatDeath', DEATH_N)
 
 
@@ -230,7 +257,7 @@ def eyes_at(act_name, frame):
 result = {
     "clamped_ik": CLAMP[0],
     "sleep": {"foot_lift": sleep_lift, "mesh_z_min": round(sleep_lo, 4), "mesh_z_max": round(sleep_hi, 4)},
-    "death": {"foot_lift": death_lift, "root_lift": death_root_lift,
+    "death": {"max_residual": round(max(death_residual), 4),
               "mesh_z_min": round(death_lo, 4), "mesh_z_max": round(death_hi, 4)},
     "sleep_eyes_gltf": eyes_at('GoatSleep', 1),
     "death_eyes_gltf": eyes_at('GoatDeath', DEATH_N),

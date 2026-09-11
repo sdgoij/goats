@@ -6,15 +6,19 @@ let haveModel = false;
 let groundOffset = 0;
 
 // Clip handles by role, filled in from the model's animation names. Each is
-// { index, frames, duration } or null when that clip is absent.
+// { index, frames, duration } or null when that clip is absent. `CLIP[role]` is
+// the default; `VARIANTS[role]` holds every clip for roles that have more than
+// one (idle/sleep/jump), so different goats can play different versions.
 const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null };
+const VARIANTS = { idle: [], sleep: [], jump: [] };
+const playerVariant = { idle: 0, sleep: -1, jump: -1 };
 
 // Model-space eye points baked in Blender for the death pose, used to place the
 // X-eye sprites (glTF Y-up, from the rig). Sleeping eyes are real eyelid
 // geometry now -- the `LidL`/`LidR` bones close in the GoatSleep clip.
 const DEATH_EYES = [
-    { x: 0.8852, y: 0.9087, z: 0.1013 },
-    { x: 0.8764, y: 0.8544, z: 0.3758 },
+    { x: 0.8259, y: 0.4274, z: 1.6120 },
+    { x: 0.7945, y: 0.1493, z: 1.6031 },
 ];
 
 // Authored stride and stance fraction of each locomotion clip, used to derive
@@ -33,6 +37,16 @@ function findClip(names, wanted) {
         if (names[i].toLowerCase().indexOf(wanted) >= 0) return i;
     }
     return -1;
+}
+
+// Every clip whose name contains `wanted`, in model order. Used for the role
+// variants (GoatIdle, GoatIdle2, GoatIdle3, ...).
+function findClips(names, wanted) {
+    const out = [];
+    for (let i = 0; i < names.length; i++) {
+        if (names[i].toLowerCase().indexOf(wanted) >= 0) out.push(i);
+    }
+    return out;
 }
 
 function clipInfo(index) {
@@ -81,19 +95,22 @@ function loadGoat() {
             rl.modelAnimationDuration(model, i).toFixed(3) + "s)");
     }
     // Match by substring so the clips survive a rename (GoatRun -> Run, ...).
-    const idle = findClip(names, "idle");
-    const jump = findClip(names, "jump");
+    const idle = findClips(names, "idle");
+    const jump = findClips(names, "jump");
+    const sleep = findClips(names, "sleep");
     const run = findClip(names, "run");
     const trot = findClip(names, "trot");
     const walk = findClip(names, "walk");
-    const sleep = findClip(names, "sleep");
     const death = findClip(names, "death");
-    CLIP.idle = idle >= 0 ? clipInfo(idle) : null;
-    CLIP.jump = jump >= 0 ? clipInfo(jump) : null;
+    CLIP.idle = idle.length > 0 ? clipInfo(idle[0]) : null;
+    CLIP.jump = jump.length > 0 ? clipInfo(jump[0]) : null;
+    CLIP.sleep = sleep.length > 0 ? clipInfo(sleep[0]) : null;
+    VARIANTS.idle = idle.map(clipInfo);
+    VARIANTS.jump = jump.map(clipInfo);
+    VARIANTS.sleep = sleep.map(clipInfo);
     CLIP.run = run >= 0 ? clipInfo(run) : null;
     CLIP.trot = trot >= 0 ? clipInfo(trot) : null;
     CLIP.walk = walk >= 0 ? clipInfo(walk) : null;
-    CLIP.sleep = sleep >= 0 ? clipInfo(sleep) : null;
     CLIP.death = death >= 0 ? clipInfo(death) : null;
 
     console.log("goat: model handle " + model + ", live=" + rl.isModelValid(model) +
@@ -106,9 +123,8 @@ function loadGoat() {
 // Every bot owns a model handle of its own -- CPU skinning writes deformed
 // vertices into the model's meshes, so two goats cannot share one model and
 // still animate independently -- which is why the handle is explicit.
-function poseModelOn(handle, role, phase) {
-    const info = CLIP[role];
-    if (info === null || info.frames < 1) return false;
+function poseModelOn(handle, info, phase) {
+    if (info === null || info === undefined || info.frames < 1) return false;
     const last = info.frames - 1;
     let frame = phase * last;
     if (frame > last) frame = last;
@@ -116,8 +132,34 @@ function poseModelOn(handle, role, phase) {
     return true;
 }
 
+// Which clip variant to play for a role, wrapping the index.
+function clipAt(role, variant) {
+    const list = VARIANTS[role];
+    if (list !== undefined && list.length > 0) {
+        const n = list.length;
+        return list[((variant % n) + n) % n];
+    }
+    return CLIP[role];
+}
+
+function clipCount(role) {
+    const list = VARIANTS[role];
+    return list !== undefined ? list.length : 0;
+}
+
+// Advance the player's variant for a role, so it does not always do the same
+// idle / sleep / jump. Bots cycle their own variants in bots.js.
+function cyclePlayerVariant(role) {
+    const n = clipCount(role);
+    if (n > 1) playerVariant[role] = (playerVariant[role] + 1) % n;
+}
+
+function playerClip(role) {
+    return clipAt(role, playerVariant[role]);
+}
+
 function poseModel(role, phase) {
-    return poseModelOn(model, role, phase);
+    return poseModelOn(model, playerClip(role), phase);
 }
 
 // Draw the model: position, yaw about +Y (degrees), uniform scale, given tint.

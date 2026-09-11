@@ -91,6 +91,9 @@ function loadBots() {
             jumpDur: 1,
             jumpSpeed: 0,
             jumpCool: 0,
+            // Which clip variant this bot plays per role; -1 so the first cycle
+            // lands on index 0, and walk/trot/run have only one clip each.
+            var: { idle: -1, sleep: -1, jump: -1, walk: 0, trot: 0, run: 0 },
         });
     }
     if (BOTS.length > 0) console.log("goat: " + BOTS.length + " bot goats");
@@ -129,6 +132,9 @@ function botNewAction(b) {
         b.mode = botRnd() < 0.10 ? "sleep" : "idle";
         b.timer = b.mode === "sleep" ? 5 + botRnd() * 6 : 2 + botRnd() * 5;
         b.zoom = 0;
+        // Rotate the variant so this bot does not always do the same clip.
+        const n = clipCount(b.mode);
+        if (n > 1) b.var[b.mode] = (b.var[b.mode] + 1) % n;
         return;
     }
     const s = botRnd();
@@ -174,7 +180,7 @@ function updateBots(dt) {
         } else {
             // Speed for the current gait, from the same stride/duty the player uses.
             const role = botRole(b);
-            const info = CLIP[role];
+            const info = clipAt(role, b.var[role]);
             const gait = GAIT[role];
             let spd = 0;
             if (b.mode !== "idle" && b.mode !== "sleep") {
@@ -220,8 +226,11 @@ function updateBots(dt) {
                 b.zoom -= dt;
                 if (b.zoom > 0 && b.jumpCool <= 0 && spd > 0) {
                     b.mode = "jump";
+                    const nj = clipCount("jump");
+                    if (nj > 1) b.var.jump = (b.var.jump + 1) % nj;
+                    const jinfo = clipAt("jump", b.var.jump);
+                    b.jumpDur = jinfo !== null && jinfo !== undefined ? jinfo.duration : FALLBACK_JUMP_TIME;
                     b.jumpTime = 0;
-                    b.jumpDur = CLIP.jump ? CLIP.jump.duration : FALLBACK_JUMP_TIME;
                     b.jumpSpeed = spd * 1.15;
                     b.jumpCool = 0.5 + botRnd() * 1.3;
                 }
@@ -229,7 +238,8 @@ function updateBots(dt) {
 
             // Advance the looping clip (jumps pose themselves from jumpTime).
             if (b.mode !== "jump") {
-                const dur = info !== null && info.duration > 0 ? info.duration : V_CYCLE;
+                const cur = clipAt(role, b.var[role]);
+                const dur = cur !== null && cur !== undefined && cur.duration > 0 ? cur.duration : V_CYCLE;
                 b.phase = mod1(b.phase + dt / dur);
             }
         }
@@ -322,7 +332,8 @@ function drawBots(tint) {
         if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) {
             rl.drawCube(b.x, 0.02, b.z, 1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
         }
-        poseModelOn(b.model, botRole(b), b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1) : b.phase);
+        const role = botRole(b);
+        poseModelOn(b.model, clipAt(role, b.var[role]), b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1) : b.phase);
         // Draw directly (no `drawModelAt` wrapper) to keep the JS call depth
         // shallow -- the debug stack guard is tight.
         rl.drawModelEx(b.model, b.x, groundOffset * b.spec.scale, b.z,
@@ -341,7 +352,8 @@ function drawBotsShadow() {
         if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) continue;
         rl.setModelShader(b.model, depthShader);
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, -1);
-        poseModelOn(b.model, botRole(b), b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1) : b.phase);
+        const role = botRole(b);
+        poseModelOn(b.model, clipAt(role, b.var[role]), b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1) : b.phase);
         rl.drawModelEx(b.model, b.x, groundOffset * b.spec.scale, b.z,
             0, 1, 0, (b.yaw * 180) / Math.PI,
             b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);

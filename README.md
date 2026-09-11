@@ -14,16 +14,18 @@ cargo run --release
 
 ## Features
 
-- Skinned glTF goat with seven baked clips: `GoatIdle`, `GoatWalk`, `GoatTrot`,
-  `GoatRun`, `GoatJump`, `GoatSleep`, `GoatDeath`.
+- Skinned glTF goat with eleven baked clips: `GoatIdle` / `GoatIdle2` /
+  `GoatIdle3`, `GoatWalk`, `GoatTrot`, `GoatRun`, `GoatJump` / `GoatJump2`,
+  `GoatSleep` / `GoatSleep2` and `GoatDeath`. Idle, sleep and jump have variants,
+  so the player cycles through them and each bot settles on its own.
 - State machine covering idle / walk / trot / run / jump / **sleeping** / **dead**,
   with a script-controlled jump arc taken from the clip's root motion.
 - **Health and energy.** Energy drains faster the harder the goat works; at zero
   it is exhausted (capped at a walk, bleeding health) until it sleeps. Sleep
   restores energy and health; zero health is fatal.
 - **Sleeping and death** with their own clips: the goat's real eyelids close
-  while sleeping (a `LidL`/`LidR` bone pair), and cartoon X-eyes appear once the
-  death collapse settles.
+  while sleeping (a `LidL`/`LidR` bone pair), and on death it buckles and topples
+  right over onto its side, where the cartoon X-eyes appear.
 - **Day/night cycle**: a clock drives a gradient sky, the sun and moon arcing
   overhead, a star field and a scene-wide ambient tint. Hold `T` to
   fast-forward the clock.
@@ -129,7 +131,7 @@ cargo run             # debug builds work too; see "Troubleshooting"
 | `src/main.rs` | Rust host: installs the JIT + raylib, embeds the GLB, joins and evaluates the scene |
 | `src/game/*.js` | The scene, split into 9 parts (core, model, world, lighting, sky, audio, weather, bots, goat) |
 | `sfx/` | Music, weather ambience and goat vocalisations (loaded at runtime) |
-| `goat_animated.glb` | Exported model (7 clips, textures embedded) — embedded into the binary |
+| `goat_animated.glb` | Exported model (11 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials (its `.blend1` auto-backup is git-ignored) |
 | `tex/` | Knitted-fleece textures (diffuse / normal / roughness / displacement / AO) |
 | `tools/inspect_glb.py` | Dump a GLB's images, textures, materials and animations |
@@ -179,7 +181,10 @@ about the bone's local Y (the hinge) sweeps the cap down over the eye. Closing i
 `tools/goat_eyelids.py` rebuilds them and re-exports.
 `tools/goat_states.py` rebuilds the recumbent `GoatSleep` and the collapsing
 `GoatDeath` clips the same way, auto-grounding each so the lowest mesh vertex
-rests on the ground.
+rests on the ground -- the death clip now rolls all the way onto the goat's side,
+with a per-frame ground correction because the roll pivots on the goat's edge.
+`tools/goat_variants.py` adds the `GoatIdle2` / `GoatIdle3` / `GoatSleep2` /
+`GoatJump2` variants.
 
 Export to GLB with every action as its own clip, shifted to start at `t = 0` so
 loops are exact:
@@ -303,6 +308,9 @@ python tools/inspect_glb.py goat_animated.glb
 
 # Re-author the sleep/death clips and re-export (run inside Blender)
 #   exec(open("tools/goat_states.py").read())
+
+# Re-author the idle/sleep/jump variants and re-export (run inside Blender)
+#   exec(open("tools/goat_variants.py").read())
 
 # The engine's raylib surface test (from the Slag checkout)
 cargo test -p runtime --features raylib --lib raylib

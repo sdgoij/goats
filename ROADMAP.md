@@ -415,6 +415,30 @@ overlaps, and jumps.
 
 ---
 
+## Animation variants & the side-fall death ✅ Done
+
+To give the herd some individuality:
+
+- **Idle variants.** `GoatIdle2` is a grazing idle (head down, weight shifting),
+  `GoatIdle3` an alert one (head up, big held looks left and right). The player
+  advances its idle variant each time it settles back into idle; every bot
+  cycles its own variant on each new action, so the herd shows all of them.
+- **Sleep / jump variants.** `GoatSleep2` curls the head the other way with
+  slower breathing; `GoatJump2` is a bigger bound -- deeper crouch, higher arc
+  and a proper leg tuck at the apex.
+- **Death falls onto its side.** `GoatDeath` now rolls about the forward axis
+  until the goat is genuinely on its side (the old clip only slumped ~10°).
+  Because the roll pivots on the goat's edge rather than its centreline, the clip
+  emulates a ground-level pivot and then applies a per-frame ground correction
+  (the leg IK depends on the root height, so one pass does not settle).
+
+All authored in Blender by `tools/goat_states.py` (sleep/death) and
+`tools/goat_variants.py` (idle/sleep/jump variants); the model now carries 11
+clips, and a mismatch between the two scripts' grounding passes is why the death
+clip needed a small residual (max ~0.18) to keep the lowest vertex on the ground.
+
+---
+
 ## Cross-cutting work
 
 - **Splitting the scene.** ✅ **Done.** The scene is `src/game/*.js` in nine
