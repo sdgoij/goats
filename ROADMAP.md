@@ -337,9 +337,12 @@ RGB; and `DrawMesh` binds a model's material maps over any unit
 `setShaderValueTexture`.
 
 What it adds over the planar fallback: self-shadowing (the goat's legs and head
-on its body) and a correct shadow on any non-flat receiver. Limits: a single
-1024² map covering a 14-unit box, so the shadow softens at distance and clips
-when the goat leaves the box.
+on its body) and a correct shadow on any non-flat receiver. The grass inside the
+light's box casts into the same pass (the batch path, like the terrain, drawn
+before the goat), so nearby tufts ground the goat in the field; tufts outside the
+box are culled because they cannot project into the map. Limits: a single 1024²
+map covering a 14-unit box, so the shadow softens at distance and clips when the
+goat leaves the box.
 
 ---
 
@@ -397,6 +400,8 @@ deterministically-rainy frame walks slower than a dry one.
   Bindings already exist.
 - **HUD.** Bars, clock, weather icon, a death screen. `drawRectangle`/`drawText`
   plus `drawTextEx` and `drawRectangleGradientV` from M0.
+- **Repo hygiene.** The Blender `*.blend1` auto-backup is git-ignored and
+  untracked (`goat.blend1` stays on disk for Blender but is not in the repo).
 - **Validation.**
   - Extend `tools/goat_logic_test.js` with a simulated clock: assert energy
     drains at the right rates, sleep recovers, starvation damages health, and
@@ -424,5 +429,8 @@ deterministically-rainy frame walks slower than a dry one.
    harness is stable. Keep, or make it random per run?
 6. ~~**Scene splitting?**~~ **Settled:** eight files in `src/game/`, joined in
    the order listed in `src/main.rs`.
-7. **Shadow scope:** only the goat casts into the shadow map today. Should the
-   grass and props cast too, and is one 1024² cascade enough as the world grows?
+7. ~~**Shadow scope:**~~ **Done:** the goat *and* the grass inside the shadow
+   box cast into the depth pass. Tufts outside the box are culled (their shadow
+   could not be sampled anyway). Props would follow the same path if added. One
+   1024² cascade is still enough while the world stays a single goat-sized field;
+   a larger world would want cascades or a bigger map.

@@ -42,9 +42,10 @@ cargo run --release
 - **Real lighting and shadows (M4/M4b)**: a small custom GLSL program lights
   the scene. A directional sun (or moon at night) driven by the clock, plus a
   hemispheric ambient term, shades the goat and the terrain per fragment. The
-  goat casts a shadow from a depth pass rendered in the light's view, sampled
-  with a 3x3 PCF kernel — so it self-shadows and the terrain takes a proper
-  perspective shadow. Press `L` to toggle lighting and `K` to cycle the shadow
+  goat and the grass inside the light's box cast shadows from a depth pass
+  rendered in the light's view, sampled with a 3x3 PCF kernel — so the goat
+  self-shadows and the terrain takes a proper perspective shadow, including from
+  nearby tufts. Press `L` to toggle lighting and `K` to cycle the shadow
   between the map, the planar fallback and off. Falls back to the M2/M3
   ambient-tint look if the engine lacks the shader bindings.
 - **Audio**: a background music loop plus weather ambience and goat
@@ -57,7 +58,8 @@ cargo run --release
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
-- Orbit + zoom camera, a culled grass field, and a health/energy HUD.
+- Orbit + zoom camera, a culled grass field that casts into the shadow map, and
+  a health/energy HUD.
 - A cube-skeleton fallback (voxel body + 2-bone-IK legs) if the model cannot be
   loaded.
 
@@ -121,7 +123,7 @@ cargo run             # debug builds work too; see "Troubleshooting"
 | `src/game/*.js` | The scene, split into 8 parts (core, model, world, lighting, sky, audio, weather, goat) |
 | `sfx/` | Music, weather ambience and goat vocalisations (loaded at runtime) |
 | `goat_animated.glb` | Exported model (7 clips, textures embedded) — embedded into the binary |
-| `goat.blend` | Blender source: armature rig, actions, materials |
+| `goat.blend` | Blender source: armature rig, actions, materials (its `.blend1` auto-backup is git-ignored) |
 | `tex/` | Knitted-fleece textures (diffuse / normal / roughness / displacement / AO) |
 | `tools/inspect_glb.py` | Dump a GLB's images, textures, materials and animations |
 | `tools/goat_logic_test.js` | Headless Node harness for the scene (stubs `rl`) |
@@ -247,8 +249,11 @@ handed to the *model* draw through a material map — `setModelTexture` puts it 
 every material's map 1, which `DrawMesh` binds to unit 1 and feeds the `texture1`
 sampler from. That is the only reliable route, since `setShaderValueTexture`
 picks a unit that the model's own maps then overwrite; the terrain (batch path)
-has no materials and uses `setShaderValueTexture` directly. `K` cycles the map,
-a planar fallback (the earlier M4 look) and off.
+has no materials and uses `setShaderValueTexture` directly. The grass tufts
+inside the light's box go in through the same depth pass, but via the batch path
+(`beginShaderMode`, like the terrain) and drawn before the goat so its depth wins
+on overlap; tufts outside the box cannot project into the map, so they are
+culled. `K` cycles the map, a planar fallback (the earlier M4 look) and off.
 
 The M5 sky reuses the same bindings. It is a full-screen pass (`beginShaderMode`
 + `drawRectangle`) whose fragment shader reads `gl_FragCoord`, so the fragment

@@ -227,25 +227,31 @@ function drawRain(w, h) {
     }
 }
 
+// Grass tufts, leaning with the gust and culled by squared radius around the
+// goat. Shared with the shadow pass, which draws the same cubes through the
+// depth program so the grass casts too. `cull2` is the cull radius squared;
+// nearer tufts get a second segment so the bend reads up close.
+function drawTufts(g, tuftCol, cull2, detail2) {
+    for (let i = 0; i < TUFTS.length; i++) {
+        const tx = TUFTS[i].x - g.px;
+        const tz = TUFTS[i].z - g.pz;
+        const d2 = tx * tx + tz * tz;
+        if (d2 > cull2) continue;
+        const off = Math.sin(swayTime * 3.0 + TUFTS[i].p) * 0.11 * windSway;
+        rl.drawCube(TUFTS[i].x + off, 0.06, TUFTS[i].z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
+        if (d2 < detail2) {
+            rl.drawCube(TUFTS[i].x + off * 1.7, 0.20, TUFTS[i].z + off * 0.7,
+                0.11, 0.16, 0.11, tuftCol);
+        }
+    }
+}
+
 function drawGround(g, groundCol, tuftCol) {
     // Snap the slab to a 2-unit grid so it looks pinned down while we travel.
     const gx = Math.round(g.px / 2) * 2;
     const gz = Math.round(g.pz / 2) * 2;
     rl.drawCube(gx, -0.06, gz, 70, 0.1, 70, groundCol);
     rl.drawGrid(40, 1.0);
-    for (let i = 0; i < TUFTS.length; i++) {
-        const tx = TUFTS[i].x - g.px;
-        const tz = TUFTS[i].z - g.pz;
-        const d2 = tx * tx + tz * tz;
-        if (d2 > 576) continue; // cull beyond 24 units
-        // Lean each tuft with the gust; nearer ones get a second segment so the
-        // bend reads up close.
-        const off = Math.sin(swayTime * 3.0 + TUFTS[i].p) * 0.11 * windSway;
-        rl.drawCube(TUFTS[i].x + off, 0.06, TUFTS[i].z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
-        if (d2 < 180) {
-            rl.drawCube(TUFTS[i].x + off * 1.7, 0.20, TUFTS[i].z + off * 0.7,
-                0.11, 0.16, 0.11, tuftCol);
-        }
-    }
+    drawTufts(g, tuftCol, 576, 180);   // cull beyond 24 units, detail inside ~13
 }
 

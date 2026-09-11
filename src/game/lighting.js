@@ -243,8 +243,9 @@ function setShadowUniforms() {
 
 // ---- shadow map (M4b) ----------------------------------------------------
 //
-// A depth-only pass renders the goat from the light's point of view into a
-// render texture; the lit shader projects each fragment into that view and
+// A depth-only pass renders the goat (and the grass inside the light's box)
+// from the light's point of view into a render texture; the lit shader
+// projects each fragment into that view and
 // compares depths with a 3x3 PCF kernel, so the goat self-shadows and the
 // terrain takes a proper (perspective-correct) shadow. Depth is packed across
 // RGB and stored as `1 - depth`, so the cleared-black background reads as "far".
@@ -268,6 +269,12 @@ const SHADOW_FAR = 48.0;
 const SHADOW_BIAS = 0.0018;
 const SHADOW_STRENGTH = 0.85; // how dark a fully-shadowed sample gets
 const SHADOW_MAP_INDEX = 1;   // MATERIAL_MAP_METALNESS -> sampler `texture1`
+// The map only spans a SHADOW_HALF box around the goat, so every tuft inside it
+// is exactly the grass shadow the lit shader can sample (anything outside would
+// project to out-of-range uv and be ignored). The small margin catches tufts
+// just outside whose short shadow leans into the box.
+const SHADOW_GRASS_HALF = SHADOW_HALF + 2.0;
+const SHADOW_GRASS_CULL2 = SHADOW_GRASS_HALF * SHADOW_GRASS_HALF;
 
 let shadowMapReady = false;
 let shadowMode = SHADOW_PLANAR;
@@ -396,12 +403,21 @@ function updateShadow() {
     shadowStrengthNow = SHADOW_STRENGTH * low * (0.35 + 0.65 * skyLight);
 }
 
-// Render the goat from the light's point of view into the shadow texture.
+// Render the goat and the near grass from the light's point of view into the
+// shadow texture.
 function renderShadowMap() {
     if (!shadowMapReady || !haveModel || shadowStrengthNow <= 0.001) return;
     rl.beginTextureMode(shadowRT);
     rl.clearBackground(rl.color(0, 0, 0, 255));
     rl.beginMode3D(0, 0, 0, goat.px, 0, goat.pz, 45);
+    // Grass casts too. It is immediate-mode geometry, so unlike the model it goes
+    // through the batch path with `beginShaderMode`; drawing it first lets the
+    // goat's depth win wherever the two overlap. The tufts are swayed by the
+    // same `drawTufts` the visible pass uses, so the shadow tracks the wind.
+    rl.beginShaderMode(depthShader);
+    setMatrixOn(depthShader, depthUniforms.lightVP, LIGHT_MATRIX);
+    drawTufts(goat, rl.WHITE, SHADOW_GRASS_CULL2, SHADOW_GRASS_CULL2);
+    rl.endShaderMode();
     rl.setModelShader(model, depthShader);
     // Detach the shadow target while it is the framebuffer's own attachment.
     rl.setModelTexture(model, SHADOW_MAP_INDEX, -1);

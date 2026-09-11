@@ -37,6 +37,8 @@ const soundLoads = [];
 const soundsPlayed = [];
 const timeline = [];
 const logs = [];
+let shadowPass = false;
+let shadowCubeDraws = 0;
 
 const keys = {};
 const pressed = {};
@@ -100,7 +102,7 @@ const rl = Object.assign({}, constants, {
     loadRenderTexture: () => 5, isRenderTextureValid: () => true,
     renderTextureColor: () => 6, renderTextureDepth: () => 7,
     renderTextureSize: () => ({ x: 1024, y: 1024 }),
-    beginTextureMode: () => {}, endTextureMode: () => {},
+    beginTextureMode: () => { shadowPass = true; }, endTextureMode: () => { shadowPass = false; },
     initAudioDevice: () => {}, closeAudioDevice: () => {},
     loadSound: (p) => { soundLoads.push(p); return soundLoads.length - 1; },
     playSound: (s) => { soundsPlayed.push(s); },
@@ -137,7 +139,7 @@ const rl = Object.assign({}, constants, {
         frameIndex += 1;
     },
     beginMode3D: () => {}, endMode3D: () => {},
-    drawCube: () => {}, drawGrid: () => {},
+    drawCube: () => { if (shadowPass) shadowCubeDraws += 1; }, drawGrid: () => {},
     drawSphere: () => {}, drawPoint3D: () => {}, drawRectangleGradientV: () => {},
     drawLine: () => {},
     drawRectangle: () => {}, drawText: (text) => {
@@ -228,6 +230,7 @@ const checks = [
     ['lighting is active', lightAt(15) === 'lit + shadow map', lightAt(15)],
     ['model uses the lit shader', modelShaderCalls.indexOf(0) >= 0, modelShaderCalls.slice(0, 4)],
     ['depth pass uses the depth shader', modelShaderCalls.indexOf(2) >= 0, modelShaderCalls.slice(0, 6)],
+    ['grass casts in the shadow pass', shadowCubeDraws > 0, shadowCubeDraws],
     ['shadow map bound to the model', modelTextureCalls.some((c) => c[0] === 1 && c[1] === 6),
         modelTextureCalls.slice(0, 4)],
     ['L toggles lighting off', lightAt(3210) === 'off', lightAt(3210)],
