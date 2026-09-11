@@ -60,7 +60,8 @@ the photoreal cloud shader (M5).
 | **M0** | Engine primitives: 3D shapes, billboards | — | S–M | ✅ **Done** — landed upstream |
 | **M1** | Stats, `sleeping`, `dead` states | — | M | ✅ **Done** |
 | **M2** | Day/night cycle (approximate lighting) | M0 (sun/moon) | M | ✅ **Done** |
-| **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | ✅ **Done** (audio deferred to M3b) |
+| **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | ✅ **Done** (audio in M3b) |
+| **M3b** | Weather and goat audio | M3 | S | ✅ **Done** |
 | **M4** | Shaders: real lighting + cast shadows | M0 | L | ✅ **Done** (incl. M4b shadow map) |
 | **M5** | Weather phase 2: shader clouds (photoreal stretch) | M4 | L | Only sensible once shaders exist |
 
@@ -241,7 +242,7 @@ tracks the time of day.
 
 ## M3 — Weather phase 1 ✅ Done
 
-Goal: believable clouds, rain and wind. Audio is the remaining piece (M3b).
+Goal: believable clouds, rain and wind, with audio (see M3b).
 
 Shipped in `goat.js`:
 
@@ -264,15 +265,19 @@ Shipped in `goat.js`:
   scaled by the gust, with a second segment up close.
 
 Acceptance met: weather transitions blend rather than pop; rain falls at the
-wind angle; grass sways with gusts. Not yet met: audio (needs generated sound
-assets). Verified code-side via `tools/goat_logic_test.js` (clock, weather text
-and `C` are covered); visual look is **not** machine-verified.
+wind angle; grass sways with gusts; audio tracks the intensity (M3b). Verified
+code-side via `tools/goat_logic_test.js` (clock, weather text and `C` are
+covered); visual look is **not** machine-verified.
 
-### M3b — Weather audio (remaining)
+### M3b — Weather and goat audio ✅ Done
 
-Looping wind and rain beds (`loadSound` + `playSound` + `setSoundVolume`), volume
-and pitch tied to intensity, optional thunder. Bindings already exist; what is
-missing is the sound assets to embed.
+Shipped with the `Music` bindings (streaming, native looping) and `Sound`
+effects. A background track loops under everything at a low volume; the rain and
+wind beds stream at a volume tied to the weather intensity; thunder plays on a
+cooldown once the rain is heavy; and the goat bleats on jump, sleep, waking and
+death, with a little random pitch so repeats differ. `M` mutes. All of it loads
+from `sfx/` on disk and is skipped if a file is missing. MP3/OGG decoding was
+enabled on raylib-sys for the compressed effects.
 
 ---
 

@@ -24,13 +24,12 @@ cargo run --release
 - **Sleeping and death** with their own clips, a closed-eye sprite while sleeping
   and cartoon X-eyes once the death collapse settles.
 - **Day/night cycle**: a clock drives a gradient sky, the sun and moon arcing
-  overhead, a star field, a scene-wide ambient tint and a blob shadow. Hold `T`
-  to fast-forward the clock. (True lighting and cast shadows are M4.)
+  overhead, a star field and a scene-wide ambient tint. Hold `T` to
+  fast-forward the clock.
 - **Weather**: a seeded state machine walks `clear → cloudy → rain → clearing`.
   Procedural noise-puff clouds drift with the wind and overcast greys the sky,
   rain falls as wind-slanted streaks, and the grass sways with gusty noise.
-  Press `C` to skip to the next state. (Weather audio and shader clouds are
-  deferred to M3b / M5.)
+  Press `C` to skip to the next state. (Shader clouds are M5.)
 - **Real lighting and shadows (M4/M4b)**: a small custom GLSL program lights
   the scene. A directional sun (or moon at night) driven by the clock, plus a
   hemispheric ambient term, shades the goat and the terrain per fragment. The
@@ -39,6 +38,13 @@ cargo run --release
   perspective shadow. Press `L` to toggle lighting and `K` to cycle the shadow
   between the map, the planar fallback and off. Falls back to the M2/M3
   ambient-tint look if the engine lacks the shader bindings.
+- **Audio**: a background music loop plus weather ambience and goat
+  vocalisations. The track and the rain/wind beds are streamed `Music` (they loop
+  natively and cost almost no memory); bleats and thunder are short `Sound`
+  effects with a little pitch variation. Rain and wind volume follow the weather,
+  thunder rumbles once the rain is heavy, and the goat bleats on jump, sleep,
+  waking and death. Press `M` to mute. Audio loads from `sfx/` on disk and is
+  skipped if a file is missing.
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
@@ -60,6 +66,7 @@ cargo run --release
 | `C` | force the next weather state |
 | `L` | toggle the lit shader / shadows |
 | `K` | cycle shadows: map / planar / off |
+| `M` | mute / unmute the audio |
 | `A` / `D` | turn left / right |
 | mouse drag | orbit the camera |
 | arrow keys | orbit the camera (keyboard fallback) |
@@ -102,6 +109,7 @@ cargo run             # debug builds work too; see "Troubleshooting"
 | --- | --- |
 | `src/main.rs` | Rust host: installs the JIT + raylib, embeds the GLB, evaluates the scene |
 | `src/goat.js` | The scene: gait state machine, jump, camera, HUD, grass |
+| `sfx/` | Music, weather ambience and goat vocalisations (loaded at runtime) |
 | `goat_animated.glb` | Exported model (5 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials |
 | `tex/` | Knitted-fleece textures (diffuse / normal / roughness / displacement / AO) |
@@ -217,6 +225,28 @@ sampler from. That is the only reliable route, since `setShaderValueTexture`
 picks a unit that the model's own maps then overwrite; the terrain (batch path)
 has no materials and uses `setShaderValueTexture` directly. `K` cycles the map,
 a planar fallback (the earlier M4 look) and off.
+
+## The `rl` audio surface
+
+The sound effects and music needed a small audio surface (also upstream):
+
+```
+initAudioDevice  closeAudioDevice
+loadSound  playSound  stopSound  setSoundVolume  isSoundPlaying  setSoundPitch
+loadMusic  unloadMusic  playMusic  updateMusic  stopMusic  pauseMusic
+resumeMusic  setMusicVolume  setMusicPitch  isMusicPlaying
+musicTimeLength  musicTimePlayed
+```
+
+`Music` streams from disk (the wind and rain beds are ~10 MB each) and loops
+natively, while `Sound` is fully decoded and meant for short effects. Music
+needs `updateMusic` every frame to keep the stream fed. `SUPPORT_FILEFORMAT_MP3`
+and `SUPPORT_FILEFORMAT_OGG` are enabled on raylib-sys; without them the
+compressed effects decode to nothing. Embedded assets keep their extension when
+materialised to a temp file, since raylib picks the decoder from it.
+
+Audio is loaded from `sfx/` at runtime rather than embedded, so the binary stays
+small — run from the repository root (as `cargo run` does).
 
 ## Tests and tools
 

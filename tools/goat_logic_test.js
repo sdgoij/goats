@@ -30,6 +30,11 @@ let statsText = '';
 let weatherText = '';
 const modelShaderCalls = [];
 const modelTextureCalls = [];
+const musicLoads = [];
+const musicPlayed = [];
+let musicUpdates = 0;
+const soundLoads = [];
+const soundsPlayed = [];
 const timeline = [];
 const logs = [];
 
@@ -60,7 +65,7 @@ const constants = {
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
     KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90, KEY_T: 84,
-    KEY_C: 67, KEY_L: 76, KEY_K: 75,
+    KEY_C: 67, KEY_L: 76, KEY_K: 75, KEY_M: 77,
     WHITE: {}, RAYWHITE: {},
     SHADER_UNIFORM_FLOAT: 0, SHADER_UNIFORM_VEC2: 1, SHADER_UNIFORM_VEC3: 2,
     SHADER_UNIFORM_VEC4: 3, SHADER_UNIFORM_INT: 4, SHADER_UNIFORM_UINT: 8,
@@ -96,6 +101,17 @@ const rl = Object.assign({}, constants, {
     renderTextureColor: () => 6, renderTextureDepth: () => 7,
     renderTextureSize: () => ({ x: 1024, y: 1024 }),
     beginTextureMode: () => {}, endTextureMode: () => {},
+    initAudioDevice: () => {}, closeAudioDevice: () => {},
+    loadSound: (p) => { soundLoads.push(p); return soundLoads.length - 1; },
+    playSound: (s) => { soundsPlayed.push(s); },
+    stopSound: () => {}, setSoundVolume: () => {}, setSoundPitch: () => {},
+    isSoundPlaying: () => false,
+    loadMusic: (p) => { musicLoads.push(p); return musicLoads.length - 1; },
+    unloadMusic: () => {}, playMusic: (m) => { musicPlayed.push(m); },
+    updateMusic: () => { musicUpdates += 1; }, stopMusic: () => {},
+    pauseMusic: () => {}, resumeMusic: () => {},
+    setMusicVolume: () => {}, setMusicPitch: () => {},
+    isMusicPlaying: () => true, musicTimeLength: () => 100, musicTimePlayed: () => 0,
     makeTexture: () => 0,
     drawBillboard: () => {},
     windowShouldClose: () => {
@@ -165,6 +181,10 @@ function lightAt(i) {
     const m = /light (lit \+ shadow map|lit \+ planar shadow|lit|off|cube shader)/.exec(row(i).speed);
     return m ? m[1] : null;
 }
+function audioAt(i) {
+    const m = /audio (on|muted|off)/.exec(row(i).speed);
+    return m ? m[1] : null;
+}
 
 let deathFrame = -1;
 for (const r of timeline) {
@@ -200,6 +220,11 @@ const checks = [
     ['shadow map bound to the model', modelTextureCalls.some((c) => c[0] === 1 && c[1] === 6),
         modelTextureCalls.slice(0, 4)],
     ['L toggles lighting off', lightAt(3210) === 'off', lightAt(3210)],
+    ['background music plays', musicPlayed.indexOf(0) >= 0, musicPlayed.slice(0, 4)],
+    ['music streams are updated', musicUpdates > 0, musicUpdates],
+    ['ambience beds load', musicLoads.length >= 3, musicLoads.length],
+    ['the goat bleats on jump', soundsPlayed.length > 0, soundsPlayed.length],
+    ['audio is reported', audioAt(15) === 'on', audioAt(15)],
     ['goat dies of exhaustion', deathFrame > 200 && deathFrame < 3950, deathFrame],
     ['death clip held while dead', clipAt(deathFrame + 5) === 'GoatDeath', clipAt(deathFrame + 5)],
     ['health is zero at death', deadStats !== null && deadStats.health === 0, deadStats],
