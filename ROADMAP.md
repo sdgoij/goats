@@ -59,7 +59,7 @@ shadows and the photoreal cloud shader.
 | --- | --- | --- | --- | --- |
 | **M0** | Engine primitives: 3D shapes, billboards | — | S–M | ✅ **Done** — landed upstream |
 | **M1** | Stats, `sleeping`, `dead` states | — | M | ✅ **Done** |
-| **M2** | Day/night cycle (approximate lighting) | M0 (sun/moon) | M | High visual payoff, mostly JS |
+| **M2** | Day/night cycle (approximate lighting) | M0 (sun/moon) | M | ✅ **Done** |
 | **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | Builds on the day/night sky |
 | **M4** | Shaders: real lighting + cast shadows | M0 | L | Biggest engine lift; changes how everything renders |
 | **M5** | Weather phase 2: shader clouds (photoreal stretch) | M4 | L | Only sensible once shaders exist |
@@ -203,10 +203,17 @@ eyes, ignores input, and can be restarted.
 
 ---
 
-## M2 — Day/night cycle
+## M2 — Day/night cycle ✅ Done
 
 Goal: a clock drives the sky, the light and the celestial bodies, and the world
 looks meaningfully different at night.
+
+What landed: an interpolated sky curve (colour + light factor by the hour)
+drawn as a full-screen vertical gradient; a scene-wide ambient tint multiplied
+into the model, terrain and fallback goat; a sun and moon arcing east to west on
+a celestial sphere; a fixed star field that fades in at dusk; a cheap blob
+shadow; and a night-drain hook (energy costs 1.6x in the cold). Hold `T` to
+fast-forward the clock. The HUD shows the time of day.
 
 - **Clock**: `world.time` in hours `[0, 24)`, advancing at a configurable rate
   (e.g. 1 game day = 6 real minutes). `rl.getTime()` already exists for the

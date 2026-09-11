@@ -30,6 +30,11 @@
 // or a missing asset) the sandbox falls back to the original cube-skeleton goat:
 // voxel-filled body boxes and 2-bone-IK limbs drawn with `rl.drawCube`.
 //
+// A day/night cycle drives a gradient sky, a sun and moon arcing overhead, a
+// star field, a scene-wide ambient tint and a blob shadow. Hold T to
+// fast-forward the clock. (True lighting and cast shadows need shaders and are
+// still on the roadmap.)
+//
 // The goat has health and energy. Energy drains faster the harder it works; at
 // zero the goat is exhausted -- capped at a walk and slowly losing health -- so
 // it has to sleep to recover. At zero health it dies and needs a restart.
@@ -41,6 +46,7 @@
 //   SPACE         jump
 //   Z             sleep / wake
 //   R             restart after death
+//   T (hold)      fast-forward the clock
 //   A / D         turn left / right
 //   mouse drag    orbit the camera        mouse wheel    zoom
 //   P             pause / resume
@@ -251,7 +257,7 @@ function poseModel(role, phase) {
 function drawModelGoat(g) {
     const yawDeg = (g.yaw * 180) / Math.PI;
     rl.drawModelEx(model, g.px, g.py + groundOffset, g.pz,
-        0, 1, 0, yawDeg, MODEL_SCALE, MODEL_SCALE, MODEL_SCALE, rl.WHITE);
+        0, 1, 0, yawDeg, MODEL_SCALE, MODEL_SCALE, MODEL_SCALE, ambTint);
 }
 
 // ---- the cube fallback ---------------------------------------------------
@@ -322,29 +328,29 @@ function drawLeg(g, leg) {
     const ang = legAngles(f.dx, dy);
 
     const hip = { x: leg.hx, y: V_HIP_Y, z: leg.hz };
-    drawSeg(g, hip, ang.upper, V_L1, 0.11, FUR, 3);
+    drawSeg(g, hip, ang.upper, V_L1, 0.11, ambFur, 3);
     const knee = segEnd(hip, ang.upper, V_L1);
-    drawSeg(g, knee, ang.lower, V_L2, 0.09, FUR, 3);
+    drawSeg(g, knee, ang.lower, V_L2, 0.09, ambFur, 3);
     const foot = segEnd(knee, ang.lower, V_L2);
     const w = toWorld(foot, g);
-    rl.drawCube(w.x, w.y, w.z, 0.12, 0.10, 0.12, HOOF);
+    rl.drawCube(w.x, w.y, w.z, 0.12, 0.10, 0.12, ambHoof);
 }
 
 function drawGoat(g) {
     // barrel of the body
-    drawBox(g, { x: 0.0, y: 0.78, z: 0.0 }, { x: 1.20, y: 0.62, z: 0.56 }, FUR, 0.30);
+    drawBox(g, { x: 0.0, y: 0.78, z: 0.0 }, { x: 1.20, y: 0.62, z: 0.56 }, ambFur, 0.30);
     // neck (shoulder -> head base) and tail
-    drawSeg(g, { x: 0.40, y: 0.92, z: 0.0 }, Math.atan2(0.32, -0.20), 0.377, 0.22, FUR, 3);
-    drawSeg(g, { x: -0.58, y: 0.90, z: 0.0 }, Math.atan2(-0.10, -0.12), 0.156, 0.09, FUR_DK, 2);
+    drawSeg(g, { x: 0.40, y: 0.92, z: 0.0 }, Math.atan2(0.32, -0.20), 0.377, 0.22, ambFur, 3);
+    drawSeg(g, { x: -0.58, y: 0.90, z: 0.0 }, Math.atan2(-0.10, -0.12), 0.156, 0.09, ambFurDk, 2);
     // head, muzzle, beard
-    drawBox(g, { x: 0.86, y: 1.16, z: 0.0 }, { x: 0.34, y: 0.28, z: 0.28 }, FUR, 0.14);
-    drawBox(g, { x: 1.02, y: 1.10, z: 0.0 }, { x: 0.20, y: 0.16, z: 0.18 }, DARK, 0.10);
-    drawBox(g, { x: 0.98, y: 0.98, z: 0.0 }, { x: 0.08, y: 0.10, z: 0.08 }, DARK, 0.08);
+    drawBox(g, { x: 0.86, y: 1.16, z: 0.0 }, { x: 0.34, y: 0.28, z: 0.28 }, ambFur, 0.14);
+    drawBox(g, { x: 1.02, y: 1.10, z: 0.0 }, { x: 0.20, y: 0.16, z: 0.18 }, ambDark, 0.10);
+    drawBox(g, { x: 0.98, y: 0.98, z: 0.0 }, { x: 0.08, y: 0.10, z: 0.08 }, ambDark, 0.08);
     // ears, horns, eyes
     for (let s = -1; s <= 1; s += 2) {
-        drawBox(g, { x: 0.80, y: 1.26, z: 0.16 * s }, { x: 0.10, y: 0.07, z: 0.18 }, DARK, 0.09);
-        drawSeg(g, { x: 0.80, y: 1.28, z: 0.07 * s }, Math.atan2(-0.14, -0.14), 0.198, 0.07, HORN, 2);
-        drawBox(g, { x: 0.90, y: 1.19, z: 0.14 * s }, { x: 0.06, y: 0.05, z: 0.05 }, EYE, 0.05);
+        drawBox(g, { x: 0.80, y: 1.26, z: 0.16 * s }, { x: 0.10, y: 0.07, z: 0.18 }, ambDark, 0.09);
+        drawSeg(g, { x: 0.80, y: 1.28, z: 0.07 * s }, Math.atan2(-0.14, -0.14), 0.198, 0.07, ambHorn, 2);
+        drawBox(g, { x: 0.90, y: 1.19, z: 0.14 * s }, { x: 0.06, y: 0.05, z: 0.05 }, ambEye, 0.05);
     }
     // legs
     for (let i = 0; i < LEGS.length; i++) {
@@ -368,17 +374,153 @@ const TUFTS = [];
     console.log("goat: " + TUFTS.length + " grass tufts");
 })();
 
+// ---- day/night -----------------------------------------------------------
+
+const DAY_LENGTH = 240;         // real seconds for one 24 h day
+const TIME_FAST = 40;           // hold T to advance time this many times faster
+const NIGHT_DRAIN_MULT = 1.6;   // energy drains faster in the cold
+
+// Sky keyframes by hour: sky-top and horizon colours plus a 0..1 light factor
+// used to tint the whole scene. Hour 24 repeats hour 0.
+const SKY_KEYS = [
+    { h: 0.0, top: [8, 10, 28], bot: [16, 20, 44], light: 0.0 },
+    { h: 4.5, top: [12, 14, 34], bot: [26, 28, 54], light: 0.0 },
+    { h: 6.0, top: [70, 70, 120], bot: [190, 120, 90], light: 0.25 },
+    { h: 7.5, top: [120, 165, 220], bot: [235, 190, 150], light: 0.8 },
+    { h: 12.0, top: [110, 170, 240], bot: [175, 210, 245], light: 1.0 },
+    { h: 17.0, top: [120, 165, 220], bot: [235, 200, 160], light: 0.85 },
+    { h: 19.0, top: [90, 80, 130], bot: [225, 130, 90], light: 0.35 },
+    { h: 20.5, top: [26, 28, 58], bot: [70, 60, 90], light: 0.08 },
+    { h: 22.0, top: [10, 12, 30], bot: [18, 22, 46], light: 0.0 },
+    { h: 24.0, top: [8, 10, 28], bot: [16, 20, 44], light: 0.0 },
+];
+
+let worldTime = 8.0;        // hours, [0, 24)
+let skyLight = 1.0;         // 0 (night) .. 1 (full day)
+let skyTop = 0;             // packed sky colours, refreshed each frame
+let skyBot = 0;
+let ambR = 1.0, ambG = 1.0, ambB = 1.0;
+let ambTint = 0xFFFFFFFF;
+let ambFur, ambFurDk, ambDark, ambHorn, ambHoof, ambEye, ambGround, ambTuft, ambShadow;
+let clockText = "";
+
+// Fixed star field on a big sphere; drawn relative to the goat so it reads as
+// infinitely far away.
+const STARS = [];
+(function buildStars() {
+    for (let i = 0; i < 320; i++) {
+        const a = hash(i * 12.9898) * Math.PI * 2;
+        const e = 0.05 + hash(i * 78.233) * 1.35;
+        const r = Math.cos(e) * 90;
+        STARS.push({ x: Math.cos(a) * r, y: Math.sin(e) * 90, z: Math.sin(a) * r });
+    }
+})();
+
+function mod24(h) {
+    return ((h % 24) + 24) % 24;
+}
+
+function mix(a, b, t) {
+    return a + (b - a) * t;
+}
+
+// Sample the sky curve at `h` hours: packed top/horizon colours and the light
+// factor, interpolated between the two surrounding keyframes.
+function skySample(h) {
+    let i = 0;
+    while (i < SKY_KEYS.length - 2 && h > SKY_KEYS[i + 1].h) i += 1;
+    const a = SKY_KEYS[i];
+    const b = SKY_KEYS[i + 1];
+    const span = b.h - a.h;
+    const t = span > 0 ? (h - a.h) / span : 0;
+    return {
+        top: rl.color(
+            Math.round(mix(a.top[0], b.top[0], t)),
+            Math.round(mix(a.top[1], b.top[1], t)),
+            Math.round(mix(a.top[2], b.top[2], t)), 255),
+        bot: rl.color(
+            Math.round(mix(a.bot[0], b.bot[0], t)),
+            Math.round(mix(a.bot[1], b.bot[1], t)),
+            Math.round(mix(a.bot[2], b.bot[2], t)), 255),
+        light: mix(a.light, b.light, t),
+    };
+}
+
+// Multiply a packed 0xRRGGBBAA colour by per-channel factors.
+function scaleColor(packed, fr, fg, fb) {
+    return rl.color(
+        Math.round(((packed >>> 24) & 255) * fr),
+        Math.round(((packed >>> 16) & 255) * fg),
+        Math.round(((packed >>> 8) & 255) * fb),
+        255);
+}
+
+// Refresh the scene's ambient tint once per frame: a dim, blue-shifted version
+// of daylight, plus the palette the fallback goat and terrain are drawn with.
+function updateAmbient() {
+    const t = skyLight;
+    ambR = 0.40 + 0.60 * t;
+    ambG = 0.44 + 0.56 * t;
+    ambB = 0.62 + 0.38 * t;
+    ambTint = rl.color(Math.round(255 * ambR), Math.round(255 * ambG), Math.round(255 * ambB), 255);
+    ambFur = scaleColor(FUR, ambR, ambG, ambB);
+    ambFurDk = scaleColor(FUR_DK, ambR, ambG, ambB);
+    ambDark = scaleColor(DARK, ambR, ambG, ambB);
+    ambHorn = scaleColor(HORN, ambR, ambG, ambB);
+    ambHoof = scaleColor(HOOF, ambR, ambG, ambB);
+    ambEye = scaleColor(EYE, ambR, ambG, ambB);
+    ambGround = scaleColor(GROUND, ambR, ambG, ambB);
+    ambTuft = scaleColor(TUFT, ambR, ambG, ambB);
+    const dark = 1 - 0.5 * t;
+    ambShadow = scaleColor(GROUND, ambR * dark, ambG * dark, ambB * dark);
+}
+
+function drawStars() {
+    const fade = (0.35 - skyLight) / 0.35;
+    if (fade <= 0) return;
+    const shade = Math.round(200 * fade + 40);
+    const blue = Math.min(255, shade + 25);
+    for (let i = 0; i < STARS.length; i++) {
+        rl.drawPoint3D(goat.px + STARS[i].x, STARS[i].y, goat.pz + STARS[i].z,
+            rl.color(shade, shade, blue, 255));
+    }
+}
+
+// Sun and moon on opposite sides of a celestial sphere, arcing east to west
+// between 06:00 and 18:00.
+function drawCelestial() {
+    const a = ((worldTime - 6) / 12) * Math.PI;   // 0 at 06:00, PI at 18:00
+    const dx = Math.cos(a);
+    const dy = Math.sin(a);
+    const R = 70;
+    if (dy > -0.25) {
+        const warm = 0.55 + 0.45 * Math.max(0, dy);
+        rl.drawSphere(goat.px + dx * R, dy * R, goat.pz, 2.4,
+            rl.color(255, Math.round(220 * warm + 35), Math.round(150 * warm + 80), 255));
+    }
+    if (dy < 0.25) {
+        rl.drawSphere(goat.px - dx * R, -dy * R, goat.pz, 1.8, rl.color(214, 220, 238, 255));
+    }
+}
+
+// Cheap contact shadow: a flattened dark rectangle under the goat, darker and
+// longer-lived the higher the sun. Real cast shadows need shaders (M4).
+function drawShadow() {
+    if (skyLight <= 0.05) return;
+    rl.drawCube(goat.px, 0.02, goat.pz, 1.25, 0.012, 1.7, ambShadow);
+}
+
 function drawGround(g) {
     // Snap the slab to a 2-unit grid so it looks pinned down while we travel.
     const gx = Math.round(g.px / 2) * 2;
     const gz = Math.round(g.pz / 2) * 2;
-    rl.drawCube(gx, -0.06, gz, 70, 0.1, 70, GROUND);
+    rl.drawCube(gx, -0.06, gz, 70, 0.1, 70, ambGround);
     rl.drawGrid(40, 1.0);
     for (let i = 0; i < TUFTS.length; i++) {
         const tx = TUFTS[i].x - g.px;
         const tz = TUFTS[i].z - g.pz;
         if (tx * tx + tz * tz > 576) continue; // cull beyond 24 units
-        rl.drawCube(TUFTS[i].x, 0.06, TUFTS[i].z, 0.14, 0.16, 0.14, TUFT);
+        rl.drawCube(TUFTS[i].x, 0.06, TUFTS[i].z, 0.14, 0.16, 0.14, ambTuft);
     }
 }
 
@@ -512,6 +654,7 @@ function updateStats(dt) {
     if (mode === "run") drain = ENERGY_DRAIN.run;
     else if (mode === "trot") drain = ENERGY_DRAIN.trot;
     else if (mode === "walk") drain = ENERGY_DRAIN.walk;
+    if (skyLight < 0.25) drain *= NIGHT_DRAIN_MULT;   // cold nights burn energy faster
     stats.energy = Math.max(0, stats.energy - drain * dt);
     if (stats.energy <= 0) {
         exhausted = true;
@@ -586,10 +729,10 @@ function drawHud(move) {
     if (haveModel) {
         how = curClipName !== "" ? "clip '" + curClipName + "'" : "glb model";
     }
-    const status = "speed " + curSpeed.toFixed(2) + " m/s   phase " + goat.phase.toFixed(2) +
-        "   fps " + rl.getFPS();
+    const status = clockText + "   speed " + curSpeed.toFixed(2) + " m/s   phase " +
+        goat.phase.toFixed(2) + "   fps " + rl.getFPS();
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
+    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
         10, 32, 14, rl.RAYWHITE);
 
     // Health and energy bars, top-right.
@@ -614,10 +757,25 @@ function run() {
     loadGoat();
     makeEyeTextures();
 
+    const sw = rl.getScreenWidth();
+    const sh = rl.getScreenHeight();
     let frames = 0;
     while (!rl.windowShouldClose()) {
         const dt = Math.min(rl.getFrameTime(), 0.05);
         frames += 1;
+
+        // day/night: advance the clock, then refresh the sky and the ambient
+        // tint the whole scene is drawn with.
+        const fast = rl.isKeyDown(rl.KEY_T);
+        worldTime = mod24(worldTime + (dt / DAY_LENGTH) * 24 * (fast ? TIME_FAST : 1));
+        const sky = skySample(worldTime);
+        skyTop = sky.top;
+        skyBot = sky.bot;
+        skyLight = sky.light;
+        updateAmbient();
+        const hh = Math.floor(worldTime);
+        const mm = Math.floor((worldTime - hh) * 60);
+        clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
 
         // camera: drag to orbit, arrows as a fallback, wheel to zoom
         if (rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
@@ -728,9 +886,13 @@ function run() {
         const cz = goat.pz + camDist * cp * Math.cos(camYaw);
 
         rl.beginDrawing();
-        rl.clearBackground(SKY);
+        rl.clearBackground(skyBot);
+        rl.drawRectangleGradientV(0, 0, sw, sh, skyTop, skyBot);
         rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
+        drawStars();
+        drawCelestial();
         drawGround(goat);
+        drawShadow();
         if (haveModel) {
             drawModelGoat(goat);
             drawEyes();

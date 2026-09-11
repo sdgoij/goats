@@ -23,6 +23,9 @@ cargo run --release
   restores energy and health; zero health is fatal.
 - **Sleeping and death** with their own clips, a closed-eye sprite while sleeping
   and cartoon X-eyes once the death collapse settles.
+- **Day/night cycle**: a clock drives a gradient sky, the sun and moon arcing
+  overhead, a star field, a scene-wide ambient tint and a blob shadow. Hold `T`
+  to fast-forward the clock. (True lighting and cast shadows are M4.)
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
@@ -40,6 +43,7 @@ cargo run --release
 | `Space` | jump |
 | `Z` | sleep / wake |
 | `R` | restart after death |
+| `T` (hold) | fast-forward the clock |
 | `A` / `D` | turn left / right |
 | mouse drag | orbit the camera |
 | arrow keys | orbit the camera (keyboard fallback) |

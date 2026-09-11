@@ -54,7 +54,7 @@ const constants = {
     KEY_RIGHT: 262, KEY_LEFT: 263, KEY_DOWN: 264, KEY_UP: 265,
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
-    KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90,
+    KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90, KEY_T: 84,
     WHITE: {}, RAYWHITE: {},
 };
 
@@ -99,10 +99,11 @@ const rl = Object.assign({}, constants, {
     },
     beginMode3D: () => {}, endMode3D: () => {},
     drawCube: () => {}, drawGrid: () => {},
+    drawSphere: () => {}, drawPoint3D: () => {}, drawRectangleGradientV: () => {},
     drawRectangle: () => {}, drawText: (text) => {
         const s = String(text);
-        if (s.indexOf('speed ') === 0) speedText = s;
-        else if (s.indexOf('health ') === 0) statsText = s;
+        if (s.indexOf('speed ') >= 0) speedText = s;
+        else if (s.indexOf('health ') >= 0) statsText = s;
     },
 });
 
@@ -130,6 +131,10 @@ function statAt(i) {
     const m = /health (\d+)\s+energy (\d+)/.exec(row(i).stats);
     return m ? { health: Number(m[1]), energy: Number(m[2]) } : null;
 }
+function clockAt(i) {
+    const m = /^(\d\d):(\d\d)/.exec(row(i).speed);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
 
 let deathFrame = -1;
 for (const r of timeline) {
@@ -153,6 +158,8 @@ const checks = [
     ['trot speed ~1.58 m/s', Math.abs((speedAt(40) || 0) - 1.577) < 0.02, speedAt(40)],
     ['run speed ~2.94 m/s', Math.abs((speedAt(60) || 0) - 2.941) < 0.02, speedAt(60)],
     ['energy drains while running', e20 && e60 && e60.energy < e20.energy, [e20, e60]],
+    ['clock advances over time', clockAt(20) !== null && clockAt(1200) > clockAt(20),
+        [clockAt(20), clockAt(1200)]],
     ['goat dies of exhaustion', deathFrame > 200 && deathFrame < 3950, deathFrame],
     ['death clip held while dead', clipAt(deathFrame + 5) === 'GoatDeath', clipAt(deathFrame + 5)],
     ['health is zero at death', deadStats !== null && deadStats.health === 0, deadStats],
