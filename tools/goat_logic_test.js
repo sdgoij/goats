@@ -29,6 +29,7 @@ let speedText = '';
 let statsText = '';
 let weatherText = '';
 const modelShaderCalls = [];
+const modelTextureCalls = [];
 const timeline = [];
 const logs = [];
 
@@ -59,7 +60,7 @@ const constants = {
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
     KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90, KEY_T: 84,
-    KEY_C: 67, KEY_L: 76,
+    KEY_C: 67, KEY_L: 76, KEY_K: 75,
     WHITE: {}, RAYWHITE: {},
     SHADER_UNIFORM_FLOAT: 0, SHADER_UNIFORM_VEC2: 1, SHADER_UNIFORM_VEC3: 2,
     SHADER_UNIFORM_VEC4: 3, SHADER_UNIFORM_INT: 4, SHADER_UNIFORM_UINT: 8,
@@ -82,13 +83,19 @@ const rl = Object.assign({}, constants, {
     },
     drawModelEx: () => {},
     setModelShader: (_m, s) => { modelShaderCalls.push(s); },
-    loadShaderFromMemory: (vs) => (vs.indexOf('shadowOn') >= 0 ? 1 : 0),
+    setModelTexture: (_m, index, tex) => { modelTextureCalls.push([index, tex]); },
+    loadShaderFromMemory: (vs, fs) => (vs.indexOf('shadowOn') >= 0 ? 1
+        : (vs.indexOf('vClip') >= 0 ? 2 : 0)),
     isShaderValid: () => true,
     getShaderLocation: () => 0,
     beginShaderMode: () => {}, endShaderMode: () => {},
     setShaderValue: () => {}, setShaderValueVector2: () => {},
     setShaderValueVector3: () => {}, setShaderValueVector4: () => {},
     setShaderValueMatrix: () => {}, setShaderValueTexture: () => {},
+    loadRenderTexture: () => 5, isRenderTextureValid: () => true,
+    renderTextureColor: () => 6, renderTextureDepth: () => 7,
+    renderTextureSize: () => ({ x: 1024, y: 1024 }),
+    beginTextureMode: () => {}, endTextureMode: () => {},
     makeTexture: () => 0,
     drawBillboard: () => {},
     windowShouldClose: () => {
@@ -155,7 +162,7 @@ function clockAt(i) {
     return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 }
 function lightAt(i) {
-    const m = /light (lit \+ cast shadow|lit|off|cube shader)/.exec(row(i).speed);
+    const m = /light (lit \+ shadow map|lit \+ planar shadow|lit|off|cube shader)/.exec(row(i).speed);
     return m ? m[1] : null;
 }
 
@@ -187,9 +194,11 @@ const checks = [
         weatherAt(300)],
     ['C changes the weather', weatherAt(2999) !== weatherAt(3200),
         [weatherAt(2999), weatherAt(3200)]],
-    ['lighting is active', lightAt(15) === 'lit + cast shadow', lightAt(15)],
+    ['lighting is active', lightAt(15) === 'lit + shadow map', lightAt(15)],
     ['model uses the lit shader', modelShaderCalls.indexOf(0) >= 0, modelShaderCalls.slice(0, 4)],
-    ['shadow shader swap runs', modelShaderCalls.indexOf(1) >= 0, modelShaderCalls.slice(0, 4)],
+    ['depth pass uses the depth shader', modelShaderCalls.indexOf(2) >= 0, modelShaderCalls.slice(0, 6)],
+    ['shadow map bound to the model', modelTextureCalls.some((c) => c[0] === 1 && c[1] === 6),
+        modelTextureCalls.slice(0, 4)],
     ['L toggles lighting off', lightAt(3210) === 'off', lightAt(3210)],
     ['goat dies of exhaustion', deathFrame > 200 && deathFrame < 3950, deathFrame],
     ['death clip held while dead', clipAt(deathFrame + 5) === 'GoatDeath', clipAt(deathFrame + 5)],
@@ -200,6 +209,7 @@ const checks = [
 const failed = checks.filter((c) => !c[1]);
 console.log('--- goat.js logic test ---');
 console.log('model line:', logs.filter((l) => l.indexOf('model handle') >= 0).join(' | '));
+console.log('shadow line:', logs.filter((l) => l.indexOf('shadow map') >= 0).join(' | '));
 console.log('death frame:', deathFrame, 'stats:', JSON.stringify(deadStats));
 for (const [name, ok, got] of checks) {
     console.log((ok ? 'PASS' : 'FAIL') + '  ' + name + (ok ? '' : '  (got ' + JSON.stringify(got) + ')'));

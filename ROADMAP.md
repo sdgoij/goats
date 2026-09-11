@@ -61,7 +61,7 @@ the photoreal cloud shader (M5).
 | **M1** | Stats, `sleeping`, `dead` states | — | M | ✅ **Done** |
 | **M2** | Day/night cycle (approximate lighting) | M0 (sun/moon) | M | ✅ **Done** |
 | **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | ✅ **Done** (audio deferred to M3b) |
-| **M4** | Shaders: real lighting + cast shadows | M0 | L | ✅ **Done** (planar shadows; shadow map is M4b) |
+| **M4** | Shaders: real lighting + cast shadows | M0 | L | ✅ **Done** (incl. M4b shadow map) |
 | **M5** | Weather phase 2: shader clouds (photoreal stretch) | M4 | L | Only sensible once shaders exist |
 
 ---
@@ -290,6 +290,7 @@ Bindings added upstream in `sdgoij/slag`:
 | `beginShaderMode` / `endShaderMode` | bind the lit shader around immediate-mode draws |
 | `setShaderValue`, `setShaderValueVector2/3/4`, `setShaderValueMatrix`, `setShaderValueTexture` | per-frame uniforms |
 | `setModelShader` | point a model's materials at a shader (`DrawMesh` ignores `beginShaderMode`) |
+| `setModelTexture` | point a material map at a texture (how the shadow map reaches a model draw) |
 | `loadRenderTexture`, `isRenderTextureValid`, `unloadRenderTexture`, `beginTextureMode`, `endTextureMode`, `renderTextureSize`, `renderTextureColor`, `renderTextureDepth` | offscreen passes and shadow maps |
 
 Shipped in `goat.js`:
@@ -304,29 +305,32 @@ Shipped in `goat.js`:
   normals on the CPU in this build and uploads them, so the lit shader works on
   the animated goat with plain `vertexPosition`/`vertexNormal` — the roadmap's
   bone-matrix risk did not materialise.
-- **Cast shadows** are a planar projection, not a depth map: the goat is drawn a
-  second time with a vertex shader that squashes every vertex onto the ground
-  along the light direction, filled with a translucent dark colour. On the flat
-  terrain this tracks the sun with none of the bias/acne tuning a shadow map
-  needs, and it costs one extra model draw.
+- **Cast shadows.** A depth pass renders the goat from the light's point of view
+  into a render texture, and the lit shader compares depths with a 3x3 PCF
+  kernel, so the goat self-shadows and the terrain takes a perspective-correct
+  shadow. Depth is packed across RGB and stored as `1 - depth`. `K` cycles the
+  shadow map, a planar fallback and off.
 
 Acceptance: the goat and terrain are lit by the sun/moon and the goat casts a
-shadow that tracks the day/night cycle. Code-side this is verified (shaders
-compile, no GL/JS errors, 59–60 fps in release by day and night); the *look* and
-shadow correctness are not machine-verified.
+shadow that tracks the day/night cycle. Code-side this is verified (three
+shaders compile, no GL/JS errors, 59–60 fps in release by day and night); the
+*look* and shadow correctness are not machine-verified.
 
-Not met: **soft** shadows (PCF) and self-shadowing. Those want a real shadow-map
-pass, which the `loadRenderTexture` + `setShaderValueMatrix` bindings already
-support — tracked as **M4b** below.
+### M4b — Shadow map ✅ Done
 
-### M4b — Shadow map (next)
+A depth-only pass with `lightVP` (a JS-built orthographic light matrix passed
+via `setShaderValueMatrix`), sampled in the lit program with a 3x3 PCF blur.
+Two raylib details shaped it: a render texture's depth attachment is a
+renderbuffer (not samplable), so depth is packed into the colour attachment's
+RGB; and `DrawMesh` binds a model's material maps over any unit
+`setShaderValueTexture` picks, so the shadow map rides in material map 1 via
+`setModelTexture` for the model, while the terrain (batch path) uses
+`setShaderValueTexture`.
 
-Render depth from the light into a render texture with a depth-only shader, then
-sample it in the lit program with a 3x3 PCF blur for soft edges. Needs a
-JS-built light view-projection matrix (orthographic), passed with
-`setShaderValueMatrix`; the render-texture colour attachment is exposed by
-`renderTextureColor` for that pass. This adds self-shadowing (the goat's legs on
-its body) and shadows on the grass, which the planar projection cannot do.
+What it adds over the planar fallback: self-shadowing (the goat's legs and head
+on its body) and a correct shadow on any non-flat receiver. Limits: a single
+1024² map covering a 14-unit box, so the shadow softens at distance and clips
+when the goat leaves the box.
 
 ---
 

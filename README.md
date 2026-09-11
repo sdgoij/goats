@@ -31,12 +31,14 @@ cargo run --release
   rain falls as wind-slanted streaks, and the grass sways with gusty noise.
   Press `C` to skip to the next state. (Weather audio and shader clouds are
   deferred to M3b / M5.)
-- **Real lighting (M4)**: a small custom GLSL program lights the scene.
-  A directional sun (or moon at night) driven by the clock, plus a
-  hemispheric ambient term, shades the goat and the terrain per fragment, and
-  the goat casts a projected silhouette shadow that tracks the sun. Press `L`
-  to toggle. Falls back to the M2/M3 ambient-tint look if the engine lacks the
-  shader bindings.
+- **Real lighting and shadows (M4/M4b)**: a small custom GLSL program lights
+  the scene. A directional sun (or moon at night) driven by the clock, plus a
+  hemispheric ambient term, shades the goat and the terrain per fragment. The
+  goat casts a shadow from a depth pass rendered in the light's view, sampled
+  with a 3x3 PCF kernel — so it self-shadows and the terrain takes a proper
+  perspective shadow. Press `L` to toggle lighting and `K` to cycle the shadow
+  between the map, the planar fallback and off. Falls back to the M2/M3
+  ambient-tint look if the engine lacks the shader bindings.
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
@@ -57,6 +59,7 @@ cargo run --release
 | `T` (hold) | fast-forward the clock |
 | `C` | force the next weather state |
 | `L` | toggle the lit shader / shadows |
+| `K` | cycle shadows: map / planar / off |
 | `A` / `D` | turn left / right |
 | mouse drag | orbit the camera |
 | arrow keys | orbit the camera (keyboard fallback) |
@@ -194,6 +197,7 @@ setShaderValueTexture
 loadRenderTexture  isRenderTextureValid  unloadRenderTexture
 beginTextureMode  endTextureMode
 renderTextureSize  renderTextureColor  renderTextureDepth
+setModelTexture
 ```
 
 Two consequences shape `goat.js`. raylib's default shader is unlit and
@@ -203,10 +207,16 @@ goat is routed through the lit program with `setModelShader`, while the terrain
 CPU-skinning build, raylib already deforms positions *and* normals on the CPU
 before upload, so the lit shader needs no bone matrices.
 
-The shadow is a planar projection rather than a depth map: the goat is drawn
-again with a vertex shader that squashes it onto the ground along the light
-direction. `loadRenderTexture`/`setShaderValueMatrix` are in place for a proper
-shadow-map pass (soft edges, self-shadowing) whenever it is wanted.
+The shadow is a depth pass rendered in the light's view, compared in the lit
+shader with a 3x3 PCF kernel. Depth is packed across the render texture's RGB
+(its depth attachment is only a renderbuffer, so it is not samplable) and stored
+as `1 - depth` so the cleared-black background reads as "far". The shadow map is
+handed to the *model* draw through a material map — `setModelTexture` puts it in
+every material's map 1, which `DrawMesh` binds to unit 1 and feeds the `texture1`
+sampler from. That is the only reliable route, since `setShaderValueTexture`
+picks a unit that the model's own maps then overwrite; the terrain (batch path)
+has no materials and uses `setShaderValueTexture` directly. `K` cycles the map,
+a planar fallback (the earlier M4 look) and off.
 
 ## Tests and tools
 

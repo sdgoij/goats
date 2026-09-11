@@ -590,12 +590,19 @@ const LIT_FS = [
     "in vec3 fragWorldPos;",
     "in vec3 fragNormal;",
     "uniform sampler2D texture0;",
+    "uniform sampler2D texture1;",
     "uniform vec4 colDiffuse;",
     "uniform vec3 lightDir;",
     "uniform vec4 lightColor;",
     "uniform vec4 ambientColor;",
     "uniform vec3 camPos;",
+    "uniform mat4 lightVP;",
+    "uniform vec2 shadowTexel;",
+    "uniform float shadowBias;",
+    "uniform float shadowStrength;",
     "out vec4 finalColor;",
+    // Depth is packed across RGB so 8-bit channels give ~24-bit precision.
+    "float unpackDepth(vec3 c) { return dot(c, vec3(1.0, 1.0/255.0, 1.0/65025.0)); }",
     "void main() {",
     "    vec4 texel = texture(texture0, fragTexCoord) * colDiffuse * fragColor;",
     "    vec3 n = normalize(fragNormal);",
@@ -605,9 +612,27 @@ const LIT_FS = [
     "    float ndl = max(dot(n, l), 0.0);",
     "    float hemi = 0.5 + 0.5 * n.y;",
     "    vec3 ambient = ambientColor.rgb * mix(0.55, 1.05, hemi);",
-    "    vec3 diffuse = lightColor.rgb * ndl;",
+    "    float shadow = 1.0;",
+    "    if (shadowStrength > 0.001) {",
+    "        vec4 lclip = lightVP * vec4(fragWorldPos, 1.0);",
+    "        vec3 ndc = lclip.xyz / lclip.w;",
+    "        vec2 uv = ndc.xy * 0.5 + 0.5;",
+    "        float ref = ndc.z * 0.5 + 0.5;",
+    "        if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0 && ref < 1.0) {",
+    "            float sum = 0.0;",
+    "            for (int y = -1; y <= 1; y++) {",
+    "                for (int x = -1; x <= 1; x++) {",
+    "                    vec3 e = texture(texture1, uv + vec2(float(x), float(y))*shadowTexel).rgb;",
+    "                    float d = 1.0 - unpackDepth(e);",
+    "                    sum += (ref - shadowBias > d) ? 1.0 : 0.0;",
+    "                }",
+    "            }",
+    "            shadow = 1.0 - (sum/9.0)*shadowStrength;",
+    "        }",
+    "    }",
+    "    vec3 diffuse = lightColor.rgb * ndl * shadow;",
     "    vec3 halfV = normalize(l + viewDir);",
-    "    float spec = pow(max(dot(n, halfV), 0.0), 24.0) * ndl * 0.18;",
+    "    float spec = pow(max(dot(n, halfV), 0.0), 24.0) * ndl * shadow * 0.18;",
     "    vec3 color = texel.rgb * (ambient + diffuse) + lightColor.rgb * spec;",
     "    finalColor = vec4(color, texel.a);",
     "}",
@@ -677,6 +702,7 @@ function makeLighting() {
         shadowAlpha: rl.getShaderLocation(shadowShader, "shadowAlpha"),
     } : null;
     if (haveModel) rl.setModelShader(model, litShader);
+    makeShadowMap();
     console.log("lighting: lit shader " + litShader + ", shadow shader " + shadowShader);
 }
 
@@ -722,6 +748,17 @@ function setLitUniforms(cx, cy, cz) {
     rl.setShaderValueVector4(litShader, litUniforms.ambientColor,
         LIGHT_AMBIENT[0], LIGHT_AMBIENT[1], LIGHT_AMBIENT[2], 1.0);
     rl.setShaderValueVector3(litShader, litUniforms.camPos, cx, cy, cz);
+    if (litShadow !== null) {
+        setMatrixOn(litShader, litShadow.lightVP, LIGHT_MATRIX);
+        rl.setShaderValueVector2(litShader, litShadow.texel, 1 / SHADOW_SIZE, 1 / SHADOW_SIZE);
+        rl.setShaderValue(litShader, litShadow.bias, SHADOW_BIAS, rl.SHADER_UNIFORM_FLOAT);
+        rl.setShaderValue(litShader, litShadow.strength, shadowStrengthNow, rl.SHADER_UNIFORM_FLOAT);
+        // The terrain goes through the batch path, which never sees the model's
+        // material map 1, so bind the shadow sampler explicitly for it.
+        if (shadowStrengthNow > 0.001 && shadowSamplerLoc >= 0) {
+            rl.setShaderValueTexture(litShader, shadowSamplerLoc, shadowColor);
+        }
+    }
 }
 
 function setShadowUniforms() {
@@ -731,6 +768,178 @@ function setShadowUniforms() {
     rl.setShaderValue(shadowShader, shadowUniforms.shadowOn, 1.0, rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(shadowShader, shadowUniforms.shadowAlpha,
         SHADOW_ALPHA * (0.35 + 0.65 * skyLight), rl.SHADER_UNIFORM_FLOAT);
+}
+
+// ---- shadow map (M4b) ----------------------------------------------------
+//
+// A depth-only pass renders the goat from the light's point of view into a
+// render texture; the lit shader projects each fragment into that view and
+// compares depths with a 3x3 PCF kernel, so the goat self-shadows and the
+// terrain takes a proper (perspective-correct) shadow. Depth is packed across
+// RGB and stored as `1 - depth`, so the cleared-black background reads as "far".
+//
+// Getting an extra texture into a *model* draw is the awkward part: `DrawMesh`
+// binds a material's map `i` to texture unit `i` and feeds `texture{i}` from it,
+// while `setShaderValueTexture` picks a unit that those maps then overwrite. So
+// the shadow map lives in every material's map 1 (metalness), which the lit
+// shader does not otherwise use. The terrain (batch path) has no materials, so it
+// is handed the sampler with `setShaderValueTexture` instead.
+
+const SHADOW_OFF = 0;
+const SHADOW_PLANAR = 1;
+const SHADOW_MAP = 2;
+
+const SHADOW_SIZE = 1024;
+const SHADOW_HALF = 7.0;      // half-width of the light's box, in world units
+const SHADOW_DIST = 22.0;     // how far the light sits from its centre
+const SHADOW_NEAR = 1.0;
+const SHADOW_FAR = 48.0;
+const SHADOW_BIAS = 0.0018;
+const SHADOW_STRENGTH = 0.85; // how dark a fully-shadowed sample gets
+const SHADOW_MAP_INDEX = 1;   // MATERIAL_MAP_METALNESS -> sampler `texture1`
+
+let shadowMapReady = false;
+let shadowMode = SHADOW_PLANAR;
+let shadowRT = -1;
+let shadowColor = -1;
+let depthShader = -1;
+let depthUniforms = null;
+let litShadow = null;         // locations of the lit shader's shadow uniforms
+let shadowSamplerLoc = -1;
+const LIGHT_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+let shadowStrengthNow = 0;
+
+const DEPTH_VS = [
+    "#version 330",
+    "in vec3 vertexPosition;",
+    "uniform mat4 matModel;",
+    "uniform mat4 lightVP;",
+    "out vec4 vClip;",
+    "void main() {",
+    "    vClip = lightVP * matModel * vec4(vertexPosition, 1.0);",
+    "    gl_Position = vClip;",
+    "}",
+].join("\n");
+
+const DEPTH_FS = [
+    "#version 330",
+    "in vec4 vClip;",
+    "out vec4 finalColor;",
+    "vec3 packDepth(float d) {",
+    "    vec3 enc = fract(vec3(1.0, 255.0, 65025.0)*d);",
+    "    enc -= enc.yzz*vec3(1.0/255.0, 1.0/255.0, 0.0);",
+    "    return enc;",
+    "}",
+    "void main() {",
+    "    float depth = vClip.z/vClip.w*0.5 + 0.5;",
+    "    finalColor = vec4(packDepth(clamp(1.0 - depth, 0.0, 0.999)), 1.0);",
+    "}",
+].join("\n");
+
+function cross3(a, b) {
+    return [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]];
+}
+function dot3(a, b) {
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+function unit3(v) {
+    const l = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]) || 1;
+    return [v[0]/l, v[1]/l, v[2]/l];
+}
+
+// Orthographic world -> light-clip matrix: x/y span a SHADOW_HALF box around
+// (cx, cy, cz), z runs SHADOW_NEAR..SHADOW_FAR along the light direction, with
+// the light at distance SHADOW_DIST. Row-major, the order `setShaderValueMatrix`
+// takes.
+function buildLightMatrix(cx, cy, cz) {
+    const L = unit3(LIGHT_DIR);
+    const up = Math.abs(L[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
+    const R = unit3(cross3(up, L));
+    const U = cross3(L, R);
+    const k = 2 / (SHADOW_FAR - SHADOW_NEAR);
+    const dL = dot3([cx, cy, cz], L);
+    const dR = dot3([cx, cy, cz], R);
+    const dU = dot3([cx, cy, cz], U);
+    const t2 = k*(SHADOW_DIST + dL) - k*SHADOW_NEAR - 1;
+    return [
+        R[0]/SHADOW_HALF, R[1]/SHADOW_HALF, R[2]/SHADOW_HALF, 0,
+        U[0]/SHADOW_HALF, U[1]/SHADOW_HALF, U[2]/SHADOW_HALF, 0,
+        -k*L[0], -k*L[1], -k*L[2], 0,
+        -dR/SHADOW_HALF, -dU/SHADOW_HALF, t2, 1,
+    ];
+}
+
+function setMatrixOn(shader, loc, m) {
+    rl.setShaderValueMatrix(shader, loc,
+        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+        m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+}
+
+// Build the render texture and depth program. Needs the window (GL) and the lit
+// shader already compiled.
+function makeShadowMap() {
+    if (typeof rl.loadRenderTexture !== "function" || typeof rl.setModelTexture !== "function" ||
+        typeof rl.setShaderValueMatrix !== "function" || typeof rl.setShaderValueTexture !== "function") {
+        console.log("shadow map: engine lacks the bindings - keeping the planar shadow");
+        return;
+    }
+    shadowSamplerLoc = rl.getShaderLocation(litShader, "texture1");
+    litShadow = {
+        lightVP: rl.getShaderLocation(litShader, "lightVP"),
+        texel: rl.getShaderLocation(litShader, "shadowTexel"),
+        bias: rl.getShaderLocation(litShader, "shadowBias"),
+        strength: rl.getShaderLocation(litShader, "shadowStrength"),
+    };
+    shadowRT = rl.loadRenderTexture(SHADOW_SIZE, SHADOW_SIZE);
+    if (shadowRT < 0 || !rl.isRenderTextureValid(shadowRT)) {
+        shadowRT = -1;
+        console.log("shadow map: no render texture - keeping the planar shadow");
+        return;
+    }
+    shadowColor = rl.renderTextureColor(shadowRT);
+    depthShader = rl.loadShaderFromMemory(DEPTH_VS, DEPTH_FS);
+    if (depthShader < 0 || !rl.isShaderValid(depthShader)) {
+        depthShader = -1;
+        console.log("shadow map: depth shader failed to compile - keeping the planar shadow");
+        return;
+    }
+    depthUniforms = { lightVP: rl.getShaderLocation(depthShader, "lightVP") };
+    if (haveModel) rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
+    shadowMapReady = true;
+    shadowMode = SHADOW_MAP;
+    console.log("shadow map: rt " + shadowRT + " color " + shadowColor +
+        " depth shader " + depthShader + " sampler loc " + shadowSamplerLoc);
+}
+
+// Refresh the light matrix and shadow strength for this frame.
+function updateShadow() {
+    shadowStrengthNow = 0;
+    if (shadowMode !== SHADOW_MAP || !shadowMapReady) return;
+    // Keep the light's box centred on the goat, snapped so it doesn't shimmer.
+    const cx = Math.round(goat.px * 2) / 2;
+    const cz = Math.round(goat.pz * 2) / 2;
+    const m = buildLightMatrix(cx, 0.7, cz);
+    for (let i = 0; i < 16; i++) LIGHT_MATRIX[i] = m[i];
+    // Fade the shadow out as the light drops toward the horizon.
+    const low = Math.min(1, Math.max(0, (LIGHT_DIR[1] - 0.06) / 0.25));
+    shadowStrengthNow = SHADOW_STRENGTH * low * (0.35 + 0.65 * skyLight);
+}
+
+// Render the goat from the light's point of view into the shadow texture.
+function renderShadowMap() {
+    if (!shadowMapReady || !haveModel || shadowStrengthNow <= 0.001) return;
+    rl.beginTextureMode(shadowRT);
+    rl.clearBackground(rl.color(0, 0, 0, 255));
+    rl.beginMode3D(0, 0, 0, goat.px, 0, goat.pz, 45);
+    rl.setModelShader(model, depthShader);
+    // Detach the shadow target while it is the framebuffer's own attachment.
+    rl.setModelTexture(model, SHADOW_MAP_INDEX, -1);
+    setMatrixOn(depthShader, depthUniforms.lightVP, LIGHT_MATRIX);
+    drawModelGoat(goat, rl.WHITE);
+    rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
+    rl.setModelShader(model, litShader);
+    rl.endMode3D();
+    rl.endTextureMode();
 }
 
 // ---- weather -------------------------------------------------------------
@@ -1242,7 +1451,7 @@ function drawHud(move) {
     const status = clockText + "   speed " + curSpeed.toFixed(2) + " m/s   phase " +
         goat.phase.toFixed(2) + "   fps " + rl.getFPS() + "   light " + lightingText;
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   L light   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
+    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   L light   K shadow   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
         10, 32, 14, rl.RAYWHITE);
 
     // Health and energy bars, top-right.
@@ -1294,6 +1503,7 @@ function run() {
         skyLight = sky.light;
         updateAmbient();
         updateLight();
+        updateShadow();
         const hh = Math.floor(worldTime);
         const mm = Math.floor((worldTime - hh) * 60);
         clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
@@ -1317,6 +1527,13 @@ function run() {
         if (rl.isKeyPressed(rl.KEY_L) && litShader >= 0) {
             useLighting = !useLighting;
             if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+        }
+        if (rl.isKeyPressed(rl.KEY_K) && litShader >= 0) {
+            // Cycle shadows: map -> planar -> off. The map needs the engine
+            // bindings; planar is the fallback.
+            shadowMode = (shadowMode + 1) % 3;
+            if (shadowMode === SHADOW_MAP && !shadowMapReady) shadowMode = SHADOW_OFF;
+            if (shadowMode === SHADOW_PLANAR && shadowShader < 0) shadowMode = SHADOW_OFF;
         }
         let move = 0;
         if (rl.isKeyDown(rl.KEY_W)) move += 1;
@@ -1414,12 +1631,15 @@ function run() {
         rl.beginDrawing();
         rl.clearBackground(skyBot);
         rl.drawRectangleGradientV(0, 0, sw, sh, skyTop, skyBot);
+        const lit = useLighting && litShader >= 0;
+        // The shadow-map pass must run before the main 3D pass, since it swaps
+        // render targets and leaves the model pointing back at the lit shader.
+        if (lit) renderShadowMap();
         rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
         drawStars();
         drawCelestial();
         drawClouds();
 
-        const lit = useLighting && litShader >= 0;
         if (lit) {
             // Terrain is immediate-mode geometry, so it goes through the lit
             // program with base colours: the shader now supplies the light.
@@ -1429,8 +1649,9 @@ function run() {
             if (!haveModel) drawGoat(goat);
             rl.endShaderMode();
             if (haveModel) {
-                // The projected cast shadow is drawn first, under the goat.
-                if (shadowShader >= 0 && LIGHT_DIR[1] > 0.06) {
+                // The planar fallback is drawn first, under the goat; the shadow
+                // map is sampled by the lit shader during the goat's own draw.
+                if (shadowMode === SHADOW_PLANAR && shadowShader >= 0 && LIGHT_DIR[1] > 0.06) {
                     rl.setModelShader(model, shadowShader);
                     setShadowUniforms();
                     drawModelGoat(goat, rl.WHITE);
@@ -1439,7 +1660,9 @@ function run() {
                 drawModelGoat(goat, rl.WHITE);
                 drawEyes();
             }
-            lightingText = (shadowShader >= 0 && LIGHT_DIR[1] > 0.06) ? "lit + cast shadow" : "lit";
+            if (shadowMode === SHADOW_MAP && shadowStrengthNow > 0.001) lightingText = "lit + shadow map";
+            else if (shadowMode === SHADOW_PLANAR && LIGHT_DIR[1] > 0.06) lightingText = "lit + planar shadow";
+            else lightingText = "lit";
         } else {
             // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
             drawGround(goat, ambGround, ambTuft);
