@@ -21,8 +21,9 @@ cargo run --release
 - **Health and energy.** Energy drains faster the harder the goat works; at zero
   it is exhausted (capped at a walk, bleeding health) until it sleeps. Sleep
   restores energy and health; zero health is fatal.
-- **Sleeping and death** with their own clips, a closed-eye sprite while sleeping
-  and cartoon X-eyes once the death collapse settles.
+- **Sleeping and death** with their own clips: the goat's real eyelids close
+  while sleeping (a `LidL`/`LidR` bone pair), and cartoon X-eyes appear once the
+  death collapse settles.
 - **Day/night cycle**: a clock drives a gradient sky, the sun and moon arcing
   overhead, a star field and a scene-wide ambient tint. Hold `T` to
   fast-forward the clock.
@@ -153,13 +154,20 @@ clip it wants by name via the `rl` surface (`modelAnimationCount` /
 
 ## Model pipeline
 
-`goat.blend` holds a 13-bone armature (`Root`, `Spine`, `Neck`, `Head`, `Tail`
-and four two-bone legs). The leg bones swing on their local Z axis, so each
-gait is authored as a 2-link IK problem: hoof targets in the sagittal plane are
-solved for thigh and shank angles. The clips bake their forward travel as
-in-place motion; the script moves the goat at the matching speed. The three
-locomotion gaits sit at roughly **0.87 / 1.58 / 2.94 m/s** for walk / trot /
-run, selected with no modifier, `Ctrl` and `Shift` respectively.
+`goat.blend` holds a 15-bone armature (`Root`, `Spine`, `Neck`, `Head`, `Tail`,
+the `LidL`/`LidR` eyelids and four two-bone legs). The leg bones swing on their
+local Z axis, so each gait is authored as a 2-link IK problem: hoof targets in
+the sagittal plane are solved for thigh and shank angles. The clips bake their
+forward travel as in-place motion; the script moves the goat at the matching
+speed. The three locomotion gaits sit at roughly **0.87 / 1.58 / 2.94 m/s** for
+walk / trot / run, selected with no modifier, `Ctrl` and `Shift` respectively.
+
+The eyelids are two spherical caps over the eyes, each weighted to a lid bone
+whose head sits at the eye centre and whose axis points along +X, so a rotation
+about the bone's local Y (the hinge) sweeps the cap down over the eye. Closing is
+−90° on `LidL` and +90° on `LidR`; every clip keys the pair, closed only in
+`GoatSleep`, because raylib resets a bone only when a clip animates it.
+`tools/goat_eyelids.py` rebuilds them and re-exports.
 `tools/goat_states.py` rebuilds the recumbent `GoatSleep` and the collapsing
 `GoatDeath` clips the same way, auto-grounding each so the lowest mesh vertex
 rests on the ground.

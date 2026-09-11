@@ -37,7 +37,7 @@ covers more than it first appears:
 | Grass sway / wind | ✅ | offset the existing tuft cubes with a wind field |
 | HUD bars, clock, icons | ✅ | `drawRectangle` + `drawText` |
 | New states + clips (sleep, dead) | ✅ | same Blender → GLB → `updateModelAnimation` pipeline |
-| X-eyes / closed eyes | ✅ approx | a second model drawn only in that state |
+| X-eyes / closed eyes | ✅ | real eyelids (`LidL`/`LidR`) for sleep; X-eye sprite for death |
 | Weather and night ambience audio | ✅ | `loadSound` / `playSound` / `setSoundVolume` |
 | Real directional lighting | ✅ | custom lit shader (M4) |
 | Cast shadows (shadow map) | ✅ approx | planar projection (M4); a depth map is M4b |
@@ -124,10 +124,10 @@ before any engine work.
 
 What landed: health/energy with the drain/recover table below, an explicit sleep
 toggle (`Z`) plus auto-sleep when exhausted and idle, a recumbent `GoatSleep`
-clip, a `GoatDeath` collapse that holds its final pose, and the eye sprites —
-closed-eye and X-eye billboards placed at eye points baked from the rig, rather
-than the second-model approach originally sketched below. The dead state offers
-`R` to restart.
+clip, a `GoatDeath` collapse that holds its final pose, and the eyes — the X-eye
+billboards placed at eye points baked from the rig, plus (later, replacing the
+closed-eye sprite) a real `LidL`/`LidR` eyelid pair that `GoatSleep` closes. The
+dead state offers `R` to restart.
 
 ### Goat stats
 
@@ -165,10 +165,12 @@ under the body), the neck curls and the head tucks, with slow deep breathing and
 the occasional ear or tail twitch. Author with the same 2-link leg IK used for
 the gaits so the folded legs sit on the ground believably.
 
-Eyes closed: the current rig has no eyelids, so the cheap route is a second
-small model (`goat_eyes_closed.glb`) skinned to the head bone and drawn only
-while sleeping; the thorough route is to model eyelids and add an eyelid bone.
-Recommend the second model now, eyelids if the look isn't convincing.
+Eyes closed: **done with real eyelids.** A `LidL`/`LidR` bone pair, each with a
+spherical-cap shell over its eye, was added by `tools/goat_eyelids.py`; closing
+is −90°/+90° about the bone's hinge and `GoatSleep` keys them shut. The cheap
+alternative (a second `goat_eyes_closed.glb` skinned to the head) was not needed.
+Every clip keys the pair, open except `GoatSleep`, because raylib only resets a
+bone that a clip animates.
 
 JS:
 
@@ -187,14 +189,15 @@ Blender: a `GoatDeath` clip that collapses (the goat rolls onto its side, legs
 splay, head goes back) and holds the final pose. A 1–1.5 s collapse followed by
 a long hold is enough.
 
-"X eyes": the goofy crossed-out eyes. Options, cheapest first:
+"X eyes": the goofy crossed-out eyes. Shipped as a **billboard sprite** at eye
+points baked from the death pose — no new bindings, and it rides the head via
+those baked positions. (The closed-eye sprite that used to sit alongside it is
+gone now that the goats have real eyelids.) Alternatives if it ever needs to be
+real geometry instead:
 
-1. **Second model, skinned to the head bone** (`goat_eyes_x.glb`) that is only
-   drawn in the dead pose. No new bindings; the same `updateModelAnimation`
-   frame keeps it glued to the head. **Recommended.**
-2. Bake the X geometry into the main mesh on a separate material and hide/show
-   it — needs material visibility, i.e. shaders. Defer.
-3. Draw two `drawLine3D` Xs per eye from `modelBonePosition(head)` — tiny code,
+1. Bake the X into the main mesh on a separate material and hide/show it — needs
+   material visibility, i.e. shaders. Defer.
+2. Draw two `drawLine3D` Xs per eye from `modelBonePosition(head)` — tiny code,
    but needs the M0 bone query.
 
 JS: health ≤ 0 → `dead`; controls disabled; HUD shows the cause; offer a
@@ -410,8 +413,9 @@ deterministically-rainy frame walks slower than a dry one.
 
 1. ~~**How photorealistic?**~~ **Settled:** a 2.5D sky shader (M5). Raymarched
    volumetrics remain a possible later experiment, not a plan.
-2. **Eyelids:** model real eyelids (and a lid bone), or just swap in a
-   closed-eye model? (Currently a swapped closed-eye sprite.)
+2. ~~**Eyelids:**~~ **Done:** real eyelids — a `LidL`/`LidR` bone pair with
+   spherical-cap shells, closed by the `GoatSleep` clip. The swapped
+   closed-eye sprite is gone.
 3. **Death:** is it permanent for the run, or a respawn at the last safe spot?
    Save the session or not?
 4. ~~**Does weather affect gameplay?**~~ **Settled:** yes (M6) — rain and wind

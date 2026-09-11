@@ -13,7 +13,6 @@ let idleTimer = 0;       // seconds spent idle while exhausted
 const stats = { health: MAX_STAT, energy: MAX_STAT };
 let exhausted = false;
 let xTex = -1;           // X-eye sprite texture (made after the window opens)
-let lidTex = -1;         // closed-eye sprite texture
 let moonTex = -1;        // procedural cratered moon disc
 let glowTex = -1;        // radial sun/star glow
 let camYaw = 0.7;
@@ -157,19 +156,17 @@ function updateStats(dt) {
     return stats.health <= 0 ? "die" : "awake";
 }
 
-// Build the eye sprites: a black X for the dead state and a closed-lid bar for
-// sleeping, both on a transparent field. Needs a live GL context.
+// Build the X-eye sprite for the dead state, on a transparent field. Needs a
+// live GL context. (Sleeping eyes use the model's real eyelids, so there is no
+// closed-lid sprite any more.)
 function makeEyeTextures() {
     let x = "";
-    let lid = "";
     for (let y = 0; y < 8; y++) {
         for (let px = 0; px < 8; px++) {
             x += (Math.abs(px - y) <= 1 || Math.abs(px - (7 - y)) <= 1) ? "232323FF" : "00000000";
-            lid += (y === 3 || y === 4) ? "232323FF" : "00000000";
         }
     }
     xTex = rl.makeTexture(8, 8, x);
-    lidTex = rl.makeTexture(8, 8, lid);
 }
 
 // Two-character hex for every byte, so the texture builders avoid per-pixel
@@ -241,27 +238,19 @@ function makeSkyTextures() {
     glowTex = rl.makeTexture(N, N, glow);
 }
 function drawEyes() {
-    let eyes = null;
-    let tex = -1;
-    let size = 0.12;
-    if (mode === "sleep" && lidTex >= 0) {
-        eyes = SLEEP_EYES;
-        tex = lidTex;
-        size = 0.11;
-    } else if (mode === "dead" && xTex >= 0 && CLIP.death &&
-        deathTime >= CLIP.death.duration * DEAD_EYE_FRACTION) {
-        eyes = DEATH_EYES;
-        tex = xTex;
-        size = 0.13;
-    }
-    if (eyes === null) return;
+    // Only the dead state still uses a sprite; the sleeping goat's eyes are closed
+    // by the GoatSleep clip's eyelid bones.
+    if (!(mode === "dead" && xTex >= 0 && CLIP.death &&
+        deathTime >= CLIP.death.duration * DEAD_EYE_FRACTION)) return;
+    const eyes = DEATH_EYES;
+    const size = 0.13;
     const c = Math.cos(goat.yaw);
     const s = Math.sin(goat.yaw);
     const py = goat.py + groundOffset;
     for (let i = 0; i < eyes.length; i++) {
         const wx = goat.px + eyes[i].x * c + eyes[i].z * s;
         const wz = goat.pz - eyes[i].x * s + eyes[i].z * c;
-        rl.drawBillboard(tex, wx, py + eyes[i].y, wz, size, rl.WHITE);
+        rl.drawBillboard(xTex, wx, py + eyes[i].y, wz, size, rl.WHITE);
     }
 }
 

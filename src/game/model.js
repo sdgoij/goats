@@ -9,12 +9,9 @@ let groundOffset = 0;
 // { index, frames, duration } or null when that clip is absent.
 const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null };
 
-// Model-space eye points baked in Blender for the sleep and death poses, used
-// to place the closed-eye and X-eye sprites (glTF Y-up, from the rig).
-const SLEEP_EYES = [
-    { x: 0.9204, y: 0.6112, z: -0.2877 },
-    { x: 0.9879, y: 0.6272, z: -0.0165 },
-];
+// Model-space eye points baked in Blender for the death pose, used to place the
+// X-eye sprites (glTF Y-up, from the rig). Sleeping eyes are real eyelid
+// geometry now -- the `LidL`/`LidR` bones close in the GoatSleep clip.
 const DEATH_EYES = [
     { x: 0.8852, y: 0.9087, z: 0.1013 },
     { x: 0.8764, y: 0.8544, z: 0.3758 },
