@@ -412,7 +412,7 @@ const STARS = [];
         const a = hash(i * 12.9898) * Math.PI * 2;
         const e = 0.05 + hash(i * 78.233) * 1.35;
         const r = Math.cos(e) * 90;
-        STARS.push({ x: Math.cos(a) * r, y: Math.sin(e) * 90, z: Math.sin(a) * r });
+        STARS.push({ x: Math.cos(a) * r, y: Math.sin(e) * 90, z: Math.sin(a) * r, b: hash(i * 4.1) });
     }
 })();
 
@@ -459,9 +459,11 @@ function scaleColor(packed, fr, fg, fb) {
 // of daylight, plus the palette the fallback goat and terrain are drawn with.
 function updateAmbient() {
     const t = skyLight;
-    ambR = 0.40 + 0.60 * t;
-    ambG = 0.44 + 0.56 * t;
-    ambB = 0.62 + 0.38 * t;
+    // Warm the light around dawn and dusk (light factor near 0.3).
+    const warm = Math.max(0, Math.min(1, 1 - Math.abs(t - 0.3) / 0.34));
+    ambR = Math.min(1, 0.40 + 0.60 * t + 0.14 * warm);
+    ambG = Math.min(1, 0.44 + 0.56 * t + 0.02 * warm);
+    ambB = Math.min(1, 0.62 + 0.38 * t - 0.14 * warm);
     ambTint = rl.color(Math.round(255 * ambR), Math.round(255 * ambG), Math.round(255 * ambB), 255);
     ambFur = scaleColor(FUR, ambR, ambG, ambB);
     ambFurDk = scaleColor(FUR_DK, ambR, ambG, ambB);
@@ -478,28 +480,37 @@ function updateAmbient() {
 function drawStars() {
     const fade = (0.35 - skyLight) / 0.35;
     if (fade <= 0) return;
-    const shade = Math.round(200 * fade + 40);
-    const blue = Math.min(255, shade + 25);
     for (let i = 0; i < STARS.length; i++) {
+        const s = Math.round((120 + 135 * STARS[i].b) * fade);
         rl.drawPoint3D(goat.px + STARS[i].x, STARS[i].y, goat.pz + STARS[i].z,
-            rl.color(shade, shade, blue, 255));
+            rl.color(s, s, Math.min(255, s + 25), 255));
     }
 }
 
 // Sun and moon on opposite sides of a celestial sphere, arcing east to west
-// between 06:00 and 18:00.
+// between 06:00 and 18:00. The sun is a stack of soft glow billboards (a hard
+// `drawSphere` reads flat), the moon a procedural cratered disc with a halo.
 function drawCelestial() {
     const a = ((worldTime - 6) / 12) * Math.PI;   // 0 at 06:00, PI at 18:00
     const dx = Math.cos(a);
     const dy = Math.sin(a);
     const R = 70;
-    if (dy > -0.25) {
+    const sx = goat.px + dx * R;
+    const sy = dy * R;
+    if (dy > -0.25 && glowTex >= 0) {
         const warm = 0.55 + 0.45 * Math.max(0, dy);
-        rl.drawSphere(goat.px + dx * R, dy * R, goat.pz, 2.4,
-            rl.color(255, Math.round(220 * warm + 35), Math.round(150 * warm + 80), 255));
+        rl.drawBillboard(glowTex, sx, sy, goat.pz, 26,
+            rl.color(255, Math.round(205 * warm + 30), Math.round(115 * warm + 40), 34));
+        rl.drawBillboard(glowTex, sx, sy, goat.pz, 14,
+            rl.color(255, Math.round(220 * warm + 30), Math.round(150 * warm + 70), 64));
+        rl.drawBillboard(glowTex, sx, sy, goat.pz, 7.2, rl.color(255, 250, 225, 140));
+        rl.drawBillboard(glowTex, sx, sy, goat.pz, 3.2, rl.color(255, 255, 246, 255));
     }
-    if (dy < 0.25) {
-        rl.drawSphere(goat.px - dx * R, -dy * R, goat.pz, 1.8, rl.color(214, 220, 238, 255));
+    if (dy < 0.25 && moonTex >= 0) {
+        rl.drawBillboard(glowTex, goat.px - dx * R, -dy * R, goat.pz, 9.5,
+            rl.color(196, 212, 240, 44));
+        rl.drawBillboard(moonTex, goat.px - dx * R, -dy * R, goat.pz, 3.0,
+            rl.color(255, 255, 255, 255));
     }
 }
 
@@ -539,6 +550,8 @@ const stats = { health: MAX_STAT, energy: MAX_STAT };
 let exhausted = false;
 let xTex = -1;           // X-eye sprite texture (made after the window opens)
 let lidTex = -1;         // closed-eye sprite texture
+let moonTex = -1;        // procedural cratered moon disc
+let glowTex = -1;        // radial sun/star glow
 let camYaw = 0.7;
 let camPitch = 0.42;
 let camDist = 5.2;
@@ -683,9 +696,74 @@ function makeEyeTextures() {
     lidTex = rl.makeTexture(8, 8, lid);
 }
 
-// Billboard the closed-eye / X-eye sprites onto the goat's eyes. Kept flat (no
-// helper calls) because `run()` -> `drawEyes` already sits near the debug
-// build's stack budget.
+// Two-character hex for every byte, so the texture builders avoid per-pixel
+// string formatting.
+const HEX256 = (function buildHex256() {
+    const d = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
+    const out = [];
+    for (let i = 0; i < 256; i++) out.push(d[Math.floor(i / 16)] + d[i % 16]);
+    return out;
+})();
+
+// Procedural moon and glow sprites: the demo stays asset-free, and an alpha moon
+// composites cleanly (a photo would drag a black square along, since the `rl`
+// surface has no additive blend mode yet).
+function makeSkyTextures() {
+    const N = 64;
+    const craters = [];
+    for (let i = 0; i < 16; i++) {
+        const a = hash(i * 3.7) * Math.PI * 2;
+        const rr = Math.sqrt(hash(i * 9.1)) * 0.40;
+        craters.push({
+            cx: 0.5 + Math.cos(a) * rr,
+            cy: 0.5 + Math.sin(a) * rr,
+            cr: 0.045 + hash(i * 5.3) * 0.11,
+            deep: hash(i * 7.7),
+        });
+    }
+    let moon = "";
+    let glow = "";
+    for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+            const u = (x + 0.5) / N - 0.5;
+            const v = (y + 0.5) / N - 0.5;
+            const d = Math.sqrt(u * u + v * v);
+            let r = 0;
+            let g = 0;
+            let b = 0;
+            let a = 0;
+            if (d < 0.5) {
+                const limb = 1 - 0.35 * (d / 0.5) * (d / 0.5);
+                let shade = 0.82 * limb;
+                for (let i = 0; i < craters.length; i++) {
+                    const c = craters[i];
+                    const dx = u + 0.5 - c.cx;
+                    const dy = v + 0.5 - c.cy;
+                    const dd = Math.sqrt(dx * dx + dy * dy);
+                    if (dd < c.cr) {
+                        const t = 1 - dd / c.cr;
+                        shade = shade - 0.20 * t * (0.5 + c.deep);
+                        if (dd > c.cr * 0.72) shade = shade + 0.14 * t;
+                    }
+                }
+                shade = Math.min(1, Math.max(0.32, shade));
+                r = 236 * shade;
+                g = 232 * shade;
+                b = 220 * shade;
+                a = 255 * Math.min(1, (0.5 - d) / 0.015);
+            }
+            moon += HEX256[Math.min(255, Math.max(0, Math.round(r)))] +
+                HEX256[Math.min(255, Math.max(0, Math.round(g)))] +
+                HEX256[Math.min(255, Math.max(0, Math.round(b)))] +
+                HEX256[Math.min(255, Math.max(0, Math.round(a)))];
+            const gd = d / 0.5;
+            const ga = gd >= 1 ? 0 : Math.round(255 * (1 - gd) * (1 - gd));
+            glow += "fff6d6" + HEX256[ga];
+        }
+    }
+    moonTex = rl.makeTexture(N, N, moon);
+    glowTex = rl.makeTexture(N, N, glow);
+}
 function drawEyes() {
     let eyes = null;
     let tex = -1;
@@ -756,6 +834,7 @@ function run() {
     rl.setTargetFPS(60);
     loadGoat();
     makeEyeTextures();
+    makeSkyTextures();
 
     const sw = rl.getScreenWidth();
     const sh = rl.getScreenHeight();
