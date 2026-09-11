@@ -32,6 +32,7 @@
 //
 // Controls:
 //   W / S         walk forward / backward
+//   CTRL + W/S    trot
 //   SHIFT + W/S   run
 //   SPACE         jump
 //   A / D         turn left / right
@@ -44,6 +45,7 @@
 const MODEL_PATH = "goat_animated.glb";
 const MODEL_SCALE = 1.0;
 const TURN_RATE = 1.8;     // rad/s
+const FALLBACK_TROT_MULT = 1.3;  // how much faster the cube goat "trots"
 const FALLBACK_RUN_MULT = 1.6;   // how much faster the cube goat "runs"
 const FALLBACK_JUMP_TIME = 0.6;  // seconds of the cube goat's hop
 const FALLBACK_JUMP_H = 0.55;    // metres of the cube goat's hop
@@ -117,15 +119,17 @@ let groundOffset = 0;
 
 // Clip handles by role, filled in from the model's animation names. Each is
 // { index, frames, duration } or null when that clip is absent.
-const CLIP = { idle: null, walk: null, run: null, jump: null };
+const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null };
 
 // Authored stride and stance fraction of each locomotion clip, used to derive
 // the ground speed that keeps the hooves from skating. The walk is a 4-beat
-// lateral walk (each foot planted half the cycle); the run is a 2-beat gait
-// with a short flight phase (each foot planted a third of the cycle).
+// lateral walk and the trot a 2-beat diagonal gait (each foot planted half the
+// cycle); the run is a 2-beat gait with a short flight phase (each foot planted
+// a third of the cycle).
 const GAIT = {
-    walk: { stride: 0.32, duty: 0.50 },
-    run: { stride: 0.44, duty: 0.34 },
+    walk: { stride: 0.40, duty: 0.50 },
+    trot: { stride: 0.46, duty: 0.50 },
+    run: { stride: 0.50, duty: 0.34 },
 };
 
 function findClip(names, wanted) {
@@ -151,6 +155,7 @@ function gaitSpeed(role) {
 }
 
 function walkSpeed() { return gaitSpeed("walk") || (2 * V_STRIDE) / V_CYCLE; }
+function trotSpeed() { return gaitSpeed("trot") || walkSpeed() * 1.8; }
 function runSpeed() { return gaitSpeed("run") || walkSpeed() * 3.5; }
 
 // Load the goat and index its clips. Must run after `rl.initWindow`, since
@@ -183,15 +188,17 @@ function loadGoat() {
     const idle = findClip(names, "idle");
     const jump = findClip(names, "jump");
     const run = findClip(names, "run");
+    const trot = findClip(names, "trot");
     const walk = findClip(names, "walk");
     CLIP.idle = idle >= 0 ? clipInfo(idle) : null;
     CLIP.jump = jump >= 0 ? clipInfo(jump) : null;
     CLIP.run = run >= 0 ? clipInfo(run) : null;
+    CLIP.trot = trot >= 0 ? clipInfo(trot) : null;
     CLIP.walk = walk >= 0 ? clipInfo(walk) : null;
 
     console.log("goat: model handle " + model + ", live=" + rl.isModelValid(model) +
         ", bones=" + rl.modelBoneCount(model) + ", walk " + walkSpeed().toFixed(2) +
-        " m/s, run " + runSpeed().toFixed(2) + " m/s");
+        ", trot " + trotSpeed().toFixed(2) + ", run " + runSpeed().toFixed(2) + " m/s");
     console.log("goat: model loaded, y " + bounds.minY.toFixed(3) + ".." + bounds.maxY.toFixed(3));
 }
 
@@ -366,6 +373,7 @@ let curClipName = "";
 function clipRole() {
     if (mode === "jump" && CLIP.jump) return "jump";
     if (mode === "run" && CLIP.run) return "run";
+    if (mode === "trot" && CLIP.trot) return "trot";
     if (mode === "idle" && CLIP.idle) return "idle";
     return "walk";
 }
@@ -384,21 +392,29 @@ function loopDuration() {
 // Ground speed for the current gait, from the stride/duty above.
 function groundSpeed() {
     if (!haveModel) {
-        const run = mode === "run";
-        return ((2 * V_STRIDE) / V_CYCLE) * (run ? FALLBACK_RUN_MULT : 1);
+        let mult = 1;
+        if (mode === "run") mult = FALLBACK_RUN_MULT;
+        else if (mode === "trot") mult = FALLBACK_TROT_MULT;
+        return ((2 * V_STRIDE) / V_CYCLE) * mult;
     }
     if (mode === "run" && CLIP.run) return runSpeed();
+    if (mode === "trot" && CLIP.trot) return trotSpeed();
     return walkSpeed();
 }
 
-function startJump(move, running) {
+function startJump(move, gait) {
     mode = "jump";
     jumpTime = 0;
     jumpDir = move;
     if (!haveModel) {
-        jumpSpeed = ((2 * V_STRIDE) / V_CYCLE) * (running ? FALLBACK_RUN_MULT : 1);
-    } else if (running && CLIP.run) {
+        let mult = 1;
+        if (gait === "run") mult = FALLBACK_RUN_MULT;
+        else if (gait === "trot") mult = FALLBACK_TROT_MULT;
+        jumpSpeed = ((2 * V_STRIDE) / V_CYCLE) * mult;
+    } else if (gait === "run" && CLIP.run) {
         jumpSpeed = runSpeed();
+    } else if (gait === "trot" && CLIP.trot) {
+        jumpSpeed = trotSpeed();
     } else {
         jumpSpeed = walkSpeed();
     }
@@ -411,7 +427,9 @@ function drawHud(move) {
     let state = "standing";
     if (paused) state = "paused (P to resume)";
     else if (mode === "jump") state = "jumping";
-    else if (move > 0) state = mode === "run" ? "running" : "walking forward";
+    else if (move > 0 && mode === "run") state = "running";
+    else if (move > 0 && mode === "trot") state = "trotting";
+    else if (move > 0) state = "walking forward";
     else if (move < 0) state = "walking backward";
 
     let how = "cube fallback - 4-beat walk with 2-bone IK";
@@ -421,7 +439,7 @@ function drawHud(move) {
     const status = "speed " + curSpeed.toFixed(2) + " m/s   phase " + goat.phase.toFixed(2) +
         "   fps " + rl.getFPS();
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   SHIFT run   SPACE jump   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
+    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
         10, 32, 14, rl.RAYWHITE);
     rl.drawText(status + "   " + state, 10, h - 24, 14, rl.RAYWHITE);
 }
@@ -458,18 +476,20 @@ function run() {
         if (rl.isKeyDown(rl.KEY_A)) turn += 1;
         if (rl.isKeyDown(rl.KEY_D)) turn -= 1;
         const running = rl.isKeyDown(rl.KEY_LEFT_SHIFT) || rl.isKeyDown(rl.KEY_RIGHT_SHIFT);
+        const trotting = rl.isKeyDown(rl.KEY_LEFT_CONTROL) || rl.isKeyDown(rl.KEY_RIGHT_CONTROL);
+        const gait = running ? "run" : trotting ? "trot" : "walk";
         goat.yaw += turn * TURN_RATE * dt;
 
         // state machine: jump is a one-shot that locks the gait until it lands
         if (mode === "jump") {
             jumpTime += dt;
             if (jumpTime >= jumpDuration()) {
-                mode = move !== 0 ? (running ? "run" : "walk") : "idle";
+                mode = move !== 0 ? gait : "idle";
             }
         } else if (rl.isKeyPressed(rl.KEY_SPACE)) {
-            startJump(move, running);
+            startJump(move, gait);
         } else {
-            mode = move !== 0 ? (running ? "run" : "walk") : "idle";
+            mode = move !== 0 ? gait : "idle";
         }
 
         curRole = clipRole();

@@ -13,11 +13,11 @@ const TOTAL = 200;
 
 // Clip table the stub model reports (raylib resamples to 60 fps).
 const CLIPS = [
-    { name: 'GoatIdle', dur: 2.5 },
-    { name: 'GoatWalk', dur: 1.0 },
-    { name: 'GoatRun', dur: 0.58333 },
+    { name: 'GoatIdle', dur: 6.0 },
+    { name: 'GoatWalk', dur: 0.91667 },
+    { name: 'GoatRun', dur: 0.5 },
     { name: 'GoatJump', dur: 1.16667 },
-    { name: 'GoatTrot', dur: 0.66667 },
+    { name: 'GoatTrot', dur: 0.58333 },
 ];
 const clipFrames = CLIPS.map((c) => Math.round(c.dur * 60) + 1);
 
@@ -34,9 +34,13 @@ const pressed = {};
 function applyInput(i) {
     for (const k of Object.keys(keys)) delete keys[k];
     for (const k of Object.keys(pressed)) delete pressed[k];
-    if ((i >= 10 && i < 50) || (i >= 130 && i < 141)) keys[87] = true;  // W
-    if (i >= 30 && i < 50) keys[340] = true;                           // LEFT_SHIFT
-    if (i === 50) pressed[32] = true;                                  // SPACE
+    let w = false;
+    if (i >= 10 && i < 30) w = true;                        // walk
+    if (i >= 30 && i < 50) { w = true; keys[341] = true; }  // trot  (CTRL)
+    if (i >= 50 && i < 70) { w = true; keys[340] = true; }  // run   (SHIFT)
+    if (i >= 150 && i < 161) w = true;                      // walk again
+    if (w) keys[87] = true;
+    if (i === 70) pressed[32] = true;                       // jump  (SPACE)
 }
 
 const constants = {
@@ -44,6 +48,7 @@ const constants = {
     KEY_SPACE: 32, KEY_ESCAPE: 256,
     KEY_RIGHT: 262, KEY_LEFT: 263, KEY_DOWN: 264, KEY_UP: 265,
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
+    KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
     KEY_A: 65, KEY_D: 68, KEY_S: 83, KEY_W: 87, KEY_P: 80,
     WHITE: {}, RAYWHITE: {},
 };
@@ -118,13 +123,15 @@ const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', clipAt(3) === 'GoatIdle', clipAt(3)],
     ['walk at frame 15', clipAt(15) === 'GoatWalk', clipAt(15)],
-    ['run at frame 40', clipAt(40) === 'GoatRun', clipAt(40)],
-    ['jump starts at frame 50', clipAt(50) === 'GoatJump', clipAt(50)],
-    ['jump still airborne at frame 115', clipAt(115) === 'GoatJump', clipAt(115)],
-    ['landed to idle by frame 125', clipAt(125) === 'GoatIdle', clipAt(125)],
-    ['walk again at frame 135', clipAt(135) === 'GoatWalk', clipAt(135)],
-    ['walk speed ~0.64 m/s', Math.abs((speedAt(15) || 0) - 0.64) < 0.01, speedAt(15)],
-    ['run speed ~2.22 m/s', Math.abs((speedAt(40) || 0) - 2.219) < 0.02, speedAt(40)],
+    ['trot at frame 40', clipAt(40) === 'GoatTrot', clipAt(40)],
+    ['run at frame 60', clipAt(60) === 'GoatRun', clipAt(60)],
+    ['jump starts at frame 70', clipAt(70) === 'GoatJump', clipAt(70)],
+    ['jump still airborne at frame 110', clipAt(110) === 'GoatJump', clipAt(110)],
+    ['landed to idle by frame 145', clipAt(145) === 'GoatIdle', clipAt(145)],
+    ['walk again at frame 155', clipAt(155) === 'GoatWalk', clipAt(155)],
+    ['walk speed ~0.87 m/s', Math.abs((speedAt(15) || 0) - 0.873) < 0.01, speedAt(15)],
+    ['trot speed ~1.58 m/s', Math.abs((speedAt(40) || 0) - 1.577) < 0.02, speedAt(40)],
+    ['run speed ~2.94 m/s', Math.abs((speedAt(60) || 0) - 2.941) < 0.02, speedAt(60)],
 ];
 
 const failed = checks.filter((c) => !c[1]);

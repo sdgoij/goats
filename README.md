@@ -16,8 +16,8 @@ cargo run --release
 
 - Skinned glTF goat with five baked clips: `GoatIdle`, `GoatWalk`, `GoatRun`,
   `GoatJump`, `GoatTrot`.
-- Gait state machine — idle / walk / run / jump — with a script-controlled jump
-  arc taken from the clip's root motion.
+- Gait state machine — idle / walk / trot / run / jump — with a script-controlled
+  jump arc taken from the clip's root motion.
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
@@ -30,6 +30,7 @@ cargo run --release
 | Input | Action |
 | --- | --- |
 | `W` / `S` | walk forward / backward |
+| `Ctrl` + `W` / `S` | trot |
 | `Shift` + `W` / `S` | run |
 | `Space` | jump |
 | `A` / `D` | turn left / right |
@@ -105,7 +106,9 @@ degrades to the walk rather than failing.
 and four two-bone legs). The leg bones swing on their local Z axis, so each
 gait is authored as a 2-link IK problem: hoof targets in the sagittal plane are
 solved for thigh and shank angles. The clips bake their forward travel as
-in-place motion; the script moves the goat at the matching speed.
+in-place motion; the script moves the goat at the matching speed. The three
+locomotion gaits sit at roughly **0.87 / 1.58 / 2.94 m/s** for walk / trot /
+run, selected with no modifier, `Ctrl` and `Shift` respectively.
 
 Export to GLB with every action as its own clip, shifted to start at `t = 0` so
 loops are exact:
