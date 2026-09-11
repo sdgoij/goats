@@ -1,4 +1,4 @@
-// Headless harness for src/goat.js: stubs the `rl` surface, drives a scripted
+// Headless harness for the scene in src/game/: stubs the `rl` surface, drives a scripted
 // input timeline, and checks the clip each frame plus the reported stats.
 //
 //   node tools/goat_logic_test.js
@@ -154,10 +154,17 @@ const sandbox = {
 };
 vm.createContext(sandbox);
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'goat.js'), 'utf8');
+// src/main.rs is the single source of truth for the running order: the host
+// joins the parts with `concat!`, and we parse that same list here so the two
+// can never drift apart.
+const gameDir = path.join(__dirname, '..', 'src', 'game');
+const mainRs = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.rs'), 'utf8');
+const parts = [...mainRs.matchAll(/include_str!\("game\/([^"]+)"\)/g)].map((m) => m[1]);
+if (parts.length === 0) throw new Error('no src/game parts found in src/main.rs');
+const source = parts.map((name) => fs.readFileSync(path.join(gameDir, name), 'utf8')).join('');
 let thrown = null;
 try {
-    vm.runInContext(source, sandbox, { filename: 'goat.js' });
+    vm.runInContext(source, sandbox, { filename: 'game.js' });
 } catch (e) {
     thrown = e && e.stack ? e.stack : String(e);
 }
@@ -242,7 +249,7 @@ const checks = [
 ];
 
 const failed = checks.filter((c) => !c[1]);
-console.log('--- goat.js logic test ---');
+console.log('--- goat scene logic test ---');
 console.log('model line:', logs.filter((l) => l.indexOf('model handle') >= 0).join(' | '));
 console.log('shadow line:', logs.filter((l) => l.indexOf('shadow map') >= 0).join(' | '));
 console.log('death frame:', deathFrame, 'stats:', JSON.stringify(deadStats));

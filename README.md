@@ -5,8 +5,8 @@ is loaded and played back inside the [Slag](https://github.com/sdgoij/slag)
 JavaScript engine through its raylib host module (`rl`).
 
 Almost everything that moves is JavaScript: `src/main.rs` is a thin host that
-embeds the model and evaluates `src/goat.js`, which drives the gait state
-machine, camera, HUD and terrain.
+embeds the model and evaluates the scene from `src/game/`, which drives the gait
+state machine, camera, HUD and terrain.
 
 ```
 cargo run --release
@@ -116,19 +116,19 @@ cargo run             # debug builds work too; see "Troubleshooting"
 
 | Path | What it is |
 | --- | --- |
-| `src/main.rs` | Rust host: installs the JIT + raylib, embeds the GLB, evaluates the scene |
-| `src/goat.js` | The scene: gait state machine, jump, camera, HUD, grass |
+| `src/main.rs` | Rust host: installs the JIT + raylib, embeds the GLB, joins and evaluates the scene |
+| `src/game/*.js` | The scene, split into 8 parts (core, model, world, lighting, sky, audio, weather, goat) |
 | `sfx/` | Music, weather ambience and goat vocalisations (loaded at runtime) |
-| `goat_animated.glb` | Exported model (5 clips, textures embedded) — embedded into the binary |
+| `goat_animated.glb` | Exported model (7 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials |
 | `tex/` | Knitted-fleece textures (diffuse / normal / roughness / displacement / AO) |
 | `tools/inspect_glb.py` | Dump a GLB's images, textures, materials and animations |
-| `tools/goat_logic_test.js` | Headless Node harness for `goat.js` (stubs `rl`) |
+| `tools/goat_logic_test.js` | Headless Node harness for the scene (stubs `rl`) |
 | `slag/` | Optional local Slag checkout (git-ignored) |
 
 ## How it is wired
 
-`src/main.rs` is ~25 lines:
+`src/main.rs` is small:
 
 ```rust
 let mut context = Context::new().unwrap();
@@ -136,13 +136,20 @@ context.set_host_callbacks(callbacks);          // forwards console.log -> [js]
 slag::install_jit(&mut context).unwrap();
 context.install_raylib().unwrap();
 context.register_raylib_asset("goat_animated.glb", GOAT_GLB);
-context.eval(include_str!("goat.js")).unwrap();  // the whole scene
+context.eval(SCENE).unwrap();                    // the whole scene
 ```
 
-The model bytes are compiled in with `include_bytes!`, so the demo needs no
-files on disk at runtime. `goat.js` finds the clip it wants by name via the `rl`
-surface (`modelAnimationCount` / `modelAnimationName`), so a missing clip
-degrades to the walk rather than failing.
+The scene is split for readability but compiled as one script: `SCENE` is a
+`concat!` of the parts in the order they are listed, so every part shares a
+single top-level scope (functions hoist across the whole thing, and the
+top-level `const`s run in file order). That `concat!` list is the only place the
+order lives — the headless harness parses it out of `src/main.rs`, so adding a
+part is just adding the file to `src/game/` and one line to `src/main.rs`.
+
+The model bytes are compiled in with `include_bytes!`, so the model needs no
+files on disk at runtime (the audio does — see `sfx/`). `model.js` finds the
+clip it wants by name via the `rl` surface (`modelAnimationCount` /
+`modelAnimationName`), so a missing clip degrades to the walk rather than failing.
 
 ## Model pipeline
 
@@ -217,7 +224,7 @@ renderTextureSize  renderTextureColor  renderTextureDepth
 setModelTexture
 ```
 
-Two consequences shape `goat.js`. raylib's default shader is unlit and
+Two consequences shape the scene. raylib's default shader is unlit and
 `DrawMesh` binds the *material's* shader, ignoring `beginShaderMode` — so the
 goat is routed through the lit program with `setModelShader`, while the terrain
 (immediate-mode cubes) uses `beginShaderMode`. And because this is a
@@ -266,7 +273,7 @@ small — run from the repository root (as `cargo run` does).
 ## Tests and tools
 
 ```sh
-# Drive goat.js headlessly through every state, stats and death
+# Drive the scene headlessly through every state, stats and death
 node tools/goat_logic_test.js
 
 # Inspect the model's clips, textures and materials
@@ -284,7 +291,7 @@ cargo test -p runtime --features raylib --lib raylib
 - **`Maximum call stack size exceeded` in a debug build.** Slag's stack guard
   stops deep JS recursion from overflowing the native stack. Unoptimized builds
   spend far more stack per activation, so keep per-frame helper calls shallow —
-  `goat.js` computes its HUD read-outs once in `run()` rather than nesting them
+  the scene computes its HUD read-outs once in `run()` rather than nesting them
   inside `drawHud()`. Build `--release` for headroom.
 - **Goat renders untextured.** The `SUPPORT_FILEFORMAT_JPG` feature is missing
   from the raylib build (see above).

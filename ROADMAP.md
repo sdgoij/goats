@@ -6,7 +6,7 @@ they land.
 
 Guiding principles:
 
-- **Gameplay lives in JavaScript.** The scene, rules and stats stay in `goat.js`;
+- **Gameplay lives in JavaScript.** The scene, rules and stats stay in `src/game/`;
   engine work is limited to small, generic additions like a few 3D primitives and
   shader plumbing.
 - **Blender is the source of truth for the goat.** New poses are authored as
@@ -245,7 +245,7 @@ tracks the time of day.
 
 Goal: believable clouds, rain and wind, with audio (see M3b).
 
-Shipped in `goat.js`:
+Shipped in the scene (`src/game/`):
 
 - **Weather state machine**: a seeded xorshift32 walks `clear → cloudy → rain →
   clearing` with per-state hold times, targets for cloudiness and rain, and a
@@ -299,7 +299,7 @@ Bindings added upstream in `sdgoij/slag`:
 | `setModelTexture` | point a material map at a texture (how the shadow map reaches a model draw) |
 | `loadRenderTexture`, `isRenderTextureValid`, `unloadRenderTexture`, `beginTextureMode`, `endTextureMode`, `renderTextureSize`, `renderTextureColor`, `renderTextureDepth` | offscreen passes and shadow maps |
 
-Shipped in `goat.js`:
+Shipped in the scene (`src/game/`):
 
 - **Directional lighting.** A custom program lights the scene per fragment from a
   sun (or the moon after dusk) driven by the M2 clock, with a hemispheric ambient
@@ -381,10 +381,12 @@ deterministically-rainy frame walks slower than a dry one.
 
 ## Cross-cutting work
 
-- **Splitting the scene.** `goat.js` is already 565 lines and this roadmap
-  roughly triples it. Recommended: split into a few files (`world`, `goat`,
-  `weather`, `stats`, `hud`) evaluated in order by the host, unless and until
-  the engine grows a module system. Worth deciding early.
+- **Splitting the scene.** ✅ **Done.** The scene is `src/game/*.js` in eight
+  parts (core, model, world, lighting, sky, audio, weather, goat), joined in the
+  order listed in `src/main.rs`. The host concatenates them and evaluates the
+  result as one script, so every part shares a single top-level scope and the
+  engine still needs no module system; the headless harness parses the same list
+  out of `src/main.rs`.
 - **Persistence.** Saving stats and time of day would make death and long
   sessions meaningful. Needs a small host-side file API or an in-memory
   restart-only model.
@@ -416,7 +418,7 @@ deterministically-rainy frame walks slower than a dry one.
    slow the goat and drain energy faster.
 5. **Weather determinism:** currently seeded, so a run is reproducible and the
    harness is stable. Keep, or make it random per run?
-6. **Scene splitting:** how many files, and does the host evaluate a list of
-   scripts in order? `goat.js` is well past a thousand lines now.
+6. ~~**Scene splitting?**~~ **Settled:** eight files in `src/game/`, joined in
+   the order listed in `src/main.rs`.
 7. **Shadow scope:** only the goat casts into the shadow map today. Should the
    grass and props cast too, and is one 1024² cascade enough as the world grows?
