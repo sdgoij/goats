@@ -31,6 +31,12 @@ cargo run --release
   rain falls as wind-slanted streaks, and the grass sways with gusty noise.
   Press `C` to skip to the next state. (Weather audio and shader clouds are
   deferred to M3b / M5.)
+- **Real lighting (M4)**: a small custom GLSL program lights the scene.
+  A directional sun (or moon at night) driven by the clock, plus a
+  hemispheric ambient term, shades the goat and the terrain per fragment, and
+  the goat casts a projected silhouette shadow that tracks the sun. Press `L`
+  to toggle. Falls back to the M2/M3 ambient-tint look if the engine lacks the
+  shader bindings.
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
@@ -50,6 +56,7 @@ cargo run --release
 | `R` | restart after death |
 | `T` (hold) | fast-forward the clock |
 | `C` | force the next weather state |
+| `L` | toggle the lit shader / shadows |
 | `A` / `D` | turn left / right |
 | mouse drag | orbit the camera |
 | arrow keys | orbit the camera (keyboard fallback) |
@@ -158,6 +165,7 @@ module (committed upstream in `sdgoij/slag`):
 
 ```
 loadModel  isModelValid  unloadModel
+setModelShader
 drawModel  drawModelEx   modelBounds
 modelAnimationCount  modelBoneCount
 modelAnimationName   modelAnimationFrameCount  modelAnimationDuration
@@ -172,6 +180,33 @@ Two raylib build features are required and are enabled by the dependency:
 `rl.isModelValid` reports whether the handle is live rather than forwarding
 raylib's `IsModelValid`, which rejects *any* skinned model in a CPU-skinning
 build because the bone VBOs are never uploaded without `SUPPORT_GPU_SKINNING`.
+
+## The `rl` shader surface
+
+M4's lighting needs a second set of Slag bindings (also upstream in
+`sdgoij/slag`):
+
+```
+loadShaderFromMemory  isShaderValid  unloadShader  getShaderLocation
+beginShaderMode  endShaderMode
+setShaderValue  setShaderValueVector2/3/4  setShaderValueMatrix
+setShaderValueTexture
+loadRenderTexture  isRenderTextureValid  unloadRenderTexture
+beginTextureMode  endTextureMode
+renderTextureSize  renderTextureColor  renderTextureDepth
+```
+
+Two consequences shape `goat.js`. raylib's default shader is unlit and
+`DrawMesh` binds the *material's* shader, ignoring `beginShaderMode` — so the
+goat is routed through the lit program with `setModelShader`, while the terrain
+(immediate-mode cubes) uses `beginShaderMode`. And because this is a
+CPU-skinning build, raylib already deforms positions *and* normals on the CPU
+before upload, so the lit shader needs no bone matrices.
+
+The shadow is a planar projection rather than a depth map: the goat is drawn
+again with a vertex shader that squashes it onto the ground along the light
+direction. `loadRenderTexture`/`setShaderValueMatrix` are in place for a proper
+shadow-map pass (soft edges, self-shadowing) whenever it is wanted.
 
 ## Tests and tools
 

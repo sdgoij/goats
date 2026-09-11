@@ -39,17 +39,17 @@ covers more than it first appears:
 | New states + clips (sleep, dead) | ✅ | same Blender → GLB → `updateModelAnimation` pipeline |
 | X-eyes / closed eyes | ✅ approx | a second model drawn only in that state |
 | Weather and night ambience audio | ✅ | `loadSound` / `playSound` / `setSoundVolume` |
-| Real directional lighting | ❌ | needs shaders (raylib core has no light system) |
-| Cast shadows (shadow map) | ❌ | needs shaders **and** render textures |
+| Real directional lighting | ✅ | custom lit shader (M4) |
+| Cast shadows (shadow map) | ✅ approx | planar projection (M4); a depth map is M4b |
 | Camera-facing billboards | ✅ | `drawBillboard` / `drawBillboardRec` (M0) |
 | 3D rain drops / splashes | ✅ | `drawLine3D` / `drawPoint3D` (M0) |
 | Read a bone's world transform | ✅ | `modelBonePosition` / `modelBoneTransform` (M0) |
 | Photoreal / volumetric clouds | ❌ | needs shaders; a genuine stretch |
 
-The practical consequence: **stats, sleep and death need no engine work at all**,
-and day/night plus a first pass of weather need only the M0 primitives. With M0
-landed upstream, the only remaining engine work is shaders: real lighting, cast
-shadows and the photoreal cloud shader.
+The practical consequence: **stats, sleep and death needed no engine work at all**,
+and day/night plus a first pass of weather needed only the M0 primitives. With M0
+and the M4 shader bindings landed upstream, the only remaining engine work is
+the photoreal cloud shader (M5).
 
 ---
 
@@ -61,7 +61,7 @@ shadows and the photoreal cloud shader.
 | **M1** | Stats, `sleeping`, `dead` states | — | M | ✅ **Done** |
 | **M2** | Day/night cycle (approximate lighting) | M0 (sun/moon) | M | ✅ **Done** |
 | **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | ✅ **Done** (audio deferred to M3b) |
-| **M4** | Shaders: real lighting + cast shadows | M0 | L | Biggest engine lift; changes how everything renders |
+| **M4** | Shaders: real lighting + cast shadows | M0 | L | ✅ **Done** (planar shadows; shadow map is M4b) |
 | **M5** | Weather phase 2: shader clouds (photoreal stretch) | M4 | L | Only sensible once shaders exist |
 
 ---
@@ -278,34 +278,55 @@ missing is the sound assets to embed.
 
 ## M4 — Real lighting and shadows (shaders)
 
-The big one. raylib's core has no light system, so this means shipping a small
-lit shader and the plumbing to drive it.
+raylib's core has no light system, so this shipped a small lit shader and the
+plumbing to drive it.
 
-New bindings:
+Bindings added upstream in `sdgoij/slag`:
 
 | Binding | Purpose |
 | --- | --- |
-| `loadShaderFromMemory` | compile the project's GLSL |
+| `loadShaderFromMemory`, `isShaderValid`, `unloadShader` | compile and manage the GLSL |
 | `getShaderLocation` | cache uniform locations |
-| `beginShaderMode` / `endShaderMode` | bind the lit shader around `drawModelEx` |
-| `setShaderValue` / `setShaderValueVector3` / `setShaderValueVector4` | per-frame uniforms (light direction, colour, time) |
-| `loadRenderTexture`, `beginTextureMode`, `endTextureMode` | shadow map pass |
+| `beginShaderMode` / `endShaderMode` | bind the lit shader around immediate-mode draws |
+| `setShaderValue`, `setShaderValueVector2/3/4`, `setShaderValueMatrix`, `setShaderValueTexture` | per-frame uniforms |
+| `setModelShader` | point a model's materials at a shader (`DrawMesh` ignores `beginShaderMode`) |
+| `loadRenderTexture`, `isRenderTextureValid`, `unloadRenderTexture`, `beginTextureMode`, `endTextureMode`, `renderTextureSize`, `renderTextureColor`, `renderTextureDepth` | offscreen passes and shadow maps |
 
-Work:
+Shipped in `goat.js`:
 
-- A directional sun/moon light (position, colour, intensity) driven by M2's clock.
-- Ambient + hemispheric term so night isn't pitch black.
-- A shadow-map pass from the light's point of view, sampled in the lit shader,
-  with a PCF blur for soft edges.
-- Terrain, goat and any props all draw through the lit shader; switch the blob
-  shadow off once cast shadows land.
+- **Directional lighting.** A custom program lights the scene per fragment from a
+  sun (or the moon after dusk) driven by the M2 clock, with a hemispheric ambient
+  term so night is dim blue rather than black. The goat is routed through it with
+  `setModelShader`; the terrain (immediate-mode cubes) goes through
+  `beginShaderMode`. `L` toggles the whole thing; a missing-binding check falls
+  back to the M2/M3 ambient-tint look.
+- **CPU skinning needed no bone matrices.** raylib deforms positions *and*
+  normals on the CPU in this build and uploads them, so the lit shader works on
+  the animated goat with plain `vertexPosition`/`vertexNormal` — the roadmap's
+  bone-matrix risk did not materialise.
+- **Cast shadows** are a planar projection, not a depth map: the goat is drawn a
+  second time with a vertex shader that squashes every vertex onto the ground
+  along the light direction, filled with a translucent dark colour. On the flat
+  terrain this tracks the sun with none of the bias/acne tuning a shadow map
+  needs, and it costs one extra model draw.
 
-Risks: shadow acne/bias tuning, CPU-skinned models with custom shaders (the
-bone matrices must be passed through), and keeping the trimmed raylib feature
-set workable.
+Acceptance: the goat and terrain are lit by the sun/moon and the goat casts a
+shadow that tracks the day/night cycle. Code-side this is verified (shaders
+compile, no GL/JS errors, 59–60 fps in release by day and night); the *look* and
+shadow correctness are not machine-verified.
 
-Acceptance: the goat and terrain are lit by the sun/moon and cast soft shadows
-that track the day/night cycle.
+Not met: **soft** shadows (PCF) and self-shadowing. Those want a real shadow-map
+pass, which the `loadRenderTexture` + `setShaderValueMatrix` bindings already
+support — tracked as **M4b** below.
+
+### M4b — Shadow map (next)
+
+Render depth from the light into a render texture with a depth-only shader, then
+sample it in the lit program with a 3x3 PCF blur for soft edges. Needs a
+JS-built light view-projection matrix (orthographic), passed with
+`setShaderValueMatrix`; the render-texture colour attachment is exposed by
+`renderTextureColor` for that pass. This adds self-shadowing (the goat's legs on
+its body) and shadows on the grass, which the planar projection cannot do.
 
 ---
 

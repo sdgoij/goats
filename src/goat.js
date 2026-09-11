@@ -260,11 +260,11 @@ function poseModel(role, phase) {
     return true;
 }
 
-// Draw the model: position, yaw about +Y (degrees), uniform scale, no tint.
-function drawModelGoat(g) {
+// Draw the model: position, yaw about +Y (degrees), uniform scale, given tint.
+function drawModelGoat(g, tint) {
     const yawDeg = (g.yaw * 180) / Math.PI;
     rl.drawModelEx(model, g.px, g.py + groundOffset, g.pz,
-        0, 1, 0, yawDeg, MODEL_SCALE, MODEL_SCALE, MODEL_SCALE, ambTint);
+        0, 1, 0, yawDeg, MODEL_SCALE, MODEL_SCALE, MODEL_SCALE, tint);
 }
 
 // ---- the cube fallback ---------------------------------------------------
@@ -522,10 +522,215 @@ function drawCelestial() {
 }
 
 // Cheap contact shadow: a flattened dark rectangle under the goat, darker and
-// longer-lived the higher the sun. Real cast shadows need shaders (M4).
+// longer-lived the higher the sun. Used only when the lit shader is unavailable;
+// with lighting on the goat casts a real projected silhouette (see below).
 function drawShadow() {
     if (skyLight <= 0.05) return;
     rl.drawCube(goat.px, 0.02, goat.pz, 1.25, 0.012, 1.7, ambShadow);
+}
+
+// ---- lighting (M4): directional light and projected cast shadows ---------
+//
+// raylib's default shader is unlit, so the scene is lit by a small custom
+// program. The goat is a CPU-skinned model: raylib deforms its positions *and*
+// normals on the CPU and uploads them, so a normal shader lit per-fragment works
+// without the bone matrices a GPU-skinning build would need. `DrawMesh` binds
+// the material shader and ignores `beginShaderMode`, so `setModelShader` points
+// the goat's materials at the lit program; the terrain (immediate-mode cubes)
+// goes through `beginShaderMode`.
+//
+// Shadows are a planar projection rather than a shadow map: the goat is drawn a
+// second time with a vertex shader that squashes every vertex onto the ground
+// along the light direction, filled with a translucent dark colour. On the flat
+// terrain this reads as a cast shadow that tracks the sun, with none of the
+// bias/acne tuning a depth map needs. A depth-map pass (soft edges, self-shadowing)
+// can replace it once the render-texture bindings are wired up.
+
+const GROUND_Y = 0.02;          // the plane the shadow is projected onto
+const SHADOW_ALPHA = 0.34;      // base opacity of the cast shadow
+
+const LIGHT_DIR = [0.4, 0.8, 0.12];   // unit vector pointing at the active body
+const LIGHT_COLOR = [0.9, 0.9, 0.9];  // rgb, already scaled by intensity
+const LIGHT_AMBIENT = [0.2, 0.22, 0.3];
+
+let litShader = -1;
+let shadowShader = -1;
+let litUniforms = null;
+let shadowUniforms = null;
+let useLighting = true;         // toggled with L
+let lightingText = "cube shader";
+
+const LIT_VS = [
+    "#version 330",
+    "in vec3 vertexPosition;",
+    "in vec2 vertexTexCoord;",
+    "in vec3 vertexNormal;",
+    "in vec4 vertexColor;",
+    "uniform mat4 mvp;",
+    "uniform mat4 matModel;",
+    "uniform mat4 matNormal;",
+    "out vec2 fragTexCoord;",
+    "out vec4 fragColor;",
+    "out vec3 fragWorldPos;",
+    "out vec3 fragNormal;",
+    "void main() {",
+    "    vec4 world = matModel * vec4(vertexPosition, 1.0);",
+    "    fragWorldPos = world.xyz;",
+    "    fragNormal = normalize(mat3(matNormal) * vertexNormal);",
+    "    fragTexCoord = vertexTexCoord;",
+    "    fragColor = vertexColor;",
+    "    gl_Position = mvp * vec4(vertexPosition, 1.0);",
+    "}",
+].join("\n");
+
+const LIT_FS = [
+    "#version 330",
+    "in vec2 fragTexCoord;",
+    "in vec4 fragColor;",
+    "in vec3 fragWorldPos;",
+    "in vec3 fragNormal;",
+    "uniform sampler2D texture0;",
+    "uniform vec4 colDiffuse;",
+    "uniform vec3 lightDir;",
+    "uniform vec4 lightColor;",
+    "uniform vec4 ambientColor;",
+    "uniform vec3 camPos;",
+    "out vec4 finalColor;",
+    "void main() {",
+    "    vec4 texel = texture(texture0, fragTexCoord) * colDiffuse * fragColor;",
+    "    vec3 n = normalize(fragNormal);",
+    "    vec3 viewDir = normalize(camPos - fragWorldPos);",
+    "    if (dot(n, viewDir) < 0.0) n = -n;",
+    "    vec3 l = normalize(lightDir);",
+    "    float ndl = max(dot(n, l), 0.0);",
+    "    float hemi = 0.5 + 0.5 * n.y;",
+    "    vec3 ambient = ambientColor.rgb * mix(0.55, 1.05, hemi);",
+    "    vec3 diffuse = lightColor.rgb * ndl;",
+    "    vec3 halfV = normalize(l + viewDir);",
+    "    float spec = pow(max(dot(n, halfV), 0.0), 24.0) * ndl * 0.18;",
+    "    vec3 color = texel.rgb * (ambient + diffuse) + lightColor.rgb * spec;",
+    "    finalColor = vec4(color, texel.a);",
+    "}",
+].join("\n");
+
+const SHADOW_VS = [
+    "#version 330",
+    "in vec3 vertexPosition;",
+    "uniform mat4 matModel;",
+    "uniform mat4 matView;",
+    "uniform mat4 matProjection;",
+    "uniform vec3 lightDir;",
+    "uniform float groundY;",
+    "uniform float shadowOn;",
+    "void main() {",
+    "    vec3 world = (matModel * vec4(vertexPosition, 1.0)).xyz;",
+    "    if (shadowOn > 0.5 && lightDir.y > 0.06 && world.y > groundY) {",
+    "        float t = (world.y - groundY) / lightDir.y;",
+    "        vec3 projected = vec3(world.x - lightDir.x*t, groundY, world.z - lightDir.z*t);",
+    "        gl_Position = matProjection * matView * vec4(projected, 1.0);",
+    "    } else {",
+    "        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);",
+    "    }",
+    "}",
+].join("\n");
+
+const SHADOW_FS = [
+    "#version 330",
+    "uniform float shadowAlpha;",
+    "out vec4 finalColor;",
+    "void main() { finalColor = vec4(0.02, 0.04, 0.02, shadowAlpha); }",
+].join("\n");
+
+// Compile the lit and shadow programs and cache their uniform locations. Must run
+// after the window exists (shaders need a GL context).
+function makeLighting() {
+    // Degrade gracefully on an engine without the shader bindings (the scene then
+    // keeps the M2/M3 ambient-tint look).
+    if (typeof rl.loadShaderFromMemory !== "function" ||
+        typeof rl.setModelShader !== "function" ||
+        typeof rl.setShaderValueVector3 !== "function" ||
+        typeof rl.setShaderValueVector4 !== "function") {
+        console.log("lighting: engine has no shader bindings - using the cube shader");
+        litShader = -1;
+        lightingText = "cube shader";
+        return;
+    }
+    litShader = rl.loadShaderFromMemory(LIT_VS, LIT_FS);
+    if (litShader < 0 || !rl.isShaderValid(litShader)) {
+        console.log("lighting: lit shader failed to compile - falling back to the cube shader");
+        litShader = -1;
+        lightingText = "cube shader";
+        return;
+    }
+    shadowShader = rl.loadShaderFromMemory(SHADOW_VS, SHADOW_FS);
+    if (shadowShader < 0 || !rl.isShaderValid(shadowShader)) shadowShader = -1;
+    litUniforms = {
+        lightDir: rl.getShaderLocation(litShader, "lightDir"),
+        lightColor: rl.getShaderLocation(litShader, "lightColor"),
+        ambientColor: rl.getShaderLocation(litShader, "ambientColor"),
+        camPos: rl.getShaderLocation(litShader, "camPos"),
+    };
+    shadowUniforms = shadowShader >= 0 ? {
+        lightDir: rl.getShaderLocation(shadowShader, "lightDir"),
+        groundY: rl.getShaderLocation(shadowShader, "groundY"),
+        shadowOn: rl.getShaderLocation(shadowShader, "shadowOn"),
+        shadowAlpha: rl.getShaderLocation(shadowShader, "shadowAlpha"),
+    } : null;
+    if (haveModel) rl.setModelShader(model, litShader);
+    console.log("lighting: lit shader " + litShader + ", shadow shader " + shadowShader);
+}
+
+// Refresh the light direction and colours from the day/night clock. The sun and
+// moon are the same two bodies `drawCelestial` arcs across the sky, so the light
+// and the visible disc always agree.
+function updateLight() {
+    const a = ((worldTime - 6) / 12) * Math.PI;   // 0 at 06:00, PI at 18:00
+    const sunX = Math.cos(a);
+    const sunY = Math.sin(a);
+    const tilt = 0.18;                            // push light off the XZ plane
+    const day = sunY > 0.02;
+    let lx = sunX, ly = sunY, lz = tilt;
+    if (!day) {
+        lx = -sunX; ly = -sunY; lz = -tilt;       // the moon takes over
+    }
+    const len = Math.sqrt(lx * lx + ly * ly + lz * lz) || 1;
+    LIGHT_DIR[0] = lx / len;
+    LIGHT_DIR[1] = ly / len;
+    LIGHT_DIR[2] = lz / len;
+
+    const warm = Math.max(0, Math.min(1, 1 - Math.abs(sunY) / 0.45));
+    const intense = day ? 0.30 + 0.70 * skyLight : 0.16;
+    if (day) {
+        LIGHT_COLOR[0] = intense;
+        LIGHT_COLOR[1] = intense * (1 - 0.22 * warm);
+        LIGHT_COLOR[2] = intense * (1 - 0.55 * warm);
+    } else {
+        LIGHT_COLOR[0] = intense * 0.72;
+        LIGHT_COLOR[1] = intense * 0.80;
+        LIGHT_COLOR[2] = intense;
+    }
+    LIGHT_AMBIENT[0] = 0.10 + 0.12 * skyLight;
+    LIGHT_AMBIENT[1] = 0.12 + 0.13 * skyLight;
+    LIGHT_AMBIENT[2] = 0.18 + 0.16 * skyLight;
+}
+
+function setLitUniforms(cx, cy, cz) {
+    rl.setShaderValueVector3(litShader, litUniforms.lightDir,
+        LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]);
+    rl.setShaderValueVector4(litShader, litUniforms.lightColor,
+        LIGHT_COLOR[0], LIGHT_COLOR[1], LIGHT_COLOR[2], 1.0);
+    rl.setShaderValueVector4(litShader, litUniforms.ambientColor,
+        LIGHT_AMBIENT[0], LIGHT_AMBIENT[1], LIGHT_AMBIENT[2], 1.0);
+    rl.setShaderValueVector3(litShader, litUniforms.camPos, cx, cy, cz);
+}
+
+function setShadowUniforms() {
+    rl.setShaderValueVector3(shadowShader, shadowUniforms.lightDir,
+        LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]);
+    rl.setShaderValue(shadowShader, shadowUniforms.groundY, GROUND_Y, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(shadowShader, shadowUniforms.shadowOn, 1.0, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(shadowShader, shadowUniforms.shadowAlpha,
+        SHADOW_ALPHA * (0.35 + 0.65 * skyLight), rl.SHADER_UNIFORM_FLOAT);
 }
 
 // ---- weather -------------------------------------------------------------
@@ -740,11 +945,11 @@ function drawRain(w, h) {
     }
 }
 
-function drawGround(g) {
+function drawGround(g, groundCol, tuftCol) {
     // Snap the slab to a 2-unit grid so it looks pinned down while we travel.
     const gx = Math.round(g.px / 2) * 2;
     const gz = Math.round(g.pz / 2) * 2;
-    rl.drawCube(gx, -0.06, gz, 70, 0.1, 70, ambGround);
+    rl.drawCube(gx, -0.06, gz, 70, 0.1, 70, groundCol);
     rl.drawGrid(40, 1.0);
     for (let i = 0; i < TUFTS.length; i++) {
         const tx = TUFTS[i].x - g.px;
@@ -754,10 +959,10 @@ function drawGround(g) {
         // Lean each tuft with the gust; nearer ones get a second segment so the
         // bend reads up close.
         const off = Math.sin(swayTime * 3.0 + TUFTS[i].p) * 0.11 * windSway;
-        rl.drawCube(TUFTS[i].x + off, 0.06, TUFTS[i].z + off * 0.4, 0.14, 0.16, 0.14, ambTuft);
+        rl.drawCube(TUFTS[i].x + off, 0.06, TUFTS[i].z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
         if (d2 < 180) {
             rl.drawCube(TUFTS[i].x + off * 1.7, 0.20, TUFTS[i].z + off * 0.7,
-                0.11, 0.16, 0.11, ambTuft);
+                0.11, 0.16, 0.11, tuftCol);
         }
     }
 }
@@ -1035,9 +1240,9 @@ function drawHud(move) {
         how = curClipName !== "" ? "clip '" + curClipName + "'" : "glb model";
     }
     const status = clockText + "   speed " + curSpeed.toFixed(2) + " m/s   phase " +
-        goat.phase.toFixed(2) + "   fps " + rl.getFPS();
+        goat.phase.toFixed(2) + "   fps " + rl.getFPS() + "   light " + lightingText;
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
+    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   L light   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
         10, 32, 14, rl.RAYWHITE);
 
     // Health and energy bars, top-right.
@@ -1064,6 +1269,7 @@ function run() {
     makeEyeTextures();
     makeSkyTextures();
     makeWeatherTextures();
+    makeLighting();
 
     const sw = rl.getScreenWidth();
     const sh = rl.getScreenHeight();
@@ -1087,6 +1293,7 @@ function run() {
         skyBot = lerpColor(sky.bot, OVERCAST_BOT, grey);
         skyLight = sky.light;
         updateAmbient();
+        updateLight();
         const hh = Math.floor(worldTime);
         const mm = Math.floor((worldTime - hh) * 60);
         clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
@@ -1107,6 +1314,10 @@ function run() {
         // input
         if (rl.isKeyPressed(rl.KEY_P)) paused = !paused;
         if (rl.isKeyPressed(rl.KEY_C)) forceWeather();
+        if (rl.isKeyPressed(rl.KEY_L) && litShader >= 0) {
+            useLighting = !useLighting;
+            if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+        }
         let move = 0;
         if (rl.isKeyDown(rl.KEY_W)) move += 1;
         if (rl.isKeyDown(rl.KEY_S)) move -= 1;
@@ -1207,13 +1418,39 @@ function run() {
         drawStars();
         drawCelestial();
         drawClouds();
-        drawGround(goat);
-        drawShadow();
-        if (haveModel) {
-            drawModelGoat(goat);
-            drawEyes();
+
+        const lit = useLighting && litShader >= 0;
+        if (lit) {
+            // Terrain is immediate-mode geometry, so it goes through the lit
+            // program with base colours: the shader now supplies the light.
+            rl.beginShaderMode(litShader);
+            setLitUniforms(cx, cy, cz);
+            drawGround(goat, GROUND, TUFT);
+            if (!haveModel) drawGoat(goat);
+            rl.endShaderMode();
+            if (haveModel) {
+                // The projected cast shadow is drawn first, under the goat.
+                if (shadowShader >= 0 && LIGHT_DIR[1] > 0.06) {
+                    rl.setModelShader(model, shadowShader);
+                    setShadowUniforms();
+                    drawModelGoat(goat, rl.WHITE);
+                    rl.setModelShader(model, litShader);
+                }
+                drawModelGoat(goat, rl.WHITE);
+                drawEyes();
+            }
+            lightingText = (shadowShader >= 0 && LIGHT_DIR[1] > 0.06) ? "lit + cast shadow" : "lit";
         } else {
-            drawGoat(goat);
+            // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
+            drawGround(goat, ambGround, ambTuft);
+            drawShadow();
+            if (haveModel) {
+                drawModelGoat(goat, ambTint);
+                drawEyes();
+            } else {
+                drawGoat(goat);
+            }
+            lightingText = litShader < 0 ? "cube shader" : "off";
         }
         rl.endMode3D();
         drawRain(sw, sh);

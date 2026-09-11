@@ -28,6 +28,7 @@ let lastPosed = null;
 let speedText = '';
 let statsText = '';
 let weatherText = '';
+const modelShaderCalls = [];
 const timeline = [];
 const logs = [];
 
@@ -47,6 +48,7 @@ function applyInput(i) {
     if (i === 70) pressed[32] = true;                       // SPACE jump
     if (i === 150) pressed[90] = true;                      // Z sleep
     if (i === 3000 || i === 3100) pressed[67] = true;       // C next weather
+    if (i === 3200) pressed[76] = true;                     // L lighting off
     if (i === 3950) pressed[82] = true;                     // R restart
 }
 
@@ -57,8 +59,10 @@ const constants = {
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
     KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90, KEY_T: 84,
-    KEY_C: 67,
+    KEY_C: 67, KEY_L: 76,
     WHITE: {}, RAYWHITE: {},
+    SHADER_UNIFORM_FLOAT: 0, SHADER_UNIFORM_VEC2: 1, SHADER_UNIFORM_VEC3: 2,
+    SHADER_UNIFORM_VEC4: 3, SHADER_UNIFORM_INT: 4, SHADER_UNIFORM_UINT: 8,
 };
 
 const rl = Object.assign({}, constants, {
@@ -77,6 +81,14 @@ const rl = Object.assign({}, constants, {
         lastPosed = { clip: CLIPS[i].name, frame: frame };
     },
     drawModelEx: () => {},
+    setModelShader: (_m, s) => { modelShaderCalls.push(s); },
+    loadShaderFromMemory: (vs) => (vs.indexOf('shadowOn') >= 0 ? 1 : 0),
+    isShaderValid: () => true,
+    getShaderLocation: () => 0,
+    beginShaderMode: () => {}, endShaderMode: () => {},
+    setShaderValue: () => {}, setShaderValueVector2: () => {},
+    setShaderValueVector3: () => {}, setShaderValueVector4: () => {},
+    setShaderValueMatrix: () => {}, setShaderValueTexture: () => {},
     makeTexture: () => 0,
     drawBillboard: () => {},
     windowShouldClose: () => {
@@ -142,6 +154,10 @@ function clockAt(i) {
     const m = /^(\d\d):(\d\d)/.exec(row(i).speed);
     return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 }
+function lightAt(i) {
+    const m = /light (lit \+ cast shadow|lit|off|cube shader)/.exec(row(i).speed);
+    return m ? m[1] : null;
+}
 
 let deathFrame = -1;
 for (const r of timeline) {
@@ -171,6 +187,10 @@ const checks = [
         weatherAt(300)],
     ['C changes the weather', weatherAt(2999) !== weatherAt(3200),
         [weatherAt(2999), weatherAt(3200)]],
+    ['lighting is active', lightAt(15) === 'lit + cast shadow', lightAt(15)],
+    ['model uses the lit shader', modelShaderCalls.indexOf(0) >= 0, modelShaderCalls.slice(0, 4)],
+    ['shadow shader swap runs', modelShaderCalls.indexOf(1) >= 0, modelShaderCalls.slice(0, 4)],
+    ['L toggles lighting off', lightAt(3210) === 'off', lightAt(3210)],
     ['goat dies of exhaustion', deathFrame > 200 && deathFrame < 3950, deathFrame],
     ['death clip held while dead', clipAt(deathFrame + 5) === 'GoatDeath', clipAt(deathFrame + 5)],
     ['health is zero at death', deadStats !== null && deadStats.health === 0, deadStats],
