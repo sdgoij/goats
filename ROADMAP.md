@@ -340,8 +340,10 @@ What it adds over the planar fallback: self-shadowing (the goat's legs and head
 on its body) and a correct shadow on any non-flat receiver. The grass inside the
 light's box casts into the same pass (the batch path, like the terrain, drawn
 before the goat), so nearby tufts ground the goat in the field; tufts outside the
-box are culled because they cannot project into the map. Limits: a single 1024²
-map covering a 14-unit box, so the shadow softens at distance and clips when the
+box are culled because they cannot project into the map. The field is generated
+per 2-unit cell from a hash of the cell around the goat, so it is effectively
+infinite and never leaves bare ground behind. Limits: a single 1024² map
+covering a 14-unit box, so the shadow softens at distance and clips when the
 goat leaves the box.
 
 ---

@@ -1,19 +1,9 @@
 // Part 3/8 of the goat scene: grass, the day/night curve, sun, moon and stars.
 // ---- scenery -------------------------------------------------------------
 
-// Static, deterministically jittered grass, thinned out so it reads as tufts.
-const TUFTS = [];
-(function buildTufts() {
-    for (let gx = -40; gx <= 40; gx += 2) {
-        for (let gz = -40; gz <= 40; gz += 2) {
-            const a = hash(gx * 3.1 + gz * 7.7);
-            if (a < 0.45) continue;
-            const b = hash(gx * 11.3 - gz * 5.1);
-            TUFTS.push({ x: gx + (b - 0.5) * 1.8, z: gz + (a - 0.5) * 1.8, p: hash(gx * 5.7 + gz * 2.3) * 6.28 });
-        }
-    }
-    console.log("goat: " + TUFTS.length + " grass tufts");
-})();
+// Grass is generated procedurally around the goat in `drawTufts` (weather.js),
+// so the field extends as far as the eye (and the shadow pass) can see and never
+// leaves bare ground behind after a walk.
 
 // ---- day/night -----------------------------------------------------------
 

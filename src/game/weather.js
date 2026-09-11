@@ -227,21 +227,43 @@ function drawRain(w, h) {
     }
 }
 
-// Grass tufts, leaning with the gust and culled by squared radius around the
-// goat. Shared with the shadow pass, which draws the same cubes through the
-// depth program so the grass casts too. `cull2` is the cull radius squared;
-// nearer tufts get a second segment so the bend reads up close.
+// Grass tufts, leaning with the gust, generated per 2-unit cell from a hash of
+// the cell so the field follows the goat and never runs out -- a fixed patch
+// leaves bare ground behind after a walk. The hash is inlined rather than calling
+// `hash()` to keep the per-frame JS call depth shallow. Shared with the shadow
+// pass, which draws the same cubes through the depth program so the grass casts
+// too. `cull2` is the cull radius squared; nearer tufts get a second segment so
+// the bend reads up close.
 function drawTufts(g, tuftCol, cull2, detail2) {
-    for (let i = 0; i < TUFTS.length; i++) {
-        const tx = TUFTS[i].x - g.px;
-        const tz = TUFTS[i].z - g.pz;
-        const d2 = tx * tx + tz * tz;
-        if (d2 > cull2) continue;
-        const off = Math.sin(swayTime * 3.0 + TUFTS[i].p) * 0.11 * windSway;
-        rl.drawCube(TUFTS[i].x + off, 0.06, TUFTS[i].z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
-        if (d2 < detail2) {
-            rl.drawCube(TUFTS[i].x + off * 1.7, 0.20, TUFTS[i].z + off * 0.7,
-                0.11, 0.16, 0.11, tuftCol);
+    const r = Math.sqrt(cull2);
+    const cx0 = Math.floor((g.px - r) * 0.5);
+    const cx1 = Math.ceil((g.px + r) * 0.5);
+    const cz0 = Math.floor((g.pz - r) * 0.5);
+    const cz1 = Math.ceil((g.pz + r) * 0.5);
+    for (let cx = cx0; cx <= cx1; cx++) {
+        for (let cz = cz0; cz <= cz1; cz++) {
+            let h = (cx * 374761393 + cz * 668265263) | 0;
+            h = Math.imul(h ^ (h >>> 13), 1274126177);
+            h = (h ^ (h >>> 16)) >>> 0;
+            const a = h / 4294967296;             // existence (and z jitter)
+            if (a < 0.45) continue;
+            let h2 = (cx * 1103515245 + cz * 12345) | 0;
+            h2 = Math.imul(h2 ^ (h2 >>> 15), 2246822519);
+            h2 = (h2 ^ (h2 >>> 13)) >>> 0;
+            let h3 = (cx * 2654435761 + cz * 40503) | 0;
+            h3 = Math.imul(h3 ^ (h3 >>> 16), 3266489917);
+            h3 = (h3 ^ (h3 >>> 16)) >>> 0;
+            const x = cx * 2 + (h2 / 4294967296 - 0.5) * 1.8;
+            const z = cz * 2 + (a - 0.5) * 1.8;
+            const tx = x - g.px;
+            const tz = z - g.pz;
+            const d2 = tx * tx + tz * tz;
+            if (d2 > cull2) continue;
+            const off = Math.sin(swayTime * 3.0 + (h3 / 4294967296) * 6.28) * 0.11 * windSway;
+            rl.drawCube(x + off, 0.06, z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
+            if (d2 < detail2) {
+                rl.drawCube(x + off * 1.7, 0.20, z + off * 0.7, 0.11, 0.16, 0.11, tuftCol);
+            }
         }
     }
 }

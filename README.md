@@ -58,8 +58,8 @@ cargo run --release
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
-- Orbit + zoom camera, a culled grass field that casts into the shadow map, and
-  a health/energy HUD.
+- Orbit + zoom camera, a procedural grass field that follows the goat so it never
+  runs out, and a health/energy HUD.
 - A cube-skeleton fallback (voxel body + 2-bone-IK legs) if the model cannot be
   loaded.
 
@@ -253,7 +253,9 @@ has no materials and uses `setShaderValueTexture` directly. The grass tufts
 inside the light's box go in through the same depth pass, but via the batch path
 (`beginShaderMode`, like the terrain) and drawn before the goat so its depth wins
 on overlap; tufts outside the box cannot project into the map, so they are
-culled. `K` cycles the map, a planar fallback (the earlier M4 look) and off.
+culled. The field itself is generated per 2-unit cell from a hash of the cell, so
+it follows the goat and never leaves bare ground behind. `K` cycles the map, a
+planar fallback (the earlier M4 look) and off.
 
 The M5 sky reuses the same bindings. It is a full-screen pass (`beginShaderMode`
 + `drawRectangle`) whose fragment shader reads `gl_FragCoord`, so the fragment
