@@ -1,4 +1,4 @@
-// Part 1/9 of the goat scene: tuning, stats, palette and maths helpers. This
+// Part 1/10 of the goat scene: tuning, stats, palette and maths helpers. This
 // file also carries the scene's overall header comment.
 //
 // A walking, running, jumping goat for the Slag x raylib sandbox.
@@ -16,7 +16,8 @@
 //   audio.js     music streams, weather beds, goat bleats
 //   weather.js   the weather state machine and wind
 //   bots.js      the autonomous bot herd
-//   goat.js      the gait state machine, HUD and the main loop
+//   goat.js      the gait state machine, HUD and frame loop
+//   ctl.js       the stdin command channel
 //
 // The goat is `goat_animated.glb`, baked from the Blender rig and loaded through
 // the `rl` model surface. Every clip bakes its forward travel as *in-place*

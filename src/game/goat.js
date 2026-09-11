@@ -1,4 +1,4 @@
-// Part 9/9 of the goat scene: the gait state machine, HUD and main loop.
+// Part 9/10 of the goat scene: the gait state machine, HUD and frame loop.
 // ---- gait state ----------------------------------------------------------
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
@@ -19,6 +19,11 @@ let glowTex = -1;        // radial sun/star glow
 let camYaw = 0.7;
 let camPitch = 0.42;
 let camDist = 5.2;
+
+// Filled in by `sceneInit`; the host owns the frame loop now (see below).
+let screenW = 1;
+let screenH = 1;
+let sceneFrames = 0;
 
 // Live gait read-outs, refreshed once per frame at `run()` depth. `drawHud`
 // reads these rather than calling the helpers itself: in a debug build every
@@ -294,7 +299,14 @@ function drawHud(move) {
     rl.drawText(status + "   " + state, 10, h - 24, 14, rl.RAYWHITE);
 }
 
-function run() {
+// ---- host-driven frame loop ----------------------------------------------
+//
+// The host (`src/main.rs`) owns the loop so it can interleave commands from
+// stdin between frames: it calls `sceneInit()` once, then `sceneFrame()` until
+// it returns false, then `sceneShutdown()`. `run()` is the standalone driver
+// kept for the headless harness (`tools/goat_logic_test.js`).
+
+function sceneInit() {
     rl.initWindow(1000, 640, "Slag goat - walk / run / jump / sleep");
     rl.setTargetFPS(60);
     loadGoat();
@@ -307,233 +319,248 @@ function run() {
     makeBotTextures();
     loadBots();
 
-    const sw = rl.getScreenWidth();
-    const sh = rl.getScreenHeight();
-    let frames = 0;
-    while (!rl.windowShouldClose()) {
-        const dt = Math.min(rl.getFrameTime(), 0.05);
-        frames += 1;
+    screenW = rl.getScreenWidth();
+    screenH = rl.getScreenHeight();
+    sceneFrames = 0;
+}
 
-        // day/night: advance the clock, then refresh the sky and the ambient
-        // tint the whole scene is drawn with.
-        const fast = rl.isKeyDown(rl.KEY_T);
-        worldTime = mod24(worldTime + (dt / DAY_LENGTH) * 24 * (fast ? TIME_FAST : 1));
-        const sky = skySample(worldTime);
-        updateWind(dt);
-        updateWeather(dt);
-        updateClouds(dt);
-        updateRain(dt);
-        updateAudio(dt);
-        // overcast skies wash the gradient toward grey
-        const grey = Math.min(0.75, cloudiness * 0.75);
-        skyTop = lerpColor(sky.top, OVERCAST_TOP, grey);
-        skyBot = lerpColor(sky.bot, OVERCAST_BOT, grey);
-        skyLight = sky.light;
-        updateAmbient();
-        updateLight();
-        updateShadow();
-        const hh = Math.floor(worldTime);
-        const mm = Math.floor((worldTime - hh) * 60);
-        clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+// One frame: advance the world and draw it. Returns false once the window is
+// closing or `quit` was received, so the host stops calling it.
+function sceneFrame() {
+    if (ctlQuit || rl.windowShouldClose()) return false;
+    const dt = Math.min(rl.getFrameTime(), 0.05);
+    sceneFrames += 1;
 
-        // camera: drag to orbit, arrows as a fallback, wheel to zoom
-        if (rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
-            camYaw -= rl.getMouseDeltaX() * 0.004;
-            camPitch -= rl.getMouseDeltaY() * 0.004;
+    // day/night: advance the clock, then refresh the sky and the ambient
+    // tint the whole scene is drawn with.
+    const fast = ctlKeyDown(rl.KEY_T);
+    worldTime = mod24(worldTime + (dt / DAY_LENGTH) * 24 * (fast ? TIME_FAST : 1));
+    const sky = skySample(worldTime);
+    updateWind(dt);
+    updateWeather(dt);
+    updateClouds(dt);
+    updateRain(dt);
+    updateAudio(dt);
+    // overcast skies wash the gradient toward grey
+    const grey = Math.min(0.75, cloudiness * 0.75);
+    skyTop = lerpColor(sky.top, OVERCAST_TOP, grey);
+    skyBot = lerpColor(sky.bot, OVERCAST_BOT, grey);
+    skyLight = sky.light;
+    updateAmbient();
+    updateLight();
+    updateShadow();
+    const hh = Math.floor(worldTime);
+    const mm = Math.floor((worldTime - hh) * 60);
+    clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+
+    // camera: drag to orbit, arrows as a fallback, wheel to zoom
+    if (rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+        camYaw -= rl.getMouseDeltaX() * 0.004;
+        camPitch -= rl.getMouseDeltaY() * 0.004;
+    }
+    if (ctlKeyDown(rl.KEY_LEFT)) camYaw += 1.6 * dt;
+    if (ctlKeyDown(rl.KEY_RIGHT)) camYaw -= 1.6 * dt;
+    if (ctlKeyDown(rl.KEY_UP)) camPitch += 1.0 * dt;
+    if (ctlKeyDown(rl.KEY_DOWN)) camPitch -= 1.0 * dt;
+    camDist -= rl.getMouseWheelMove() * 0.4;
+    camPitch = clamp(camPitch, 0.08, 1.35);
+    camDist = clamp(camDist, 2.2, 12.0);
+
+    // input
+    if (rl.isKeyPressed(rl.KEY_P)) paused = !paused;
+    if (rl.isKeyPressed(rl.KEY_C)) forceWeather();
+    if (rl.isKeyPressed(rl.KEY_L) && litShader >= 0) {
+        useLighting = !useLighting;
+        if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+        setBotsShader(useLighting ? litShader : -1);
+    }
+    if (rl.isKeyPressed(rl.KEY_K) && litShader >= 0) {
+        // Cycle shadows: map -> planar -> off. The map needs the engine
+        // bindings; planar is the fallback.
+        shadowMode = (shadowMode + 1) % 3;
+        if (shadowMode === SHADOW_MAP && !shadowMapReady) shadowMode = SHADOW_OFF;
+        if (shadowMode === SHADOW_PLANAR && shadowShader < 0) shadowMode = SHADOW_OFF;
+    }
+    if (rl.isKeyPressed(rl.KEY_M)) setMuted(!muted);
+    if (rl.isKeyPressed(rl.KEY_B) && skyShader >= 0) useSkyShader = !useSkyShader;
+    let move = 0;
+    if (ctlKeyDown(rl.KEY_W)) move += 1;
+    if (ctlKeyDown(rl.KEY_S)) move -= 1;
+    let turn = 0;
+    if (ctlKeyDown(rl.KEY_A)) turn += 1;
+    if (ctlKeyDown(rl.KEY_D)) turn -= 1;
+    const running = ctlKeyDown(rl.KEY_LEFT_SHIFT) || ctlKeyDown(rl.KEY_RIGHT_SHIFT);
+    const trotting = ctlKeyDown(rl.KEY_LEFT_CONTROL) || ctlKeyDown(rl.KEY_RIGHT_CONTROL);
+    let gait = running ? "run" : trotting ? "trot" : "walk";
+    if (exhausted) gait = "walk";   // an exhausted goat cannot run or trot
+    if (mode !== "sleep" && mode !== "dead") goat.yaw += turn * TURN_RATE * dt;
+
+    // state machine: jump, sleep and death lock the mode; everything else
+    // follows the requested gait.
+    if (mode === "dead") {
+        if (rl.isKeyPressed(rl.KEY_R)) restart();
+    } else if (mode === "sleep") {
+        if (rl.isKeyPressed(rl.KEY_Z) || move !== 0 || stats.energy >= MAX_STAT) {
+            wakeUp();
         }
-        if (rl.isKeyDown(rl.KEY_LEFT)) camYaw += 1.6 * dt;
-        if (rl.isKeyDown(rl.KEY_RIGHT)) camYaw -= 1.6 * dt;
-        if (rl.isKeyDown(rl.KEY_UP)) camPitch += 1.0 * dt;
-        if (rl.isKeyDown(rl.KEY_DOWN)) camPitch -= 1.0 * dt;
-        camDist -= rl.getMouseWheelMove() * 0.4;
-        camPitch = clamp(camPitch, 0.08, 1.35);
-        camDist = clamp(camDist, 2.2, 12.0);
-
-        // input
-        if (rl.isKeyPressed(rl.KEY_P)) paused = !paused;
-        if (rl.isKeyPressed(rl.KEY_C)) forceWeather();
-        if (rl.isKeyPressed(rl.KEY_L) && litShader >= 0) {
-            useLighting = !useLighting;
-            if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
-            setBotsShader(useLighting ? litShader : -1);
-        }
-        if (rl.isKeyPressed(rl.KEY_K) && litShader >= 0) {
-            // Cycle shadows: map -> planar -> off. The map needs the engine
-            // bindings; planar is the fallback.
-            shadowMode = (shadowMode + 1) % 3;
-            if (shadowMode === SHADOW_MAP && !shadowMapReady) shadowMode = SHADOW_OFF;
-            if (shadowMode === SHADOW_PLANAR && shadowShader < 0) shadowMode = SHADOW_OFF;
-        }
-        if (rl.isKeyPressed(rl.KEY_M)) setMuted(!muted);
-        if (rl.isKeyPressed(rl.KEY_B) && skyShader >= 0) useSkyShader = !useSkyShader;
-        let move = 0;
-        if (rl.isKeyDown(rl.KEY_W)) move += 1;
-        if (rl.isKeyDown(rl.KEY_S)) move -= 1;
-        let turn = 0;
-        if (rl.isKeyDown(rl.KEY_A)) turn += 1;
-        if (rl.isKeyDown(rl.KEY_D)) turn -= 1;
-        const running = rl.isKeyDown(rl.KEY_LEFT_SHIFT) || rl.isKeyDown(rl.KEY_RIGHT_SHIFT);
-        const trotting = rl.isKeyDown(rl.KEY_LEFT_CONTROL) || rl.isKeyDown(rl.KEY_RIGHT_CONTROL);
-        let gait = running ? "run" : trotting ? "trot" : "walk";
-        if (exhausted) gait = "walk";   // an exhausted goat cannot run or trot
-        if (mode !== "sleep" && mode !== "dead") goat.yaw += turn * TURN_RATE * dt;
-
-        // state machine: jump, sleep and death lock the mode; everything else
-        // follows the requested gait.
-        if (mode === "dead") {
-            if (rl.isKeyPressed(rl.KEY_R)) restart();
-        } else if (mode === "sleep") {
-            if (rl.isKeyPressed(rl.KEY_Z) || move !== 0 || stats.energy >= MAX_STAT) {
-                wakeUp();
-            }
-        } else if (mode === "jump") {
-            jumpTime += dt;
-            if (jumpTime >= jumpDuration()) {
-                mode = move !== 0 ? gait : "idle";
-            }
-        } else if (rl.isKeyPressed(rl.KEY_Z)) {
-            startSleep();
-        } else if (rl.isKeyPressed(rl.KEY_SPACE)) {
-            startJump(move, gait);
-        } else {
+    } else if (mode === "jump") {
+        jumpTime += dt;
+        if (jumpTime >= jumpDuration()) {
             mode = move !== 0 ? gait : "idle";
-            // drop off on our own once exhausted and standing still
-            if (exhausted && move === 0) {
-                idleTimer += dt;
-                if (idleTimer >= AUTO_SLEEP_DELAY) startSleep();
-            } else {
-                idleTimer = 0;
-            }
         }
-
-        if (updateStats(dt) === "die") die();
-
-        // The player's idle variant advances each time it settles into idle, so
-        // it cycles through the idle clips instead of always doing the same one.
-        if (mode !== lastMode) {
-            if (mode === "idle") cyclePlayerVariant("idle");
-            lastMode = mode;
-        }
-
-        curRole = clipRole();
-        curSpeed = groundSpeed();
-
-        if (!paused) {
-            if (mode === "jump") {
-                // Horizontal travel continues at the speed set at take-off; the
-                // vertical arc comes from the clip (or the fallback hop).
-                if (jumpDir !== 0) {
-                    goat.px += Math.cos(goat.yaw) * jumpDir * jumpSpeed * dt;
-                    goat.pz += -Math.sin(goat.yaw) * jumpDir * jumpSpeed * dt;
-                }
-                if (!haveModel) {
-                    goat.py = V_DROP + FALLBACK_JUMP_H *
-                        Math.sin(Math.PI * Math.min(jumpTime / jumpDuration(), 1));
-                }
-            } else if (mode === "sleep") {
-                goat.phase = mod1(goat.phase + dt / loopDuration());
-                goat.py = haveModel ? 0 : V_DROP;
-            } else if (mode === "dead") {
-                goat.py = haveModel ? 0 : V_DROP;
-            } else {
-                goat.phase = mod1(goat.phase + dt / loopDuration());
-                const speed = groundSpeed();
-                if (move !== 0) {
-                    goat.px += Math.cos(goat.yaw) * move * speed * dt;
-                    goat.pz += -Math.sin(goat.yaw) * move * speed * dt;
-                }
-                // The model's clip bobs the body itself; only the fallback needs a bob.
-                goat.py = haveModel ? 0 : V_DROP + Math.sin(4 * Math.PI * goat.phase) * V_BOB;
-            }
-        }
-
-        if (haveModel) {
-            if (mode === "jump" && CLIP.jump) {
-                poseModel("jump", Math.min(jumpTime / CLIP.jump.duration, 1));
-            } else if (mode === "dead" && CLIP.death) {
-                poseModel("death", Math.min(deathTime / CLIP.death.duration, 1));
-            } else {
-                poseModel(curRole, goat.phase);
-            }
-            const info = playerClip(curRole);
-            curClipName = info !== null && info !== undefined ? rl.modelAnimationName(model, info.index) : "";
-        }
-        updateBots(dt);
-        resolveGoatCollisions();
-
-        // render
-        const ty = 0.85 + goat.py;
-        const cp = Math.cos(camPitch);
-        const cx = goat.px + camDist * cp * Math.sin(camYaw);
-        const cy = ty + camDist * Math.sin(camPitch);
-        const cz = goat.pz + camDist * cp * Math.cos(camYaw);
-
-        rl.beginDrawing();
-        rl.clearBackground(skyBot);
-        const skyShaderOn = useSkyShader && skyShader >= 0;
-        if (skyShaderOn) {
-            drawSky(cx, cy, cz, goat.px, ty, goat.pz, sw, sh, dt);
+    } else if (rl.isKeyPressed(rl.KEY_Z)) {
+        startSleep();
+    } else if (rl.isKeyPressed(rl.KEY_SPACE)) {
+        startJump(move, gait);
+    } else {
+        mode = move !== 0 ? gait : "idle";
+        // drop off on our own once exhausted and standing still
+        if (exhausted && move === 0) {
+            idleTimer += dt;
+            if (idleTimer >= AUTO_SLEEP_DELAY) startSleep();
         } else {
-            rl.drawRectangleGradientV(0, 0, sw, sh, skyTop, skyBot);
-        }
-        const lit = useLighting && litShader >= 0;
-        // The shadow-map pass must run before the main 3D pass, since it swaps
-        // render targets and leaves the model pointing back at the lit shader.
-        if (lit) renderShadowMap();
-        rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
-        drawStars();
-        drawCelestial();
-        if (!skyShaderOn) drawClouds();
-
-        if (lit) {
-            // Terrain is immediate-mode geometry, so it goes through the lit
-            // program with base colours: the shader now supplies the light.
-            rl.beginShaderMode(litShader);
-            setLitUniforms(cx, cy, cz);
-            drawGround(goat, GROUND, TUFT);
-            if (!haveModel) drawGoat(goat);
-            rl.endShaderMode();
-            if (haveModel) {
-                // The planar fallback is drawn first, under the goat; the shadow
-                // map is sampled by the lit shader during the goat's own draw.
-                if (shadowMode === SHADOW_PLANAR && shadowShader >= 0 && LIGHT_DIR[1] > 0.06) {
-                    rl.setModelShader(model, shadowShader);
-                    setShadowUniforms();
-                    drawModelGoat(goat, rl.WHITE);
-                    rl.setModelShader(model, litShader);
-                }
-                drawModelGoat(goat, rl.WHITE);
-                drawEyes();
-            }
-            drawBots(rl.WHITE);
-            if (shadowMode === SHADOW_MAP && shadowStrengthNow > 0.001) lightingText = "lit + shadow map";
-            else if (shadowMode === SHADOW_PLANAR && LIGHT_DIR[1] > 0.06) lightingText = "lit + planar shadow";
-            else lightingText = "lit";
-        } else {
-            // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
-            drawGround(goat, ambGround, ambTuft);
-            drawShadow();
-            if (haveModel) {
-                drawModelGoat(goat, ambTint);
-                drawEyes();
-            } else {
-                drawGoat(goat);
-            }
-            drawBots(ambTint);
-            lightingText = litShader < 0 ? "cube shader" : "off";
-        }
-        rl.endMode3D();
-        drawRain(sw, sh);
-        drawHud(move);
-        rl.endDrawing();
-
-        if (frames % 240 === 0) {
-            console.log("frame " + frames + " mode " + mode + " phase " + goat.phase.toFixed(2) +
-                " fps " + rl.getFPS() + " gap " + goatMinGap().toFixed(2));
+            idleTimer = 0;
         }
     }
 
-    console.log("window closed after " + frames + " frames");
+    if (updateStats(dt) === "die") die();
+
+    // The player's idle variant advances each time it settles into idle, so
+    // it cycles through the idle clips instead of always doing the same one.
+    if (mode !== lastMode) {
+        if (mode === "idle") cyclePlayerVariant("idle");
+        lastMode = mode;
+    }
+
+    curRole = clipRole();
+    curSpeed = groundSpeed();
+
+    // `step <n>` (ctl.js) unsticks this gate for a fixed number of frames even
+    // while paused, so a script can advance the world deterministically.
+    if (!paused || ctlStep > 0) {
+        if (mode === "jump") {
+            // Horizontal travel continues at the speed set at take-off; the
+            // vertical arc comes from the clip (or the fallback hop).
+            if (jumpDir !== 0) {
+                goat.px += Math.cos(goat.yaw) * jumpDir * jumpSpeed * dt;
+                goat.pz += -Math.sin(goat.yaw) * jumpDir * jumpSpeed * dt;
+            }
+            if (!haveModel) {
+                goat.py = V_DROP + FALLBACK_JUMP_H *
+                    Math.sin(Math.PI * Math.min(jumpTime / jumpDuration(), 1));
+            }
+        } else if (mode === "sleep") {
+            goat.phase = mod1(goat.phase + dt / loopDuration());
+            goat.py = haveModel ? 0 : V_DROP;
+        } else if (mode === "dead") {
+            goat.py = haveModel ? 0 : V_DROP;
+        } else {
+            goat.phase = mod1(goat.phase + dt / loopDuration());
+            const speed = groundSpeed();
+            if (move !== 0) {
+                goat.px += Math.cos(goat.yaw) * move * speed * dt;
+                goat.pz += -Math.sin(goat.yaw) * move * speed * dt;
+            }
+            // The model's clip bobs the body itself; only the fallback needs a bob.
+            goat.py = haveModel ? 0 : V_DROP + Math.sin(4 * Math.PI * goat.phase) * V_BOB;
+        }
+    }
+
+    if (haveModel) {
+        if (mode === "jump" && CLIP.jump) {
+            poseModel("jump", Math.min(jumpTime / CLIP.jump.duration, 1));
+        } else if (mode === "dead" && CLIP.death) {
+            poseModel("death", Math.min(deathTime / CLIP.death.duration, 1));
+        } else {
+            poseModel(curRole, goat.phase);
+        }
+        const info = playerClip(curRole);
+        curClipName = info !== null && info !== undefined ? rl.modelAnimationName(model, info.index) : "";
+    }
+    updateBots(dt);
+    resolveGoatCollisions();
+
+    // render
+    const ty = 0.85 + goat.py;
+    const cp = Math.cos(camPitch);
+    const cx = goat.px + camDist * cp * Math.sin(camYaw);
+    const cy = ty + camDist * Math.sin(camPitch);
+    const cz = goat.pz + camDist * cp * Math.cos(camYaw);
+
+    rl.beginDrawing();
+    rl.clearBackground(skyBot);
+    const skyShaderOn = useSkyShader && skyShader >= 0;
+    if (skyShaderOn) {
+        drawSky(cx, cy, cz, goat.px, ty, goat.pz, screenW, screenH, dt);
+    } else {
+        rl.drawRectangleGradientV(0, 0, screenW, screenH, skyTop, skyBot);
+    }
+    const lit = useLighting && litShader >= 0;
+    // The shadow-map pass must run before the main 3D pass, since it swaps
+    // render targets and leaves the model pointing back at the lit shader.
+    if (lit) renderShadowMap();
+    rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
+    drawStars();
+    drawCelestial();
+    if (!skyShaderOn) drawClouds();
+
+    if (lit) {
+        // Terrain is immediate-mode geometry, so it goes through the lit
+        // program with base colours: the shader now supplies the light.
+        rl.beginShaderMode(litShader);
+        setLitUniforms(cx, cy, cz);
+        drawGround(goat, GROUND, TUFT);
+        if (!haveModel) drawGoat(goat);
+        rl.endShaderMode();
+        if (haveModel) {
+            // The planar fallback is drawn first, under the goat; the shadow
+            // map is sampled by the lit shader during the goat's own draw.
+            if (shadowMode === SHADOW_PLANAR && shadowShader >= 0 && LIGHT_DIR[1] > 0.06) {
+                rl.setModelShader(model, shadowShader);
+                setShadowUniforms();
+                drawModelGoat(goat, rl.WHITE);
+                rl.setModelShader(model, litShader);
+            }
+            drawModelGoat(goat, rl.WHITE);
+            drawEyes();
+        }
+        drawBots(rl.WHITE);
+        if (shadowMode === SHADOW_MAP && shadowStrengthNow > 0.001) lightingText = "lit + shadow map";
+        else if (shadowMode === SHADOW_PLANAR && LIGHT_DIR[1] > 0.06) lightingText = "lit + planar shadow";
+        else lightingText = "lit";
+    } else {
+        // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
+        drawGround(goat, ambGround, ambTuft);
+        drawShadow();
+        if (haveModel) {
+            drawModelGoat(goat, ambTint);
+            drawEyes();
+        } else {
+            drawGoat(goat);
+        }
+        drawBots(ambTint);
+        lightingText = litShader < 0 ? "cube shader" : "off";
+    }
+    rl.endMode3D();
+drawRain(screenW, screenH);
+drawHud(move);
+rl.endDrawing();
+
+if (sceneFrames % 240 === 0) {
+    console.log("frame " + sceneFrames + " mode " + mode + " phase " + goat.phase.toFixed(2) +
+        " fps " + rl.getFPS() + " gap " + goatMinGap().toFixed(2));
+}
+
+    if (ctlStep > 0) {
+        ctlStep -= 1;
+        if (ctlStep === 0) paused = true;   // a step always ends paused
+    }
+
+    return true;
+}
+
+function sceneShutdown() {
+    console.log("window closed after " + sceneFrames + " frames");
     unloadBots();
     if (haveModel) {
         rl.unloadModel(model);
@@ -542,4 +569,10 @@ function run() {
     rl.closeWindow();
 }
 
-run();
+// The standalone driver: init, frame until the window closes, tear down. Used
+// by the headless harness; the host drives the pieces directly.
+function run() {
+    sceneInit();
+    while (sceneFrame()) {}
+    sceneShutdown();
+}

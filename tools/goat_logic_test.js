@@ -181,7 +181,9 @@ if (parts.length === 0) throw new Error('no src/game parts found in src/main.rs'
 const source = parts.map((name) => fs.readFileSync(path.join(gameDir, name), 'utf8')).join('');
 let thrown = null;
 try {
-    vm.runInContext(source, sandbox, { filename: 'game.js' });
+    // The scene no longer self-drives (the host owns the loop -- see
+    // src/main.rs), so the harness starts the standalone driver itself.
+    vm.runInContext(source + '\nrun();', sandbox, { filename: 'game.js' });
 } catch (e) {
     thrown = e && e.stack ? e.stack : String(e);
 }

@@ -1,4 +1,4 @@
-// Part 5/9 of the goat scene: the 2.5D procedural cloud sky shader.
+// Part 5/10 of the goat scene: the 2.5D procedural cloud sky shader.
 // ---- sky shader (M5): 2.5D procedural clouds -----------------------------
 //
 // The sky is drawn as one full-screen pass instead of a gradient plus cloud
