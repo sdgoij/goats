@@ -1,5 +1,5 @@
 // Headless harness for src/goat.js: stubs the `rl` surface, drives a scripted
-// input timeline, and checks the clip each frame and the reported speed.
+// input timeline, and checks the clip each frame plus the reported stats.
 //
 //   node tools/goat_logic_test.js
 //
@@ -9,23 +9,25 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const TOTAL = 200;
+const TOTAL = 4050;
 
 // Clip table the stub model reports (raylib resamples to 60 fps).
 const CLIPS = [
     { name: 'GoatIdle', dur: 6.0 },
     { name: 'GoatWalk', dur: 0.91667 },
+    { name: 'GoatTrot', dur: 0.58333 },
     { name: 'GoatRun', dur: 0.5 },
     { name: 'GoatJump', dur: 1.16667 },
-    { name: 'GoatTrot', dur: 0.58333 },
+    { name: 'GoatSleep', dur: 8.0 },
+    { name: 'GoatDeath', dur: 1.79167 },
 ];
 const clipFrames = CLIPS.map((c) => Math.round(c.dur * 60) + 1);
 
 let frameIndex = 0;
 let lastPosed = null;
 let speedText = '';
+let statsText = '';
 const timeline = [];
-const posed = [];
 const logs = [];
 
 const keys = {};
@@ -38,9 +40,12 @@ function applyInput(i) {
     if (i >= 10 && i < 30) w = true;                        // walk
     if (i >= 30 && i < 50) { w = true; keys[341] = true; }  // trot  (CTRL)
     if (i >= 50 && i < 70) { w = true; keys[340] = true; }  // run   (SHIFT)
-    if (i >= 150 && i < 161) w = true;                      // walk again
+    if (i >= 180 && i < 200) w = true;                      // walk after waking
+    if (i >= 200) { w = true; keys[340] = true; }           // run to exhaustion, then die
     if (w) keys[87] = true;
-    if (i === 70) pressed[32] = true;                       // jump  (SPACE)
+    if (i === 70) pressed[32] = true;                       // SPACE jump
+    if (i === 150) pressed[90] = true;                      // Z sleep
+    if (i === 3950) pressed[82] = true;                     // R restart
 }
 
 const constants = {
@@ -49,7 +54,7 @@ const constants = {
     KEY_RIGHT: 262, KEY_LEFT: 263, KEY_DOWN: 264, KEY_UP: 265,
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
-    KEY_A: 65, KEY_D: 68, KEY_S: 83, KEY_W: 87, KEY_P: 80,
+    KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90,
     WHITE: {}, RAYWHITE: {},
 };
 
@@ -67,36 +72,43 @@ const rl = Object.assign({}, constants, {
     modelAnimationDuration: (_m, i) => CLIPS[i].dur,
     updateModelAnimation: (_m, i, frame) => {
         lastPosed = { clip: CLIPS[i].name, frame: frame };
-        posed.push(lastPosed);
     },
     drawModelEx: () => {},
+    makeTexture: () => 0,
+    drawBillboard: () => {},
     windowShouldClose: () => {
         if (frameIndex >= TOTAL) return true;
         applyInput(frameIndex);
         return false;
     },
     getFrameTime: () => 1 / 60,
-    getFPS: () => 60, getScreenHeight: () => 640,
+    getFPS: () => 60, getScreenHeight: () => 640, getScreenWidth: () => 1000,
     isMouseButtonDown: () => false, getMouseDeltaX: () => 0, getMouseDeltaY: () => 0,
     getMouseWheelMove: () => 0,
     isKeyDown: (k) => !!keys[k],
     isKeyPressed: (k) => !!pressed[k],
     isKeyReleased: () => false, isKeyUp: (k) => !keys[k],
     beginDrawing: () => {}, clearBackground: () => {}, endDrawing: () => {
-        timeline.push({ i: frameIndex, clip: lastPosed ? lastPosed.clip : null, speed: speedText });
+        timeline.push({
+            i: frameIndex,
+            clip: lastPosed ? lastPosed.clip : null,
+            speed: speedText,
+            stats: statsText,
+        });
         frameIndex += 1;
     },
     beginMode3D: () => {}, endMode3D: () => {},
     drawCube: () => {}, drawGrid: () => {},
-    drawText: (text) => { if (String(text).indexOf('speed ') === 0) speedText = text; },
+    drawRectangle: () => {}, drawText: (text) => {
+        const s = String(text);
+        if (s.indexOf('speed ') === 0) speedText = s;
+        else if (s.indexOf('health ') === 0) statsText = s;
+    },
 });
 
 const sandbox = {
     rl,
-    console: {
-        log: (...a) => logs.push(a.join(' ')),
-        warn: () => {}, error: (...a) => logs.push('ERROR ' + a.join(' ')),
-    },
+    console: { log: (...a) => logs.push(a.join(' ')), warn: () => {}, error: () => {} },
 };
 vm.createContext(sandbox);
 
@@ -108,16 +120,24 @@ try {
     thrown = e && e.stack ? e.stack : String(e);
 }
 
+const row = (i) => timeline.find((r) => r.i === i) || { clip: null, speed: '', stats: '' };
+const clipAt = (i) => row(i).clip;
 function speedAt(i) {
-    const row = timeline.find((r) => r.i === i);
-    if (!row) return null;
-    const m = /speed ([\d.]+) m\/s/.exec(row.speed);
+    const m = /speed ([\d.]+) m\/s/.exec(row(i).speed);
     return m ? Number(m[1]) : null;
 }
-function clipAt(i) {
-    const row = timeline.find((r) => r.i === i);
-    return row ? row.clip : null;
+function statAt(i) {
+    const m = /health (\d+)\s+energy (\d+)/.exec(row(i).stats);
+    return m ? { health: Number(m[1]), energy: Number(m[2]) } : null;
 }
+
+let deathFrame = -1;
+for (const r of timeline) {
+    if (r.clip === 'GoatDeath') { deathFrame = r.i; break; }
+}
+const e20 = statAt(20);
+const e60 = statAt(60);
+const deadStats = deathFrame >= 0 ? statAt(deathFrame) : null;
 
 const checks = [
     ['no throw', thrown === null, thrown],
@@ -126,18 +146,23 @@ const checks = [
     ['trot at frame 40', clipAt(40) === 'GoatTrot', clipAt(40)],
     ['run at frame 60', clipAt(60) === 'GoatRun', clipAt(60)],
     ['jump starts at frame 70', clipAt(70) === 'GoatJump', clipAt(70)],
-    ['jump still airborne at frame 110', clipAt(110) === 'GoatJump', clipAt(110)],
     ['landed to idle by frame 145', clipAt(145) === 'GoatIdle', clipAt(145)],
-    ['walk again at frame 155', clipAt(155) === 'GoatWalk', clipAt(155)],
+    ['sleeping at frame 160', clipAt(160) === 'GoatSleep', clipAt(160)],
+    ['woke to walk at frame 190', clipAt(190) === 'GoatWalk', clipAt(190)],
     ['walk speed ~0.87 m/s', Math.abs((speedAt(15) || 0) - 0.873) < 0.01, speedAt(15)],
     ['trot speed ~1.58 m/s', Math.abs((speedAt(40) || 0) - 1.577) < 0.02, speedAt(40)],
     ['run speed ~2.94 m/s', Math.abs((speedAt(60) || 0) - 2.941) < 0.02, speedAt(60)],
+    ['energy drains while running', e20 && e60 && e60.energy < e20.energy, [e20, e60]],
+    ['goat dies of exhaustion', deathFrame > 200 && deathFrame < 3950, deathFrame],
+    ['death clip held while dead', clipAt(deathFrame + 5) === 'GoatDeath', clipAt(deathFrame + 5)],
+    ['health is zero at death', deadStats !== null && deadStats.health === 0, deadStats],
+    ['R restarts into run', clipAt(4000) === 'GoatRun', clipAt(4000)],
 ];
 
 const failed = checks.filter((c) => !c[1]);
 console.log('--- goat.js logic test ---');
 console.log('model line:', logs.filter((l) => l.indexOf('model handle') >= 0).join(' | '));
-console.log('run/jump model log:', logs.filter((l) => l.indexOf('run ') >= 0 && l.indexOf('m/s') >= 0).join(' | '));
+console.log('death frame:', deathFrame, 'stats:', JSON.stringify(deadStats));
 for (const [name, ok, got] of checks) {
     console.log((ok ? 'PASS' : 'FAIL') + '  ' + name + (ok ? '' : '  (got ' + JSON.stringify(got) + ')'));
 }

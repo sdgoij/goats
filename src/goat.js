@@ -8,7 +8,7 @@
 //   rl.modelBounds          bounding box, used to stand the goat on the ground
 //   rl.modelAnimationCount  how many clips came with it
 //   rl.modelAnimationName   clip name ("GoatIdle", "GoatWalk", "GoatRun",
-//                           "GoatJump", "GoatTrot")
+//                           "GoatJump", "GoatTrot", "GoatSleep", "GoatDeath")
 //   rl.modelAnimationFrameCount
 //   rl.modelAnimationDuration  clip length in seconds
 //   rl.updateModelAnimation pose the model at a clip frame
@@ -30,11 +30,17 @@
 // or a missing asset) the sandbox falls back to the original cube-skeleton goat:
 // voxel-filled body boxes and 2-bone-IK limbs drawn with `rl.drawCube`.
 //
+// The goat has health and energy. Energy drains faster the harder it works; at
+// zero the goat is exhausted -- capped at a walk and slowly losing health -- so
+// it has to sleep to recover. At zero health it dies and needs a restart.
+//
 // Controls:
 //   W / S         walk forward / backward
 //   CTRL + W/S    trot
 //   SHIFT + W/S   run
 //   SPACE         jump
+//   Z             sleep / wake
+//   R             restart after death
 //   A / D         turn left / right
 //   mouse drag    orbit the camera        mouse wheel    zoom
 //   P             pause / resume
@@ -49,6 +55,19 @@ const FALLBACK_TROT_MULT = 1.3;  // how much faster the cube goat "trots"
 const FALLBACK_RUN_MULT = 1.6;   // how much faster the cube goat "runs"
 const FALLBACK_JUMP_TIME = 0.6;  // seconds of the cube goat's hop
 const FALLBACK_JUMP_H = 0.55;    // metres of the cube goat's hop
+
+// ---- stats ---------------------------------------------------------------
+
+const MAX_STAT = 100;
+const ENERGY_DRAIN = { idle: 0.4, walk: 1.0, trot: 2.0, run: 4.0 };  // per second
+const JUMP_ENERGY_COST = 2.0;
+const SLEEP_ENERGY_RECOVER = 12;   // per second
+const SLEEP_HEALTH_RECOVER = 2;
+const IDLE_HEALTH_RECOVER = 0.1;
+const EXHAUST_HEALTH_DRAIN = 3;
+const RESTED_ENERGY = 20;          // health only regenerates above this
+const AUTO_SLEEP_DELAY = 2.0;      // seconds idle while exhausted
+const DEAD_EYE_FRACTION = 0.75;    // show the X eyes once the death clip is this far in
 
 // Cube-fallback gait only (ignored when the model loads).
 const V_STRIDE = 0.20;
@@ -119,7 +138,18 @@ let groundOffset = 0;
 
 // Clip handles by role, filled in from the model's animation names. Each is
 // { index, frames, duration } or null when that clip is absent.
-const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null };
+const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null };
+
+// Model-space eye points baked in Blender for the sleep and death poses, used
+// to place the closed-eye and X-eye sprites (glTF Y-up, from the rig).
+const SLEEP_EYES = [
+    { x: 0.9204, y: 0.6112, z: -0.2877 },
+    { x: 0.9879, y: 0.6272, z: -0.0165 },
+];
+const DEATH_EYES = [
+    { x: 0.8852, y: 0.9087, z: 0.1013 },
+    { x: 0.8764, y: 0.8544, z: 0.3758 },
+];
 
 // Authored stride and stance fraction of each locomotion clip, used to derive
 // the ground speed that keeps the hooves from skating. The walk is a 4-beat
@@ -190,11 +220,15 @@ function loadGoat() {
     const run = findClip(names, "run");
     const trot = findClip(names, "trot");
     const walk = findClip(names, "walk");
+    const sleep = findClip(names, "sleep");
+    const death = findClip(names, "death");
     CLIP.idle = idle >= 0 ? clipInfo(idle) : null;
     CLIP.jump = jump >= 0 ? clipInfo(jump) : null;
     CLIP.run = run >= 0 ? clipInfo(run) : null;
     CLIP.trot = trot >= 0 ? clipInfo(trot) : null;
     CLIP.walk = walk >= 0 ? clipInfo(walk) : null;
+    CLIP.sleep = sleep >= 0 ? clipInfo(sleep) : null;
+    CLIP.death = death >= 0 ? clipInfo(death) : null;
 
     console.log("goat: model handle " + model + ", live=" + rl.isModelValid(model) +
         ", bones=" + rl.modelBoneCount(model) + ", walk " + walkSpeed().toFixed(2) +
@@ -352,10 +386,17 @@ function drawGround(g) {
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
 let paused = false;
-let mode = "idle";       // idle | walk | run | jump
+let mode = "idle";       // idle | walk | trot | run | jump | sleep | dead
 let jumpTime = 0;        // seconds into the current jump
 let jumpSpeed = 0;       // ground speed frozen at take-off
 let jumpDir = 0;         // travel direction (-1/0/1) frozen at take-off
+let sleepTime = 0;       // seconds slept since last awake
+let deathTime = 0;       // seconds since the death started
+let idleTimer = 0;       // seconds spent idle while exhausted
+const stats = { health: MAX_STAT, energy: MAX_STAT };
+let exhausted = false;
+let xTex = -1;           // X-eye sprite texture (made after the window opens)
+let lidTex = -1;         // closed-eye sprite texture
 let camYaw = 0.7;
 let camPitch = 0.42;
 let camDist = 5.2;
@@ -371,6 +412,8 @@ let curClipName = "";
 // Which clip role is driving the pose right now, falling back to the walk for
 // any role the model does not provide.
 function clipRole() {
+    if (mode === "dead" && CLIP.death) return "death";
+    if (mode === "sleep" && CLIP.sleep) return "sleep";
     if (mode === "jump" && CLIP.jump) return "jump";
     if (mode === "run" && CLIP.run) return "run";
     if (mode === "trot" && CLIP.trot) return "trot";
@@ -391,6 +434,7 @@ function loopDuration() {
 
 // Ground speed for the current gait, from the stride/duty above.
 function groundSpeed() {
+    if (mode === "sleep" || mode === "dead") return 0;
     if (!haveModel) {
         let mult = 1;
         if (mode === "run") mult = FALLBACK_RUN_MULT;
@@ -418,6 +462,110 @@ function startJump(move, gait) {
     } else {
         jumpSpeed = walkSpeed();
     }
+    stats.energy = Math.max(0, stats.energy - JUMP_ENERGY_COST);
+}
+
+function startSleep() {
+    mode = "sleep";
+    sleepTime = 0;
+    idleTimer = 0;
+}
+
+function wakeUp() {
+    mode = "idle";
+    sleepTime = 0;
+}
+
+function die() {
+    mode = "dead";
+    deathTime = 0;
+}
+
+function restart() {
+    stats.health = MAX_STAT;
+    stats.energy = MAX_STAT;
+    exhausted = false;
+    idleTimer = 0;
+    sleepTime = 0;
+    deathTime = 0;
+    goat.px = 0;
+    goat.pz = 0;
+    goat.yaw = 0;
+    goat.phase = 0;
+    mode = "idle";
+}
+
+// Advance health/energy for the current mode, once per frame. Returns "die"
+// when health runs out so the caller can switch to the dead state.
+function updateStats(dt) {
+    if (mode === "dead") {
+        deathTime += dt;
+        return "dead";
+    }
+    if (mode === "sleep") {
+        sleepTime += dt;
+        stats.energy = Math.min(MAX_STAT, stats.energy + SLEEP_ENERGY_RECOVER * dt);
+        stats.health = Math.min(MAX_STAT, stats.health + SLEEP_HEALTH_RECOVER * dt);
+        return "sleep";
+    }
+    let drain = ENERGY_DRAIN.idle;
+    if (mode === "run") drain = ENERGY_DRAIN.run;
+    else if (mode === "trot") drain = ENERGY_DRAIN.trot;
+    else if (mode === "walk") drain = ENERGY_DRAIN.walk;
+    stats.energy = Math.max(0, stats.energy - drain * dt);
+    if (stats.energy <= 0) {
+        exhausted = true;
+        stats.health = Math.max(0, stats.health - EXHAUST_HEALTH_DRAIN * dt);
+    } else {
+        exhausted = false;
+        if (mode === "idle" && stats.energy > RESTED_ENERGY) {
+            stats.health = Math.min(MAX_STAT, stats.health + IDLE_HEALTH_RECOVER * dt);
+        }
+    }
+    return stats.health <= 0 ? "die" : "awake";
+}
+
+// Build the eye sprites: a black X for the dead state and a closed-lid bar for
+// sleeping, both on a transparent field. Needs a live GL context.
+function makeEyeTextures() {
+    let x = "";
+    let lid = "";
+    for (let y = 0; y < 8; y++) {
+        for (let px = 0; px < 8; px++) {
+            x += (Math.abs(px - y) <= 1 || Math.abs(px - (7 - y)) <= 1) ? "232323FF" : "00000000";
+            lid += (y === 3 || y === 4) ? "232323FF" : "00000000";
+        }
+    }
+    xTex = rl.makeTexture(8, 8, x);
+    lidTex = rl.makeTexture(8, 8, lid);
+}
+
+// Billboard the closed-eye / X-eye sprites onto the goat's eyes. Kept flat (no
+// helper calls) because `run()` -> `drawEyes` already sits near the debug
+// build's stack budget.
+function drawEyes() {
+    let eyes = null;
+    let tex = -1;
+    let size = 0.12;
+    if (mode === "sleep" && lidTex >= 0) {
+        eyes = SLEEP_EYES;
+        tex = lidTex;
+        size = 0.11;
+    } else if (mode === "dead" && xTex >= 0 && CLIP.death &&
+        deathTime >= CLIP.death.duration * DEAD_EYE_FRACTION) {
+        eyes = DEATH_EYES;
+        tex = xTex;
+        size = 0.13;
+    }
+    if (eyes === null) return;
+    const c = Math.cos(goat.yaw);
+    const s = Math.sin(goat.yaw);
+    const py = goat.py + groundOffset;
+    for (let i = 0; i < eyes.length; i++) {
+        const wx = goat.px + eyes[i].x * c + eyes[i].z * s;
+        const wz = goat.pz - eyes[i].x * s + eyes[i].z * c;
+        rl.drawBillboard(tex, wx, py + eyes[i].y, wz, size, rl.WHITE);
+    }
 }
 
 // ---- main ----------------------------------------------------------------
@@ -425,7 +573,9 @@ function startJump(move, gait) {
 function drawHud(move) {
     const h = rl.getScreenHeight();
     let state = "standing";
-    if (paused) state = "paused (P to resume)";
+    if (mode === "dead") state = "dead - R to restart";
+    else if (paused) state = "paused (P to resume)";
+    else if (mode === "sleep") state = "sleeping (Z to wake)";
     else if (mode === "jump") state = "jumping";
     else if (move > 0 && mode === "run") state = "running";
     else if (move > 0 && mode === "trot") state = "trotting";
@@ -439,15 +589,30 @@ function drawHud(move) {
     const status = "speed " + curSpeed.toFixed(2) + " m/s   phase " + goat.phase.toFixed(2) +
         "   fps " + rl.getFPS();
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
+    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
         10, 32, 14, rl.RAYWHITE);
+
+    // Health and energy bars, top-right.
+    const bw = 160;
+    const bx = rl.getScreenWidth() - bw - 12;
+    rl.drawRectangle(bx, 10, bw, 14, rl.color(28, 28, 34, 220));
+    rl.drawRectangle(bx + 1, 11, Math.round((bw - 2) * stats.health / MAX_STAT), 12,
+        rl.color(208, 62, 62, 255));
+    rl.drawRectangle(bx, 30, bw, 14, rl.color(28, 28, 34, 220));
+    rl.drawRectangle(bx + 1, 31, Math.round((bw - 2) * stats.energy / MAX_STAT), 12,
+        rl.color(222, 190, 62, 255));
+    rl.drawText("health " + Math.round(stats.health) + "   energy " + Math.round(stats.energy),
+        bx, 50, 14, rl.RAYWHITE);
+    if (mode === "sleep") rl.drawText("Z z z", bx, 70, 20, rl.RAYWHITE);
+
     rl.drawText(status + "   " + state, 10, h - 24, 14, rl.RAYWHITE);
 }
 
 function run() {
-    rl.initWindow(1000, 640, "Slag goat - walk / run / jump");
+    rl.initWindow(1000, 640, "Slag goat - walk / run / jump / sleep");
     rl.setTargetFPS(60);
     loadGoat();
+    makeEyeTextures();
 
     let frames = 0;
     while (!rl.windowShouldClose()) {
@@ -477,20 +642,39 @@ function run() {
         if (rl.isKeyDown(rl.KEY_D)) turn -= 1;
         const running = rl.isKeyDown(rl.KEY_LEFT_SHIFT) || rl.isKeyDown(rl.KEY_RIGHT_SHIFT);
         const trotting = rl.isKeyDown(rl.KEY_LEFT_CONTROL) || rl.isKeyDown(rl.KEY_RIGHT_CONTROL);
-        const gait = running ? "run" : trotting ? "trot" : "walk";
-        goat.yaw += turn * TURN_RATE * dt;
+        let gait = running ? "run" : trotting ? "trot" : "walk";
+        if (exhausted) gait = "walk";   // an exhausted goat cannot run or trot
+        if (mode !== "sleep" && mode !== "dead") goat.yaw += turn * TURN_RATE * dt;
 
-        // state machine: jump is a one-shot that locks the gait until it lands
-        if (mode === "jump") {
+        // state machine: jump, sleep and death lock the mode; everything else
+        // follows the requested gait.
+        if (mode === "dead") {
+            if (rl.isKeyPressed(rl.KEY_R)) restart();
+        } else if (mode === "sleep") {
+            if (rl.isKeyPressed(rl.KEY_Z) || move !== 0 || stats.energy >= MAX_STAT) {
+                wakeUp();
+            }
+        } else if (mode === "jump") {
             jumpTime += dt;
             if (jumpTime >= jumpDuration()) {
                 mode = move !== 0 ? gait : "idle";
             }
+        } else if (rl.isKeyPressed(rl.KEY_Z)) {
+            startSleep();
         } else if (rl.isKeyPressed(rl.KEY_SPACE)) {
             startJump(move, gait);
         } else {
             mode = move !== 0 ? gait : "idle";
+            // drop off on our own once exhausted and standing still
+            if (exhausted && move === 0) {
+                idleTimer += dt;
+                if (idleTimer >= AUTO_SLEEP_DELAY) startSleep();
+            } else {
+                idleTimer = 0;
+            }
         }
+
+        if (updateStats(dt) === "die") die();
 
         curRole = clipRole();
         curSpeed = groundSpeed();
@@ -507,6 +691,11 @@ function run() {
                     goat.py = V_DROP + FALLBACK_JUMP_H *
                         Math.sin(Math.PI * Math.min(jumpTime / jumpDuration(), 1));
                 }
+            } else if (mode === "sleep") {
+                goat.phase = mod1(goat.phase + dt / loopDuration());
+                goat.py = haveModel ? 0 : V_DROP;
+            } else if (mode === "dead") {
+                goat.py = haveModel ? 0 : V_DROP;
             } else {
                 goat.phase = mod1(goat.phase + dt / loopDuration());
                 const speed = groundSpeed();
@@ -522,6 +711,8 @@ function run() {
         if (haveModel) {
             if (mode === "jump" && CLIP.jump) {
                 poseModel("jump", Math.min(jumpTime / CLIP.jump.duration, 1));
+            } else if (mode === "dead" && CLIP.death) {
+                poseModel("death", Math.min(deathTime / CLIP.death.duration, 1));
             } else {
                 poseModel(curRole, goat.phase);
             }
@@ -542,6 +733,7 @@ function run() {
         drawGround(goat);
         if (haveModel) {
             drawModelGoat(goat);
+            drawEyes();
         } else {
             drawGoat(goat);
         }

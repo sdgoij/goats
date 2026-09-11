@@ -58,7 +58,7 @@ shadows and the photoreal cloud shader.
 | # | Milestone | Depends on | Size | Why this order |
 | --- | --- | --- | --- | --- |
 | **M0** | Engine primitives: 3D shapes, billboards | — | S–M | ✅ **Done** — landed upstream |
-| **M1** | Stats, `sleeping`, `dead` states | — | M | Pure gameplay; immediately playable, no engine work |
+| **M1** | Stats, `sleeping`, `dead` states | — | M | ✅ **Done** |
 | **M2** | Day/night cycle (approximate lighting) | M0 (sun/moon) | M | High visual payoff, mostly JS |
 | **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | Builds on the day/night sky |
 | **M4** | Shaders: real lighting + cast shadows | M0 | L | Biggest engine lift; changes how everything renders |
@@ -115,10 +115,17 @@ each draw binding in a live window and dumped the goat's 13-bone skeleton
 
 ---
 
-## M1 — Stats, sleeping, dead
+## M1 — Stats, sleeping, dead ✅ Done
 
-The whole feature set here is JavaScript plus two Blender clips, so it can ship
+The whole feature set here is JavaScript plus two Blender clips, so it shipped
 before any engine work.
+
+What landed: health/energy with the drain/recover table below, an explicit sleep
+toggle (`Z`) plus auto-sleep when exhausted and idle, a recumbent `GoatSleep`
+clip, a `GoatDeath` collapse that holds its final pose, and the eye sprites —
+closed-eye and X-eye billboards placed at eye points baked from the rig, rather
+than the second-model approach originally sketched below. The dead state offers
+`R` to restart.
 
 ### Goat stats
 

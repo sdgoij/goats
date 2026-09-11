@@ -14,14 +14,19 @@ cargo run --release
 
 ## Features
 
-- Skinned glTF goat with five baked clips: `GoatIdle`, `GoatWalk`, `GoatRun`,
-  `GoatJump`, `GoatTrot`.
-- Gait state machine — idle / walk / trot / run / jump — with a script-controlled
-  jump arc taken from the clip's root motion.
+- Skinned glTF goat with seven baked clips: `GoatIdle`, `GoatWalk`, `GoatTrot`,
+  `GoatRun`, `GoatJump`, `GoatSleep`, `GoatDeath`.
+- State machine covering idle / walk / trot / run / jump / **sleeping** / **dead**,
+  with a script-controlled jump arc taken from the clip's root motion.
+- **Health and energy.** Energy drains faster the harder the goat works; at zero
+  it is exhausted (capped at a walk, bleeding health) until it sleeps. Sleep
+  restores energy and health; zero health is fatal.
+- **Sleeping and death** with their own clips, a closed-eye sprite while sleeping
+  and cartoon X-eyes once the death collapse settles.
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
-- Orbit + zoom camera, a culled grass field, and an on-screen HUD.
+- Orbit + zoom camera, a culled grass field, and a health/energy HUD.
 - A cube-skeleton fallback (voxel body + 2-bone-IK legs) if the model cannot be
   loaded.
 
@@ -33,6 +38,8 @@ cargo run --release
 | `Ctrl` + `W` / `S` | trot |
 | `Shift` + `W` / `S` | run |
 | `Space` | jump |
+| `Z` | sleep / wake |
+| `R` | restart after death |
 | `A` / `D` | turn left / right |
 | mouse drag | orbit the camera |
 | arrow keys | orbit the camera (keyboard fallback) |
@@ -109,6 +116,9 @@ solved for thigh and shank angles. The clips bake their forward travel as
 in-place motion; the script moves the goat at the matching speed. The three
 locomotion gaits sit at roughly **0.87 / 1.58 / 2.94 m/s** for walk / trot /
 run, selected with no modifier, `Ctrl` and `Shift` respectively.
+`tools/goat_states.py` rebuilds the recumbent `GoatSleep` and the collapsing
+`GoatDeath` clips the same way, auto-grounding each so the lowest mesh vertex
+rests on the ground.
 
 Export to GLB with every action as its own clip, shifted to start at `t = 0` so
 loops are exact:
@@ -156,11 +166,14 @@ build because the bone VBOs are never uploaded without `SUPPORT_GPU_SKINNING`.
 ## Tests and tools
 
 ```sh
-# Drive goat.js headlessly through idle -> walk -> run -> jump -> walk
+# Drive goat.js headlessly through every state, stats and death
 node tools/goat_logic_test.js
 
 # Inspect the model's clips, textures and materials
 python tools/inspect_glb.py goat_animated.glb
+
+# Re-author the sleep/death clips and re-export (run inside Blender)
+#   exec(open("tools/goat_states.py").read())
 
 # The engine's raylib surface test (from the Slag checkout)
 cargo test -p runtime --features raylib --lib raylib
