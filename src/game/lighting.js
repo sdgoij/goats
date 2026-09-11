@@ -327,8 +327,14 @@ function unit3(v) {
 
 // Orthographic world -> light-clip matrix: x/y span a SHADOW_HALF box around
 // (cx, cy, cz), z runs SHADOW_NEAR..SHADOW_FAR along the light direction, with
-// the light at distance SHADOW_DIST. Row-major, the order `setShaderValueMatrix`
-// takes.
+// the light at distance SHADOW_DIST.
+//
+// The 16 values are the matrix in COLUMN-major order, which is what
+// `SetShaderValueMatrix` uploads and GLSL reads: the R/U/L basis vectors are the
+// columns and the translation lands in the last four. Listing them row-major
+// instead transposes the basis, which leaves the box pinned near the world
+// origin -- the shadow then only appears while the goat is still near spawn and
+// fades out (and comes back) as it walks away and returns.
 function buildLightMatrix(cx, cy, cz) {
     const L = unit3(LIGHT_DIR);
     const up = Math.abs(L[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
@@ -340,9 +346,9 @@ function buildLightMatrix(cx, cy, cz) {
     const dU = dot3([cx, cy, cz], U);
     const t2 = k*(SHADOW_DIST + dL) - k*SHADOW_NEAR - 1;
     return [
-        R[0]/SHADOW_HALF, R[1]/SHADOW_HALF, R[2]/SHADOW_HALF, 0,
-        U[0]/SHADOW_HALF, U[1]/SHADOW_HALF, U[2]/SHADOW_HALF, 0,
-        -k*L[0], -k*L[1], -k*L[2], 0,
+        R[0]/SHADOW_HALF, U[0]/SHADOW_HALF, -k*L[0], 0,
+        R[1]/SHADOW_HALF, U[1]/SHADOW_HALF, -k*L[1], 0,
+        R[2]/SHADOW_HALF, U[2]/SHADOW_HALF, -k*L[2], 0,
         -dR/SHADOW_HALF, -dU/SHADOW_HALF, t2, 1,
     ];
 }
