@@ -1,0 +1,545 @@
+// A walking, running, jumping goat for the Slag x raylib sandbox.
+//
+// The goat is `goat_animated.glb`, the model baked from the Blender rig. It is
+// loaded through the `rl` model surface added for this demo:
+//
+//   rl.loadModel            load a .glb (also finds embedded assets)
+//   rl.isModelValid         did it load?
+//   rl.modelBounds          bounding box, used to stand the goat on the ground
+//   rl.modelAnimationCount  how many clips came with it
+//   rl.modelAnimationName   clip name ("GoatIdle", "GoatWalk", "GoatRun",
+//                           "GoatJump", "GoatTrot")
+//   rl.modelAnimationFrameCount
+//   rl.modelAnimationDuration  clip length in seconds
+//   rl.updateModelAnimation pose the model at a clip frame
+//   rl.drawModelEx          draw it with position, yaw, scale and tint
+//   rl.unloadModel          free the model and its clips
+//
+// Every clip bakes its forward travel as *in-place* motion, so the goat is
+// moved by the script at the speed the gait implies and the clip is advanced at
+// the matching rate, which keeps the hooves from skating:
+//
+//   speed = stride / (duty * clipDuration)
+//
+// where `stride` is how far a planted hoof sweeps back per step and `duty` is
+// the fraction of the cycle that foot spends on the ground. Jump height comes
+// from the `GoatJump` clip's root motion, so the script only needs to move the
+// goat horizontally while it is airborne.
+//
+// If the model cannot be loaded (an `rl` build without `SUPPORT_FILEFORMAT_GLTF`,
+// or a missing asset) the sandbox falls back to the original cube-skeleton goat:
+// voxel-filled body boxes and 2-bone-IK limbs drawn with `rl.drawCube`.
+//
+// Controls:
+//   W / S         walk forward / backward
+//   SHIFT + W/S   run
+//   SPACE         jump
+//   A / D         turn left / right
+//   mouse drag    orbit the camera        mouse wheel    zoom
+//   P             pause / resume
+//   ESC           quit
+
+// ---- tuning --------------------------------------------------------------
+
+const MODEL_PATH = "goat_animated.glb";
+const MODEL_SCALE = 1.0;
+const TURN_RATE = 1.8;     // rad/s
+const FALLBACK_RUN_MULT = 1.6;   // how much faster the cube goat "runs"
+const FALLBACK_JUMP_TIME = 0.6;  // seconds of the cube goat's hop
+const FALLBACK_JUMP_H = 0.55;    // metres of the cube goat's hop
+
+// Cube-fallback gait only (ignored when the model loads).
+const V_STRIDE = 0.20;
+const V_LIFT = 0.10;
+const V_GROUND = 0.02;
+const V_DROP = -0.08;
+const V_BOB = 0.018;
+const V_L1 = 0.26;
+const V_L2 = 0.28;
+const V_HIP_Y = 0.56;
+const V_CYCLE = 0.70;
+
+// The four legs of the cube fallback's 4-beat lateral walk (back-left leads).
+const LEGS = [
+    { hx: -0.34, hz: 0.18, phase: 0.00 },  // back left
+    { hx: 0.34, hz: 0.18, phase: 0.25 },   // front left
+    { hx: -0.34, hz: -0.18, phase: 0.50 }, // back right
+    { hx: 0.34, hz: -0.18, phase: 0.75 },  // front right
+];
+
+// ---- palette (the cube fallback; the model brings its own textures) ------
+
+const FUR = rl.color(206, 186, 156);
+const FUR_DK = rl.color(150, 128, 100);
+const DARK = rl.color(64, 50, 42);
+const HORN = rl.color(84, 70, 56);
+const HOOF = rl.color(46, 38, 34);
+const EYE = rl.color(26, 22, 20);
+const SKY = rl.color(150, 198, 235);
+const GROUND = rl.color(104, 156, 88);
+const TUFT = rl.color(78, 128, 66);
+
+// ---- small maths helpers -------------------------------------------------
+
+function clamp(v, lo, hi) {
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
+function mod1(v) {
+    return ((v % 1) + 1) % 1;
+}
+
+function hash(n) {
+    const s = Math.sin(n * 127.1) * 43758.5453;
+    return s - Math.floor(s);
+}
+
+// Local -> world: yaw about Y, then translate. The goat faces local +X, and
+// `rl.drawModelEx` rotates the model by the same convention (a Y-axis rotation
+// maps local +X to (cos, -sin) in the XZ plane).
+function toWorld(p, g) {
+    const c = Math.cos(g.yaw);
+    const s = Math.sin(g.yaw);
+    return { x: g.px + p.x * c + p.z * s, y: g.py + p.y, z: g.pz - p.x * s + p.z * c };
+}
+
+// A point `len` along a bone that starts at `from`, rotated `ang` in the local
+// X-Y plane (measured from straight down towards +X, like the Blender rig).
+function segEnd(from, ang, len) {
+    return { x: from.x + Math.sin(ang) * len, y: from.y - Math.cos(ang) * len, z: from.z };
+}
+
+// ---- the model goat ------------------------------------------------------
+
+let model = -1;
+let haveModel = false;
+let groundOffset = 0;
+
+// Clip handles by role, filled in from the model's animation names. Each is
+// { index, frames, duration } or null when that clip is absent.
+const CLIP = { idle: null, walk: null, run: null, jump: null };
+
+// Authored stride and stance fraction of each locomotion clip, used to derive
+// the ground speed that keeps the hooves from skating. The walk is a 4-beat
+// lateral walk (each foot planted half the cycle); the run is a 2-beat gait
+// with a short flight phase (each foot planted a third of the cycle).
+const GAIT = {
+    walk: { stride: 0.32, duty: 0.50 },
+    run: { stride: 0.44, duty: 0.34 },
+};
+
+function findClip(names, wanted) {
+    for (let i = 0; i < names.length; i++) {
+        if (names[i].toLowerCase().indexOf(wanted) >= 0) return i;
+    }
+    return -1;
+}
+
+function clipInfo(index) {
+    return {
+        index: index,
+        frames: rl.modelAnimationFrameCount(model, index),
+        duration: rl.modelAnimationDuration(model, index),
+    };
+}
+
+function gaitSpeed(role) {
+    const info = CLIP[role];
+    const gait = GAIT[role];
+    if (info === null || gait === undefined || info.duration <= 0) return null;
+    return gait.stride / (gait.duty * info.duration);
+}
+
+function walkSpeed() { return gaitSpeed("walk") || (2 * V_STRIDE) / V_CYCLE; }
+function runSpeed() { return gaitSpeed("run") || walkSpeed() * 3.5; }
+
+// Load the goat and index its clips. Must run after `rl.initWindow`, since
+// raylib uploads the model's textures through the GL context.
+function loadGoat() {
+    model = rl.loadModel(MODEL_PATH);
+    // `rl.loadModel` returns -1 when nothing loaded. (It deliberately does not
+    // gate on raylib's own `IsModelValid`, which rejects skinned models in this
+    // CPU-skinning build because their bone VBOs are never uploaded.)
+    if (model < 0) {
+        console.log("goat: no model at " + MODEL_PATH + " - using the cube fallback");
+        haveModel = false;
+        return;
+    }
+    haveModel = true;
+
+    const bounds = rl.modelBounds(model);
+    groundOffset = -bounds.minY;
+
+    const count = rl.modelAnimationCount(model);
+    const names = [];
+    for (let i = 0; i < count; i++) {
+        const name = rl.modelAnimationName(model, i);
+        names.push(name);
+        console.log("goat: clip " + i + " is '" + name + "' (" +
+            rl.modelAnimationFrameCount(model, i) + " frames, " +
+            rl.modelAnimationDuration(model, i).toFixed(3) + "s)");
+    }
+    // Match by substring so the clips survive a rename (GoatRun -> Run, ...).
+    const idle = findClip(names, "idle");
+    const jump = findClip(names, "jump");
+    const run = findClip(names, "run");
+    const walk = findClip(names, "walk");
+    CLIP.idle = idle >= 0 ? clipInfo(idle) : null;
+    CLIP.jump = jump >= 0 ? clipInfo(jump) : null;
+    CLIP.run = run >= 0 ? clipInfo(run) : null;
+    CLIP.walk = walk >= 0 ? clipInfo(walk) : null;
+
+    console.log("goat: model handle " + model + ", live=" + rl.isModelValid(model) +
+        ", bones=" + rl.modelBoneCount(model) + ", walk " + walkSpeed().toFixed(2) +
+        " m/s, run " + runSpeed().toFixed(2) + " m/s");
+    console.log("goat: model loaded, y " + bounds.minY.toFixed(3) + ".." + bounds.maxY.toFixed(3));
+}
+
+// Pose a clip at `phase` in [0,1] across its keyframes.
+function poseModel(role, phase) {
+    const info = CLIP[role];
+    if (info === null || info.frames < 1) return false;
+    const last = info.frames - 1;
+    let frame = phase * last;
+    if (frame > last) frame = last;
+    rl.updateModelAnimation(model, info.index, frame);
+    return true;
+}
+
+// Draw the model: position, yaw about +Y (degrees), uniform scale, no tint.
+function drawModelGoat(g) {
+    const yawDeg = (g.yaw * 180) / Math.PI;
+    rl.drawModelEx(model, g.px, g.py + groundOffset, g.pz,
+        0, 1, 0, yawDeg, MODEL_SCALE, MODEL_SCALE, MODEL_SCALE, rl.WHITE);
+}
+
+// ---- the cube fallback ---------------------------------------------------
+
+// Fill a box with a grid of cubes, then yaw it with the goat. Filling (rather
+// than one big cube) is what lets body parts rotate despite `drawCube` being
+// axis-aligned.
+function drawBox(g, center, size, color, cell) {
+    const nx = Math.max(1, Math.round(size.x / cell));
+    const ny = Math.max(1, Math.round(size.y / cell));
+    const nz = Math.max(1, Math.round(size.z / cell));
+    const sx = size.x / nx;
+    const sy = size.y / ny;
+    const sz = size.z / nz;
+    for (let i = 0; i < nx; i++) {
+        for (let j = 0; j < ny; j++) {
+            for (let k = 0; k < nz; k++) {
+                const p = {
+                    x: center.x - size.x / 2 + sx * (i + 0.5),
+                    y: center.y - size.y / 2 + sy * (j + 0.5),
+                    z: center.z - size.z / 2 + sz * (k + 0.5),
+                };
+                const w = toWorld(p, g);
+                rl.drawCube(w.x, w.y, w.z, sx * 1.02, sy * 1.02, sz * 1.02, color);
+            }
+        }
+    }
+}
+
+// Draw a limb as `n` cubes sampled along the bone, so it can point any way.
+function drawSeg(g, from, ang, len, thick, color, n) {
+    for (let i = 0; i < n; i++) {
+        const t = (i + 0.5) / n;
+        const local = segEnd(from, ang, len * t);
+        const w = toWorld(local, g);
+        rl.drawCube(w.x, w.y, w.z, thick, thick, thick, color);
+    }
+}
+
+// 2-bone IK: place the foot at (dx, dy) relative to the hip, returning the
+// upper- and lower-bone angles. The knee sits behind the hip->foot line.
+function legAngles(dx, dy) {
+    let d = Math.sqrt(dx * dx + dy * dy);
+    d = clamp(d, Math.abs(V_L1 - V_L2) + 1e-4, (V_L1 + V_L2) * 0.999);
+    const phi = Math.atan2(dx, -dy);
+    const c1 = clamp((V_L1 * V_L1 + d * d - V_L2 * V_L2) / (2 * V_L1 * d), -1, 1);
+    const c2 = clamp((V_L2 * V_L2 + d * d - V_L1 * V_L1) / (2 * V_L2 * d), -1, 1);
+    const a1 = Math.acos(c1);
+    const b = Math.acos(c2);
+    return { upper: phi - a1, lower: phi + b };
+}
+
+// Where a hoof wants to be at cycle time `t`: planted and sliding back through
+// stance (half the cycle), then lifted and reaching forward through swing.
+function footTarget(t, phase) {
+    const tt = mod1(t + phase);
+    if (tt < 0.5) {
+        const s = tt / 0.5;
+        return { dx: V_STRIDE * (1 - 2 * s), worldY: V_GROUND };
+    }
+    const s = (tt - 0.5) / 0.5;
+    return { dx: V_STRIDE * (-1 + 2 * s), worldY: V_GROUND + V_LIFT * Math.sin(Math.PI * s) };
+}
+
+function drawLeg(g, leg) {
+    const f = footTarget(g.phase, leg.phase);
+    const dy = (f.worldY - g.py) - V_HIP_Y; // foot height relative to the hip
+    const ang = legAngles(f.dx, dy);
+
+    const hip = { x: leg.hx, y: V_HIP_Y, z: leg.hz };
+    drawSeg(g, hip, ang.upper, V_L1, 0.11, FUR, 3);
+    const knee = segEnd(hip, ang.upper, V_L1);
+    drawSeg(g, knee, ang.lower, V_L2, 0.09, FUR, 3);
+    const foot = segEnd(knee, ang.lower, V_L2);
+    const w = toWorld(foot, g);
+    rl.drawCube(w.x, w.y, w.z, 0.12, 0.10, 0.12, HOOF);
+}
+
+function drawGoat(g) {
+    // barrel of the body
+    drawBox(g, { x: 0.0, y: 0.78, z: 0.0 }, { x: 1.20, y: 0.62, z: 0.56 }, FUR, 0.30);
+    // neck (shoulder -> head base) and tail
+    drawSeg(g, { x: 0.40, y: 0.92, z: 0.0 }, Math.atan2(0.32, -0.20), 0.377, 0.22, FUR, 3);
+    drawSeg(g, { x: -0.58, y: 0.90, z: 0.0 }, Math.atan2(-0.10, -0.12), 0.156, 0.09, FUR_DK, 2);
+    // head, muzzle, beard
+    drawBox(g, { x: 0.86, y: 1.16, z: 0.0 }, { x: 0.34, y: 0.28, z: 0.28 }, FUR, 0.14);
+    drawBox(g, { x: 1.02, y: 1.10, z: 0.0 }, { x: 0.20, y: 0.16, z: 0.18 }, DARK, 0.10);
+    drawBox(g, { x: 0.98, y: 0.98, z: 0.0 }, { x: 0.08, y: 0.10, z: 0.08 }, DARK, 0.08);
+    // ears, horns, eyes
+    for (let s = -1; s <= 1; s += 2) {
+        drawBox(g, { x: 0.80, y: 1.26, z: 0.16 * s }, { x: 0.10, y: 0.07, z: 0.18 }, DARK, 0.09);
+        drawSeg(g, { x: 0.80, y: 1.28, z: 0.07 * s }, Math.atan2(-0.14, -0.14), 0.198, 0.07, HORN, 2);
+        drawBox(g, { x: 0.90, y: 1.19, z: 0.14 * s }, { x: 0.06, y: 0.05, z: 0.05 }, EYE, 0.05);
+    }
+    // legs
+    for (let i = 0; i < LEGS.length; i++) {
+        drawLeg(g, LEGS[i]);
+    }
+}
+
+// ---- scenery -------------------------------------------------------------
+
+// Static, deterministically jittered grass, thinned out so it reads as tufts.
+const TUFTS = [];
+(function buildTufts() {
+    for (let gx = -40; gx <= 40; gx += 2) {
+        for (let gz = -40; gz <= 40; gz += 2) {
+            const a = hash(gx * 3.1 + gz * 7.7);
+            if (a < 0.45) continue;
+            const b = hash(gx * 11.3 - gz * 5.1);
+            TUFTS.push({ x: gx + (b - 0.5) * 1.8, z: gz + (a - 0.5) * 1.8 });
+        }
+    }
+    console.log("goat: " + TUFTS.length + " grass tufts");
+})();
+
+function drawGround(g) {
+    // Snap the slab to a 2-unit grid so it looks pinned down while we travel.
+    const gx = Math.round(g.px / 2) * 2;
+    const gz = Math.round(g.pz / 2) * 2;
+    rl.drawCube(gx, -0.06, gz, 70, 0.1, 70, GROUND);
+    rl.drawGrid(40, 1.0);
+    for (let i = 0; i < TUFTS.length; i++) {
+        const tx = TUFTS[i].x - g.px;
+        const tz = TUFTS[i].z - g.pz;
+        if (tx * tx + tz * tz > 576) continue; // cull beyond 24 units
+        rl.drawCube(TUFTS[i].x, 0.06, TUFTS[i].z, 0.14, 0.16, 0.14, TUFT);
+    }
+}
+
+// ---- gait state ----------------------------------------------------------
+
+const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
+let paused = false;
+let mode = "idle";       // idle | walk | run | jump
+let jumpTime = 0;        // seconds into the current jump
+let jumpSpeed = 0;       // ground speed frozen at take-off
+let jumpDir = 0;         // travel direction (-1/0/1) frozen at take-off
+let camYaw = 0.7;
+let camPitch = 0.42;
+let camDist = 5.2;
+
+// Live gait read-outs, refreshed once per frame at `run()` depth. `drawHud`
+// reads these rather than calling the helpers itself: in a debug build every
+// extra JS activation costs ~160 KB of native stack, and the guard trips if the
+// HUD's own frame nests a few more calls.
+let curRole = "walk";
+let curSpeed = 0;
+let curClipName = "";
+
+// Which clip role is driving the pose right now, falling back to the walk for
+// any role the model does not provide.
+function clipRole() {
+    if (mode === "jump" && CLIP.jump) return "jump";
+    if (mode === "run" && CLIP.run) return "run";
+    if (mode === "idle" && CLIP.idle) return "idle";
+    return "walk";
+}
+
+function jumpDuration() {
+    return CLIP.jump ? CLIP.jump.duration : FALLBACK_JUMP_TIME;
+}
+
+// Seconds of an idle/walk/run loop (one full cycle), for phase advance.
+function loopDuration() {
+    const role = clipRole();
+    if (haveModel && CLIP[role]) return CLIP[role].duration;
+    return V_CYCLE;
+}
+
+// Ground speed for the current gait, from the stride/duty above.
+function groundSpeed() {
+    if (!haveModel) {
+        const run = mode === "run";
+        return ((2 * V_STRIDE) / V_CYCLE) * (run ? FALLBACK_RUN_MULT : 1);
+    }
+    if (mode === "run" && CLIP.run) return runSpeed();
+    return walkSpeed();
+}
+
+function startJump(move, running) {
+    mode = "jump";
+    jumpTime = 0;
+    jumpDir = move;
+    if (!haveModel) {
+        jumpSpeed = ((2 * V_STRIDE) / V_CYCLE) * (running ? FALLBACK_RUN_MULT : 1);
+    } else if (running && CLIP.run) {
+        jumpSpeed = runSpeed();
+    } else {
+        jumpSpeed = walkSpeed();
+    }
+}
+
+// ---- main ----------------------------------------------------------------
+
+function drawHud(move) {
+    const h = rl.getScreenHeight();
+    let state = "standing";
+    if (paused) state = "paused (P to resume)";
+    else if (mode === "jump") state = "jumping";
+    else if (move > 0) state = mode === "run" ? "running" : "walking forward";
+    else if (move < 0) state = "walking backward";
+
+    let how = "cube fallback - 4-beat walk with 2-bone IK";
+    if (haveModel) {
+        how = curClipName !== "" ? "clip '" + curClipName + "'" : "glb model";
+    }
+    const status = "speed " + curSpeed.toFixed(2) + " m/s   phase " + goat.phase.toFixed(2) +
+        "   fps " + rl.getFPS();
+    rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
+    rl.drawText("W/S walk   SHIFT run   SPACE jump   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
+        10, 32, 14, rl.RAYWHITE);
+    rl.drawText(status + "   " + state, 10, h - 24, 14, rl.RAYWHITE);
+}
+
+function run() {
+    rl.initWindow(1000, 640, "Slag goat - walk / run / jump");
+    rl.setTargetFPS(60);
+    loadGoat();
+
+    let frames = 0;
+    while (!rl.windowShouldClose()) {
+        const dt = Math.min(rl.getFrameTime(), 0.05);
+        frames += 1;
+
+        // camera: drag to orbit, arrows as a fallback, wheel to zoom
+        if (rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+            camYaw -= rl.getMouseDeltaX() * 0.004;
+            camPitch -= rl.getMouseDeltaY() * 0.004;
+        }
+        if (rl.isKeyDown(rl.KEY_LEFT)) camYaw += 1.6 * dt;
+        if (rl.isKeyDown(rl.KEY_RIGHT)) camYaw -= 1.6 * dt;
+        if (rl.isKeyDown(rl.KEY_UP)) camPitch += 1.0 * dt;
+        if (rl.isKeyDown(rl.KEY_DOWN)) camPitch -= 1.0 * dt;
+        camDist -= rl.getMouseWheelMove() * 0.4;
+        camPitch = clamp(camPitch, 0.08, 1.35);
+        camDist = clamp(camDist, 2.2, 12.0);
+
+        // input
+        if (rl.isKeyPressed(rl.KEY_P)) paused = !paused;
+        let move = 0;
+        if (rl.isKeyDown(rl.KEY_W)) move += 1;
+        if (rl.isKeyDown(rl.KEY_S)) move -= 1;
+        let turn = 0;
+        if (rl.isKeyDown(rl.KEY_A)) turn += 1;
+        if (rl.isKeyDown(rl.KEY_D)) turn -= 1;
+        const running = rl.isKeyDown(rl.KEY_LEFT_SHIFT) || rl.isKeyDown(rl.KEY_RIGHT_SHIFT);
+        goat.yaw += turn * TURN_RATE * dt;
+
+        // state machine: jump is a one-shot that locks the gait until it lands
+        if (mode === "jump") {
+            jumpTime += dt;
+            if (jumpTime >= jumpDuration()) {
+                mode = move !== 0 ? (running ? "run" : "walk") : "idle";
+            }
+        } else if (rl.isKeyPressed(rl.KEY_SPACE)) {
+            startJump(move, running);
+        } else {
+            mode = move !== 0 ? (running ? "run" : "walk") : "idle";
+        }
+
+        curRole = clipRole();
+        curSpeed = groundSpeed();
+
+        if (!paused) {
+            if (mode === "jump") {
+                // Horizontal travel continues at the speed set at take-off; the
+                // vertical arc comes from the clip (or the fallback hop).
+                if (jumpDir !== 0) {
+                    goat.px += Math.cos(goat.yaw) * jumpDir * jumpSpeed * dt;
+                    goat.pz += -Math.sin(goat.yaw) * jumpDir * jumpSpeed * dt;
+                }
+                if (!haveModel) {
+                    goat.py = V_DROP + FALLBACK_JUMP_H *
+                        Math.sin(Math.PI * Math.min(jumpTime / jumpDuration(), 1));
+                }
+            } else {
+                goat.phase = mod1(goat.phase + dt / loopDuration());
+                const speed = groundSpeed();
+                if (move !== 0) {
+                    goat.px += Math.cos(goat.yaw) * move * speed * dt;
+                    goat.pz += -Math.sin(goat.yaw) * move * speed * dt;
+                }
+                // The model's clip bobs the body itself; only the fallback needs a bob.
+                goat.py = haveModel ? 0 : V_DROP + Math.sin(4 * Math.PI * goat.phase) * V_BOB;
+            }
+        }
+
+        if (haveModel) {
+            if (mode === "jump" && CLIP.jump) {
+                poseModel("jump", Math.min(jumpTime / CLIP.jump.duration, 1));
+            } else {
+                poseModel(curRole, goat.phase);
+            }
+            const info = CLIP[curRole];
+            curClipName = info !== null ? rl.modelAnimationName(model, info.index) : "";
+        }
+
+        // render
+        const ty = 0.85 + goat.py;
+        const cp = Math.cos(camPitch);
+        const cx = goat.px + camDist * cp * Math.sin(camYaw);
+        const cy = ty + camDist * Math.sin(camPitch);
+        const cz = goat.pz + camDist * cp * Math.cos(camYaw);
+
+        rl.beginDrawing();
+        rl.clearBackground(SKY);
+        rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
+        drawGround(goat);
+        if (haveModel) {
+            drawModelGoat(goat);
+        } else {
+            drawGoat(goat);
+        }
+        rl.endMode3D();
+        drawHud(move);
+        rl.endDrawing();
+
+        if (frames % 240 === 0) {
+            console.log("frame " + frames + " mode " + mode + " phase " + goat.phase.toFixed(2) +
+                " fps " + rl.getFPS());
+        }
+    }
+
+    console.log("window closed after " + frames + " frames");
+    if (haveModel) {
+        rl.unloadModel(model);
+    }
+    rl.closeWindow();
+}
+
+run();
