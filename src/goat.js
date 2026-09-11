@@ -404,6 +404,7 @@ const SKY_KEYS = [
 
 let worldTime = 8.0;        // hours, [0, 24)
 let skyLight = 1.0;         // 0 (night) .. 1 (full day)
+let skyWarm = 0.0;          // 0 (neutral) .. 1 (dawn/dusk warm)
 let skyTop = 0;             // packed sky colours, refreshed each frame
 let skyBot = 0;
 let ambR = 1.0, ambG = 1.0, ambB = 1.0;
@@ -468,6 +469,7 @@ function updateAmbient() {
     const t = skyLight;
     // Warm the light around dawn and dusk (light factor near 0.3).
     const warm = Math.max(0, Math.min(1, 1 - Math.abs(t - 0.3) / 0.34));
+    skyWarm = warm;
     ambR = Math.min(1, 0.40 + 0.60 * t + 0.14 * warm);
     ambG = Math.min(1, 0.44 + 0.56 * t + 0.02 * warm);
     ambB = Math.min(1, 0.62 + 0.38 * t - 0.14 * warm);
@@ -942,6 +944,183 @@ function renderShadowMap() {
     rl.endTextureMode();
 }
 
+// ---- sky shader (M5): 2.5D procedural clouds -----------------------------
+//
+// The sky is drawn as one full-screen pass instead of a gradient plus cloud
+// billboards. For each pixel the shader rebuilds the camera ray from the camera
+// basis, samples the gradient, and looks up animated value-noise fBm on a flat
+// cloud layer -- the `radial.divide by dir.y` projection is what compresses the
+// clouds toward the horizon, i.e. the parallax. Clouds are shaded by comparing
+// the density with a sample taken toward the sun, so they brighten on the sun's
+// side and pick up its dawn/dusk color. `B` falls back to the billboard clouds.
+
+const CLOUD_HEIGHT = 6.0;      // world units of the cloud layer
+const CLOUD_SCALE = 0.055;     // noise frequency
+const CLOUD_SHARP = 0.22;      // softness of the coverage edge
+const CLOUD_SPEED = 0.55;      // how fast the layer drifts
+
+let skyShader = -1;
+let skyUniforms = null;
+let useSkyShader = true;
+let skyTime = 0;
+
+const SKY_VS = [
+    "#version 330",
+    "in vec3 vertexPosition;",
+    "uniform mat4 mvp;",
+    "void main() { gl_Position = mvp * vec4(vertexPosition, 1.0); }",
+].join("\n");
+
+const SKY_FS = [
+    "#version 330",
+    "out vec4 finalColor;",
+    "uniform vec2 screenSize;",
+    "uniform vec3 camPos;",
+    "uniform vec3 camForward;",
+    "uniform vec3 camRight;",
+    "uniform vec3 camUp;",
+    "uniform float tanHalfFov;",
+    "uniform float aspect;",
+    "uniform vec3 zenithColor;",
+    "uniform vec3 horizonColor;",
+    "uniform vec3 sunDir;",
+    "uniform vec4 sunColor;",
+    "uniform float cloudiness;",
+    "uniform float time;",
+    "uniform vec2 wind;",
+    "uniform vec3 cloudLit;",
+    "uniform vec3 cloudShadow;",
+    "uniform float cloudHeight;",
+    "uniform float cloudScale;",
+    "uniform float cloudSharp;",
+    "uniform float nightDim;",
+    "float hash21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }",
+    "float vnoise(vec2 p) {",
+    "    vec2 i = floor(p); vec2 f = fract(p);",
+    "    vec2 u = f * f * (3.0 - 2.0 * f);",
+    "    return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),",
+    "               mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);",
+    "}",
+    "float fbm(vec2 p) {",
+    "    float v = 0.0; float amp = 0.5;",
+    "    for (int i = 0; i < 4; i++) { v += amp * vnoise(p); p = p * 2.03 + 11.7; amp *= 0.5; }",
+    "    return v;",
+    "}",
+    "void main() {",
+    "    vec2 uv = gl_FragCoord.xy / screenSize;",
+    "    vec2 ndc = vec2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);",
+    "    vec3 dir = normalize(camForward + camRight * (ndc.x * tanHalfFov * aspect)",
+    "                                       + camUp * (ndc.y * tanHalfFov));",
+    "    float h = dir.y;",
+    "    vec3 sky = mix(horizonColor, zenithColor, pow(clamp(h, 0.0, 1.0), 0.55));",
+    "    if (cloudiness > 0.01 && h > 0.0) {",
+    "        float t = cloudHeight / max(h, 0.035);",
+    "        vec2 base = (camPos.xz + dir.xz * t) * cloudScale;",
+    "        vec2 drift = wind * (time * 0.01 * 0.55);",
+    "        vec2 p = base + drift;",
+    "        float n = fbm(p);",
+    "        float threshold = mix(0.72, 0.28, cloudiness);",
+    "        float d = smoothstep(threshold, threshold + cloudSharp, n);",
+    "        float n2 = fbm(p + normalize(sunDir.xz + vec2(1e-4)) * 0.06);",
+    "        float d2 = smoothstep(threshold, threshold + cloudSharp, n2);",
+    "        float lit = clamp(0.45 + (d - d2) * 3.5 + 0.35 * max(sunDir.y, 0.0), 0.0, 1.0);",
+    "        vec3 cloud = mix(cloudShadow, cloudLit, lit);",
+    "        float fade = smoothstep(0.0, 0.16, h);",
+    "        sky = mix(sky, cloud, d * fade);",
+    "    }",
+    "    float sunAmt = max(dot(dir, sunDir), 0.0);",
+    "    sky += sunColor.rgb * pow(sunAmt, 10.0) * 0.10 * (1.0 - nightDim * 0.5);",
+    "    finalColor = vec4(sky, 1.0);",
+    "}",
+].join("\n");
+
+function makeSkyShader() {
+    if (typeof rl.loadShaderFromMemory !== "function") return;
+    skyShader = rl.loadShaderFromMemory(SKY_VS, SKY_FS);
+    if (skyShader < 0 || !rl.isShaderValid(skyShader)) {
+        console.log("sky: shader failed to compile - keeping the gradient and billboards");
+        skyShader = -1;
+        return;
+    }
+    skyUniforms = {
+        screenSize: rl.getShaderLocation(skyShader, "screenSize"),
+        camPos: rl.getShaderLocation(skyShader, "camPos"),
+        camForward: rl.getShaderLocation(skyShader, "camForward"),
+        camRight: rl.getShaderLocation(skyShader, "camRight"),
+        camUp: rl.getShaderLocation(skyShader, "camUp"),
+        tanHalfFov: rl.getShaderLocation(skyShader, "tanHalfFov"),
+        aspect: rl.getShaderLocation(skyShader, "aspect"),
+        zenithColor: rl.getShaderLocation(skyShader, "zenithColor"),
+        horizonColor: rl.getShaderLocation(skyShader, "horizonColor"),
+        sunDir: rl.getShaderLocation(skyShader, "sunDir"),
+        sunColor: rl.getShaderLocation(skyShader, "sunColor"),
+        cloudiness: rl.getShaderLocation(skyShader, "cloudiness"),
+        time: rl.getShaderLocation(skyShader, "time"),
+        wind: rl.getShaderLocation(skyShader, "wind"),
+        cloudLit: rl.getShaderLocation(skyShader, "cloudLit"),
+        cloudShadow: rl.getShaderLocation(skyShader, "cloudShadow"),
+        cloudHeight: rl.getShaderLocation(skyShader, "cloudHeight"),
+        cloudScale: rl.getShaderLocation(skyShader, "cloudScale"),
+        cloudSharp: rl.getShaderLocation(skyShader, "cloudSharp"),
+        nightDim: rl.getShaderLocation(skyShader, "nightDim"),
+    };
+    console.log("sky: shader " + skyShader);
+}
+
+function channelOf(packed, shift) {
+    return ((packed >>> shift) & 255) / 255;
+}
+
+// Draw the whole sky. `cx/cy/cz` is the camera, `tx/ty/tz` its target; the
+// forward/right/up basis is rebuilt here and handed to the shader, which turns
+// each pixel back into a view ray.
+function drawSky(cx, cy, cz, tx, ty, tz, sw, sh, dt) {
+    skyTime += dt;
+    let fx = tx - cx, fy = ty - cy, fz = tz - cz;
+    const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1;
+    fx /= fl; fy /= fl; fz /= fl;
+    let rx = -fz, rz = fx;
+    const rlen = Math.sqrt(rx * rx + rz * rz) || 1;
+    rx /= rlen; rz /= rlen;
+    // up = cross(right, forward), with right.y = 0
+    const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
+
+    // Overcast greys the clouds; night darkens them.
+    const lit = 0.12 + 0.88 * skyLight;
+    const shadow = 0.09 + 0.40 * skyLight;
+    rl.beginShaderMode(skyShader);
+    rl.setShaderValueVector2(skyShader, skyUniforms.screenSize, sw, sh);
+    rl.setShaderValueVector3(skyShader, skyUniforms.camPos, cx, cy, cz);
+    rl.setShaderValueVector3(skyShader, skyUniforms.camForward, fx, fy, fz);
+    rl.setShaderValueVector3(skyShader, skyUniforms.camRight, rx, 0, rz);
+    rl.setShaderValueVector3(skyShader, skyUniforms.camUp, ux, uy, uz);
+    rl.setShaderValue(skyShader, skyUniforms.tanHalfFov, Math.tan(55 * 0.5 * Math.PI / 180),
+        rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.aspect, sw / sh, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValueVector3(skyShader, skyUniforms.zenithColor,
+        channelOf(skyTop, 24), channelOf(skyTop, 16), channelOf(skyTop, 8));
+    rl.setShaderValueVector3(skyShader, skyUniforms.horizonColor,
+        channelOf(skyBot, 24), channelOf(skyBot, 16), channelOf(skyBot, 8));
+    rl.setShaderValueVector3(skyShader, skyUniforms.sunDir,
+        LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]);
+    rl.setShaderValueVector4(skyShader, skyUniforms.sunColor,
+        LIGHT_COLOR[0], LIGHT_COLOR[1], LIGHT_COLOR[2], 1.0);
+    rl.setShaderValue(skyShader, skyUniforms.cloudiness, cloudiness, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.time, skyTime, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValueVector2(skyShader, skyUniforms.wind, windX * CLOUD_SPEED, windZ * CLOUD_SPEED);
+    rl.setShaderValueVector3(skyShader, skyUniforms.cloudLit,
+        Math.min(1, lit + 0.10 * skyWarm), Math.min(1, lit + 0.02 * skyWarm),
+        Math.min(1, lit - 0.06 * skyWarm));
+    rl.setShaderValueVector3(skyShader, skyUniforms.cloudShadow,
+        shadow * 0.95, shadow * 0.97, shadow * 1.06);
+    rl.setShaderValue(skyShader, skyUniforms.cloudHeight, CLOUD_HEIGHT, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.cloudScale, CLOUD_SCALE, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.cloudSharp, CLOUD_SHARP, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.nightDim, 1 - skyLight, rl.SHADER_UNIFORM_FLOAT);
+    rl.drawRectangle(0, 0, sw, sh, rl.WHITE);
+    rl.endShaderMode();
+}
+
 // ---- audio ---------------------------------------------------------------
 //
 // The background track and the weather beds are `Music` streams: they loop
@@ -1077,6 +1256,14 @@ const RAIN_MAX = 160;       // streaks; each is a drawLine, so this is a cost kn
 const OVERCAST_TOP = rl.color(96, 102, 116, 255);
 const OVERCAST_BOT = rl.color(150, 154, 162, 255);
 
+// Weather bites into gameplay: rain and wind slow the goat down, and being wet
+// and cold burns energy faster (on top of the existing night penalty).
+const RAIN_SLOW = 0.28;      // at full rain the goat moves up to 28% slower
+const WIND_SLOW = 0.07;      // a full gust slows it a little more
+const WET_DRAIN = 0.65;      // up to +65% energy drain in heavy rain
+const WIND_DRAIN = 0.20;
+const WIND_NORM = 1.4;       // windSway value that counts as "a full gust"
+
 const WEATHER_STATES = {
     clear: { cloud: 0.05, rain: 0.0 },
     cloudy: { cloud: 0.70, rain: 0.0 },
@@ -1099,6 +1286,8 @@ let rainAmount = 0.0;       // 0..1, eased
 let rainActive = 0;
 let windX = 1.0, windZ = 0.2;
 let windSway = 0.4;
+let weatherSpeed = 1.0;      // multiplier on the goat's ground speed
+let weatherDrain = 1.0;      // multiplier on its energy drain
 let swayTime = 0.0;
 let weatherText = "";
 let rngState = 0x9e3779b9;
@@ -1209,9 +1398,15 @@ function updateWeather(dt) {
     const k = Math.min(1, dt * 0.6);
     cloudiness += (target.cloud - cloudiness) * k;
     rainAmount += (target.rain - rainAmount) * k;
+    const windNorm = Math.min(1, windSway / WIND_NORM);
+    // Gate on rain: "clear" stays exactly neutral, and wind only bites when the
+    // goat is actually wet.
+    weatherSpeed = 1 - (RAIN_SLOW + WIND_SLOW * windNorm) * rainAmount;
+    weatherDrain = 1 + (WET_DRAIN + WIND_DRAIN * windNorm) * rainAmount;
     weatherText = weatherKind + "   wind " +
         Math.sqrt(windX * windX + windZ * windZ).toFixed(1) + " m/s";
     if (rainAmount > 0.02) weatherText = weatherText + "   rain " + Math.round(rainAmount * 100) + "%";
+    if (weatherSpeed < 0.98) weatherText = weatherText + "   slowed " + Math.round((1 - weatherSpeed) * 100) + "%";
 }
 
 // C jumps to the next state, for previewing the cycle.
@@ -1356,15 +1551,21 @@ function loopDuration() {
 // Ground speed for the current gait, from the stride/duty above.
 function groundSpeed() {
     if (mode === "sleep" || mode === "dead") return 0;
+    let base;
     if (!haveModel) {
         let mult = 1;
         if (mode === "run") mult = FALLBACK_RUN_MULT;
         else if (mode === "trot") mult = FALLBACK_TROT_MULT;
-        return ((2 * V_STRIDE) / V_CYCLE) * mult;
+        base = ((2 * V_STRIDE) / V_CYCLE) * mult;
+    } else if (mode === "run" && CLIP.run) {
+        base = runSpeed();
+    } else if (mode === "trot" && CLIP.trot) {
+        base = trotSpeed();
+    } else {
+        base = walkSpeed();
     }
-    if (mode === "run" && CLIP.run) return runSpeed();
-    if (mode === "trot" && CLIP.trot) return trotSpeed();
-    return walkSpeed();
+    // Rain and wind slow the goat: it works harder for the same clip.
+    return base * weatherSpeed;
 }
 
 function startJump(move, gait) {
@@ -1383,6 +1584,7 @@ function startJump(move, gait) {
     } else {
         jumpSpeed = walkSpeed();
     }
+    jumpSpeed *= weatherSpeed;   // a wet goat does not jump as far
     stats.energy = Math.max(0, stats.energy - JUMP_ENERGY_COST);
     playBleat(0.9);
 }
@@ -1438,6 +1640,7 @@ function updateStats(dt) {
     else if (mode === "trot") drain = ENERGY_DRAIN.trot;
     else if (mode === "walk") drain = ENERGY_DRAIN.walk;
     if (skyLight < 0.25) drain *= NIGHT_DRAIN_MULT;   // cold nights burn energy faster
+    drain *= weatherDrain;                            // ...and so does being soaked
     stats.energy = Math.max(0, stats.energy - drain * dt);
     if (stats.energy <= 0) {
         exhausted = true;
@@ -1579,9 +1782,10 @@ function drawHud(move) {
     }
     const status = clockText + "   speed " + curSpeed.toFixed(2) + " m/s   phase " +
         goat.phase.toFixed(2) + "   fps " + rl.getFPS() + "   light " + lightingText +
+        "   sky " + (useSkyShader && skyShader >= 0 ? "shader" : "billboards") +
         "   audio " + (audioReady ? (muted ? "muted" : "on") : "off");
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   L light   K shadow   M audio   A/D turn   drag: orbit   wheel: zoom   P: pause   ESC: quit",
+    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   L light   K shadow   B sky   M audio   A/D turn   P: pause   ESC: quit",
         10, 32, 14, rl.RAYWHITE);
 
     // Health and energy bars, top-right.
@@ -1609,6 +1813,7 @@ function run() {
     makeSkyTextures();
     makeWeatherTextures();
     makeLighting();
+    makeSkyShader();
     makeAudio();
 
     const sw = rl.getScreenWidth();
@@ -1668,6 +1873,7 @@ function run() {
             if (shadowMode === SHADOW_PLANAR && shadowShader < 0) shadowMode = SHADOW_OFF;
         }
         if (rl.isKeyPressed(rl.KEY_M)) setMuted(!muted);
+        if (rl.isKeyPressed(rl.KEY_B) && skyShader >= 0) useSkyShader = !useSkyShader;
         let move = 0;
         if (rl.isKeyDown(rl.KEY_W)) move += 1;
         if (rl.isKeyDown(rl.KEY_S)) move -= 1;
@@ -1763,7 +1969,12 @@ function run() {
 
         rl.beginDrawing();
         rl.clearBackground(skyBot);
-        rl.drawRectangleGradientV(0, 0, sw, sh, skyTop, skyBot);
+        const skyShaderOn = useSkyShader && skyShader >= 0;
+        if (skyShaderOn) {
+            drawSky(cx, cy, cz, goat.px, ty, goat.pz, sw, sh, dt);
+        } else {
+            rl.drawRectangleGradientV(0, 0, sw, sh, skyTop, skyBot);
+        }
         const lit = useLighting && litShader >= 0;
         // The shadow-map pass must run before the main 3D pass, since it swaps
         // render targets and leaves the model pointing back at the lit shader.
@@ -1771,7 +1982,7 @@ function run() {
         rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
         drawStars();
         drawCelestial();
-        drawClouds();
+        if (!skyShaderOn) drawClouds();
 
         if (lit) {
             // Terrain is immediate-mode geometry, so it goes through the lit

@@ -44,7 +44,7 @@ covers more than it first appears:
 | Camera-facing billboards | ✅ | `drawBillboard` / `drawBillboardRec` (M0) |
 | 3D rain drops / splashes | ✅ | `drawLine3D` / `drawPoint3D` (M0) |
 | Read a bone's world transform | ✅ | `modelBonePosition` / `modelBoneTransform` (M0) |
-| Photoreal / volumetric clouds | ❌ | needs shaders; a genuine stretch |
+| Photoreal / volumetric clouds | ⚠️ 2.5D | sky shader (M5); true volumetrics are a stretch |
 
 The practical consequence: **stats, sleep and death needed no engine work at all**,
 and day/night plus a first pass of weather needed only the M0 primitives. With M0
@@ -63,7 +63,8 @@ the photoreal cloud shader (M5).
 | **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | ✅ **Done** (audio in M3b) |
 | **M3b** | Weather and goat audio | M3 | S | ✅ **Done** |
 | **M4** | Shaders: real lighting + cast shadows | M0 | L | ✅ **Done** (incl. M4b shadow map) |
-| **M5** | Weather phase 2: shader clouds (photoreal stretch) | M4 | L | Only sensible once shaders exist |
+| **M5** | Weather phase 2: sky shader clouds | M4 | L | ✅ **Done** (2.5D shader; volumetrics deferred) |
+| **M6** | Weather affects gameplay | M3 | S | ✅ **Done** (rain slows, wet drains energy) |
 
 ---
 
@@ -339,17 +340,42 @@ when the goat leaves the box.
 
 ---
 
-## M5 — Weather phase 2: photorealistic clouds
+## M5 — Weather phase 2: procedural sky ✅ Done (2.5D)
 
-Stretch goal. Replace the cloud-texture dome with a sky shader: noise-based
-cloud coverage animated over time, lit by the M4 sun so clouds pick up dawn and
-dusk colours, with a parallax layer for the horizon.
+The cloud layer is now a full-screen sky shader rather than billboards.
+Per pixel it rebuilds the camera ray from the camera basis, draws the
+hour-of-day gradient, and samples animated value-noise fBm on a flat cloud layer
+at `CLOUD_HEIGHT`; the ray-to-plane projection is what compresses the clouds
+toward the horizon (the parallax). Clouds are shaded by comparing the density
+against a sample taken toward the sun, so they brighten on the sun's side and
+pick up its dawn/dusk colour, and they dim and grey with night and overcast.
+`B` falls back to the M2 gradient and the noise-puff billboards.
 
-This is where "photorealistic" gets genuinely hard — true volumetrics would mean
-raymarching a participating medium, which is a large performance and complexity
-jump. Recommend treating this as an experimental branch and deciding on the
-look before committing to it. A good-looking 2.5D sky shader is the realistic
-target; raymarched volumetrics are a research stretch.
+Cost is a 4-octave fBm, twice per sky pixel (the second sample is the sun-side
+lighting term). Release holds 60 fps in daylight and 56–58 in the worst case
+(night, stars, heavy rain); the earlier billboards were a little cheaper but much
+less convincing.
+
+**Deferred:** true volumetrics (raymarching a participating medium). The roadmap
+flagged this as a research stretch; the 2.5D shader is the realistic target and
+is what shipped.
+
+---
+
+## M6 — Weather affects gameplay ✅ Done
+
+Being wet and cold is now a resource cost, which ties the weather to the M1
+stats:
+
+- **Rain and wind slow the goat**: up to `RAIN_SLOW` (28%) plus `WIND_SLOW` (7%)
+at full rain, applied to every gait and to the jump take-off speed.
+- **Being soaked drains energy faster**: up to +65% (`WET_DRAIN`) plus wind, on
+top of the existing night penalty.
+- Both are gated on `rainAmount`, so `clear` stays exactly neutral — which also
+  keeps the gait-speed assertions in the harness exact.
+
+The HUD weather line reports the current slowdown, and the harness checks that a
+deterministically-rainy frame walks slower than a dry one.
 
 ---
 
@@ -380,16 +406,17 @@ target; raymarched volumetrics are a research stretch.
 
 ## Open questions
 
-1. **How photorealistic?** A 2.5D sky shader is achievable; raymarched
-   volumetric clouds are a much larger project. Where do we stop?
+1. ~~**How photorealistic?**~~ **Settled:** a 2.5D sky shader (M5). Raymarched
+   volumetrics remain a possible later experiment, not a plan.
 2. **Eyelids:** model real eyelids (and a lid bone), or just swap in a
-   closed-eye model?
+   closed-eye model? (Currently a swapped closed-eye sprite.)
 3. **Death:** is it permanent for the run, or a respawn at the last safe spot?
    Save the session or not?
-4. **Does weather affect gameplay** (rain slows the goat, cold at night drains
-   energy), or is it purely cosmetic at first?
-5. **Weather determinism:** seeded so a run is reproducible for tests, or fully
-   random?
+4. ~~**Does weather affect gameplay?**~~ **Settled:** yes (M6) — rain and wind
+   slow the goat and drain energy faster.
+5. **Weather determinism:** currently seeded, so a run is reproducible and the
+   harness is stable. Keep, or make it random per run?
 6. **Scene splitting:** how many files, and does the host evaluate a list of
-   scripts in order?
-7. **Shadow scope:** only the goat and terrain, or everything including grass?
+   scripts in order? `goat.js` is well past a thousand lines now.
+7. **Shadow scope:** only the goat casts into the shadow map today. Should the
+   grass and props cast too, and is one 1024² cascade enough as the world grows?

@@ -26,10 +26,18 @@ cargo run --release
 - **Day/night cycle**: a clock drives a gradient sky, the sun and moon arcing
   overhead, a star field and a scene-wide ambient tint. Hold `T` to
   fast-forward the clock.
-- **Weather**: a seeded state machine walks `clear → cloudy → rain → clearing`.
-  Procedural noise-puff clouds drift with the wind and overcast greys the sky,
-  rain falls as wind-slanted streaks, and the grass sways with gusty noise.
-  Press `C` to skip to the next state. (Shader clouds are M5.)
+- **Weather**: a seeded state machine walks `clear → cloudy → rain → clearing`,
+  forced to the next state with `C`. Rain falls as wind-slanted streaks, the
+  grass sways with gusty noise, and overcast greys the sky. Rain and wind bite
+  into gameplay: a soaked goat moves up to ~30% slower and burns energy faster,
+  on top of the existing night penalty. Press `B` to switch the sky between the
+  cloud shader and the billboard fallback.
+- **Procedural sky (M5)**: the sky is one full-screen shader. Per pixel it
+  rebuilds the camera ray, draws the hour-of-day gradient, and samples animated
+  value-noise fBm on a flat cloud layer — the ray-to-plane projection is what
+  gives the clouds their parallax toward the horizon. Clouds are lit by
+  comparing density against a sample taken toward the sun, so they brighten on
+  the sun's side and pick up its dawn/dusk colour.
 - **Real lighting and shadows (M4/M4b)**: a small custom GLSL program lights
   the scene. A directional sun (or moon at night) driven by the clock, plus a
   hemispheric ambient term, shades the goat and the terrain per fragment. The
@@ -67,6 +75,7 @@ cargo run --release
 | `L` | toggle the lit shader / shadows |
 | `K` | cycle shadows: map / planar / off |
 | `M` | mute / unmute the audio |
+| `B` | toggle the sky shader / billboard clouds |
 | `A` / `D` | turn left / right |
 | mouse drag | orbit the camera |
 | arrow keys | orbit the camera (keyboard fallback) |
@@ -225,6 +234,12 @@ sampler from. That is the only reliable route, since `setShaderValueTexture`
 picks a unit that the model's own maps then overwrite; the terrain (batch path)
 has no materials and uses `setShaderValueTexture` directly. `K` cycles the map,
 a planar fallback (the earlier M4 look) and off.
+
+The M5 sky reuses the same bindings. It is a full-screen pass (`beginShaderMode`
++ `drawRectangle`) whose fragment shader reads `gl_FragCoord`, so the fragment
+side is independent of raylib's own projection; the JS side passes the camera
+basis, fov, hour-of-day colours, sun direction/colour, wind and cloudiness as
+uniforms. `B` falls back to the M2 gradient and the noise-puff billboards.
 
 ## The `rl` audio surface
 

@@ -65,7 +65,7 @@ const constants = {
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
     KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90, KEY_T: 84,
-    KEY_C: 67, KEY_L: 76, KEY_K: 75, KEY_M: 77,
+    KEY_C: 67, KEY_L: 76, KEY_K: 75, KEY_M: 77, KEY_B: 66,
     WHITE: {}, RAYWHITE: {},
     SHADER_UNIFORM_FLOAT: 0, SHADER_UNIFORM_VEC2: 1, SHADER_UNIFORM_VEC3: 2,
     SHADER_UNIFORM_VEC4: 3, SHADER_UNIFORM_INT: 4, SHADER_UNIFORM_UINT: 8,
@@ -90,7 +90,7 @@ const rl = Object.assign({}, constants, {
     setModelShader: (_m, s) => { modelShaderCalls.push(s); },
     setModelTexture: (_m, index, tex) => { modelTextureCalls.push([index, tex]); },
     loadShaderFromMemory: (vs, fs) => (vs.indexOf('shadowOn') >= 0 ? 1
-        : (vs.indexOf('vClip') >= 0 ? 2 : 0)),
+        : (vs.indexOf('vClip') >= 0 ? 2 : (fs.indexOf('cloudiness') >= 0 ? 3 : 0))),
     isShaderValid: () => true,
     getShaderLocation: () => 0,
     beginShaderMode: () => {}, endShaderMode: () => {},
@@ -185,6 +185,10 @@ function audioAt(i) {
     const m = /audio (on|muted|off)/.exec(row(i).speed);
     return m ? m[1] : null;
 }
+function skyAt(i) {
+    const m = /sky (shader|billboards)/.exec(row(i).speed);
+    return m ? m[1] : null;
+}
 
 let deathFrame = -1;
 for (const r of timeline) {
@@ -225,6 +229,12 @@ const checks = [
     ['ambience beds load', musicLoads.length >= 3, musicLoads.length],
     ['the goat bleats on jump', soundsPlayed.length > 0, soundsPlayed.length],
     ['audio is reported', audioAt(15) === 'on', audioAt(15)],
+    ['the sky shader is used', skyAt(15) === 'shader', skyAt(15)],
+    // Frame 3400 is deterministically walking in ~15% rain (see the weather
+    // PRNG), so its speed must be below the dry walk speed.
+    ['rain is reported at the test frame', row(3400).weather.indexOf('rain ') >= 0, row(3400).weather],
+    ['rain slows the goat', speedAt(3400) !== null && speedAt(3400) < speedAt(15) - 0.01,
+        [speedAt(15), speedAt(3400)]],
     ['goat dies of exhaustion', deathFrame > 200 && deathFrame < 3950, deathFrame],
     ['death clip held while dead', clipAt(deathFrame + 5) === 'GoatDeath', clipAt(deathFrame + 5)],
     ['health is zero at death', deadStats !== null && deadStats.health === 0, deadStats],
