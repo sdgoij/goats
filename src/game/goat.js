@@ -277,18 +277,11 @@ function drawHud(move) {
     else if (move > 0) state = "walking forward";
     else if (move < 0) state = "walking backward";
 
-    let how = "cube fallback - 4-beat walk with 2-bone IK";
-    if (haveModel) {
-        how = curClipName !== "" ? "clip '" + curClipName + "'" : "glb model";
-    }
     const status = clockText + "   speed " + curSpeed.toFixed(2) + " m/s   phase " +
         goat.phase.toFixed(2) + "   fps " + rl.getFPS() + "   light " + lightingText +
         "   sky " + (useSkyShader && skyShader >= 0 ? "shader" : "billboards") +
         "   audio " + (audioReady ? (muted ? "muted" : "on") : "off") +
         "   herd " + BOTS.length;
-    rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   E eat   Z sleep   T time   L light   K shadow   B sky   M audio   A/D turn   P: pause   ESC: menu",
-        10, 32, 14, rl.RAYWHITE);
 
     // Health and energy bars, top-right.
     const bw = 160;
