@@ -105,6 +105,7 @@ function sceneCommand(line) {
                 x: ctlRound(goat.px),
                 y: ctlRound(goat.py),
                 z: ctlRound(goat.pz),
+                ground: ctlRound(terrainHeight(goat.px, goat.pz)),
                 yaw: ctlRound(goat.yaw),
                 phase: ctlRound(goat.phase),
                 time: ctlRound(worldTime),
@@ -354,6 +355,7 @@ function sceneCommand(line) {
             useLighting = ctlToggle(useLighting, parts[1]);
             if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
             setBotsShader(useLighting ? litShader : -1);
+            setTerrainShader(useLighting ? litShader : -1);
             return "ok lighting " + (useLighting ? "on" : "off");
         }
         case "shadows": {

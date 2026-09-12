@@ -17,7 +17,8 @@
 // bias/acne tuning a depth map needs. A depth-map pass (soft edges, self-shadowing)
 // can replace it once the render-texture bindings are wired up.
 
-const GROUND_Y = 0.02;          // the plane the shadow is projected onto
+const GROUND_Y = 0.02;          // plane the planar shadow projects onto, plus
+                                // the terrain height under the goat
 const SHADOW_ALPHA = 0.34;      // base opacity of the cast shadow
 
 const LIGHT_DIR = [0.4, 0.8, 0.12];   // unit vector pointing at the active body
@@ -173,6 +174,8 @@ function makeLighting() {
         shadowAlpha: rl.getShaderLocation(shadowShader, "shadowAlpha"),
     } : null;
     if (haveModel) rl.setModelShader(model, litShader);
+    // The terrain is a model too, so it takes the lit program the same way.
+    if (terrainMesh >= 0) rl.setModelShader(terrainMesh, litShader);
     makeShadowMap();
     console.log("lighting: lit shader " + litShader + ", shadow shader " + shadowShader);
 }
@@ -224,8 +227,9 @@ function setLitUniforms(cx, cy, cz) {
         rl.setShaderValueVector2(litShader, litShadow.texel, 1 / SHADOW_SIZE, 1 / SHADOW_SIZE);
         rl.setShaderValue(litShader, litShadow.bias, SHADOW_BIAS, rl.SHADER_UNIFORM_FLOAT);
         rl.setShaderValue(litShader, litShadow.strength, shadowStrengthNow, rl.SHADER_UNIFORM_FLOAT);
-        // The terrain goes through the batch path, which never sees the model's
-        // material map 1, so bind the shadow sampler explicitly for it.
+        // The grass and the cube fallback are immediate-mode geometry, which
+        // never sees the model's material map 1, so bind the shadow sampler
+        // explicitly for the batch path.
         if (shadowStrengthNow > 0.001 && shadowSamplerLoc >= 0) {
             rl.setShaderValueTexture(litShader, shadowSamplerLoc, shadowColor);
         }
@@ -235,7 +239,8 @@ function setLitUniforms(cx, cy, cz) {
 function setShadowUniforms() {
     rl.setShaderValueVector3(shadowShader, shadowUniforms.lightDir,
         LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]);
-    rl.setShaderValue(shadowShader, shadowUniforms.groundY, GROUND_Y, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(shadowShader, shadowUniforms.groundY,
+        GROUND_Y + terrainHeight(goat.px, goat.pz), rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(shadowShader, shadowUniforms.shadowOn, 1.0, rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(shadowShader, shadowUniforms.shadowAlpha,
         SHADOW_ALPHA * (0.35 + 0.65 * skyLight), rl.SHADER_UNIFORM_FLOAT);
@@ -254,8 +259,9 @@ function setShadowUniforms() {
 // binds a material's map `i` to texture unit `i` and feeds `texture{i}` from it,
 // while `setShaderValueTexture` picks a unit that those maps then overwrite. So
 // the shadow map lives in every material's map 1 (metalness), which the lit
-// shader does not otherwise use. The terrain (batch path) has no materials, so it
-// is handed the sampler with `setShaderValueTexture` instead.
+// shader does not otherwise use -- for the goat, the herd and the terrain mesh
+// alike. The grass and the cube fallback are immediate-mode (batch) draws with no
+// materials, so they get the sampler with `setShaderValueTexture` instead.
 
 const SHADOW_OFF = 0;
 const SHADOW_PLANAR = 1;
@@ -389,6 +395,7 @@ function makeShadowMap() {
     }
     depthUniforms = { lightVP: rl.getShaderLocation(depthShader, "lightVP") };
     if (haveModel) rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
+    if (terrainMesh >= 0) rl.setModelTexture(terrainMesh, SHADOW_MAP_INDEX, shadowColor);
     shadowMapReady = true;
     shadowMode = SHADOW_MAP;
     console.log("shadow map: rt " + shadowRT + " color " + shadowColor +

@@ -254,7 +254,7 @@ function drawEyes() {
     const size = 0.13;
     const c = Math.cos(goat.yaw);
     const s = Math.sin(goat.yaw);
-    const py = goat.py + groundOffset;
+    const py = goatBaseY(goat) + groundOffset;
     for (let i = 0; i < eyes.length; i++) {
         const wx = goat.px + eyes[i].x * c + eyes[i].z * s;
         const wz = goat.pz - eyes[i].x * s + eyes[i].z * c;
@@ -343,10 +343,11 @@ function sceneLoadStep() {
     else if (i === 1) makeSkyTextures();
     else if (i === 2) makeWeatherTextures();
     else if (i === 3) loadGoat();
-    else if (i === 4) makeLighting();
-    else if (i === 5) makeSkyShader();
-    else if (i === 6) makeAudio();
-    else if (i === 7) makeBotTextures();
+    else if (i === 4) makeTerrain();
+    else if (i === 5) makeLighting();
+    else if (i === 6) makeSkyShader();
+    else if (i === 7) makeAudio();
+    else if (i === 8) makeBotTextures();
     else {
         // One bot per step, so the bar keeps moving through the model loads.
         const want = clamp(Math.round(SETTINGS.herd), 0, 10);
@@ -389,7 +390,7 @@ function sceneInit() {
     // The load runs a step at a time from `sceneFrame`, so the splash shows.
     loaded = false;
     loadStep = 0;
-    loadTotal = 8 + clamp(Math.round(SETTINGS.herd), 0, 10);
+    loadTotal = 9 + clamp(Math.round(SETTINGS.herd), 0, 10);
     screenW = rl.getScreenWidth();
     screenH = rl.getScreenHeight();
     sceneFrames = 0;
@@ -476,6 +477,7 @@ function sceneFrame() {
         SETTINGS.light = useLighting;
         if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
         setBotsShader(useLighting ? litShader : -1);
+        setTerrainShader(useLighting ? litShader : -1);
     }
     if (press(rl.KEY_K) && litShader >= 0) {
         // Cycle shadows: map -> planar -> off. The map needs the engine
@@ -606,9 +608,13 @@ function sceneFrame() {
     }
     updateBots(dt);
     resolveGoatCollisions();
+    // The heightfield follows the goat: rebuild the grid if it has left the one
+    // it was built around, before either the shadow pass or the visible one reads
+    // it.
+    terrainEnsure(goat.px, goat.pz);
 
     // render
-    const ty = 0.85 + goat.py;
+    const ty = 0.85 + goatBaseY(goat);
     const cp = Math.cos(camPitch);
     const cx = goat.px + camDist * cp * Math.sin(camYaw);
     const cy = ty + camDist * Math.sin(camPitch);
@@ -632,13 +638,17 @@ function sceneFrame() {
     if (!skyShaderOn) drawClouds();
 
     if (lit) {
-        // Terrain is immediate-mode geometry, so it goes through the lit
-        // program with base colours: the shader now supplies the light.
+        // `setLitUniforms` first: it binds the batch's texture units (the shadow
+        // map's sampler among them) and the grass below samples them, so it must
+        // stay adjacent to the grass draws. The terrain goes after the batch
+        // block because it is a model draw: it binds its own material shader and
+        // unbinds the texture units when it finishes.
         rl.beginShaderMode(litShader);
         setLitUniforms(cx, cy, cz);
-        drawGround(goat, GROUND, TUFT);
+        drawTufts(goat, TUFT, 576, 180);   // cull beyond 24 units, detail inside ~13
         if (!haveModel) drawGoat(goat);
         rl.endShaderMode();
+        drawTerrain(rl.WHITE);
         if (haveModel) {
             // The planar fallback is drawn first, under the goat; the shadow
             // map is sampled by the lit shader during the goat's own draw.
@@ -657,7 +667,8 @@ function sceneFrame() {
         else lightingText = "lit";
     } else {
         // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
-        drawGround(goat, ambGround, ambTuft);
+        drawTerrain(ambTint);
+        drawTufts(goat, ambTuft, 576, 180);
         drawShadow();
         if (haveModel) {
             drawModelGoat(goat, ambTint);

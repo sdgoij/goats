@@ -281,19 +281,24 @@ function drawTufts(g, tuftCol, cull2, detail2) {
             const d2 = tx * tx + tz * tz;
             if (d2 > cull2) continue;
             const off = Math.sin(swayTime * 3.0 + (h3 / 4294967296) * 6.28) * 0.11 * windSway;
-            rl.drawCube(x + off, 0.06, z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
+            // The tuft sits on the heightfield, so the grass follows the ground.
+            // The cell's height is cached: the field is world-anchored, so a
+            // cell never changes, and this drops the visible field's ~500 noise
+            // samples per frame to nearly none (the key mirrors `tuftKey` in
+            // food.js). Inlined rather than a helper call, to keep the per-frame
+            // depth shallow.
+            const hkey = (cx + 4096) * 8192 + (cz + 4096);
+            let gy = TERRAIN_CELL_H.get(hkey);
+            if (gy === undefined) {
+                gy = terrainHeight(x, z);
+                if (TERRAIN_CELL_H.size > 32768) TERRAIN_CELL_H.clear();
+                TERRAIN_CELL_H.set(hkey, gy);
+            }
+            rl.drawCube(x + off, gy + 0.06, z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
             if (d2 < detail2) {
-                rl.drawCube(x + off * 1.7, 0.20, z + off * 0.7, 0.11, 0.16, 0.11, tuftCol);
+                rl.drawCube(x + off * 1.7, gy + 0.20, z + off * 0.7, 0.11, 0.16, 0.11, tuftCol);
             }
         }
     }
-}
-
-function drawGround(g, groundCol, tuftCol) {
-    // Snap the slab to a 2-unit grid so it looks pinned down while we travel.
-    const gx = Math.round(g.px / 2) * 2;
-    const gz = Math.round(g.pz / 2) * 2;
-    rl.drawCube(gx, -0.06, gz, 70, 0.1, 70, groundCol);
-    drawTufts(g, tuftCol, 576, 180);   // cull beyond 24 units, detail inside ~13
 }
 

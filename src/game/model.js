@@ -174,9 +174,10 @@ function poseModel(role, phase) {
 }
 
 // Draw the model: position, yaw about +Y (degrees), uniform scale, given tint.
+// The y is the ground under the goat (`goatBaseY`), so it walks up the terrain.
 function drawModelGoat(g, tint) {
     const yawDeg = (g.yaw * 180) / Math.PI;
-    rl.drawModelEx(model, g.px, g.py + groundOffset, g.pz,
+    rl.drawModelEx(model, g.px, goatBaseY(g) + groundOffset, g.pz,
         0, 1, 0, yawDeg, MODEL_SCALE, MODEL_SCALE, MODEL_SCALE, tint);
 }
 

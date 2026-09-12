@@ -67,6 +67,8 @@ uses.
 | **M5** | Weather phase 2: sky shader clouds | M4 | L | ✅ **Done** (2.5D shader) |
 | **M5b** | Volumetric clouds: raymarched slab | M5 | M | ✅ **Done** (self-shadowed, phase function, cirrus) |
 | **M6** | Weather affects gameplay | M3 | S | ✅ **Done** (rain slows, wet drains energy) |
+| **M7** | Bot herd | M1, M4 | M | ✅ **Done** (collides, grazes, zoomies) |
+| **M8** | Heightfield terrain + materials | M4 (lighting) | M | ✅ **Done** (engine `makeModel`) |
 
 ---
 
@@ -526,6 +528,67 @@ clip needed a small residual (max ~0.18) to keep the lowest vertex on the ground
 
 ---
 
+## M8 — Heightfield terrain + materials ✅ Done
+
+The ground is no longer a flat plane. It is a 3-octave value-noise field
+(`terrainShape`) scaled by a ramp that keeps a bowl around the spawn level, so
+the goat starts on flat grass and the relief eases in over `TERRAIN_RAMP` units.
+`terrainHeight(x, z)` is the single source of truth for the ground: the goat, the
+herd, the grass, the eyes and both shadows all read it.
+
+**One mesh, not cubes.** A cube per cell was built first and reverted. On the
+same probe at 2560x1440 it cost ~14 us per cube, so ~450 cells ran 41 fps
+against 56 for the flat plane — a practical ceiling of ~100 cells, roughly a
+tenth of what a good-looking heightfield needs. Immediate-mode triangles are no
+better: `drawCube`/`drawTriangle3D` leave raylib's default normal `(0, 0, 1)` and
+texcoord `(0, 0)`, so a triangle heightfield is lit as if every face pointed +Z
+and cannot carry a world-mapped texture at all.
+
+So the terrain is a 48x48-quad grid built through a new engine binding,
+`rl.makeModel(vertices, indices, normals, colors, texcoords)`, which returns a
+handle in the same registry as `loadModel` — so `drawModelEx`, `setModelShader`,
+`setModelTexture` and `unloadModel` all apply unchanged, and the shadow map binds
+through material map 1 exactly as the goat's does. The grid spans +/-48 units and
+is rebuilt once the goat has moved `TERRAIN_SNAP` (24) units; between rebuilds
+the whole terrain is a single `drawModelEx`.
+
+**Materials without a splat map.** Per-vertex colours carry the material —
+grass / dark grass / sand / mud / rock, picked from height, slope and a
+patchiness noise — and a tiling procedural detail texture supplies the grain. The
+lit shader already computes `texture0 * colDiffuse * fragColor`, so this needed no
+shader change and no extra texture units, which matters here: the batch has a
+4-unit budget and `rlSetUniformSampler` silently no-ops once it is full (see
+M5b). Adjacent cells interpolate, so material boundaries come out as gradients.
+
+**Cost.** The mesh is free — one draw, 4608 triangles, 55-58 fps at 1440p
+against 56-59 for the flat plane, i.e. within noise. The cost was the per-cell
+noise: `drawTufts` samples the field ~500 times a frame, measured at ~2 ms/frame.
+A per-cell height cache (`TERRAIN_CELL_H`, keyed like the grass's eaten-cell map
+and cleared past 32k entries) removes it. The rebuild resamples the whole
+2401-vertex grid — at the ~4 us per field sample that 2 ms implies, roughly
+13 ms, so it drops one frame every `TERRAIN_SNAP` units of travel, felt only at a
+run.
+
+**Verified numerically, not by eye.** The harness gained seven checks: the field
+is not flat, the spawn bowl is level, the mesh is one grid with per-vertex normals
+/ colours / UVs and a varying height, it carries at least four distinct materials,
+and both the goat and every bot are drawn exactly at `terrainHeight` under them.
+Two rendered frames
+were decoded to confirm the ground region is green-dominant with 0% sky pixels
+(so it is neither culled nor missing), and that the detail texture is sampled at
+all: replacing it with white raised the ground's mean luma 104.6 -> 119.5 at the
+same time of day, which is the texture's own mean. (Comparing frames from
+different times of day instead showed a similar shift from the rising sun alone,
+which is a reminder to A/B within one scripted run.)
+
+**Deferred.** Water (the field has hollows but no lakes or streams); per-material
+textures (needs a splat map and a careful look at the texture-unit budget); and
+drawing the terrain into the depth pass so hills cast onto each other — the
+normals already shade slopes, and terrain self-shadowing brings acne that only a
+screenshot review could judge.
+
+---
+
 ## Cross-cutting work
 
 - **Splitting the scene.** ✅ **Done.** The scene is `src/game/*.js` in nine
@@ -577,3 +640,7 @@ clip needed a small residual (max ~0.18) to keep the lowest vertex on the ground
    could not be sampled anyway). Props would follow the same path if added. One
    1024² cascade is still enough while the world stays a single goat-sized field;
    a larger world would want cascades or a bigger map.
+8. **What does the terrain gain next?** Water is the obvious visual gap (the
+   field has hollows but no lakes or streams), but a splat-map material upgrade
+   and scattered props (rocks, trees) on the same field are both cheaper, and
+   nothing yet justifies leaving the level spawn bowl.

@@ -431,7 +431,8 @@ function drawBots(tint) {
         const dx = b.x - goat.px;
         const dz = b.z - goat.pz;
         if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) {
-            rl.drawCube(b.x, 0.02, b.z, 1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
+            rl.drawCube(b.x, terrainHeight(b.x, b.z) + 0.06, b.z,
+                1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
         }
         const role = botRole(b);
         // One-shot roles (jump, eat) pose from their own clock; the rest loop.
@@ -440,7 +441,7 @@ function drawBots(tint) {
         poseModelOn(b.model, clipAt(role, b.var[role]), pose);
         // Draw directly (no `drawModelAt` wrapper) to keep the JS call depth
         // shallow -- the debug stack guard is tight.
-        rl.drawModelEx(b.model, b.x, groundOffset * b.spec.scale, b.z,
+        rl.drawModelEx(b.model, b.x, terrainHeight(b.x, b.z) + groundOffset * b.spec.scale, b.z,
             0, 1, 0, (b.yaw * 180) / Math.PI,
             b.spec.scale, b.spec.scale, b.spec.scale, tint);
     }
@@ -460,7 +461,7 @@ function drawBotsShadow() {
         const pose = b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1)
             : b.mode === "eat" ? Math.min(b.eatTime / b.eatDur, 1) : b.phase;
         poseModelOn(b.model, clipAt(role, b.var[role]), pose);
-        rl.drawModelEx(b.model, b.x, groundOffset * b.spec.scale, b.z,
+        rl.drawModelEx(b.model, b.x, terrainHeight(b.x, b.z) + groundOffset * b.spec.scale, b.z,
             0, 1, 0, (b.yaw * 180) / Math.PI,
             b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, shadowColor);

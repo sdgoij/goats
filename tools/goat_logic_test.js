@@ -60,6 +60,15 @@ let loadingFrames = 0;
 let progressBarCalls = 0;
 let splashTitle = false;
 let splashStep = '';
+// Terrain instrumentation: the last mesh handed to `makeModel`, how many were
+// built, and the y the goat's model was last drawn at. The stub model's bounds
+// start at y 0, so `groundOffset` is 0 and the drawn y is the terrain height
+// under the goat plus any hop.
+let terrainMeshesBuilt = 0;
+let lastTerrainMesh = null;
+let goatDrawY = null;
+const botDrawY = new Map();
+let terrainError = null;
 
 const keys = {};
 const pressed = {};
@@ -99,6 +108,15 @@ const rl = Object.assign({}, constants, {
     initWindow: () => {}, setTargetFPS: () => {}, closeWindow: () => {}, setExitKey: () => {},
     toggleFullscreen: () => {}, isWindowFullscreen: () => false,
     loadModel: (p) => { modelPaths.push(p); const h = modelLoads; modelLoads += 1; return h; },
+    // The terrain grid. The engine side is covered by the runtime surface test;
+    // here the scene's use of it is what matters, so the arrays are kept for the
+    // checks to inspect. The handle space is its own, so a terrain mesh can never
+    // be confused with the goat (0) or a bot model.
+    makeModel: (vertices, indices, normals, colors, texcoords) => {
+        terrainMeshesBuilt += 1;
+        lastTerrainMesh = { vertices, indices, normals, colors, texcoords };
+        return 1000 + terrainMeshesBuilt;
+    },
     isModelValid: () => true,
     unloadModel: () => {},
     modelBounds: () => ({ minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 1.47, maxZ: 0 }),
@@ -117,7 +135,13 @@ const rl = Object.assign({}, constants, {
             if (CLIPS[i].name.indexOf('GoatJump') === 0) botJumps += 1;
         }
     },
-    drawModelEx: () => {},
+    drawModelEx: (m, x, y, z) => {
+        // The goat is handle 0 and the terrain meshes are 1000+; everything else
+        // is a bot. Bots are drawn at the ground under them, so the recorded y
+        // must equal `terrainHeight` there (`groundOffset` is 0 in this stub).
+        if (m === 0) goatDrawY = y;
+        else if (m < 1000) botDrawY.set(m, { x: x, y: y, z: z });
+    },
     setModelShader: (_m, s) => { modelShaderCalls.push(s); },
     setModelTexture: (_m, index, tex) => { modelTextureCalls.push([index, tex]); },
     loadShaderFromMemory: (vs, fs) => {
@@ -392,6 +416,61 @@ const botFed = botBellyMax > 0;
 const grazeWalks = logs.map((l) => /grazeWalks (\d+)/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
 const botGrazeWalks = grazeWalks.length ? Math.max.apply(null, grazeWalks) : 0;
 
+// ---- terrain -------------------------------------------------------------
+// The heightfield, the mesh it feeds and the goat's placement on it. The engine
+// side (`rl.makeModel`) is covered by the runtime surface test; here the question
+// is whether the scene uses it: a field that is not flat, a level spawn bowl, a
+// grid carrying real normals/UVs/material colours, and the goat drawn on the
+// surface.
+let terrainSpread = 0;
+let terrainFlatAtSpawn = false;
+let terrainMeshOk = false;
+let terrainMaterials = 0;
+let terrainStandOk = false;
+let herdStandsOk = false;
+try {
+    let lo = 1e9;
+    let hi = -1e9;
+    for (let x = -60; x <= 60; x += 3) {
+        for (let z = -60; z <= 60; z += 3) {
+            const h = sandbox.terrainHeight(x, z);
+            if (h < lo) lo = h;
+            if (h > hi) hi = h;
+        }
+    }
+    terrainSpread = hi - lo;
+    terrainFlatAtSpawn = Math.abs(sandbox.terrainHeight(0, 0)) < 1e-9 &&
+        Math.abs(sandbox.terrainHeight(4, -3)) < 1e-9;
+    const m = lastTerrainMesh;
+    if (m !== null) {
+        const verts = m.vertices.length / 3;
+        let vlo = 1e9;
+        let vhi = -1e9;
+        for (let i = 1; i < m.vertices.length; i += 3) {
+            if (m.vertices[i] < vlo) vlo = m.vertices[i];
+            if (m.vertices[i] > vhi) vhi = m.vertices[i];
+        }
+        const seen = new Set();
+        for (let i = 0; i < m.colors.length; i += 4) {
+            seen.add(m.colors[i] + ',' + m.colors[i + 1] + ',' + m.colors[i + 2]);
+        }
+        terrainMaterials = seen.size;
+        terrainMeshOk = verts === 49 * 49 && vhi - vlo > 0.5 &&
+            m.indices.length === 48 * 48 * 6 &&
+            m.normals.length === verts * 3 && m.colors.length === verts * 4 &&
+            m.texcoords.length === verts * 2;
+    }
+    const final = JSON.parse(sandbox.sceneCommand('state').slice(3));
+    terrainStandOk = goatDrawY !== null && typeof goatDrawY === 'number' &&
+        Math.abs(goatDrawY - sandbox.terrainHeight(final.x, final.z)) < 0.02;
+    herdStandsOk = botDrawY.size > 0;
+    for (const d of botDrawY.values()) {
+        if (Math.abs(d.y - sandbox.terrainHeight(d.x, d.z)) > 1e-6) herdStandsOk = false;
+    }
+} catch (e) {
+    terrainError = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -475,21 +554,31 @@ const checks = [
     // paints a progress bar, then the game begins on the frame after the last
     // step (so `loadTotal - 1` loading frames are drawn for the default herd).
     ['the scene starts unloaded', readyBefore === false && hasLoadStep, readyBefore],
-    ['the loader takes one step per frame', loadingFrames === 8 + 7 - 1, loadingFrames],
+    ['the loader takes one step per frame', loadingFrames === 9 + 7 - 1, loadingFrames],
     ['the splash draws a progress bar', progressBarCalls === loadingFrames && progressBarCalls > 0,
         [progressBarCalls, loadingFrames]],
     ['the splash names the game and step count',
-        splashTitle && splashStep === 'loading 14 / 15', [splashTitle, splashStep]],
+        splashTitle && splashStep === 'loading 15 / 16', [splashTitle, splashStep]],
     // Self-contained binary: the scene must not reach the filesystem for assets.
     ['every requested asset is embedded', requestedAssets.length >= 10 && missingAssets.length === 0,
         missingAssets],
     ['the embedded table covers model and audio', embeddedNames.size >= 13, embeddedNames.size],
+    // Terrain: the field, the mesh built from it, and the goat standing on it.
+    ['no terrain errors', terrainError === null, terrainError],
+    ['the terrain is not flat', terrainSpread > 1.5, terrainSpread],
+    ['the spawn bowl stays level', terrainFlatAtSpawn, null],
+    ['the terrain is one grid with normals, UVs and colours', terrainMeshOk,
+        lastTerrainMesh ? lastTerrainMesh.vertices.length / 3 : null],
+    ['the terrain mesh carries several materials', terrainMaterials >= 4, terrainMaterials],
+    ['the goat stands on the terrain', terrainStandOk, goatDrawY],
+    ['the herd stands on the terrain', herdStandsOk, botDrawY.size],
 ];
 
 const failed = checks.filter((c) => !c[1]);
 console.log('--- goat scene logic test ---');
 console.log('model line:', logs.filter((l) => l.indexOf('model handle') >= 0).join(' | '));
 console.log('shadow line:', logs.filter((l) => l.indexOf('shadow map') >= 0).join(' | '));
+console.log('terrain line:', logs.filter((l) => l.indexOf('terrain:') >= 0)[0]);
 console.log('death frame:', deathFrame, 'stats:', JSON.stringify(deadStats));
 console.log('bot herd:', botCount, 'bot poses:', botPoses, 'bot jumps:', botJumps, 'min gap:', minGap);
 console.log('bot idle variants:', botIdles.join(','), '| player idle variants:', playerIdles.join(','));

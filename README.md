@@ -9,7 +9,7 @@ JavaScript engine through its raylib host module (`rl`).
 
 Almost everything that moves is JavaScript: `src/main.rs` is a thin host that
 embeds the model and evaluates the scene from `src/game/`, which drives the gait
-state machine, camera, HUD and terrain.
+state machine, camera, HUD and the heightfield terrain.
 
 Prebuilt binaries for Windows x86-64 and Linux x86-64/AArch64 are attached to
 each [release](https://github.com/sdgoij/goats/releases); to build it yourself:
@@ -63,6 +63,16 @@ page, where GitHub plays it.*
   distance haze blends far cloud into the horizon. The **Clouds** setting (Low /
   Medium / High — 6 / 12 / 22 march steps) trades quality for speed; `B`
   switches to the billboard fallback.
+- **Heightfield terrain**: the ground is a 3-octave noise field built into a
+  48x48-quad mesh (`rl.makeModel`) and drawn in one call, so it carries real
+  per-vertex normals, UVs and colours. It spans +/-48 units around the goat and
+  rebuilds once the goat has moved 24. Materials (grass, dark grass, sand, mud,
+  rock) are per-vertex colours chosen from height, slope and patchiness noise,
+  modulated by a tiling detail texture; a level spawn bowl keeps the start flat.
+  The goat, the herd, the grass and both shadows all read `terrainHeight`, so
+  nothing floats or sinks. A cube-per-cell version of this measured 41 fps
+  against 56 for the flat plane, which is why it is one mesh; without the
+  `makeModel` binding the ground falls back to the flat slab.
 - **Real lighting and shadows (M4/M4b)**: a small custom GLSL program lights
   the scene. A directional sun (or moon at night) driven by the clock, plus a
   hemispheric ambient term, shades the goat and the terrain per fragment. The
@@ -265,13 +275,21 @@ Playing a skinned, animated model needed new bindings in Slag's raylib
 module (committed upstream in `sdgoij/slag`):
 
 ```
-loadModel  isModelValid  unloadModel
-setModelShader
+loadModel  makeModel  isModelValid  unloadModel
+setModelShader  setModelTexture
 drawModel  drawModelEx   modelBounds
 modelAnimationCount  modelBoneCount
 modelAnimationName   modelAnimationFrameCount  modelAnimationDuration
 updateModelAnimation
 ```
+
+`rl.makeModel(vertices[, indices[, normals[, colors[, texcoords]]]])` builds a
+model from flat number arrays and returns a handle in the same registry as
+`loadModel`, so every other binding here applies to it unchanged. That is what
+makes the heightfield possible: terrain drawn from immediate-mode geometry gets
+raylib's default normal `(0, 0, 1)` and texcoord `(0, 0)`, so it cannot be lit or
+textured. The arrays are allocated with raylib's allocator, so `unloadModel`
+frees them exactly once.
 
 Two raylib build features are required and are enabled by the dependency:
 `SUPPORT_FILEFORMAT_GLTF` (so `.glb` loads at all) and `SUPPORT_FILEFORMAT_JPG`
@@ -300,8 +318,10 @@ setModelTexture
 
 Two consequences shape the scene. raylib's default shader is unlit and
 `DrawMesh` binds the *material's* shader, ignoring `beginShaderMode` — so the
-goat is routed through the lit program with `setModelShader`, while the terrain
-(immediate-mode cubes) uses `beginShaderMode`. And because this is a
+goat and the terrain are routed through the lit program with `setModelShader`,
+while the grass and the cube fallback use `beginShaderMode`. (A model draw also
+resets the batch shader when it finishes, which is why the terrain is drawn
+outside the grass's shader-mode block.) And because this is a
 CPU-skinning build, raylib already deforms positions *and* normals on the CPU
 before upload, so the lit shader needs no bone matrices.
 
@@ -312,10 +332,11 @@ as `1 - depth` so the cleared-black background reads as "far". The shadow map is
 handed to the *model* draw through a material map — `setModelTexture` puts it in
 every material's map 1, which `DrawMesh` binds to unit 1 and feeds the `texture1`
 sampler from. That is the only reliable route, since `setShaderValueTexture`
-picks a unit that the model's own maps then overwrite; the terrain (batch path)
-has no materials and uses `setShaderValueTexture` directly. The grass tufts
+picks a unit that the model's own maps then overwrite; the grass and the cube
+fallback (batch path) have no materials and use `setShaderValueTexture` directly.
+The grass tufts
 inside the light's box go in through the same depth pass, but via the batch path
-(`beginShaderMode`, like the terrain) and drawn before the goat so its depth wins
+(`beginShaderMode`) and drawn before the goat so its depth wins
 on overlap; tufts outside the box cannot project into the map, so they are
 culled. The field itself is generated per 2-unit cell from a hash of the cell, so
 it follows the goat and never leaves bare ground behind. `K` cycles the map, a

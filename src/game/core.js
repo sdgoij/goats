@@ -165,11 +165,12 @@ const HEX256 = (function buildHex256() {
 
 // Local -> world: yaw about Y, then translate. The goat faces local +X, and
 // `rl.drawModelEx` rotates the model by the same convention (a Y-axis rotation
-// maps local +X to (cos, -sin) in the XZ plane).
+// maps local +X to (cos, -sin) in the XZ plane). `y` is measured from the
+// ground under the goat (`goatBaseY`), so the cube fallback climbs the terrain.
 function toWorld(p, g) {
     const c = Math.cos(g.yaw);
     const s = Math.sin(g.yaw);
-    return { x: g.px + p.x * c + p.z * s, y: g.py + p.y, z: g.pz - p.x * s + p.z * c };
+    return { x: g.px + p.x * c + p.z * s, y: goatBaseY(g) + p.y, z: g.pz - p.x * s + p.z * c };
 }
 
 // A point `len` along a bone that starts at `from`, rotated `ang` in the local
