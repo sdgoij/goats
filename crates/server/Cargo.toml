@@ -1,0 +1,15 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# The binary is `goatsd`; the package name only has to be unique in the
+# workspace.
+[[bin]]
+name = "goatsd"
+path = "src/main.rs"
+
+[dependencies]
+session = { path = "../session" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }

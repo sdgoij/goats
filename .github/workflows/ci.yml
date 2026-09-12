@@ -92,7 +92,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --workspace
 
       # The networking crates carry their own tests (the transport's loopback
       # session); the scene is covered by the harness above.
@@ -105,7 +105,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/goats.exe dist/
+          Copy-Item target/release/goats.exe, target/release/goatsd.exe dist/
           Copy-Item README.md, LICENSE.md dist/
           Compress-Archive -Path dist/* -DestinationPath ${{ matrix.package }} -Force
 
@@ -113,7 +113,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p dist
-          cp target/release/goats dist/
+          cp target/release/goats target/release/goatsd dist/
           cp README.md LICENSE.md dist/
           tar -czf ${{ matrix.package }} -C dist .
 
