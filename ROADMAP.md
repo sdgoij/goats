@@ -77,7 +77,7 @@ uses.
 | **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | ✅ **Done** |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | ✅ **Done** (players sync; server-owned bots/weather are M12b) |
-| **M12b** | Server-owned world: headless `goatsd` scene, bot authority | M12 | L | ✅ **Done** (the bots are the server's; weather is still per-client) |
+| **M12b** | Server-owned world: headless `goatsd` scene, bot and weather authority | M12 | L | ✅ **Done** (the bots and sky are the server's; food is still local) |
 | **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
 
 ---
@@ -878,26 +878,41 @@ what it receives and does not run the bot AI at all (`netWorldLocal` gates
 simulates the herd and publishes it. The relay accepts only `Datagram::Peer` from
 a client, so a client cannot move the bots.
 
+The sky followed the bots, on the same snapshot. `WeatherState` carries the
+state the machine is in, the eased cloudiness and rain, the wind and the
+day/night clock; the wire version is 4. The host runs `updateWeather`/
+`updateWind`; a client takes the scalars (`applyWeatherState`) and still
+recomputes its own goat's speed and drain every frame, because those depend on
+its own belly. Clouds, rain particles and grass sway stay local and relative to
+the viewer, which is why the wind reaches them but their positions do not cross
+the wire; the rain keeps its own PRNG stream so a client, which never advances
+`rngState`, still gets varied streaks without disturbing the seeded weather. `C`
+and `T` are host-only now, since a client forcing either would just be
+overwritten.
+
 The headless half is `crates/server/src/headless.rs`: it evaluates the client's
 exact scene parts, in the client's order, against a null `rl`
 (`crates/server/src/headless_rl.js`) instead of installing raylib, then drives
-`sceneFrame` at a fixed 1/60 and reads the bots back as JSON. A test asserts the
+`sceneFrame` at a fixed 1/60 and reads the world back as JSON. A test asserts the
 server's part list matches `crates/goats/src/main.rs`, so the two cannot silently
 diverge. `goatsd` seeds the sim from the session seed before `sceneInit`, so the
 world is generated from it rather than adopted after the fact — which closes the
 "the initial layout does not agree" gap the player-sync note left open.
 
-**Still open.** Weather is seed-shared and still simulated per client, so it can
-drift; moving it behind the server is the remaining slice. The scene also does
-the full render-side work every step (all no-ops, but real JavaScript): a release
-build keeps up with 60 Hz, a debug one does not, so `goatsd` wants `--release`.
+**Still open.** Food is the last piece of the world that is not the server's:
+the eaten cells and their regrowth are local to each client, so a client can see
+(eat) grass the server has already consumed. The seed keeps the regrowth stream
+in step, which is why the drift is small, but it is not authority. Separately,
+the scene does the full render-side work every step (all no-ops, but real
+JavaScript): a release build keeps up with 60 Hz, a debug one does not, so
+`goatsd` wants `--release`.
 
-**Verified.** `cargo test --workspace` — proto 13, session 8, goats 4, server 3
-(one of which is `#[ignore]`d: three fresh sims, each re-JITing the scene, is
-~35 s) — the harness at ALL PASS (124, including the host-publishes and
-client-mirrors checks), `cargo fmt --all -- --check` and `cargo clippy
+**Verified.** `cargo test --workspace` — proto 13, session 8, goats 4, server 2
+plus 1 `#[ignore]`d (three fresh sims, each re-JITing the scene, is ~35 s) — the
+harness at ALL PASS (125, including the host-publishes, client-mirrors and
+weather-mirrors checks), `cargo fmt --all -- --check` and `cargo clippy
 --workspace --all-targets -- -D warnings` clean. The live check — a `goatsd`
-session whose bots move together for every client — needs a display.
+session whose herd and sky stay together for every client — needs a display.
 
 ---
 
