@@ -1,0 +1,135 @@
+name: CI
+
+# Tests run on every push and pull request. Tagged pushes (`v*`) additionally
+# build the three release binaries and publish them as a GitHub Release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The headless harness is the project's test suite: it stubs the `rl` surface
+  # and drives the whole scene (gait states, stats, sleep, death, weather, the
+  # bot herd, eating, the menu and asset embedding) through a scripted timeline.
+  # It needs only Node -- no raylib, no display.
+  test:
+    name: Logic tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax-check every scene part
+        shell: bash
+        run: for f in src/game/*.js tools/*.js; do node --check "$f"; done
+      - name: Run the goat logic harness
+        run: node tools/goat_logic_test.js
+
+  # The game embeds every asset it needs, so each release is a single binary.
+  build:
+    name: Build (${{ matrix.name }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows-latest
+            package: goats-windows-x86_64.zip
+          - name: linux-x86_64
+            os: ubuntu-latest
+            package: goats-linux-x86_64.tar.gz
+          # GitHub-hosted arm64 runners; a public repository gets these on the
+          # free plan. To build aarch64 without them, this job can instead run
+          # on x86-64 under QEMU, or cross-compile with a `cross`/Docker
+          # toolchain and an aarch64 sysroot.
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            package: goats-linux-aarch64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      # Slag compiles raylib (via cmake) and its bindings (via bindgen, which
+      # needs libclang). The engine builds GLFW with the Wayland backend, which
+      # needs the Wayland protocol headers; GLFW loads libwayland-client at
+      # runtime with dlopen, so there is no link-time Wayland dependency (the
+      # `-lX11` that raylib-sys emits is dropped by --as-needed). The X11 and
+      # Mesa headers are installed to cover an X11 build of the engine.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang libclang-dev \
+            libasound2-dev \
+            libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev \
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libxext-dev \
+            libgl1-mesa-dev libegl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      # Ship the licence and the readme alongside the self-contained binary.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/goats.exe dist/
+          Copy-Item README.md, LICENSE.md dist/
+          Compress-Archive -Path dist/* -DestinationPath ${{ matrix.package }} -Force
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp target/release/goats dist/
+          cp README.md LICENSE.md dist/
+          tar -czf ${{ matrix.package }} -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.package }}
+          if-no-files-found: error
+
+  # Only a tag publishes; ordinary pushes just build and keep the artifacts.
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: List the assets
+        run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: false

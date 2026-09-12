@@ -12,6 +12,15 @@ state machine, camera, HUD and terrain.
 cargo run --release
 ```
 
+## Demo
+
+A short clip of the sandbox in motion:
+
+<video src="goats.mp4" controls muted loop width="100%"></video>
+
+*If the player above does not appear, [`goats.mp4`](goats.mp4) opens on its file
+page, where GitHub plays it.*
+
 ## Features
 
 - Skinned glTF goat with eleven baked clips: `GoatIdle` / `GoatIdle2` /
@@ -55,8 +64,9 @@ cargo run --release
   natively and cost almost no memory); bleats and thunder are short `Sound`
   effects with a little pitch variation. Rain and wind volume follow the weather,
   thunder rumbles once the rain is heavy, and the goat bleats on jump, sleep,
-  waking and death. Press `M` to mute. Audio loads from `sfx/` on disk and is
-  skipped if a file is missing.
+  waking and death. Press `M` to mute. Every clip is embedded in the binary (the
+  long ambience beds are shipped as Ogg Vorbis), so the game needs no files on
+  disk.
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
@@ -100,6 +110,11 @@ cargo run --release
 - Rust with edition 2024 support (tested with 1.98).
 - A GPU/driver exposing OpenGL 3.3.
 - Network access on the first build: Slag is a **git dependency**.
+- On Linux, the development packages raylib and its Wayland GLFW backend need
+  (Slag compiles GLFW itself): `cmake`, `pkg-config`, a C toolchain,
+  `clang` + `libclang-dev` for bindgen, `libasound2-dev`, `libwayland-dev` +
+  `libwayland-bin` + `wayland-protocols` + `libxkbcommon-dev`, and the Mesa/EGL
+  headers. `.github/workflows/ci.yml` carries the exact `apt-get` list.
 
 ## Building
 
@@ -124,18 +139,42 @@ cargo run --release   # recommended
 cargo run             # debug builds work too; see "Troubleshooting"
 ```
 
+## Releases
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+- **Logic tests** on `ubuntu-latest` and `windows-latest`: `node --check` over
+  the scene parts and the tool scripts, then the headless harness
+  (`node tools/goat_logic_test.js`).
+- **Builds** for the three supported targets, each uploaded as a workflow
+  artifact:
+
+| Target | Runner | Archive |
+| --- | --- | --- |
+| Windows x86-64 | `windows-latest` | `goats-windows-x86_64.zip` |
+| Linux x86-64 | `ubuntu-latest` | `goats-linux-x86_64.tar.gz` |
+| Linux AArch64 | `ubuntu-24.04-arm` | `goats-linux-aarch64.tar.gz` |
+
+Pushing a `v*` tag publishes all three archives as a GitHub Release; an ordinary
+push only builds and keeps the artifacts. Because the model and every sound are
+embedded, an archive is just the executable plus this readme and the licence.
+The AArch64 job uses GitHub's hosted arm64 runners, which a public repository
+gets on the free plan.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
-| `src/main.rs` | Rust host: installs the JIT + raylib, embeds the GLB, joins and evaluates the scene |
-| `src/game/*.js` | The scene, split into 9 parts (core, model, world, lighting, sky, audio, weather, bots, goat) |
-| `sfx/` | Music, weather ambience and goat vocalisations (loaded at runtime) |
+| `src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
+| `src/game/*.js` | The scene, split into 12 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu) |
+| `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
 | `goat_animated.glb` | Exported model (11 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials (its `.blend1` auto-backup is git-ignored) |
+| `goats.mp4` | The demo clip for the README (22 s, 1280×720, H.264) |
 | `tex/` | Knitted-fleece textures (diffuse / normal / roughness / displacement / AO) |
 | `tools/inspect_glb.py` | Dump a GLB's images, textures, materials and animations |
 | `tools/goat_logic_test.js` | Headless Node harness for the scene (stubs `rl`) |
+| `.github/workflows/ci.yml` | Tests, release builds and tag publishing |
 | `slag/` | Optional local Slag checkout (git-ignored) |
 
 ## How it is wired
