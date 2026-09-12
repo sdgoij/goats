@@ -2,6 +2,11 @@ name: CI
 
 # Tests run on every push and pull request. Tagged pushes (`v*`) additionally
 # build the three release binaries and publish them as a GitHub Release.
+#
+# The action majors below are the first of each action that run on Node 24: Node
+# 20 is removed from the runners on 2026-09-23. See github.blog/changelog,
+# "Deprecation of Node 20 on GitHub Actions runners". (checkout v5, setup-node
+# v5, upload-artifact v7, download-artifact v8, action-gh-release v3.)
 on:
   push:
     branches: [main]
@@ -30,8 +35,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - name: Syntax-check every scene part
@@ -64,7 +69,7 @@ jobs:
             os: ubuntu-24.04-arm
             package: goats-linux-aarch64.tar.gz
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Slag compiles raylib (via cmake) and its bindings (via bindgen, which
       # needs libclang). The engine builds GLFW with the Wayland backend, which
@@ -107,7 +112,7 @@ jobs:
           cp README.md LICENSE.md dist/
           tar -czf ${{ matrix.package }} -C dist .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.package }}
@@ -122,14 +127,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - name: List the assets
         run: ls -la dist
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
           draft: false
+          # A semver prerelease (`v0.2.0-rc.1`) is published as a prerelease;
+          # `v0.2.0` stays a normal release.
+          prerelease: ${{ contains(github.ref_name, '-') }}

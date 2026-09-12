@@ -1,5 +1,8 @@
 # Slag Goat
 
+[![CI](https://github.com/sdgoij/goats/actions/workflows/ci.yml/badge.svg)](https://github.com/sdgoij/goats/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/sdgoij/goats?include_prereleases&sort=semver&label=release)](https://github.com/sdgoij/goats/releases)
+
 A JavaScript-driven 3D goat sandbox. A rigged, animated goat authored in Blender
 is loaded and played back inside the [Slag](https://github.com/sdgoij/slag)
 JavaScript engine through its raylib host module (`rl`).
@@ -7,6 +10,9 @@ JavaScript engine through its raylib host module (`rl`).
 Almost everything that moves is JavaScript: `src/main.rs` is a thin host that
 embeds the model and evaluates the scene from `src/game/`, which drives the gait
 state machine, camera, HUD and terrain.
+
+Prebuilt binaries for Windows x86-64 and Linux x86-64/AArch64 are attached to
+each [release](https://github.com/sdgoij/goats/releases); to build it yourself:
 
 ```
 cargo run --release
