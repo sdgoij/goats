@@ -22,6 +22,7 @@
 const CONSOLE_KEY = typeof rl.KEY_GRAVE === "number" ? rl.KEY_GRAVE : 96;
 const CONSOLE_MAX_LINES = 200;
 const CONSOLE_HISTORY = 32;
+const CONSOLE_MAX_INPUT = 512;
 
 const CONSOLE_COLORS = {
     echo: rl.color(148, 150, 158, 255),    // what the player typed
@@ -124,6 +125,51 @@ function consoleSubmit(line) {
     consoleCaret = 0;
 }
 
+// Reads the engine's clipboard. Without the binding, paste and copy say so
+// rather than silently doing nothing.
+function consoleClipboardAvailable() {
+    return typeof rl.getClipboardText === "function" && typeof rl.setClipboardText === "function";
+}
+
+// Pasted text arrives as one line of printable characters: a ticket copied from
+// a terminal comes with a newline, and a text field has no room for either.
+function consoleSanitizePaste(text) {
+    let out = "";
+    for (const character of String(text)) {
+        const code = character.codePointAt(0);
+        if (code < 32 || code === 127) continue;
+        out += character;
+    }
+    return out.trim();
+}
+
+// Ctrl+V: insert the clipboard at the caret.
+function consolePaste() {
+    if (typeof rl.getClipboardText !== "function") {
+        consoleSystem("paste needs the engine's getClipboardText binding");
+        return;
+    }
+    const text = consoleSanitizePaste(rl.getClipboardText());
+    const room = CONSOLE_MAX_INPUT - consoleInput.length;
+    if (text === "" || room <= 0) return;
+    const insert = text.slice(0, room);
+    consoleInput = consoleInput.slice(0, consoleCaret) + insert + consoleInput.slice(consoleCaret);
+    consoleCaret += insert.length;
+}
+
+// Ctrl+C, or the `copy` verb: put text on the clipboard. Returns false when the
+// engine has no clipboard, so a command can report it.
+function consoleCopy(text) {
+    if (typeof rl.setClipboardText !== "function") {
+        consoleSystem("copy needs the engine's setClipboardText binding");
+        return false;
+    }
+    const value = String(text);
+    rl.setClipboardText(value);
+    consoleSystem("copied " + value.length + " characters");
+    return true;
+}
+
 // Read the character queue and the editing keys, once a frame while open.
 function consoleHandleInput() {
     // Text: raylib queues one codepoint per key press, 0 once drained, so read
@@ -131,7 +177,7 @@ function consoleHandleInput() {
     if (typeof rl.getCharPressed === "function") {
         let code = rl.getCharPressed();
         while (code !== 0) {
-            if (code >= 32 && code < 127) {
+            if (code >= 32 && code < 127 && consoleInput.length < CONSOLE_MAX_INPUT) {
                 consoleInput = consoleInput.slice(0, consoleCaret) + String.fromCharCode(code) +
                     consoleInput.slice(consoleCaret);
                 consoleCaret += 1;
@@ -139,6 +185,11 @@ function consoleHandleInput() {
             code = rl.getCharPressed();
         }
     }
+    // Clipboard. Ctrl+V is how a ticket gets in -- they are long, and typing one
+    // correctly is not a reasonable thing to ask of anyone.
+    const control = rl.isKeyDown(rl.KEY_LEFT_CONTROL) || rl.isKeyDown(rl.KEY_RIGHT_CONTROL);
+    if (control && rl.isKeyPressed(rl.KEY_V)) consolePaste();
+    if (control && rl.isKeyPressed(rl.KEY_C) && consoleInput.length > 0) consoleCopy(consoleInput);
     if (consoleCaret > 0 && rl.isKeyPressed(rl.KEY_BACKSPACE)) {
         consoleInput = consoleInput.slice(0, consoleCaret - 1) + consoleInput.slice(consoleCaret);
         consoleCaret -= 1;

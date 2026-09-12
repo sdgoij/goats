@@ -22,7 +22,7 @@ const ctlHeld = {};
 const HELP = "help ping state stats time weather bots camera features fps " +
     "jump sleep wake restart kill health energy heal eat grass walk trot run back stop " +
     "turn yaw pos phase pause resume step lighting shadows sky mute settings setting ui console " +
-    "host connect leave who net " +
+    "host connect leave who net copy " +
     "screenshot quit";
 
 // A movement key is down if a script holds it or the real keyboard does, and no
@@ -290,6 +290,14 @@ function sceneCommand(line) {
             return "ok " + JSON.stringify(netStatus());
         case "net":
             return "ok " + JSON.stringify(netStatus());
+        case "copy": {
+            if (!consoleClipboardAvailable()) return "error clipboard unavailable";
+            // With no argument, `copy` is the ticket -- the one thing long enough
+            // that it should never have to be typed.
+            const text = parts.length > 1 ? parts.slice(1).join(" ") : netTicket;
+            if (text === "") return "error nothing to copy";
+            return consoleCopy(text) ? "ok copy" : "error clipboard unavailable";
+        }
 
         // ---- goat state --------------------------------------------------
         case "jump":

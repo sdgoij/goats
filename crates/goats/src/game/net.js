@@ -100,6 +100,7 @@ function sceneNetEvent(line) {
         case "ticket":
             netTicket = String(event.ticket);
             consoleNet("net: ticket " + netTicket);
+            consoleSystem("net: `copy` puts the ticket on the clipboard");
             break;
         case "welcome":
             netMode = "client";

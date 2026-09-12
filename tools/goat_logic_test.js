@@ -77,10 +77,15 @@ const pressed = {};
 // The console's text queue (M9): `rl.getCharPressed` drains this, the way raylib
 // queues one codepoint per real key press.
 const chars = [];
+// The stubbed clipboard, and every write to it, so the copy path is observable.
+let clipboard = '';
+const clipboardWrites = [];
 // Console probe (M9): the frames whose post-frame console/goat state is
 // snapshotted, because `run()` drives the loop internally.
 const consoleProbe = {};
-const consoleProbeFrames = new Set([4007, 4008, 4009, 4011, 4013, 4016, 4018, 4021]);
+const consoleProbeFrames = new Set([
+    4007, 4008, 4009, 4011, 4013, 4016, 4018, 4021, 4032, 4034,
+]);
 
 function applyInput(i) {
     for (const k of Object.keys(keys)) delete keys[k];
@@ -107,11 +112,25 @@ function applyInput(i) {
     if (i === 4018) pressed[256] = true;                    // ESC closes, not the menu
     if (i === 4020) pressed[96] = true;                     // ` reopens
     if (i === 4022) pressed[256] = true;                    // ESC closes again
+    // Clipboard: paste a ticket with Ctrl+V, copy the line back out with
+    // Ctrl+C. The clipboard carries a newline, as one copied from a terminal
+    // does, so the paste has to strip it.
+    if (i === 4030) pressed[96] = true;                     // ` opens
+    if (i === 4032) {
+        clipboard = 'endpointABC\n';
+        keys[341] = true;                                   // CTRL
+        pressed[86] = true;                                 // V
+    }
+    if (i === 4034) {
+        keys[341] = true;                                   // CTRL
+        pressed[67] = true;                                 // C
+    }
+    if (i === 4036) pressed[96] = true;                     // ` closes
 }
 
 const constants = {
     MOUSE_BUTTON_LEFT: 0,
-    KEY_SPACE: 32, KEY_ESCAPE: 256, KEY_ENTER: 257, KEY_BACKSPACE: 259,
+    KEY_SPACE: 32, KEY_ESCAPE: 256, KEY_ENTER: 257, KEY_BACKSPACE: 259, KEY_V: 86,
     KEY_DELETE: 261, KEY_GRAVE: 96,
     KEY_RIGHT: 262, KEY_LEFT: 263, KEY_DOWN: 264, KEY_UP: 265,
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
@@ -215,6 +234,8 @@ const rl = Object.assign({}, constants, {
     isKeyPressed: (k) => !!pressed[k],
     isKeyReleased: () => false, isKeyUp: (k) => !keys[k],
     getCharPressed: () => (chars.length > 0 ? chars.shift() : 0),
+    getClipboardText: () => clipboard,
+    setClipboardText: (text) => { clipboard = String(text); clipboardWrites.push(clipboard); },
     beginDrawing: () => {}, clearBackground: () => {}, endDrawing: () => {
         // The splash's loading frames are not part of the scripted timeline.
         if (typeof sandbox.sceneReady === 'function' && !sandbox.sceneReady()) {
@@ -559,6 +580,21 @@ const cp = (i) => consoleProbe[i] ||
     { x: null, z: null, state: { open: false, input: '', lines: [], history: [] }, ui: '' };
 const cpLines = (i) => cp(i).state.lines || [];
 
+// Clipboard (M9b): paste is a key path (frames 4030-4036), so the probe carries
+// it; `copy` is a command and is driven directly here.
+let clipTest = {};
+try {
+    const pasted = cp(4032).state.input;
+    clipTest.pasted = pasted.endsWith('endpointABC') && pasted.indexOf('\n') < 0;
+    clipTest.copiedKey = clipboardWrites.some((w) => w.endsWith('endpointABC'));
+    clipTest.copyReply = sandbox.sceneCommand('copy hello');
+    clipTest.copiedVerb = clipTest.copyReply === 'ok copy' &&
+        clipboardWrites[clipboardWrites.length - 1] === 'hello';
+    clipTest.nothing = sandbox.sceneCommand('copy') === 'error nothing to copy';
+} catch (e) {
+    clipTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -688,6 +724,12 @@ const checks = [
     ['connect queues a join', netTest.joinQueued, netTest],
     ['host without a name asks for one', netTest.promptAsked, netTest],
     ['the prompt answer is used', netTest.promptAnswered, netTest],
+    // Clipboard (M9b): a ticket is too long to type, so paste has to work.
+    ['the console pastes and strips the newline', clipTest.pasted, clipTest],
+    ['Ctrl+C copies the line', clipTest.copiedKey, clipTest],
+    ['the copy verb writes the clipboard', clipTest.copiedVerb, clipTest],
+    ['copy with nothing to copy is an error', clipTest.nothing, clipTest],
+    ['no clipboard errors', clipTest.error === undefined, clipTest.error],
 ];
 
 const failed = checks.filter((c) => !c[1]);
