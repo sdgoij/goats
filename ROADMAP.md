@@ -76,7 +76,8 @@ uses.
 | **M9b** | Console clipboard: paste a ticket | M9 | S | ✅ **Done** |
 | **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | ✅ **Done** |
-| **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | The actual gameplay payload |
+| **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | ✅ **Done** (players sync; server-owned bots/weather are M12b) |
+| **M12b** | Server-owned world: headless `goatsd` scene, bot/weather authority | M12 | L | The world stops drifting once two players touch it |
 | **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
 
 ---
@@ -838,6 +839,35 @@ whisper both arrived in the other window.
 - **Deferred:** client-side prediction/reconciliation, server-authoritative
   movement and lag compensation. Also settle `P` (pauses locally today) and the
   death/restart flow, both of which must become server-owned or be disabled.
+
+**Landed (player sync).** The wire version is 2. `Welcome` carries the session
+seed, which the host mixes from the clock at `host` and both ends hand to the
+scene as the first event; `sceneUseSeed` derives the weather, bot, food and
+audio xorshift streams from it with one draw each. Offline the streams keep
+their old constants, so the harness is untouched. `PeerState`/`PeerFrame` and a
+`Gait` enum carry the transforms, and both the host and each client publish
+their own goat every third frame (~20 Hz) on QUIC datagrams, which the server
+relays tagged with the sender's canonical name — a client sends the state alone,
+so it cannot move someone else's goat. Non-finite states are dropped rather than
+relayed. The scene keeps one goat model per peer (the same per-goat ownership
+the bots use), eases position, yaw and phase toward the newest snapshot on the
+short way around, and drops the model when the peer leaves.
+
+**Still open (M12b).** The bots and the weather are still simulated on every
+client, so once two players interact with a bot the goats drift; making that
+authoritative needs a headless scene in `goatsd`. The engine supports it —
+`install_rlx` plus a stub `rl` global runs the scene with no window, which is the
+shape the engine's own headless test uses — but the scene has to be driven with
+no display and the bots and weather moved behind the server. Until then the seed
+is partial by design: weather and food regrowth agree from the join moment, the
+initial layout does not.
+
+**Verified.** `cargo test --workspace` (proto 12, session 7 — the new relay test
+sends real datagrams through a real host — goats 4), `node tools/goat_logic_test.js`
+at ALL PASS (120, including the seed, pose-cadence and peer checks), `cargo fmt
+--all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`
+clean. The visual check — two windows, each seeing the other's goat move — still
+needs a display.
 
 ---
 

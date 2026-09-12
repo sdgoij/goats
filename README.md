@@ -152,16 +152,27 @@ ticket.
   everyone. `@name <text>` (or `say` / `msg <name> <text>`) is a 1:1 whisper, and
   the console marks it as one. Offline, bare text is an error, and `who` lists
   the roster.
+- **See each other**: every player's goat is relayed to the others about 20 times
+  a second, so you can watch them move. Snapshots are unreliable datagrams and
+  the scene interpolates between them.
 - `leave` ends the session.
 
 Chat is rate limited to a short burst and each line is capped and stripped of
-control characters, so a session cannot be flooded by one player.
+control characters, so a session cannot be flooded by one player. Movement is
+client-authoritative: the server relays each player's own goat rather than
+simulating it.
 
 It is LAN-only for now: the endpoint binds local sockets with no relay, so it
 reaches other machines on the same network and not the wider internet. Internet
 play (n0's relays and hole punching) is a one-line change in the session crate.
 
-The headless server is a lobby at this point: it does not simulate the world yet.
+The world is shared by seed, which the host picks at `host` and sends with the
+welcome; every client derives the weather, food regrowth and bleat streams from
+it. It is not yet fully server-owned: the bots still simulate on each client, so
+they can drift apart once players interact with them.
+
+The headless server is a lobby at present: it holds the session and relays goats
+and chat, but does not simulate the world.
 
 ## Requirements
 
@@ -273,7 +284,9 @@ frame the host hands the scene its events with `sceneNetEvent(line)` and takes
 the scene's queued intents back with `sceneNetDrain()`, without ever awaiting in
 the frame loop. `net.js` is the scene end of that channel; the console commands
 are `host`, `connect <ticket>`, `who`, `leave`, `say` and `msg` (with bare text
-and a leading `@name` both routed to chat).
+and a leading `@name` both routed to chat). Chat and roster travel on reliable
+streams, one message per stream; goat snapshots travel as unreliable datagrams,
+which `net.js` turns into a remote goat per peer and eases toward the latest one.
 
 ## Model pipeline
 
