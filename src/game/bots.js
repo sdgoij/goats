@@ -1,4 +1,4 @@
-// Part 9/11 of the goat scene: the bot herd.
+// Part 9/12 of the goat scene: the bot herd.
 //
 // Each bot owns its own model handle. That is not wasteful book-keeping: this is
 // a CPU-skinning build, so `updateModelAnimation` deforms the vertices *inside
@@ -12,7 +12,6 @@
 // near without any explicit flocking.
 // ---- bot herd ------------------------------------------------------------
 
-const BOT_COUNT = 6;
 // How far a bot will look for grass to walk to when it decides to graze.
 const GRAZE_SEEK_RANGE = 12;
 
@@ -71,43 +70,71 @@ function makeBotTextures() {
     }
 }
 
-// Load one model per bot and give it its lit shader, shadow map and fleece.
-function loadBots() {
+// The temperament/coat for bot `i`. Only six fleeces are hand-authored, so past
+// the sixth the coats recycle with a bigger body -- enough variety up to the
+// settings' ten goats.
+function botSpec(i) {
+    const base = BOT_SPEC[i % BOT_SPEC.length];
+    const cycle = Math.floor(i / BOT_SPEC.length);
+    if (cycle === 0) return base;
+    return { coat: base.coat, scale: base.scale * (1 + 0.08 * cycle), bold: base.bold, lazy: base.lazy };
+}
+
+// Load one bot's model and give it its lit shader, shadow map and fleece.
+function botAdd(i) {
+    const handle = rl.loadModel(MODEL_PATH);
+    if (handle < 0) return false;
+    const tex = BOT_TEX[i % BOT_TEX.length];
+    if (litShader >= 0) rl.setModelShader(handle, litShader);
+    if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
+    if (tex !== undefined && tex >= 0) rl.setModelTexture(handle, 0, tex);
+    // A golden-angle spread rings the player evenly for any herd size.
+    const a = i * 2.399963 + 0.3;
+    const r = 6 + botRnd() * 14;
+    BOTS.push({
+        model: handle,
+        spec: botSpec(i),
+        x: goat.px + Math.cos(a) * r,
+        z: goat.pz + Math.sin(a) * r,
+        yaw: a + Math.PI,
+        phase: botRnd(),
+        mode: "idle",
+        timer: 0.5 + botRnd() * 3,
+        tx: 0,
+        tz: 0,
+        zoom: 0,       // seconds of "zoomies" left while running
+        jumpTime: 0,
+        jumpDur: 1,
+        jumpSpeed: 0,
+        jumpCool: 0,
+        eatTime: 0,    // seconds into the current meal
+        eatDur: 1,
+        eatCool: 0,    // seconds before this bot will graze again
+        satiety: 0,    // 0..1, eases this bot's rain slowdown while it lasts
+        graze: false,  // walking to a tuft to eat when it arrives
+        // Which clip variant this bot plays per role; -1 so the first cycle
+        // lands on index 0, and walk/trot/run have only one clip each.
+        var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0 },
+    });
+    return true;
+}
+
+// Grow or shrink the herd to `n` (0..10). Every bot owns its model (CPU skinning),
+// so a change loads or unloads individual goats at runtime.
+function setHerdSize(n) {
     if (typeof rl.loadModel !== "function" || !haveModel) return;
-    for (let i = 0; i < BOT_SPEC.length; i++) {
-        const handle = rl.loadModel(MODEL_PATH);
-        if (handle < 0) continue;
-        if (litShader >= 0) rl.setModelShader(handle, litShader);
-        if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
-        if (BOT_TEX[i] !== undefined && BOT_TEX[i] >= 0) rl.setModelTexture(handle, 0, BOT_TEX[i]);
-        const a = (i / BOT_SPEC.length) * Math.PI * 2 + 0.3;
-        const r = 6 + botRnd() * 14;
-        BOTS.push({
-            model: handle,
-            spec: BOT_SPEC[i],
-            x: goat.px + Math.cos(a) * r,
-            z: goat.pz + Math.sin(a) * r,
-            yaw: a + Math.PI,
-            phase: botRnd(),
-            mode: "idle",
-            timer: 0.5 + botRnd() * 3,
-            tx: 0,
-            tz: 0,
-            zoom: 0,       // seconds of "zoomies" left while running
-            jumpTime: 0,
-            jumpDur: 1,
-            jumpSpeed: 0,
-            jumpCool: 0,
-            eatTime: 0,    // seconds into the current meal
-            eatDur: 1,
-            eatCool: 0,    // seconds before this bot will graze again
-            satiety: 0,    // 0..1, eases this bot's rain slowdown while it lasts
-            graze: false,  // walking to a tuft to eat when it arrives
-            // Which clip variant this bot plays per role; -1 so the first cycle
-            // lands on index 0, and walk/trot/run have only one clip each.
-            var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0 },
-        });
+    n = clamp(Math.round(n), 0, 10);
+    while (BOTS.length > n) {
+        const b = BOTS.pop();
+        if (typeof rl.unloadModel === "function") rl.unloadModel(b.model);
     }
+    while (BOTS.length < n) {
+        if (!botAdd(BOTS.length)) break;
+    }
+}
+
+function loadBots() {
+    setHerdSize(SETTINGS.herd);
     if (BOTS.length > 0) console.log("goat: " + BOTS.length + " bot goats");
 }
 

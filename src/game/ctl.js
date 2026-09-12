@@ -1,4 +1,4 @@
-// Part 11/11 of the goat scene: the stdin command channel.
+// Part 11/12 of the goat scene: the stdin command channel.
 // ---- control channel ------------------------------------------------------
 //
 // The host (`src/main.rs`) reads a line from stdin, calls `sceneCommand(line)`
@@ -20,11 +20,13 @@ const ctlHeld = {};
 
 const HELP = "help ping state stats time weather bots camera features fps " +
     "jump sleep wake restart kill health energy heal eat grass walk trot run back stop " +
-    "turn yaw pos phase pause resume step lighting shadows sky mute screenshot quit";
+    "turn yaw pos phase pause resume step lighting shadows sky mute settings setting ui " +
+    "screenshot quit";
 
-// A movement key is down if a script holds it or the real keyboard does.
+// A movement key is down if a script holds it or the real keyboard does, and no
+// menu is swallowing input.
 function ctlKeyDown(code) {
-    return ctlHeld[code] === true || rl.isKeyDown(code);
+    return uiScreen === "hud" && (ctlHeld[code] === true || rl.isKeyDown(code));
 }
 
 function ctlRelease(code) {
@@ -180,6 +182,50 @@ function sceneCommand(line) {
             });
         case "fps":
             return "ok " + rl.getFPS();
+
+        // ---- settings / UI ----------------------------------------------
+        case "settings":
+            return "ok " + JSON.stringify({
+                bgm: SETTINGS.bgm,
+                sfx: SETTINGS.sfx,
+                light: SETTINGS.light,
+                shadow: SETTINGS.shadow === SHADOW_MAP ? "map" : SETTINGS.shadow === SHADOW_PLANAR ? "planar" : "off",
+                sky: SETTINGS.sky,
+                herd: SETTINGS.herd
+            });
+        case "setting": {
+            const key = parts[1];
+            if (key === "bgm" || key === "sfx") {
+                const v = ctlArg(parts, 2);
+                if (v === null) return "error setting " + key + " expects a number";
+                SETTINGS[key] = clamp(Math.round(v), 0, 100);
+            } else if (key === "light" || key === "sky") {
+                if (parts[2] === "on" || parts[2] === "off") SETTINGS[key] = parts[2] === "on";
+                else if (parts[2] === "toggle") SETTINGS[key] = !SETTINGS[key];
+                else return "error setting " + key + " expects on|off|toggle";
+            } else if (key === "shadow") {
+                const mode = CTL_SHADOWS[parts[2]];
+                if (mode === undefined) return "error setting shadow expects map|planar|off";
+                SETTINGS.shadow = mode;
+            } else if (key === "herd") {
+                const v = ctlArg(parts, 2);
+                if (v === null) return "error setting herd expects a number";
+                SETTINGS.herd = clamp(Math.round(v), 0, 10);
+            } else {
+                return "error unknown setting: " + (key === undefined ? "" : key);
+            }
+            applySettings();
+            return "ok setting " + key;
+        }
+        case "ui": {
+            const screen = parts[1];
+            if (screen === undefined) return "ok " + uiScreen;
+            if (screen !== "hud" && screen !== "main" && screen !== "settings" && screen !== "keymap") {
+                return "error ui expects hud|main|settings|keymap";
+            }
+            uiScreen = screen;
+            return "ok ui " + uiScreen;
+        }
 
         // ---- goat state --------------------------------------------------
         case "jump":

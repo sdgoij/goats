@@ -39,6 +39,7 @@ const SCENE: &str = concat!(
     include_str!("game/bots.js"),
     include_str!("game/goat.js"),
     include_str!("game/ctl.js"),
+    include_str!("game/menu.js"),
 );
 
 /// One of the scene's global functions, resolved by name.

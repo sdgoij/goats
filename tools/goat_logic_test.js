@@ -87,7 +87,7 @@ const constants = {
 
 const rl = Object.assign({}, constants, {
     color: () => ({}),
-    initWindow: () => {}, setTargetFPS: () => {}, closeWindow: () => {},
+    initWindow: () => {}, setTargetFPS: () => {}, closeWindow: () => {}, setExitKey: () => {},
     loadModel: () => { const h = modelLoads; modelLoads += 1; return h; },
     isModelValid: () => true,
     unloadModel: () => {},
@@ -135,6 +135,13 @@ const rl = Object.assign({}, constants, {
     isMusicPlaying: () => true, musicTimeLength: () => 100, musicTimePlayed: () => 0,
     makeTexture: () => 0,
     drawBillboard: () => {},
+    // raygui controls (the menu screen); the harness never opens one, but the
+    // engine surface should be complete.
+    guiPanel: () => {}, guiGroupBox: () => {}, guiLabel: () => {},
+    guiButton: () => false,
+    guiToggle: (_x, _y, _w, _h, _t, v) => ({ action: 0, value: v }),
+    guiSlider: (_x, _y, _w, _h, _l, _r, v) => ({ action: 0, value: v }),
+    guiComboBox: (_x, _y, _w, _h, _t, v) => ({ action: 0, value: v }),
     windowShouldClose: () => {
         if (frameIndex >= TOTAL) return true;
         applyInput(frameIndex);
@@ -184,10 +191,14 @@ const parts = [...mainRs.matchAll(/include_str!\("game\/([^"]+)"\)/g)].map((m) =
 if (parts.length === 0) throw new Error('no src/game parts found in src/main.rs');
 const source = parts.map((name) => fs.readFileSync(path.join(gameDir, name), 'utf8')).join('');
 let thrown = null;
+let defaultSettings = {};
 try {
     // The scene no longer self-drives (the host owns the loop -- see
-    // src/main.rs), so the harness starts the standalone driver itself.
-    vm.runInContext(source + '\nrun();', sandbox, { filename: 'game.js' });
+    // src/main.rs), so evaluate it, read the settings defaults before the
+    // scripted input (which presses L and friends), then start the driver.
+    vm.runInContext(source, sandbox, { filename: 'game.js' });
+    defaultSettings = JSON.parse(sandbox.sceneCommand('settings').slice(3));
+    sandbox.run();
 } catch (e) {
     thrown = e && e.stack ? e.stack : String(e);
 }
@@ -277,6 +288,38 @@ try {
     eatTest.error = String(e);
 }
 const botEatClips = [...botClipNames].filter((n) => n.indexOf('GoatEat') === 0).length;
+
+// Settings and screens are reachable through the command channel too.
+let settingsDefaults = false;
+let settingsApplied = false;
+let herdGrew = false;
+let herdShrank = false;
+let screenSet = false;
+try {
+    const s = defaultSettings;
+    settingsDefaults = s.bgm === 90 && s.sfx === 90 && s.light === true &&
+        s.shadow === 'map' && s.sky === true && s.herd === 7;
+    sandbox.sceneCommand('setting light off');
+    sandbox.sceneCommand('setting shadow planar');
+    sandbox.sceneCommand('setting sky off');
+    sandbox.sceneCommand('setting herd 9');
+    const f = JSON.parse(sandbox.sceneCommand('features').slice(3));
+    const nine = JSON.parse(sandbox.sceneCommand('bots').slice(3)).count;
+    sandbox.sceneCommand('setting herd 3');
+    const three = JSON.parse(sandbox.sceneCommand('bots').slice(3)).count;
+    settingsApplied = f.lighting === false && f.shadows === 'planar' && f.sky === false;
+    herdGrew = nine === 9;
+    herdShrank = three === 3;
+    sandbox.sceneCommand('setting light on');
+    sandbox.sceneCommand('setting shadow map');
+    sandbox.sceneCommand('setting sky on');
+    sandbox.sceneCommand('setting herd 7');
+    screenSet = sandbox.sceneCommand('ui settings') === 'ok ui settings' &&
+        sandbox.sceneCommand('ui') === 'ok settings';
+    sandbox.sceneCommand('ui hud');
+} catch (e) {
+    eatTest.uiError = String(e);
+}
 // Direct proof the visuals follow the model: drawn tufts drop when one is eaten.
 let tuftVanishes = false;
 let tuftDrawDrop = null;
@@ -366,6 +409,11 @@ const checks = [
     ['bots play the eating clip', botEatClips >= 1, botEatClips],
     ['eaten grass regrows', eatTest.regrew, eatTest],
     ['eaten grass stops being drawn', tuftVanishes, tuftDrawDrop],
+    ['settings default to the spec', settingsDefaults, null],
+    ['settings apply to the world', settingsApplied, null],
+    ['herd size grows the herd', herdGrew, null],
+    ['herd size shrinks the herd', herdShrank, null],
+    ['menu screens can be opened', screenSet, null],
 ];
 
 const failed = checks.filter((c) => !c[1]);

@@ -1,4 +1,4 @@
-// Part 6/11 of the goat scene: music streams, weather beds and goat bleats.
+// Part 6/12 of the goat scene: music streams, weather beds and goat bleats.
 // ---- audio ---------------------------------------------------------------
 //
 // The background track and the weather beds are `Music` streams: they loop
@@ -28,6 +28,16 @@ const MUSIC_VOLUME = 0.20;   // the background track sits well under the sfx
 const SFX_VOLUME = 0.65;
 const RAIN_VOLUME = 0.9;     // scaled by the rain amount
 const WIND_VOLUME = 0.8;     // scaled by the wind gust
+
+// Settings scale the two base levels: SETTINGS.bgm / SETTINGS.sfx are 0..100
+// (see menu.js).
+function musicGain() { return MUSIC_VOLUME * SETTINGS.bgm / 100; }
+function sfxGain() { return SFX_VOLUME * SETTINGS.sfx / 100; }
+
+// Re-apply the music volume after a settings change (SFX volume is set per play).
+function applyAudioSettings() {
+    if (audioReady && musicMain >= 0) rl.setMusicVolume(musicMain, muted ? 0 : musicGain());
+}
 
 let audioReady = false;
 let muted = false;
@@ -59,7 +69,7 @@ function makeAudio() {
     rl.initAudioDevice();
     musicMain = rl.loadMusic(MUSIC_PATH);
     if (musicMain >= 0) {
-        rl.setMusicVolume(musicMain, MUSIC_VOLUME);
+        rl.setMusicVolume(musicMain, musicGain());
         rl.playMusic(musicMain);
     }
     for (let i = 0; i < BLEAT_PATHS.length; i++) {
@@ -91,7 +101,7 @@ function makeAudio() {
 function playBleat(gain) {
     if (!audioReady || muted || BLEATS.length === 0) return;
     const sound = BLEATS[Math.floor(arnd() * BLEATS.length) % BLEATS.length];
-    rl.setSoundVolume(sound, SFX_VOLUME * gain);
+    rl.setSoundVolume(sound, sfxGain() * gain);
     rl.setSoundPitch(sound, 0.9 + arnd() * 0.25);
     rl.playSound(sound);
 }
@@ -102,17 +112,17 @@ function updateAudio(dt) {
     if (musicMain >= 0) rl.updateMusic(musicMain);
     if (rainLoop >= 0) {
         rl.updateMusic(rainLoop);
-        rl.setMusicVolume(rainLoop, muted ? 0 : MUSIC_VOLUME * RAIN_VOLUME * rainAmount);
+        rl.setMusicVolume(rainLoop, muted ? 0 : musicGain() * RAIN_VOLUME * rainAmount);
     }
     if (windLoop >= 0) {
         rl.updateMusic(windLoop);
-        rl.setMusicVolume(windLoop, muted ? 0 : MUSIC_VOLUME * WIND_VOLUME * windSway);
+        rl.setMusicVolume(windLoop, muted ? 0 : musicGain() * WIND_VOLUME * windSway);
     }
     thunderCooldown -= dt;
     if (rainAmount > 0.55 && thunderCooldown <= 0 && THUNDERS.length > 0) {
         const sound = THUNDERS[Math.floor(arnd() * THUNDERS.length) % THUNDERS.length];
         if (!muted) {
-            rl.setSoundVolume(sound, SFX_VOLUME * 0.8);
+            rl.setSoundVolume(sound, sfxGain() * 0.8);
             rl.playSound(sound);
         }
         thunderCooldown = 8 + arnd() * 14;
@@ -121,6 +131,6 @@ function updateAudio(dt) {
 
 function setMuted(next) {
     muted = next;
-    if (audioReady && musicMain >= 0) rl.setMusicVolume(musicMain, muted ? 0 : MUSIC_VOLUME);
+    applyAudioSettings();
 }
 

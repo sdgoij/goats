@@ -1,4 +1,4 @@
-// Part 10/11 of the goat scene: the gait state machine, HUD and frame loop.
+// Part 10/12 of the goat scene: the gait state machine, HUD and frame loop.
 // ---- gait state ----------------------------------------------------------
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
@@ -287,7 +287,7 @@ function drawHud(move) {
         "   audio " + (audioReady ? (muted ? "muted" : "on") : "off") +
         "   herd " + BOTS.length;
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   E eat   Z sleep   T time   L light   K shadow   B sky   M audio   A/D turn   P: pause   ESC: quit",
+    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   E eat   Z sleep   T time   L light   K shadow   B sky   M audio   A/D turn   P: pause   ESC: menu",
         10, 32, 14, rl.RAYWHITE);
 
     // Health and energy bars, top-right.
@@ -329,6 +329,8 @@ function drawHud(move) {
 function sceneInit() {
     rl.initWindow(1000, 640, "Slag goat - walk / run / jump / sleep");
     rl.setTargetFPS(60);
+    // ESC is ours now: it opens the menu instead of closing the window.
+    if (typeof rl.setExitKey === "function") rl.setExitKey(0);
     loadGoat();
     makeEyeTextures();
     makeSkyTextures();
@@ -348,7 +350,14 @@ function sceneInit() {
 // closing or `quit` was received, so the host stops calling it.
 function sceneFrame() {
     if (ctlQuit || rl.windowShouldClose()) return false;
-    const dt = Math.min(rl.getFrameTime(), 0.05);
+    // ESC toggles the main menu: it freezes the game and opens the menu; a second
+    // press resumes (or steps back from a sub-screen).
+    if (rl.isKeyPressed(rl.KEY_ESCAPE)) {
+        uiScreen = uiScreen === "hud" ? "main" : uiScreen === "main" ? "hud" : "main";
+    }
+    // A menu freezes time: every world update is dt-driven, so a zero dt is the
+    // whole pause (input is gated separately).
+    const dt = uiIsOpen() ? 0 : Math.min(rl.getFrameTime(), 0.05);
     sceneFrames += 1;
 
     // food: the nearest tuft decides whether the action menu shows, and the E
@@ -381,7 +390,7 @@ function sceneFrame() {
     clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
 
     // camera: drag to orbit, arrows as a fallback, wheel to zoom
-    if (rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+    if (uiScreen === "hud" && rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
         camYaw -= rl.getMouseDeltaX() * 0.004;
         camPitch -= rl.getMouseDeltaY() * 0.004;
     }
@@ -389,27 +398,32 @@ function sceneFrame() {
     if (ctlKeyDown(rl.KEY_RIGHT)) camYaw -= 1.6 * dt;
     if (ctlKeyDown(rl.KEY_UP)) camPitch += 1.0 * dt;
     if (ctlKeyDown(rl.KEY_DOWN)) camPitch -= 1.0 * dt;
-    camDist -= rl.getMouseWheelMove() * 0.4;
+    if (uiScreen === "hud") camDist -= rl.getMouseWheelMove() * 0.4;
     camPitch = clamp(camPitch, 0.08, 1.35);
     camDist = clamp(camDist, 2.2, 12.0);
 
     // input
-    if (rl.isKeyPressed(rl.KEY_P)) paused = !paused;
-    if (rl.isKeyPressed(rl.KEY_C)) forceWeather();
-    if (rl.isKeyPressed(rl.KEY_L) && litShader >= 0) {
+    if (press(rl.KEY_P)) paused = !paused;
+    if (press(rl.KEY_C)) forceWeather();
+    if (press(rl.KEY_L) && litShader >= 0) {
         useLighting = !useLighting;
+        SETTINGS.light = useLighting;
         if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
         setBotsShader(useLighting ? litShader : -1);
     }
-    if (rl.isKeyPressed(rl.KEY_K) && litShader >= 0) {
+    if (press(rl.KEY_K) && litShader >= 0) {
         // Cycle shadows: map -> planar -> off. The map needs the engine
         // bindings; planar is the fallback.
         shadowMode = (shadowMode + 1) % 3;
         if (shadowMode === SHADOW_MAP && !shadowMapReady) shadowMode = SHADOW_OFF;
         if (shadowMode === SHADOW_PLANAR && shadowShader < 0) shadowMode = SHADOW_OFF;
+        SETTINGS.shadow = shadowMode;
     }
-    if (rl.isKeyPressed(rl.KEY_M)) setMuted(!muted);
-    if (rl.isKeyPressed(rl.KEY_B) && skyShader >= 0) useSkyShader = !useSkyShader;
+    if (press(rl.KEY_M)) setMuted(!muted);
+    if (press(rl.KEY_B) && skyShader >= 0) {
+        useSkyShader = !useSkyShader;
+        SETTINGS.sky = useSkyShader;
+    }
     let move = 0;
     if (ctlKeyDown(rl.KEY_W)) move += 1;
     if (ctlKeyDown(rl.KEY_S)) move -= 1;
@@ -422,12 +436,14 @@ function sceneFrame() {
     if (exhausted) gait = "walk";   // an exhausted goat cannot run or trot
     if (mode !== "sleep" && mode !== "dead" && mode !== "eat") goat.yaw += turn * TURN_RATE * dt;
 
-    // state machine: jump, sleep and death lock the mode; everything else
-    // follows the requested gait.
-    if (mode === "dead") {
-        if (rl.isKeyPressed(rl.KEY_R)) restart();
+    // state machine: jump, sleep, eat and death lock the mode; everything else
+    // follows the requested gait. A menu freezes the machine entirely.
+    if (uiScreen !== "hud") {
+        // paused by the menu
+    } else if (mode === "dead") {
+        if (press(rl.KEY_R)) restart();
     } else if (mode === "sleep") {
-        if (rl.isKeyPressed(rl.KEY_Z) || move !== 0 || stats.energy >= MAX_STAT) {
+        if (press(rl.KEY_Z) || move !== 0 || stats.energy >= MAX_STAT) {
             wakeUp();
         }
     } else if (mode === "jump") {
@@ -440,11 +456,11 @@ function sceneFrame() {
         if (eatTime >= eatDuration()) {
             mode = move !== 0 ? gait : "idle";
         }
-    } else if (rl.isKeyPressed(rl.KEY_E) && foodReady) {
+    } else if (press(rl.KEY_E) && foodReady) {
         startEat(foodTarget);
-    } else if (rl.isKeyPressed(rl.KEY_Z)) {
+    } else if (press(rl.KEY_Z)) {
         startSleep();
-    } else if (rl.isKeyPressed(rl.KEY_SPACE)) {
+    } else if (press(rl.KEY_SPACE)) {
         startJump(move, gait);
     } else {
         mode = move !== 0 ? gait : "idle";
@@ -582,7 +598,8 @@ function sceneFrame() {
     }
     rl.endMode3D();
 drawRain(screenW, screenH);
-drawHud(move);
+if (uiScreen === "hud") drawHud(move);
+else drawUi();
 rl.endDrawing();
 
 if (sceneFrames % 240 === 0) {

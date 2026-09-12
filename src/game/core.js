@@ -1,4 +1,4 @@
-// Part 1/11 of the goat scene: tuning, stats, palette and maths helpers. This
+// Part 1/12 of the goat scene: tuning, stats, palette and maths helpers. This
 // file also carries the scene's overall header comment.
 //
 // A walking, running, jumping goat for the Slag x raylib sandbox.
@@ -19,6 +19,7 @@
 //   bots.js      the autonomous bot herd
 //   goat.js      the gait state machine, HUD and frame loop
 //   ctl.js       the stdin command channel
+//   menu.js      the main menu, settings and keymap (raygui)
 //
 // The goat is `goat_animated.glb`, baked from the Blender rig and loaded through
 // the `rl` model surface. Every clip bakes its forward travel as *in-place*
@@ -62,7 +63,7 @@
 //   mouse drag    orbit the camera        mouse wheel    zoom
 //   arrow keys    orbit the camera (keyboard fallback)
 //   P             pause / resume
-//   ESC           quit
+//   ESC           main menu / resume
 
 // ---- tuning --------------------------------------------------------------
 
@@ -74,6 +75,22 @@ const FALLBACK_TROT_MULT = 1.3;  // how much faster the cube goat "trots"
 const FALLBACK_RUN_MULT = 1.6;   // how much faster the cube goat "runs"
 const FALLBACK_JUMP_TIME = 0.6;  // seconds of the cube goat's hop
 const FALLBACK_JUMP_H = 0.55;    // metres of the cube goat's hop
+
+// ---- settings (see menu.js) ----------------------------------------------
+//
+// Live values the main menu edits. Kept here, in the first part, so every later
+// part can read them; `applySettings` in menu.js pushes them into the systems
+// that own the behaviour. `shadow` holds a SHADOW_* index from lighting.js (the
+// numeric literals avoid a cross-part initialiser dependency).
+
+const SETTINGS = {
+    bgm: 90,        // background music volume, 0..100
+    sfx: 90,        // sound-effect volume, 0..100
+    light: true,    // lit shader on/off
+    shadow: 2,      // 0 none, 1 planar, 2 shadow map
+    sky: true,      // sky shader on/off
+    herd: 7,        // bot goats, 0..10
+};
 
 // ---- stats ---------------------------------------------------------------
 

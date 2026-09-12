@@ -1,4 +1,4 @@
-// Part 7/11 of the goat scene: the weather state machine, wind and effects.
+// Part 7/12 of the goat scene: the weather state machine, wind and effects.
 // ---- weather -------------------------------------------------------------
 
 const WIND_BASE = 1.6;              // m/s
