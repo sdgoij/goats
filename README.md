@@ -146,9 +146,16 @@ ticket.
   can be pasted. `copy` puts the ticket you were given back on the clipboard, and
   Ctrl+C copies the current line.
 - **Standalone server**: `cargo run --release -p server` runs `goatsd`, a
-  headless host that prints its ticket and logs joins, leaves and the roster.
-  Stop it with Ctrl-C.
-- `who` lists the roster; `leave` ends the session.
+  headless host that prints its ticket and logs joins, leaves, the roster and
+  chat. Stop it with Ctrl-C.
+- **Chat**: in a session, type a line with no leading slash to say it to
+  everyone. `@name <text>` (or `say` / `msg <name> <text>`) is a 1:1 whisper, and
+  the console marks it as one. Offline, bare text is an error, and `who` lists
+  the roster.
+- `leave` ends the session.
+
+Chat is rate limited to a short burst and each line is capped and stripped of
+control characters, so a session cannot be flooded by one player.
 
 It is LAN-only for now: the endpoint binds local sockets with no relay, so it
 reaches other machines on the same network and not the wider internet. Internet
@@ -265,7 +272,8 @@ a line-based bridge: `net.rs` runs the session on its own tokio thread, and each
 frame the host hands the scene its events with `sceneNetEvent(line)` and takes
 the scene's queued intents back with `sceneNetDrain()`, without ever awaiting in
 the frame loop. `net.js` is the scene end of that channel; the console commands
-are `host`, `connect <ticket>`, `who` and `leave`.
+are `host`, `connect <ticket>`, `who`, `leave`, `say` and `msg` (with bare text
+and a leading `@name` both routed to chat).
 
 ## Model pipeline
 

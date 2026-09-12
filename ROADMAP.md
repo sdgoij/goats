@@ -75,7 +75,7 @@ uses.
 | **M9** | In-game console + character input | `getCharPressed` (upstream) | S–M | ✅ **Done** (engine binding + console; live keystroke check pending) |
 | **M9b** | Console clipboard: paste a ticket | M9 | S | ✅ **Done** |
 | **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
-| **M11** | Chat: global, DMs, system lines | M10 | S–M | Cheap once the channel exists, and it exercises it both ways |
+| **M11** | Chat: global, DMs, system lines | M10 | S–M | ✅ **Done** (unit + harness; live two-window chat not yet run) |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | The actual gameplay payload |
 | **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
 
@@ -786,11 +786,31 @@ loopback endpoints need no real network).
 
 Cheap once M10's channel exists, and it exercises it in both directions.
 
+**Landed.** `ClientMessage::Chat` and the server's `Chat`/`Joined`/`Left`/
+`Notice` replies carry chat over the existing per-message stream, and the server
+ows routing: a bare line goes to everyone (the sender included), a leading
+`@name` goes only to that player (and the host, when the host is the sender or
+the target), and an unknown name comes back as a `Notice`. The sender reaches
+the session through `Host::say` / `Client::say`, queued from the scene as a
+`Say` intent, so the frame loop still never awaits. The console handles the
+typing: bare text is chat in a session, `@name text` / `say` / `msg <name>
+<text>` are the DM spellings, a leading `/` is stripped so `/who` is `who`, and
+an empty command reply prints nothing so a queued chat line is silent. Names
+are canonical on the server, chat is sanitised and capped at 512 bytes, and a
+burst of 5 lines per 3s per player is the rate limit.
+
+**Verified.** `cargo test --workspace` (the loopback bridge test now carries a
+global line and a whisper end to end), `node tools/goat_logic_test.js` (113
+checks, including the console's chat and command routing) and clippy. The
+visual check — two windows, type into one, read it in the other — still needs a
+display.
+
 - Global: bare text broadcasts.
 - 1:1: a **leading** `@name text` is a DM, with `/msg name text` as the
   unambiguous form. Deliberately not parsing `@` mid-message, so a sentence that
   merely mentions a name does not leak as a DM.
-- Commands: `/who`, `/nick`, `/help`; system lines for join/leave/rename.
+- Commands: `who`, `help`; system lines for join/leave. `/nick` (renaming)
+  is not implemented yet — names are fixed for the life of the session.
 - Names are not unique, so the server assigns the canonical one: cap the length,
   strip control characters/ANSI, de-duplicate (`Bob`, then `Bob #2`).
 - DMs are filtered by the server, not broadcast.
