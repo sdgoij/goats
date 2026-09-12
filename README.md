@@ -155,10 +155,11 @@ ticket.
 - **See each other**: every player's goat is relayed to the others about 20 times
   a second, so you can watch them move. Snapshots are unreliable datagrams and
   the scene interpolates between them.
-- **A shared herd and sky**: the bots and the weather are simulated only by
+- **A shared world**: the bots, the weather and the meadow are simulated only by
   whoever hosts -- the game window that ran `host`, or `goatsd` -- and broadcast
   together about 10 times a second. Everyone else mirrors them, so the herd stays
-  where the host put it and everyone sees the same storm at the same time of day.
+  where the host put it, everyone sees the same storm at the same time of day,
+  and the grass one player eats is gone for the others too.
 - `leave` ends the session.
 
 Chat is rate limited to a short burst and each line is capped and stripped of
@@ -170,14 +171,14 @@ It is LAN-only for now: the endpoint binds local sockets with no relay, so it
 reaches other machines on the same network and not the wider internet. Internet
 play (n0's relays and hole punching) is a one-line change in the session crate.
 
-The sky is the server's as well: the weather state machine, its easing and the
-day/night clock run only on whoever hosts, and ride the same broadcast as the
-bots. A client applies them -- but still works out its own goat's speed and
-energy drain from that weather, because those depend on how full its belly is.
-The `C` (force weather) and `T` (fast-forward) keys are host/offline only.
-
-The world seed still matters for what the server does not own: the food regrowth
-and the bleat variety are derived from it on every machine.
+The sky and the meadow are the server's as well: the weather state machine, its
+easing, the day/night clock, the PRNG streams and the eaten grass all run only on
+whoever hosts, and ride the same broadcast as the bots. Joining *replaces* the
+client's world with the server's -- it does not keep the one it generated before
+connecting -- and a client reports the tufts it eats, so the host's meadow is the
+one everyone actually grazed. A client still works out its own goat's speed and
+energy drain from the server's weather, because those depend on how full its own
+belly is. `C` (force weather) and `T` (fast-forward) are host/offline only.
 
 ## Requirements
 

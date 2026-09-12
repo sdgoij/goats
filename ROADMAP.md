@@ -77,7 +77,7 @@ uses.
 | **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | ✅ **Done** |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | ✅ **Done** (players sync; server-owned bots/weather are M12b) |
-| **M12b** | Server-owned world: headless `goatsd` scene, bot and weather authority | M12 | L | ✅ **Done** (the bots and sky are the server's; food is still local) |
+| **M12b** | Server-owned world: headless `goatsd` scene, bots/weather/meadow authority | M12 | L | ✅ **Done** (the world is the server's; the players are the open axis) |
 | **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
 
 ---
@@ -899,20 +899,32 @@ diverge. `goatsd` seeds the sim from the session seed before `sceneInit`, so the
 world is generated from it rather than adopted after the fact — which closes the
 "the initial layout does not agree" gap the player-sync note left open.
 
-**Still open.** Food is the last piece of the world that is not the server's:
-the eaten cells and their regrowth are local to each client, so a client can see
-(eat) grass the server has already consumed. The seed keeps the regrowth stream
-in step, which is why the drift is small, but it is not authority. Separately,
-the scene does the full render-side work every step (all no-ops, but real
-JavaScript): a release build keeps up with 60 Hz, a debug one does not, so
-`goatsd` wants `--release`.
+**Landed (the meadow).** The world snapshot gained the PRNG streams and the
+eaten cells, and joining now *replaces* a client's world rather than merging it
+with the one it had generated before connecting. The streams the server sends
+are its current values, not the seed it started from, so a stream a client still
+draws from continues where the server is; the snapshot keeps re-adopting them,
+so the two cannot drift. The meadow has to travel as state because the stream
+only picks a regrow duration at eat time — which is also why a client *reports*
+its bites (`ClientMessage::Consume`, its own rate limit) and the host's scene
+records them, instead of the client counting its own meadow down: otherwise the
+next snapshot would resurrect the tuft it just ate. Wire version 5.
 
-**Verified.** `cargo test --workspace` — proto 13, session 8, goats 4, server 2
+**Still open.** The world is the server's now; the *players* are not. Player
+goats remain client-authoritative, and the stats and the pause/death flow that
+were built for single player (`stats.energy`, `satiety`, `P`, restart) are still
+local, so they carry across a join and are not part of a session — open questions
+9 and 13. Separately, the scene does the full render-side work every step (all
+no-ops, but real JavaScript): a release build keeps up with 60 Hz, a debug one
+does not, so `goatsd` wants `--release`.
+
+**Verified.** `cargo test --workspace` — proto 14, session 9, goats 4, server 2
 plus 1 `#[ignore]`d (three fresh sims, each re-JITing the scene, is ~35 s) — the
-harness at ALL PASS (125, including the host-publishes, client-mirrors and
-weather-mirrors checks), `cargo fmt --all -- --check` and `cargo clippy
+harness at ALL PASS (128, including the host-publishes, client-mirrors, streams,
+meadow and bite-report checks), `cargo fmt --all -- --check` and `cargo clippy
 --workspace --all-targets -- -D warnings` clean. The live check — a `goatsd`
-session whose herd and sky stay together for every client — needs a display.
+session whose herd, sky and meadow stay together for every client — needs a
+display.
 
 ---
 
