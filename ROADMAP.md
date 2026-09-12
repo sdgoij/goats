@@ -922,9 +922,10 @@ does not, so `goatsd` wants `--release`.
 plus 1 `#[ignore]`d (three fresh sims, each re-JITing the scene, is ~35 s) — the
 harness at ALL PASS (128, including the host-publishes, client-mirrors, streams,
 meadow and bite-report checks), `cargo fmt --all -- --check` and `cargo clippy
---workspace --all-targets -- -D warnings` clean. The live check — a `goatsd`
-session whose herd, sky and meadow stay together for every client — needs a
-display.
+--workspace --all-targets -- -D warnings` clean. The live check also passed:
+with two windows in a session, a tuft eaten in one disappeared in the other —
+the bite was reported, the host's scene recorded it, and the next snapshot
+carried it to the other client, which is the whole meadow path.
 
 ---
 
