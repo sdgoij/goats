@@ -58,6 +58,32 @@ async fn main() {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut frames: u64 = 0;
 
+    // Built once and pinned, not re-created each iteration: a signal can land
+    // while no handler future is registered, and this loop turns over every
+    // 16 ms, so re-creating it is a race that drops Ctrl-C. On Unix, SIGTERM
+    // counts too, so `kill` and a service manager stop the server as well.
+    let interrupt = async {
+        #[cfg(unix)]
+        {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut terminate) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = terminate.recv() => {}
+                    }
+                }
+                Err(_) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    };
+    tokio::pin!(interrupt);
+
     loop {
         tokio::select! {
             _ = tick.tick() => {
@@ -87,7 +113,7 @@ async fn main() {
                     break;
                 }
             },
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut interrupt => {
                 println!();
                 println!("goatsd: shutting down");
                 break;
@@ -95,7 +121,14 @@ async fn main() {
         }
     }
 
-    host.close().await;
+    // Close the session, but never let a peer that has gone quiet hold the
+    // process open; the endpoint is going away either way.
+    if tokio::time::timeout(Duration::from_secs(2), host.close())
+        .await
+        .is_err()
+    {
+        eprintln!("goatsd: close timed out; exiting anyway");
+    }
 }
 
 /// Hands one world snapshot to the session, which broadcasts it to the clients.
