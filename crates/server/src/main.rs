@@ -67,6 +67,13 @@ async fn main() {
                 }
             }
             event = host.next_event() => match event {
+                // A bite a client reported: the scene records it, and the next
+                // world snapshot carries the eaten cell back to everyone.
+                Some(Event::Consume { key }) => {
+                    if let Err(error) = sim.consume(key) {
+                        eprintln!("goatsd: could not record a bite: {error}");
+                    }
+                }
                 Some(event) => report(event),
                 None => {
                     println!("goatsd: session finished");
@@ -109,8 +116,9 @@ fn report(event: Event) {
         }
         Event::Notice(text) => format!("notice {text}"),
         // Positions arrive many times a second; logging each would bury the
-        // session log, so they are not reported. The world is the server's own.
-        Event::Peer { .. } | Event::World { .. } => return,
+        // session log, so they are not reported. The world is the server's own,
+        // and a bite is handled by the sim above.
+        Event::Peer { .. } | Event::World { .. } | Event::Consume { .. } => return,
         Event::Disconnected => "disconnected".to_string(),
     };
     println!("{line}");

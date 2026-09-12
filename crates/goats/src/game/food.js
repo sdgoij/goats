@@ -70,20 +70,50 @@ function nearestTuft(x, z, range) {
     return best;
 }
 
-// Mark a tuft eaten so it disappears and schedules its regrowth. Shared by the
-// player and the bots; returns false when there was nothing to eat. The regrow
-// PRNG is inlined so this stays a leaf call (see `nearestTuft`).
-function consumeTuft(target) {
-    if (target === null || target === undefined) return false;
+// Draw a regrow time for `key` and record it. Shared by a local bite and one
+// reported by a client, so both assign the same kind of duration.
+function assignRegrow(key) {
     foodRngState ^= foodRngState << 13;
     foodRngState >>>= 0;
     foodRngState ^= foodRngState >>> 17;
     foodRngState ^= foodRngState << 5;
     foodRngState >>>= 0;
-    EATEN.set(tuftKey(target.cx, target.cz),
-        REGROW_MIN + (foodRngState / 4294967296) * (REGROW_MAX - REGROW_MIN));
+    EATEN.set(key, REGROW_MIN + (foodRngState / 4294967296) * (REGROW_MAX - REGROW_MIN));
     eatenCount += 1;
+}
+
+// Mark a tuft eaten so it disappears and schedules its regrowth. Shared by the
+// player and the bots; returns false when there was nothing to eat.
+function consumeTuft(target) {
+    if (target === null || target === undefined) return false;
+    assignRegrow(tuftKey(target.cx, target.cz));
     return true;
+}
+
+// Record a cell a client reported eating. The host owns the meadow, so this is
+// where a client's bite becomes real; a cell already gone is ignored.
+function sceneConsume(key) {
+    if (EATEN.has(key)) return;
+    assignRegrow(key);
+}
+
+// The meadow as the wire sees it: the eaten cells and their remaining seconds.
+function sceneEaten() {
+    const out = [];
+    for (const entry of EATEN) {
+        out.push({ key: entry[0], left: netRound3(entry[1]) });
+    }
+    return out;
+}
+
+// Replace the meadow with the server's, wholesale. Joining adopts the server's
+// world rather than merging it with the one this client had already generated.
+function applyEaten(list) {
+    EATEN.clear();
+    if (!Array.isArray(list)) return;
+    for (let i = 0; i < list.length; i++) {
+        EATEN.set(list[i].key, list[i].left);
+    }
 }
 
 // Eat `target`: remove the tuft, turn onto it, top up energy, fill the belly,
@@ -97,12 +127,19 @@ function startEat(target) {
     mode = "eat";
     eatTime = 0;
     cyclePlayerVariant("eat");
+    // In a session the meadow is the server's, so tell it about the bite; it
+    // comes back in the next world snapshot, which replaces this optimistic one.
+    if (!netWorldLocal()) netQueue({ type: "consume", key: tuftKey(target.cx, target.cz) });
     return true;
 }
 
 // Once per frame: let the belly empty out and let eaten tufts grow back.
 function updateFood(dt) {
     satiety = Math.max(0, satiety - SATIETY_DECAY * dt);
+    // The meadow is the server's in a session: a client mirrors `EATEN` from the
+    // snapshots instead of counting it down, so the two cannot disagree about
+    // when a tuft returns.
+    if (!netWorldLocal()) return;
     if (EATEN.size === 0) return;
     for (const key of EATEN.keys()) {
         const left = EATEN.get(key) - dt;

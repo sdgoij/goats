@@ -31,7 +31,8 @@ use tokio::sync::{Mutex, mpsc};
 // client's network bridge) can name a pose or a world without depending on
 // `proto` directly.
 pub use proto::{
-    BotState, Datagram, Gait, PeerFrame, PeerState, WeatherKind, WeatherState, WorldState,
+    BotState, Datagram, EatenCell, Gait, PeerFrame, PeerState, Streams, WeatherKind, WeatherState,
+    WorldState,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a
@@ -61,12 +62,17 @@ pub enum Event {
     /// A remote goat moved. `name` is the server's canonical name, not whatever
     /// the datagram claimed.
     Peer { name: String, state: PeerState },
-    /// The server's world -- its bots and its sky -- for a client to mirror
-    /// instead of simulating.
+    /// The server's world -- its bots, its sky, its streams and its meadow -- for
+    /// a client to mirror instead of simulating.
     World {
         bots: Vec<BotState>,
         weather: WeatherState,
+        streams: Streams,
+        eaten: Vec<EatenCell>,
     },
+    /// A client ate a grass cell, for the host's scene to record. Only the host
+    /// sees this; the next world snapshot carries the result to everyone.
+    Consume { key: i64 },
     /// A line to print in the console.
     Notice(String),
     /// The connection to the host ended (client side only).
@@ -234,16 +240,21 @@ impl Server {
 const CHAT_BURST: u32 = 5;
 const CHAT_WINDOW: Duration = Duration::from_secs(3);
 
+/// Eating is naturally paced by the game, but a hostile client could still spam
+/// keys, so reports get their own budget.
+const CONSUME_BURST: u32 = 8;
+const CONSUME_WINDOW: Duration = Duration::from_secs(1);
+
 /// A rolling window counter. Unbounded chat is a free denial of service and a
 /// bandwidth sink, so a peer gets a burst and then has to wait.
-fn within_burst(window: &mut Instant, count: &mut u32) -> bool {
+fn within_burst(window: &mut Instant, count: &mut u32, burst: u32, duration: Duration) -> bool {
     let now = Instant::now();
-    if now.duration_since(*window) >= CHAT_WINDOW {
+    if now.duration_since(*window) >= duration {
         *window = now;
         *count = 0;
     }
     *count += 1;
-    *count <= CHAT_BURST
+    *count <= burst
 }
 
 /// Who a chat line is for, worked out under one lock so the sends below can run
@@ -673,10 +684,12 @@ async fn handle_connection(
     // control message, so the connection stays open until the peer closes it.
     let mut window = Instant::now();
     let mut count = 0u32;
+    let mut eat_window = Instant::now();
+    let mut eat_count = 0u32;
     while let Ok(mut recv) = connection.accept_uni().await {
         match read_message::<ClientMessage>(&mut recv).await {
             Ok(ClientMessage::Chat { text }) => {
-                if !within_burst(&mut window, &mut count) {
+                if !within_burst(&mut window, &mut count, CHAT_BURST, CHAT_WINDOW) {
                     let _ = send_to(
                         &connection,
                         &ServerMessage::Notice {
@@ -687,6 +700,18 @@ async fn handle_connection(
                     continue;
                 }
                 route_chat(&state, &events, &assigned, &text).await;
+            }
+            // A bite is the host's to record: the scene there owns the meadow, so
+            // the report is handed up rather than answered here.
+            Ok(ClientMessage::Consume { key }) => {
+                if within_burst(
+                    &mut eat_window,
+                    &mut eat_count,
+                    CONSUME_BURST,
+                    CONSUME_WINDOW,
+                ) {
+                    let _ = events.send(Event::Consume { key });
+                }
             }
             // A second greeting means nothing once you are already in.
             Ok(ClientMessage::Hello { .. }) => {}
@@ -822,6 +847,8 @@ impl Client {
                         Event::World {
                             bots: world.bots,
                             weather: world.weather,
+                            streams: world.streams,
+                            eaten: world.eaten,
                         }
                     }
                 };
@@ -928,6 +955,17 @@ impl Client {
             return;
         }
         let _ = self.connection.send_datagram(Bytes::from(payload));
+    }
+
+    /// Reports a bite to the host. The host's scene records it and the next world
+    /// snapshot carries it back, so the client's own optimistic bite is confirmed.
+    pub async fn consume(&self, key: i64) -> Result<(), Error> {
+        let mut send = self
+            .connection
+            .open_uni()
+            .await
+            .map_err(|error| Error::Stream(error.to_string()))?;
+        write_message(&mut send, &ClientMessage::Consume { key }).await
     }
 
     /// The next event, or `None` once the session is finished.
@@ -1139,6 +1177,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_bite_is_reported_to_the_hosts_scene() {
+        within(async {
+            let mut host = Host::start("host").await.expect("host");
+            let alice = Client::join(host.ticket(), "alice").await.expect("alice");
+
+            alice.consume(8189_0001).await.expect("consume");
+            // The host's scene hears it. It is not broadcast: the meadow goes out
+            // in the next world snapshot instead.
+            loop {
+                if let Event::Consume { key } = host.next_event().await.expect("an event") {
+                    assert_eq!(key, 8189_0001);
+                    break;
+                }
+            }
+
+            alice.close().await;
+            host.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn the_servers_world_reaches_its_clients() {
         within(async {
             let host = Host::start("host").await.expect("host");
@@ -1174,15 +1234,32 @@ mod tests {
                     wind_sway: 1.0,
                     world_time: 9.25,
                 },
+                streams: Streams {
+                    weather: 7,
+                    bots: 8,
+                    food: 9,
+                    audio: 10,
+                },
+                eaten: vec![EatenCell {
+                    key: 4242,
+                    left: 12.5,
+                }],
             };
             for _ in 0..10 {
                 host.publish_world(&world).await;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             match client_world(&mut alice).await {
-                Event::World { bots, weather } => {
+                Event::World {
+                    bots,
+                    weather,
+                    streams,
+                    eaten,
+                } => {
                     assert_eq!(bots, world.bots);
                     assert_eq!(weather, world.weather);
+                    assert_eq!(streams, world.streams);
+                    assert_eq!(eaten, world.eaten);
                 }
                 other => panic!("expected a world, got {other:?}"),
             }

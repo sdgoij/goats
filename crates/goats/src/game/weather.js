@@ -77,6 +77,18 @@ function sceneStreams() {
     return { weather: rngState, bots: botRngState, food: foodRngState, audio: audioSeed };
 }
 
+// Adopt the server's streams. Joining takes the server's PRNG state as it is
+// *now* -- not the seed it started from -- so a stream the client still draws
+// from continues where the server is instead of replaying from zero. The world
+// snapshot keeps re-adopting them, so the two cannot drift.
+function sceneUseStreams(streams) {
+    if (!streams) return;
+    rngState = streams.weather >>> 0;
+    botRngState = streams.bots >>> 0;
+    foodRngState = streams.food >>> 0;
+    audioSeed = streams.audio >>> 0;
+}
+
 // Offline and the host run the weather state machine; a client takes the
 // server's and only recomputes the per-goat effects.
 function netWeatherLocal() {

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// The wire version, bumped whenever a message changes shape. It is also the
 /// ALPN suffix, so a peer with a different major version fails the QUIC
 /// handshake before it reaches any of this.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -51,6 +51,10 @@ pub enum ClientMessage {
     /// only the server routes -- a client cannot make the server whisper to
     /// anyone, or stop it from whispering.
     Chat { text: String },
+    /// A grass cell this client just ate, so the server can record it and send
+    /// it back in the world. A client owns its own goat, so its bites arrive as
+    /// reports rather than being simulated by the server.
+    Consume { key: i64 },
 }
 
 /// What the server sends.
@@ -210,17 +214,49 @@ impl WeatherState {
     }
 }
 
-/// The server's world, as far as a client has to mirror it: the bots and the
-/// sky. Both are simulated only by whoever hosts and applied by everyone else.
+/// The world's PRNG streams, as the server holds them *now* -- not the seed they
+/// started from. A client adopts these on join (and keeps adopting them with
+/// each snapshot), so a stream it still draws from continues where the server
+/// is rather than replaying from zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Streams {
+    pub weather: u32,
+    pub bots: u32,
+    pub food: u32,
+    pub audio: u32,
+}
+
+/// One eaten grass cell: its packed key and the seconds before it returns. The
+/// meadow is mutated by everyone, so unlike the procedural world it cannot be
+/// rebuilt from a stream -- it travels as state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EatenCell {
+    pub key: i64,
+    pub left: f32,
+}
+
+impl EatenCell {
+    pub fn is_finite(&self) -> bool {
+        self.left.is_finite()
+    }
+}
+
+/// The server's world, as far as a client has to mirror it: the bots, the sky,
+/// the PRNG streams and the eaten meadow. A client that joins takes this whole
+/// thing -- it does not keep the world it had generated before joining.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldState {
     pub bots: Vec<BotState>,
     pub weather: WeatherState,
+    pub streams: Streams,
+    pub eaten: Vec<EatenCell>,
 }
 
 impl WorldState {
     pub fn is_finite(&self) -> bool {
-        self.weather.is_finite() && self.bots.iter().all(BotState::is_finite)
+        self.weather.is_finite()
+            && self.bots.iter().all(BotState::is_finite)
+            && self.eaten.iter().all(EatenCell::is_finite)
     }
 }
 
@@ -530,6 +566,19 @@ mod tests {
                 wind_sway: 1.1,
                 world_time: 13.5,
             },
+            streams: Streams {
+                weather: 0x1111_2222,
+                bots: 0x3333_4444,
+                food: 0x5555_6666,
+                audio: 0x7777_8888,
+            },
+            eaten: vec![
+                EatenCell {
+                    key: 12345,
+                    left: 42.5,
+                },
+                EatenCell { key: -7, left: 3.0 },
+            ],
         };
         let datagram = Datagram::World(world.clone());
         let bytes = encode(&datagram).expect("encode");
@@ -566,6 +615,19 @@ mod tests {
         let mut broken = world.clone();
         broken.weather.wind_x = f32::INFINITY;
         assert!(!broken.is_finite());
+        let mut broken = world.clone();
+        broken.eaten[0].left = f32::NAN;
+        assert!(!broken.is_finite());
+    }
+
+    #[test]
+    fn a_consume_report_round_trips() {
+        let message = ClientMessage::Consume { key: 8189_0001 };
+        let payload = encode(&message).expect("encode");
+        assert_eq!(
+            &decode::<ClientMessage>(&payload).expect("decode"),
+            &message
+        );
     }
 
     #[test]

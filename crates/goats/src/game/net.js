@@ -147,7 +147,12 @@ function sceneNetEvent(line) {
             break;
         case "world":
             // The server's world. Not printed either.
-            netApplyWorld(event.bots, event.weather);
+            netApplyWorld(event.bots, event.weather, event.streams, event.eaten);
+            break;
+        case "consume":
+            // A client's bite, on the host: record it in this meadow. The next
+            // world snapshot carries it back to everyone.
+            sceneConsume(event.key);
             break;
         case "chat":
             consoleNet("net: " + (event.direct ? "dm " : "") +
@@ -322,10 +327,12 @@ function netMaybePublish() {
 
 // ---- the server's world ----------------------------------------------------
 //
-// The bots collide with players, so they diverge the moment two players touch
-// them. The host is therefore the only side that simulates them, and everyone
-// else mirrors what it sends: `netWorldLocal` is what the frame loop gates the
-// bot update on, and `netApplyWorld` is the mirror end.
+// The bots collide with players, the weather is a shared state machine, and the
+// meadow is mutated by everyone, so none of them can be reproduced from a seed
+// alone. The host is therefore the only side that simulates the world, and
+// everyone else mirrors what it sends: `netWorldLocal` is what the frame loop
+// gates the local simulation on, and `netApplyWorld` is the mirror end. Joining
+// replaces the client's world rather than merging it.
 
 function netRound3(v) {
     return Math.round(v * 1000) / 1000;
@@ -369,13 +376,22 @@ function netMaybePublishWorld() {
     if (netMode !== "host") return;   // only the host owns the world
     if (sceneFrames - netWorldFrame < NET_WORLD_EVERY) return;
     netWorldFrame = sceneFrames;
-    netQueue({ type: "world", bots: sceneWorldBots(), weather: sceneWeatherState() });
+    netQueue({
+        type: "world",
+        bots: sceneWorldBots(),
+        weather: sceneWeatherState(),
+        streams: sceneStreams(),
+        eaten: sceneEaten(),
+    });
 }
 
-// Mirror the server's world: its sky and its bots. A client runs neither the
-// weather state machine nor the bot AI, so this is the whole of both.
-function netApplyWorld(bots, weather) {
+// Mirror the server's world: its sky, its streams, its meadow and its bots. A
+// client runs neither the weather state machine nor the bot AI, and does not
+// count its meadow down, so this is the whole of all of it.
+function netApplyWorld(bots, weather, streams, eaten) {
     applyWeatherState(weather);
+    sceneUseStreams(streams);
+    applyEaten(eaten);
     if (!Array.isArray(bots)) return;
     if (BOTS.length !== bots.length) setHerdSize(bots.length);
     for (let i = 0; i < bots.length && i < BOTS.length; i++) {

@@ -57,11 +57,13 @@ const SCENE: &str = concat!(
 );
 
 /// Appended to the scene: the one seam the server needs, a JSON view of the
-/// world the session broadcasts. It can be a one-liner because `sceneWorldBots`,
-/// `sceneWeatherState` and `JSON` are already the scene's.
+/// world the session broadcasts. It can be a one-liner because the scene already
+/// has `sceneWorldBots`, `sceneWeatherState`, `sceneStreams`, `sceneEaten` and
+/// `JSON`.
 const GLUE: &str = concat!(
     "\nfunction sceneWorldJson() { return JSON.stringify({",
-    " bots: sceneWorldBots(), weather: sceneWeatherState() }); }\n",
+    " bots: sceneWorldBots(), weather: sceneWeatherState(),",
+    " streams: sceneStreams(), eaten: sceneEaten() }); }\n",
 );
 
 /// A running headless scene.
@@ -69,6 +71,7 @@ pub struct Sim {
     context: Context,
     frame: JsValue,
     world: JsValue,
+    consume: JsValue,
 }
 
 impl Sim {
@@ -93,6 +96,7 @@ impl Sim {
         let init = scene_function(&context, "sceneInit")?;
         let frame = scene_function(&context, "sceneFrame")?;
         let world = scene_function(&context, "sceneWorldJson")?;
+        let consume = scene_function(&context, "sceneConsume")?;
 
         context
             .call(
@@ -109,6 +113,7 @@ impl Sim {
             context,
             frame,
             world,
+            consume,
         })
     }
 
@@ -116,6 +121,19 @@ impl Sim {
     pub fn step(&mut self) -> Result<(), String> {
         self.context
             .call(&self.frame, &JsValue::undefined(), &[])
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Records a bite a client reported, so the meadow the server broadcasts is
+    /// the one everyone actually grazed.
+    pub fn consume(&mut self, key: i64) -> Result<(), String> {
+        self.context
+            .call(
+                &self.consume,
+                &JsValue::undefined(),
+                &[JsValue::number(key as f64)],
+            )
             .map_err(|error| error.to_string())?;
         Ok(())
     }
@@ -190,10 +208,12 @@ mod tests {
         assert!(json.contains("\"index\":"), "{json}");
         assert!(json.contains("\"gait\":"), "{json}");
         assert!(json.contains("\"phase\":"), "{json}");
-        // And the sky does too.
+        // And the sky, the streams and the meadow do too.
         assert!(json.contains("\"kind\":"), "{json}");
         assert!(json.contains("\"cloudiness\":"), "{json}");
         assert!(json.contains("\"world_time\":"), "{json}");
+        assert!(json.contains("\"streams\":"), "{json}");
+        assert!(json.contains("\"eaten\":"), "{json}");
     }
 
     #[test]

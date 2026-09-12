@@ -44,7 +44,11 @@ enum Command {
     World {
         bots: Vec<session::BotState>,
         weather: session::WeatherState,
+        streams: session::Streams,
+        eaten: Vec<session::EatenCell>,
     },
+    /// A grass cell this client just ate, for the host's scene to record.
+    Consume { key: i64 },
     /// Leave whatever session is running.
     Close,
 }
@@ -76,12 +80,16 @@ enum Event {
         name: String,
         state: session::PeerState,
     },
-    /// The server's world -- its bots and its sky -- for a client to mirror
-    /// instead of simulating.
+    /// The server's world -- bots, sky, streams and meadow -- for a client to
+    /// mirror instead of simulating.
     World {
         bots: Vec<session::BotState>,
         weather: session::WeatherState,
+        streams: session::Streams,
+        eaten: Vec<session::EatenCell>,
     },
+    /// A client's bite, for the host's scene (host side only).
+    Consume { key: i64 },
     /// The roster changed.
     Roster { names: Vec<String> },
     /// A line for the console.
@@ -185,13 +193,34 @@ impl Live {
     }
 
     /// Sends the world. Only a host has one to send; a client silently drops it.
-    async fn publish_world(&self, bots: &[session::BotState], weather: &session::WeatherState) {
+    async fn publish_world(
+        &self,
+        bots: &[session::BotState],
+        weather: &session::WeatherState,
+        streams: session::Streams,
+        eaten: &[session::EatenCell],
+    ) {
         if let Live::Host(host) = self {
             host.publish_world(&session::WorldState {
                 bots: bots.to_vec(),
                 weather: weather.clone(),
+                streams,
+                eaten: eaten.to_vec(),
             })
             .await;
+        }
+    }
+
+    /// Reports a bite. The host's own scene already recorded its own, so this is
+    /// a no-op there; a client tells the host and waits for the snapshot.
+    async fn consume(&self, key: i64) -> Option<String> {
+        match self {
+            Live::Host(_) => None,
+            Live::Client(client) => client
+                .consume(key)
+                .await
+                .err()
+                .map(|error| error.to_string()),
         }
     }
 }
@@ -270,9 +299,25 @@ async fn run(
                     }
                 }
                 // The server's world: only meaningful while hosting.
-                Command::World { bots, weather } => {
+                Command::World {
+                    bots,
+                    weather,
+                    streams,
+                    eaten,
+                } => {
                     if let Some(session) = live.as_ref() {
-                        session.publish_world(&bots, &weather).await;
+                        session
+                            .publish_world(&bots, &weather, streams, &eaten)
+                            .await;
+                    }
+                }
+                // A bite this player took, reported to the host so its scene can
+                // record it. Silent while offline, where it is already local.
+                Command::Consume { key } => {
+                    if let Some(session) = live.as_ref()
+                        && let Some(error) = session.consume(key).await
+                    {
+                        emit(&events, Event::Notice { text: error });
                     }
                 }
                 other => live = start(other, live.take(), &events).await,
@@ -297,7 +342,10 @@ async fn start(
     match command {
         Command::Close => None,
         // Handled in `run`, which has the live session in hand.
-        Command::Say { .. } | Command::Pose { .. } | Command::World { .. } => None,
+        Command::Say { .. }
+        | Command::Pose { .. }
+        | Command::World { .. }
+        | Command::Consume { .. } => None,
         Command::Host { name } => match session::Host::start(&name).await {
             Ok(host) => {
                 // The console shows the ticket, but it cannot be selected in a
@@ -359,7 +407,18 @@ fn bridge(event: session::Event) -> Event {
         session::Event::Left { name } => Event::Left { name },
         session::Event::Chat { from, text, direct } => Event::Chat { from, text, direct },
         session::Event::Peer { name, state } => Event::Peer { name, state },
-        session::Event::World { bots, weather } => Event::World { bots, weather },
+        session::Event::World {
+            bots,
+            weather,
+            streams,
+            eaten,
+        } => Event::World {
+            bots,
+            weather,
+            streams,
+            eaten,
+        },
+        session::Event::Consume { key } => Event::Consume { key },
         session::Event::Roster { names } => Event::Roster { names },
         session::Event::Notice(text) => Event::Notice { text },
         session::Event::Disconnected => Event::Disconnected,
@@ -453,18 +512,30 @@ mod tests {
             .is_ok()
         );
         match serde_json::from_str::<Command>(
-            r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"trot","variant":1}],"weather":{"kind":"rain","cloudiness":0.8,"rain_amount":0.6,"wind_x":1.4,"wind_z":0.2,"wind_sway":1.0,"world_time":9.25}}"#,
+            r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"trot","variant":1}],"weather":{"kind":"rain","cloudiness":0.8,"rain_amount":0.6,"wind_x":1.4,"wind_z":0.2,"wind_sway":1.0,"world_time":9.25},"streams":{"weather":1,"bots":2,"food":3,"audio":4},"eaten":[{"key":99,"left":30.5}]}"#,
         )
         .expect("world")
         {
-            Command::World { bots, weather } => {
+            Command::World {
+                bots,
+                weather,
+                streams,
+                eaten,
+            } => {
                 assert_eq!(bots.len(), 1);
                 assert_eq!(bots[0].index, 0);
                 assert_eq!(bots[0].gait, session::Gait::Trot);
                 assert_eq!(bots[0].variant, 1);
                 assert_eq!(weather.kind, session::WeatherKind::Rain);
                 assert_eq!(weather.world_time, 9.25);
+                assert_eq!(streams.food, 3);
+                assert_eq!(eaten.len(), 1);
+                assert_eq!(eaten[0].key, 99);
             }
+            other => panic!("unexpected {other:?}"),
+        }
+        match serde_json::from_str::<Command>(r#"{"type":"consume","key":123}"#).expect("consume") {
+            Command::Consume { key } => assert_eq!(key, 123),
             other => panic!("unexpected {other:?}"),
         }
         // An unknown intent is rejected, not silently ignored.
@@ -564,11 +635,24 @@ mod tests {
                 wind_sway: 0.6,
                 world_time: 3.0,
             },
+            streams: session::Streams {
+                weather: 1,
+                bots: 2,
+                food: 3,
+                audio: 4,
+            },
+            eaten: vec![session::EatenCell { key: 5, left: 6.0 }],
         }))
         .expect("encode");
         assert!(line.contains(r#""type":"world""#), "{line}");
         assert!(line.contains(r#""index":0"#), "{line}");
         assert!(line.contains(r#""kind":"cloudy""#), "{line}");
+        assert!(line.contains(r#""food":3"#), "{line}");
+        assert!(line.contains(r#""key":5"#), "{line}");
+
+        let line =
+            serde_json::to_string(&bridge(session::Event::Consume { key: 7 })).expect("encode");
+        assert_eq!(line, r#"{"type":"consume","key":7}"#);
     }
 
     /// Waits for the next event containing `wanted`. Events that do not match
@@ -651,7 +735,7 @@ mod tests {
         // the joiner mirrors them.
         for _ in 0..10 {
             host.send(
-                r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"walk","variant":0}],"weather":{"kind":"clear","cloudiness":0.05,"rain_amount":0.0,"wind_x":1.0,"wind_z":0.2,"wind_sway":0.4,"world_time":8.0}}"#,
+                r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"walk","variant":0}],"weather":{"kind":"clear","cloudiness":0.05,"rain_amount":0.0,"wind_x":1.0,"wind_z":0.2,"wind_sway":0.4,"world_time":8.0},"streams":{"weather":1,"bots":2,"food":3,"audio":4},"eaten":[]}"#,
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -659,5 +743,12 @@ mod tests {
         assert!(world.contains("\"index\":0"), "{world}");
         assert!(world.contains("\"gait\":\"walk\""), "{world}");
         assert!(world.contains("\"kind\":\"clear\""), "{world}");
+        assert!(world.contains("\"food\":3"), "{world}");
+
+        // A bite is reported up the streams, not over the transform channel: the
+        // host's scene hears what the client ate and records it.
+        client.send(r#"{"type":"consume","key":8189}"#);
+        let bite = wait_for(&mut host, "\"type\":\"consume\"");
+        assert!(bite.contains("\"key\":8189"), "{bite}");
     }
 }

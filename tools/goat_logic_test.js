@@ -657,14 +657,16 @@ try {
     syncTest.peerLeft = sandbox.scenePeers().length === 0;
     sandbox.sceneNetEvent('{"type":"disconnected"}');
 
-    // A client mirrors the server's bots and sky, and publishes no world of its
-    // own.
+    // A client mirrors the server's bots, sky, streams and meadow, and publishes
+    // no world of its own.
     sandbox.sceneNetEvent('{"type":"welcome","name":"eve"}');
     syncTest.clientNotLocal = sandbox.netWorldLocal() === false &&
         sandbox.netWeatherLocal() === false;
     sandbox.sceneNetEvent('{"type":"world","weather":' +
         '{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,' +
-        '"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5},"bots":[' +
+        '"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5},' +
+        '"streams":{"weather":111,"bots":222,"food":333,"audio":444},' +
+        '"eaten":[{"key":4242,"left":12.5}],"bots":[' +
         '{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0},' +
         '{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2}]}');
     const mirrored = sandbox.sceneWorldBots();
@@ -673,8 +675,24 @@ try {
     const mirroredWeather = sandbox.sceneWeatherState();
     syncTest.weatherMirror = mirroredWeather.kind === 'rain' &&
         mirroredWeather.rain_amount === 0.8 && mirroredWeather.world_time === 21.5;
+    const mirroredStreams = sandbox.sceneStreams();
+    syncTest.streamsMirror = mirroredStreams.food === 333 && mirroredStreams.audio === 444;
+    const mirroredEaten = sandbox.sceneEaten();
+    syncTest.eatenMirror = mirroredEaten.length === 1 && mirroredEaten[0].key === 4242;
     syncTest.clientIsNotAuthority =
         sandbox.sceneNetDrain().indexOf('"type":"world"') < 0;
+
+    // A client reports its bite rather than recording it; the meadow is the
+    // host's. The world above cleared the meadow, so a tuft is there to eat.
+    sandbox.sceneCommand('energy 40');
+    const tuft = JSON.parse(sandbox.sceneCommand('grass').slice(3));
+    if (tuft !== null && tuft !== undefined) {
+        sandbox.sceneCommand('pos ' + (tuft.x - 0.5) + ' ' + tuft.z);
+        sandbox.sceneNetDrain();
+        const reply = sandbox.sceneCommand('eat');
+        syncTest.reportsEat = reply.indexOf('ok') === 0 &&
+            sandbox.sceneNetDrain().indexOf('"type":"consume"') >= 0;
+    }
     sandbox.sceneNetEvent('{"type":"disconnected"}');
     syncTest.worldLocalOffline = sandbox.netWorldLocal() === true &&
         sandbox.netWeatherLocal() === true;
@@ -856,6 +874,9 @@ const checks = [
     ['a host publishes its bots', syncTest.world, syncTest],
     ['a client mirrors the server bots', syncTest.mirror, syncTest],
     ['a client mirrors the server weather', syncTest.weatherMirror, syncTest],
+    ['a client adopts the server streams', syncTest.streamsMirror, syncTest],
+    ['a client mirrors the server meadow', syncTest.eatenMirror, syncTest],
+    ['a client reports its own bite', syncTest.reportsEat, syncTest],
     ['a client does not simulate or publish the bots',
         syncTest.clientNotLocal && syncTest.clientIsNotAuthority, syncTest],
     ['offline simulates the bots and the weather locally', syncTest.worldLocalOffline, syncTest],
