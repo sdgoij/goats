@@ -98,6 +98,7 @@ function sceneCommand(line) {
                 paused: paused,
                 satiety: ctlRound(satiety),
                 foodInReach: nearestTuft(goat.px, goat.pz, EAT_RANGE) !== null,
+                eaten: eatenCount,
                 x: ctlRound(goat.px),
                 y: ctlRound(goat.py),
                 z: ctlRound(goat.pz),

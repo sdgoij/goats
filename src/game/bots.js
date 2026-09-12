@@ -91,9 +91,12 @@ function loadBots() {
             jumpDur: 1,
             jumpSpeed: 0,
             jumpCool: 0,
+            eatTime: 0,    // seconds into the current meal
+            eatDur: 1,
+            eatCool: 0,    // seconds before this bot will graze again
             // Which clip variant this bot plays per role; -1 so the first cycle
             // lands on index 0, and walk/trot/run have only one clip each.
-            var: { idle: -1, sleep: -1, jump: -1, walk: 0, trot: 0, run: 0 },
+            var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0 },
         });
     }
     if (BOTS.length > 0) console.log("goat: " + BOTS.length + " bot goats");
@@ -115,6 +118,7 @@ function setBotsShader(shader) {
 // The clip role a bot is currently playing, falling back like the player does.
 function botRole(b) {
     if (b.mode === "jump" && CLIP.jump) return "jump";
+    if (b.mode === "eat" && CLIP.eat) return "eat";
     if (b.mode === "sleep" && CLIP.sleep) return "sleep";
     if (b.mode === "run" && CLIP.run) return "run";
     if (b.mode === "trot" && CLIP.trot) return "trot";
@@ -127,6 +131,24 @@ function botRole(b) {
 // function rather than action + target helpers so the per-frame call depth stays
 // shallow -- debug builds guard the native stack hard, and bots run every frame.
 function botNewAction(b) {
+    // Bots graze too: when a tuft is in reach, they sometimes stop and eat it.
+    // The cooldown keeps the herd from stripping the field bare.
+    if (b.eatCool <= 0 && botRnd() < 0.6) {
+        const t = nearestTuft(b.x, b.z, EAT_RANGE);
+        if (t !== null) {
+            const n = clipCount("eat");
+            if (n > 1) b.var.eat = (b.var.eat + 1) % n;
+            const info = clipAt("eat", b.var.eat);
+            consumeTuft(t);
+            b.mode = "eat";
+            b.eatTime = 0;
+            b.eatDur = info !== null && info !== undefined ? info.duration : EAT_FALLBACK_TIME;
+            b.timer = b.eatDur;
+            b.eatCool = 20 + botRnd() * 40;
+            b.zoom = 0;
+            return;
+        }
+    }
     const r = botRnd();
     if (r < 0.30 + 0.35 * b.spec.lazy) {
         b.mode = botRnd() < 0.10 ? "sleep" : "idle";
@@ -161,6 +183,7 @@ function updateBots(dt) {
         const b = BOTS[i];
         b.timer -= dt;
         if (b.jumpCool > 0) b.jumpCool -= dt;
+        if (b.eatCool > 0) b.eatCool -= dt;
 
         if (b.mode === "jump") {
             // Airborne: the jump clip's root motion does the hop, so this only
@@ -176,6 +199,13 @@ function updateBots(dt) {
                     b.mode = "idle";
                     b.timer = 1.5 + botRnd() * 3;
                 }
+            }
+        } else if (b.mode === "eat") {
+            // A meal is one-shot: hold position, play it out, then move on.
+            b.eatTime += dt;
+            if (b.eatTime >= b.eatDur) {
+                b.mode = "idle";
+                b.timer = 1.5 + botRnd() * 3;
             }
         } else {
             // Speed for the current gait, from the same stride/duty the player uses.
@@ -333,7 +363,10 @@ function drawBots(tint) {
             rl.drawCube(b.x, 0.02, b.z, 1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
         }
         const role = botRole(b);
-        poseModelOn(b.model, clipAt(role, b.var[role]), b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1) : b.phase);
+        // One-shot roles (jump, eat) pose from their own clock; the rest loop.
+        const pose = b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1)
+            : b.mode === "eat" ? Math.min(b.eatTime / b.eatDur, 1) : b.phase;
+        poseModelOn(b.model, clipAt(role, b.var[role]), pose);
         // Draw directly (no `drawModelAt` wrapper) to keep the JS call depth
         // shallow -- the debug stack guard is tight.
         rl.drawModelEx(b.model, b.x, groundOffset * b.spec.scale, b.z,
@@ -353,7 +386,9 @@ function drawBotsShadow() {
         rl.setModelShader(b.model, depthShader);
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, -1);
         const role = botRole(b);
-        poseModelOn(b.model, clipAt(role, b.var[role]), b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1) : b.phase);
+        const pose = b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1)
+            : b.mode === "eat" ? Math.min(b.eatTime / b.eatDur, 1) : b.phase;
+        poseModelOn(b.model, clipAt(role, b.var[role]), pose);
         rl.drawModelEx(b.model, b.x, groundOffset * b.spec.scale, b.z,
             0, 1, 0, (b.yaw * 180) / Math.PI,
             b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);

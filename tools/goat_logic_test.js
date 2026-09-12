@@ -237,9 +237,16 @@ const playerIdles = [...new Set(timeline.map((r) => r.clip))].filter((n) => n &&
 
 // Grass is food. `run()` has finished, so exercise the mechanic through the
 // same command channel the host uses: find a tuft, stand on it, then eat it.
-const eatTest = { found: false, menu: false, ate: false, energyRose: false, satietyRose: false, gone: false };
+const eatTest = { found: false, menu: false, ate: false, energyRose: false, satietyRose: false, gone: false, regrew: false };
 let rainEase = false;
+let botEats = 0;
+let botSatiety = 0;
 try {
+    // `eaten` counts every tuft consumed this run; nothing pressed E, so a
+    // nonzero count means the bots have been grazing.
+    const afterRun = JSON.parse(sandbox.sceneCommand('state').slice(3));
+    botEats = afterRun.eaten;
+    botSatiety = afterRun.satiety;
     sandbox.sceneCommand('energy 40');
     const found = JSON.parse(sandbox.sceneCommand('grass').slice(3));
     if (found !== null && found !== undefined) {
@@ -254,11 +261,16 @@ try {
         eatTest.satietyRose = after.satiety > 0;
         const again = JSON.parse(sandbox.sceneCommand('grass').slice(3));
         eatTest.gone = again === null || again.key !== found.key;
+        // Run the food clock past the longest regrow delay; the tuft returns.
+        sandbox.updateFood(200);
+        const regrown = JSON.parse(sandbox.sceneCommand('grass').slice(3));
+        eatTest.regrew = regrown !== null && regrown.key === found.key;
     }
     rainEase = sandbox.rainSlowFactor(0) > sandbox.rainSlowFactor(1);
 } catch (e) {
     eatTest.error = String(e);
 }
+const botEatClips = [...botClipNames].filter((n) => n.indexOf('GoatEat') === 0).length;
 
 const checks = [
     ['no throw', thrown === null, thrown],
@@ -316,6 +328,10 @@ const checks = [
     ['eating restores energy', eatTest.energyRose, eatTest],
     ['eating fills the belly', eatTest.satietyRose, eatTest],
     ['a full belly eases the rain slowdown', rainEase, rainEase],
+    ['bots graze the field', botEats > 0, botEats],
+    ['bots do not feed the player', botSatiety === 0, botSatiety],
+    ['bots play the eating clip', botEatClips >= 1, botEatClips],
+    ['eaten grass regrows', eatTest.regrew, eatTest],
 ];
 
 const failed = checks.filter((c) => !c[1]);

@@ -17,10 +17,25 @@ const EAT_SATIETY = 0.55;       // belly fill per tuft, 0..1
 const SATIETY_DECAY = 0.02;     // per second
 const RAIN_SHELTER = 0.6;       // a full belly removes this share of the rain slowdown
 const EAT_FALLBACK_TIME = 2.4;  // cube-fallback meal length
+const REGROW_MIN = 40;          // seconds before an eaten tuft comes back
+const REGROW_MAX = 90;          // ...at most, so the meadow recovers patchily
 
-const EATEN = new Set();
+// Eaten cells map to the seconds left before they return. A private PRNG keeps
+// the regrow jitter off the weather's and the bots' streams (the harness asserts
+// exact weather values).
+const EATEN = new Map();
+let foodRngState = 0x1f2e3d4c;
 let satiety = 0;                // 0..1
 let eatenCount = 0;
+
+function foodRnd() {
+    foodRngState ^= foodRngState << 13;
+    foodRngState >>>= 0;
+    foodRngState ^= foodRngState >>> 17;
+    foodRngState ^= foodRngState << 5;
+    foodRngState >>>= 0;
+    return foodRngState / 4294967296;
+}
 
 // A cell's identity as one number, unique for the cell range the field spans.
 function tuftKey(cx, cz) {
@@ -68,12 +83,19 @@ function nearestTuft(x, z, range) {
     return best;
 }
 
+// Mark a tuft eaten so it disappears and schedules its regrowth. Shared by the
+// player and the bots; returns false when there was nothing to eat.
+function consumeTuft(target) {
+    if (target === null || target === undefined) return false;
+    EATEN.set(tuftKey(target.cx, target.cz), REGROW_MIN + foodRnd() * (REGROW_MAX - REGROW_MIN));
+    eatenCount += 1;
+    return true;
+}
+
 // Eat `target`: remove the tuft, top up energy, fill the belly, and switch to
 // the eat clip. Returns false when there is nothing to eat.
 function startEat(target) {
-    if (target === null || target === undefined) return false;
-    EATEN.add(tuftKey(target.cx, target.cz));
-    eatenCount += 1;
+    if (!consumeTuft(target)) return false;
     stats.energy = Math.min(MAX_STAT, stats.energy + EAT_ENERGY);
     satiety = Math.min(1, satiety + EAT_SATIETY);
     mode = "eat";
@@ -82,7 +104,13 @@ function startEat(target) {
     return true;
 }
 
-// Once per frame: let the belly empty out again.
+// Once per frame: let the belly empty out and let eaten tufts grow back.
 function updateFood(dt) {
     satiety = Math.max(0, satiety - SATIETY_DECAY * dt);
+    if (EATEN.size === 0) return;
+    for (const key of EATEN.keys()) {
+        const left = EATEN.get(key) - dt;
+        if (left <= 0) EATEN.delete(key);
+        else EATEN.set(key, left);
+    }
 }
