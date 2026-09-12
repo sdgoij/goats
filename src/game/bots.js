@@ -32,6 +32,9 @@ const BOT_TEX = [];
 // seeded and the harness asserts on the exact weather it produces, so drawing
 // from it here would shift every later value.
 let botRngState = 0x2545f491;
+// Highest belly any bot has reached this run; logged every 240 frames so the
+// harness can see the herd actually fed itself.
+let botBellyMax = 0;
 function botRnd() {
     botRngState ^= botRngState << 13;
     botRngState >>>= 0;
@@ -94,6 +97,7 @@ function loadBots() {
             eatTime: 0,    // seconds into the current meal
             eatDur: 1,
             eatCool: 0,    // seconds before this bot will graze again
+            satiety: 0,    // 0..1, eases this bot's rain slowdown while it lasts
             // Which clip variant this bot plays per role; -1 so the first cycle
             // lands on index 0, and walk/trot/run have only one clip each.
             var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0 },
@@ -140,6 +144,7 @@ function botNewAction(b) {
             if (n > 1) b.var.eat = (b.var.eat + 1) % n;
             const info = clipAt("eat", b.var.eat);
             consumeTuft(t);
+            b.satiety = Math.min(1, b.satiety + EAT_SATIETY);
             b.mode = "eat";
             b.eatTime = 0;
             b.eatDur = info !== null && info !== undefined ? info.duration : EAT_FALLBACK_TIME;
@@ -184,6 +189,8 @@ function updateBots(dt) {
         b.timer -= dt;
         if (b.jumpCool > 0) b.jumpCool -= dt;
         if (b.eatCool > 0) b.eatCool -= dt;
+        if (b.satiety > 0) b.satiety = Math.max(0, b.satiety - SATIETY_DECAY * dt);
+        if (b.satiety > botBellyMax) botBellyMax = b.satiety;
 
         if (b.mode === "jump") {
             // Airborne: the jump clip's root motion does the hop, so this only
@@ -217,7 +224,9 @@ function updateBots(dt) {
                 const base = (info !== null && info.duration > 0 && gait !== undefined)
                     ? gait.stride / (gait.duty * info.duration)
                     : (2 * V_STRIDE) / V_CYCLE;
-                spd = base * (0.75 + 0.5 * b.spec.bold);
+                // Rain slows the bots too, each eased by its own belly (food.js),
+                // so a herd that has been grazing keeps its pace in the wet.
+                spd = base * (0.75 + 0.5 * b.spec.bold) * weatherSpeedFor(b.satiety);
             }
 
             if (spd > 0) {

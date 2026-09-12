@@ -271,6 +271,9 @@ try {
     eatTest.error = String(e);
 }
 const botEatClips = [...botClipNames].filter((n) => n.indexOf('GoatEat') === 0).length;
+const bellyLog = logs.map((l) => /bellyMax ([\d.]+)/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
+const botBellyMax = bellyLog.length ? Math.max.apply(null, bellyLog) : 0;
+const botFed = botBellyMax > 0;
 
 const checks = [
     ['no throw', thrown === null, thrown],
@@ -329,6 +332,7 @@ const checks = [
     ['eating fills the belly', eatTest.satietyRose, eatTest],
     ['a full belly eases the rain slowdown', rainEase, rainEase],
     ['bots graze the field', botEats > 0, botEats],
+    ['bots fill their own belly', botFed, botBellyMax],
     ['bots do not feed the player', botSatiety === 0, botSatiety],
     ['bots play the eating clip', botEatClips >= 1, botEatClips],
     ['eaten grass regrows', eatTest.regrew, eatTest],

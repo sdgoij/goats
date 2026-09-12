@@ -147,7 +147,7 @@ function sceneCommand(line) {
             return "ok " + JSON.stringify({
                 count: BOTS.length,
                 bots: BOTS.map(function (b) {
-                    return { x: ctlRound(b.x), z: ctlRound(b.z), yaw: ctlRound(b.yaw), mode: b.mode };
+                    return { x: ctlRound(b.x), z: ctlRound(b.z), yaw: ctlRound(b.yaw), mode: b.mode, belly: ctlRound(b.satiety) };
                 })
             });
         case "camera": {

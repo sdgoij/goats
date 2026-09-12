@@ -587,7 +587,8 @@ rl.endDrawing();
 
 if (sceneFrames % 240 === 0) {
     console.log("frame " + sceneFrames + " mode " + mode + " phase " + goat.phase.toFixed(2) +
-        " fps " + rl.getFPS() + " gap " + goatMinGap().toFixed(2));
+        " fps " + rl.getFPS() + " gap " + goatMinGap().toFixed(2) +
+        " bellyMax " + botBellyMax.toFixed(2));
 }
 
     if (ctlStep > 0) {

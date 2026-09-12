@@ -146,6 +146,15 @@ function rainSlowFactor(sat) {
     return RAIN_SLOW * (1 - RAIN_SHELTER * clamp(sat, 0, 1));
 }
 
+// The ground-speed multiplier the weather imposes on a goat with the given
+// belly (0..1): rain slows it, wind adds a little, and a full belly eases the
+// rain share. Shared by the player and the bots so the herd feels the same
+// weather, each according to its own grazing.
+function weatherSpeedFor(sat) {
+    const windNorm = Math.min(1, windSway / WIND_NORM);
+    return 1 - (rainSlowFactor(sat) + WIND_SLOW * windNorm) * rainAmount;
+}
+
 function updateWeather(dt) {
     weatherTimer -= dt;
     if (weatherTimer <= 0) {
@@ -162,7 +171,7 @@ function updateWeather(dt) {
     // Gate on rain: "clear" stays exactly neutral, and wind only bites when the
     // goat is actually wet. A full belly (`satiety`, food.js) takes the edge off
     // the rain's slowdown.
-    weatherSpeed = 1 - (rainSlowFactor(satiety) + WIND_SLOW * windNorm) * rainAmount;
+    weatherSpeed = weatherSpeedFor(satiety);
     weatherDrain = 1 + (WET_DRAIN + WIND_DRAIN * windNorm) * rainAmount;
     weatherText = weatherKind + "   wind " +
         Math.sqrt(windX * windX + windZ * windZ).toFixed(1) + " m/s";
