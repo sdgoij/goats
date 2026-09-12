@@ -257,7 +257,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "crux"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "half",
  "libc",
@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "jit"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "cranelift-codegen",
  "cranelift-control",
@@ -413,7 +413,7 @@ dependencies = [
 [[package]]
 name = "lexer"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "crux",
  "syntax",
@@ -510,7 +510,7 @@ dependencies = [
 [[package]]
 name = "parser"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "crux",
  "lexer",
@@ -609,7 +609,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "regexp"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "crux",
  "unicode",
@@ -630,7 +630,7 @@ dependencies = [
 [[package]]
 name = "runtime"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "crux",
  "lexer",
@@ -699,7 +699,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "slag"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "crux",
  "jit",
@@ -743,7 +743,7 @@ dependencies = [
 [[package]]
 name = "syntax"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "crux",
 ]
@@ -772,7 +772,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "unicode"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 dependencies = [
  "unicode-id",
  "unicode-normalization",
@@ -816,7 +816,7 @@ checksum = "383ad40bb927465ec0ce7720e033cb4ca06912855fc35db31b5755d0de75b1ee"
 [[package]]
 name = "wasm"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#ca1361eca85933411d91d2b813857ca5ae65c2e5"
+source = "git+https://github.com/sdgoij/slag#357fdda457688d4c6b4469c0a3466852b96424bd"
 
 [[package]]
 name = "wasmtime-internal-core"

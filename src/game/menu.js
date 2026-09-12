@@ -1,4 +1,4 @@
-// Part 12/12 of the goat scene: the main menu, settings and keymap.
+// Part 12/13 of the goat scene: the main menu, settings and keymap.
 // ---- menus ----------------------------------------------------------------
 //
 // The UI is drawn with raygui (the engine builds its bindings as `rl.gui*`).
@@ -29,6 +29,7 @@ const KEYMAP_ROWS = [
     ["Mouse wheel", "zoom"],
     ["Arrow keys", "orbit the camera"],
     ["P", "pause / resume"],
+    ["`", "open / close the console"],
     ["ESC", "main menu / resume"],
 ];
 
@@ -40,9 +41,10 @@ function uiIsOpen() {
     return uiScreen !== "hud";
 }
 
-// Game key presses are swallowed while a menu is open.
+// Game key presses are swallowed while a menu is open, or while the console is
+// taking typed input.
 function press(code) {
-    return uiScreen === "hud" && rl.isKeyPressed(code);
+    return uiScreen === "hud" && !consoleOpen && rl.isKeyPressed(code);
 }
 
 // Push SETTINGS into the systems that own the behaviour.

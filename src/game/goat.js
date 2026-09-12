@@ -1,4 +1,4 @@
-// Part 10/12 of the goat scene: the gait state machine, HUD and frame loop.
+// Part 10/13 of the goat scene: the gait state machine, HUD and frame loop.
 // ---- gait state ----------------------------------------------------------
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
@@ -414,9 +414,12 @@ function sceneFrame() {
         }
     }
 
+    // The console is an overlay: update it first, because while it is open it
+    // takes Escape (closing itself) and swallows the gameplay keys below.
+    const consoleAteEsc = consoleUpdate();
     // ESC toggles the main menu: it freezes the game and opens the menu; a second
     // press resumes (or steps back from a sub-screen).
-    if (rl.isKeyPressed(rl.KEY_ESCAPE)) {
+    if (rl.isKeyPressed(rl.KEY_ESCAPE) && !consoleAteEsc) {
         uiScreen = uiScreen === "hud" ? "main" : uiScreen === "main" ? "hud" : "main";
     }
     // A menu freezes time: every world update is dt-driven, so a zero dt is the
@@ -457,7 +460,7 @@ function sceneFrame() {
     clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
 
     // camera: drag to orbit, arrows as a fallback, wheel to zoom
-    if (uiScreen === "hud" && rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+    if (uiScreen === "hud" && !consoleOpen && rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
         camYaw -= rl.getMouseDeltaX() * 0.004;
         camPitch -= rl.getMouseDeltaY() * 0.004;
     }
@@ -465,7 +468,7 @@ function sceneFrame() {
     if (ctlKeyDown(rl.KEY_RIGHT)) camYaw -= 1.6 * dt;
     if (ctlKeyDown(rl.KEY_UP)) camPitch += 1.0 * dt;
     if (ctlKeyDown(rl.KEY_DOWN)) camPitch -= 1.0 * dt;
-    if (uiScreen === "hud") camDist -= rl.getMouseWheelMove() * 0.4;
+    if (uiScreen === "hud" && !consoleOpen) camDist -= rl.getMouseWheelMove() * 0.4;
     camPitch = clamp(camPitch, 0.08, 1.35);
     camDist = clamp(camDist, 2.2, 12.0);
 
@@ -681,8 +684,12 @@ function sceneFrame() {
     }
     rl.endMode3D();
 drawRain(screenW, screenH);
-if (uiScreen === "hud") drawHud(move);
-else drawUi();
+if (uiScreen === "hud") {
+    drawHud(move);
+    if (consoleOpen) drawConsole();
+} else {
+    drawUi();
+}
 rl.endDrawing();
 
 if (sceneFrames % 240 === 0) {

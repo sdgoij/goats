@@ -126,7 +126,8 @@ page, where GitHub plays it.*
 | arrow keys | orbit the camera (keyboard fallback) |
 | mouse wheel | zoom |
 | `P` | pause / resume |
-| `Esc` | quit |
+| `` ` `` | open / close the console |
+| `Esc` | main menu / resume |
 
 ## Requirements
 
@@ -189,7 +190,7 @@ gets on the free plan.
 | Path | What it is |
 | --- | --- |
 | `src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
-| `src/game/*.js` | The scene, split into 12 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu) |
+| `src/game/*.js` | The scene, split into 13 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console) |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
 | `goat_animated.glb` | Exported model (11 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials (its `.blend1` auto-backup is git-ignored) |

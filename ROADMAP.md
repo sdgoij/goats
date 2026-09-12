@@ -45,6 +45,9 @@ covers more than it first appears:
 | 3D rain drops / splashes | ✅ | `drawLine3D` / `drawPoint3D` (M0) |
 | Read a bone's world transform | ✅ | `modelBonePosition` / `modelBoneTransform` (M0) |
 | Photoreal / volumetric clouds | ✅ approx | raymarched slab, self-shadowed, with a phase function (M5b); not full radiative transfer |
+| Text input (character entry) | ❌ | the surface has `isKeyPressed` but no `getCharPressed` (M9) |
+| Read raw audio streams | ❌ | no `loadAudioStream`/`updateAudioStream`, so decoded voice cannot reach raylib's mixer (M13) |
+| Networking | Host only | the JS engine has no sockets; `iroh` lives in the Rust host and reaches the scene over the command bridge (M10) |
 
 The practical consequence: **stats, sleep and death needed no engine work at all**,
 and day/night plus a first pass of weather needed only the M0 primitives. With M0
@@ -69,6 +72,11 @@ uses.
 | **M6** | Weather affects gameplay | M3 | S | ✅ **Done** (rain slows, wet drains energy) |
 | **M7** | Bot herd | M1, M4 | M | ✅ **Done** (collides, grazes, zoomies) |
 | **M8** | Heightfield terrain + materials | M4 (lighting) | M | ✅ **Done** (engine `makeModel`) |
+| **M9** | In-game console + character input | `getCharPressed` (upstream) | S–M | ✅ **Done** (engine binding + console; live keystroke check pending) |
+| **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | The console gives chat, status and errors somewhere to land |
+| **M11** | Chat: global, DMs, system lines | M10 | S–M | Cheap once the channel exists, and it exercises it both ways |
+| **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | The actual gameplay payload |
+| **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
 
 ---
 
@@ -589,17 +597,229 @@ screenshot review could judge.
 
 ---
 
+## M9 — In-game console + character input
+
+✅ **Done.** The console is the input substrate for chat and a dev tool in its
+own right, so it landed before any networking. It was one new JS part plus two
+small engine bindings; no workspace change was needed — the repository only
+splits into `crates/` when M10 starts.
+
+### Engine prerequisite (upstream Slag)
+
+One addition to `crates/runtime/src/raylib.rs`, arity-checked like the rest, with
+a case in the `rl` surface test:
+
+| Binding | Arity | Use |
+| --- | --- | --- |
+| `getCharPressed` | 0 | one UTF-32 codepoint per queued key press, `0` when drained — read in a loop until it returns 0 |
+| `guiTextBox` (optional) | 6 | raygui-owned single-line fields; not needed for the console, only if the username/ticket dialogs (M10) want one |
+
+### JS plumbing
+
+A new part, `src/game/console.js`, appended after `menu.js` (part 13/13), plus
+one line in `src/main.rs`'s `concat!` — which also updates the part list in
+`core.js`'s header comment and the README Layout row (`12 parts` → `13`).
+
+- **`consoleOpen` is an overlay flag, not a `uiScreen` value.** Menus freeze the
+  world (`dt` is forced to 0 while one is open); the console must *not* pause,
+  especially once multiplayer lands. It draws over the HUD and the game keeps
+  running behind it.
+- **Suppress gameplay input while open.** Both existing gates — `ctlKeyDown`
+  (ctl.js: movement, the arrow-orbit keys, `T`) and `press` (menu.js: `P`, `C`,
+  `L`, `K`, `M`, `F11`, `B`, `R`, `Z`, `E`, `Space`) — become
+  `uiScreen === "hud" && !consoleOpen && ...`. The inline mouse-wheel zoom check
+  in `goat.js` needs the same guard, and the `Escape` menu toggle must defer to
+  the console while it is open (close the console, not open the menu).
+- **Keys.** Backquote (`` ` ``, `KEY_GRAVE` = 96) toggles; `Enter` submits;
+  `Backspace` edits the line; `Up`/`Down` walk the history.
+- **Submit routes through the existing `sceneCommand` dispatcher**, so every verb
+  that already exists (`settings`, `time`, `bots`, `weather`, `spawn` …) works in
+  the console for free, and its `ok`/`error` reply is echoed into the scrollback.
+- **Two output streams.** A scrollback ring buffer (~200 lines) that keeps local
+  command replies visually distinct from network/system lines (`<name> text`), so
+  M10/M11 can push the latter without a second buffer.
+- **A host→scene entry point** — `sceneNetEvent(line)`, resolved by the host
+  exactly like the other `scene*` functions — so Rust can print into the console
+  without evaluating a fresh script. If an older engine build lacks the hook the
+  scene degrades to no console output rather than throwing (the same pattern as
+  the shader fallbacks).
+- `drawConsole` is an overlay built from existing bindings
+  (`drawRectangle`/`drawText`), independent of `uiScreen`.
+
+### Harness
+
+The driver already scripts input by filling the `keys`/`pressed` maps per frame,
+so the console slots straight in:
+
+- add `KEY_GRAVE: 96`, `KEY_BACKSPACE: 259`, `KEY_ENTER: 257` to the constants
+  and a scriptable `rl.getCharPressed` queue;
+- cases: open, type `ping`, submit (assert `ok pong` reaches the scrollback); a
+  held `W` must not move the goat while the console is open; `Up` recalls the
+  last command; `Escape` closes the console instead of opening the menu.
+
+Acceptance: backquote opens and closes; every printable key lands in the line;
+`Enter` runs the command and echoes `ok`/`error`; no gameplay binding fires
+while it is open; the harness covers open, type, submit, history and
+suppression.
+
+**What landed.** `getCharPressed` and `KEY_GRAVE` (96) added to the engine's
+raylib surface (upstream Slag; exercised locally through the `./slag` path
+dependency, which must not be committed). `src/game/console.js` as part 13/13,
+which renumbered the other twelve headers. The console gate in `ctlKeyDown` and
+`press`; Escape precedence and the mouse-wheel guard in the frame loop; a
+`console` verb on the dispatcher (`open` / `close` / `toggle` / `say`, plus a
+query returning the input, caret, history and scrollback); and the README and
+keymap rows. One detail worth keeping: raylib queues a character for every
+printable key whether or not it is read, so the toggle drains that backlog —
+otherwise the console would open full of the `wasd` typed while playing.
+
+**Verified.** The engine surface test passes
+(`cargo test -p runtime --features raylib,raygui installs_the_rl_surface`), the
+game builds against the local checkout, and the harness gained eleven checks —
+open, type `ping`, submit, `ok pong` in the scrollback, history recall, Escape
+closing the console without opening the menu, reopen, and the goat moving while
+closed but frozen while open — taking it to 88 passing checks.
+**Not verified here:** an actual keystroke in a live window (this environment has
+no display), which is the one check left for a machine with a GPU.
+
+---
+
+## M10 — Networking foundation: workspace, iroh, join by ticket
+
+All of it moves to Rust, because the JS engine has no sockets: the scene never
+touches the network, it only emits intents and consumes events.
+
+**Repository.** Convert to a Cargo workspace, mirroring Slag's layout:
+
+```
+crates/goats     client + the JS scene (moved from src/)
+crates/proto     serde message types; no iroh/tokio; testable in isolation
+crates/session   session/server logic on tokio + iroh; no window
+crates/server    bin `goatsd`: session + a headless frame loop
+```
+
+**Transport.** `iroh`, pinned exactly (1.2.0 at the time of writing). One ALPN
+per major protocol version (`goats/1`) so a mismatched build fails cleanly
+instead of deserialising garbage. Joining is copy-pasting an `iroh-tickets`
+ticket. `presets::N0` reaches peers over n0's public relays with DNS lookup;
+self-hosting `iroh-relay` or LAN-only direct addresses are later options (see
+the open questions). `bevy_iroh` is worth **trialling** and pinning — it
+advertises replication, rooms, presence and voice, which is exactly the shape we
+want — but it is Bevy-shaped and days old, so plain `iroh` plus our own
+`session` layer is the fallback, not a rewrite.
+
+**Host bridge.** A Tokio runtime on its own thread owns the `Endpoint`; the
+synchronous frame loop drains an `mpsc` at frame boundaries and **never awaits**,
+so the render loop cannot stall. Rust→JS is `sceneNetEvent(line)`; JS→Rust is one
+more host callback. Keeping it line/JSON matches the existing command channel and
+stays stubbable by the harness.
+
+**Client-as-host.** A client hosting a game is just an endpoint that accepts the
+same ALPN and runs `session` in-process, so "Host" and "Join" share one code
+path. Host quitting ends the session (no migration).
+
+**The headless server runs the same JS.** `goatsd` evaluates the identical scene
+against a **null `rl` host module** — no window, no GL — the trick
+`tools/goat_logic_test.js` already proves works: terrain, weather, bots and food
+simulate with every draw/audio call no-op'd, while `rl.color` and the
+model/texture builders return usable handles. That keeps one world model instead
+of a Rust re-implementation, and means the server needs no GPU. Watch the one
+binding the sim genuinely needs: `getFrameTime`, which the server replaces with a
+fixed timestep.
+
+**Protocol basics.** A version/`hello` handshake, the username prompt (server
+owns the canonical name), a roster, and input validation — message-size caps and
+finite positions, since a `NaN` leaked into an interpolated transform poisons the
+render.
+
+Acceptance: two clients and one `goatsd` can each host or join by ticket; the
+roster shows names; the console prints join/leave; `proto` round-trips and the
+`session` state machine are covered by headless tests (iroh's `test-utils` /
+loopback endpoints need no real network).
+
+---
+
+## M11 — Chat
+
+Cheap once M10's channel exists, and it exercises it in both directions.
+
+- Global: bare text broadcasts.
+- 1:1: a **leading** `@name text` is a DM, with `/msg name text` as the
+  unambiguous form. Deliberately not parsing `@` mid-message, so a sentence that
+  merely mentions a name does not leak as a DM.
+- Commands: `/who`, `/nick`, `/help`; system lines for join/leave/rename.
+- Names are not unique, so the server assigns the canonical one: cap the length,
+  strip control characters/ANSI, de-duplicate (`Bob`, then `Bob #2`).
+- DMs are filtered by the server, not broadcast.
+- Rate-limit and cap message length; unbounded chat is a trivial DoS and a
+  bandwidth sink.
+
+---
+
+## M12 — World sync
+
+- **The world is shared by seed.** Terrain, grass and the initial layout are pure
+  functions of position, and the assets are embedded and identical, so the host
+  sends a session seed at join and every client generates the same world — no
+  asset transfer and, more importantly, only goats need syncing.
+- The current seeds are hardcoded constants (`botRngState`, `audioSeed`, the
+  weather `rnd()` stream); they become a session seed. Note this touches the
+  harness, which asserts the exact weather a seeded stream produces.
+- **Authority.** Player goats are client-authoritative and relayed by the host —
+  simple and low-latency, trusting clients, which is the right call for a
+  sandbox. Bots and weather are server-owned: bots collide with players, so they
+  diverge the moment anyone interacts.
+- **Transport.** Unreliable datagrams at ~15–20 Hz carrying
+  `(id, x, z, yaw, mode, phase, speed, name)`; remote goats interpolate ~100 ms
+  behind. Reliable streams carry join/roster/chat only.
+- **Deferred:** client-side prediction/reconciliation, server-authoritative
+  movement and lag compensation. Also settle `P` (pauses locally today) and the
+  death/restart flow, both of which must become server-owned or be disabled.
+
+---
+
+## M13 — Voice chat
+
+Deliberately last, but the transport really is the easy part: one ~20 ms Opus
+frame per QUIC datagram on the connection we already have.
+
+- Capture: `cpal` (or `capture-helper-rs`) in the host; encode with the `opus`
+  crate (~24 kbps).
+- Playback: either `cpal` directly — which bypasses `SETTINGS.sfx` and the `M`
+  mute, and is therefore wrong — or via new `rl` audio-stream bindings
+  (`loadAudioStream`/`updateAudioStream`) so voice flows through raylib's mixer
+  and honours the existing audio settings. That binding is the engine work.
+- Needs a jitter buffer, Opus PLC for loss, push-to-talk, per-peer mute/volume,
+  and distance attenuation (positions are already known, so this is nearly
+  free).
+- Uplink is the limit: full mesh is ~24–32 kbps upstream *per peer*, so it is
+  fine for ≤4 players; beyond that the host should relay.
+- Keep it behind a generic unreliable "media" channel so it slots in without
+  reworking the transform channel.
+
+---
+
 ## Cross-cutting work
 
-- **Splitting the scene.** ✅ **Done.** The scene is `src/game/*.js` in nine
-  parts (core, model, world, lighting, sky, audio, weather, bots, goat), joined in the
-  order listed in `src/main.rs`. The host concatenates them and evaluates the
+- **Splitting the scene.** ✅ **Done.** The scene is `src/game/*.js` in twelve
+  parts (core, model, world, lighting, sky, audio, weather, food, bots, goat,
+  ctl, menu), joined in the order listed in `src/main.rs` — a thirteenth,
+  `console.js`, arrives with M9. The host concatenates them and evaluates the
   result as one script, so every part shares a single top-level scope and the
   engine still needs no module system; the headless harness parses the same list
   out of `src/main.rs`.
+- **Workspace.** M10 turns the repo into a Cargo workspace — `crates/goats`
+  (client + JS), `crates/proto` (serde types, no iroh/tokio), `crates/session`
+  (tokio + iroh, no window) and `crates/server` (bin `goatsd`), mirroring Slag's
+  layout. M9 deliberately needs none of it.
+- **Host bridge.** The JS↔Rust boundary stays line/JSON: `sceneCommand` in,
+  `sceneNetEvent` out, one more host callback back. The synchronous frame loop
+  drains an `mpsc` and never awaits (iroh is Tokio); the harness stubs the same
+  entry points.
 - **Persistence.** Saving stats and time of day would make death and long
   sessions meaningful. Needs a small host-side file API or an in-memory
-  restart-only model.
+  restart-only model. The same API has to hold the netplay endpoint's secret key
+  (M10): lose it and the player loses their identity.
 - **Audio.** Weather beds, a bleat on jump/death, an ambient night layer.
   Bindings already exist.
 - **HUD.** Bars, clock, weather icon, a death screen. `drawRectangle`/`drawText`
@@ -644,3 +864,22 @@ screenshot review could judge.
    field has hollows but no lakes or streams), but a splat-map material upgrade
    and scattered props (rocks, trees) on the same field are both cheaper, and
    nothing yet justifies leaving the level spawn bowl.
+9. **Authority model.** Client-authoritative player goats relayed by the host
+   (simple, low-latency, trusts the client) is what we ship first;
+   server-authoritative movement, prediction and reconciliation wait until the
+   sandbox actually needs them.
+10. **Reach.** Internet play out of the box via `presets::N0` (n0's public
+    relays plus DNS), or LAN/direct-only to start and no third-party
+    infrastructure at all? The first is frictionless, the second has no external
+    dependency.
+11. **Bots and weather in multiplayer.** Server-owned (recommended — bots
+    collide with players, so they diverge the moment anyone interacts) or
+    cosmetic per client?
+12. **Join method.** Copy-pasting an `iroh-tickets` ticket is v1; a short room
+    code needs a rendezvous service (`pkarr`, `iroh-gossip-rendezvous`) — later,
+    or never?
+13. **Death and pause in multiplayer.** `P` freezes the world locally and death
+    offers a local restart; both must become server-owned or be disabled.
+14. **`bevy_iroh`.** Trial it and pin a version: it advertises exactly the
+    replication/rooms/presence we want, but it is Bevy-shaped and days old. Fall
+    back to a hand-rolled session layer over plain `iroh` if it does not fit.

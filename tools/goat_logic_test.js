@@ -67,11 +67,20 @@ let splashStep = '';
 let terrainMeshesBuilt = 0;
 let lastTerrainMesh = null;
 let goatDrawY = null;
+let goatDrawX = null;
+let goatDrawZ = null;
 const botDrawY = new Map();
 let terrainError = null;
 
 const keys = {};
 const pressed = {};
+// The console's text queue (M9): `rl.getCharPressed` drains this, the way raylib
+// queues one codepoint per real key press.
+const chars = [];
+// Console probe (M9): the frames whose post-frame console/goat state is
+// snapshotted, because `run()` drives the loop internally.
+const consoleProbe = {};
+const consoleProbeFrames = new Set([4007, 4008, 4009, 4011, 4013, 4016, 4018, 4021]);
 
 function applyInput(i) {
     for (const k of Object.keys(keys)) delete keys[k];
@@ -88,11 +97,22 @@ function applyInput(i) {
     if (i === 3000 || i === 3100) pressed[67] = true;       // C next weather
     if (i === 3200) pressed[76] = true;                     // L lighting off
     if (i === 3950) pressed[82] = true;                     // R restart
+    // Console (M9). Frames 4010+ follow the R-restart run, so opening it there
+    // stops a goat that was genuinely moving: that is what proves the input
+    // gate, and it cannot disturb any earlier assertion.
+    if (i === 4010) pressed[96] = true;                     // ` opens the console
+    if (i === 4012) chars.push(112, 105, 110, 103);         // "ping"
+    if (i === 4014) pressed[257] = true;                    // ENTER submits
+    if (i === 4016) pressed[265] = true;                    // UP recalls history
+    if (i === 4018) pressed[256] = true;                    // ESC closes, not the menu
+    if (i === 4020) pressed[96] = true;                     // ` reopens
+    if (i === 4022) pressed[256] = true;                    // ESC closes again
 }
 
 const constants = {
     MOUSE_BUTTON_LEFT: 0,
-    KEY_SPACE: 32, KEY_ESCAPE: 256,
+    KEY_SPACE: 32, KEY_ESCAPE: 256, KEY_ENTER: 257, KEY_BACKSPACE: 259,
+    KEY_DELETE: 261, KEY_GRAVE: 96,
     KEY_RIGHT: 262, KEY_LEFT: 263, KEY_DOWN: 264, KEY_UP: 265,
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
@@ -139,7 +159,9 @@ const rl = Object.assign({}, constants, {
         // The goat is handle 0 and the terrain meshes are 1000+; everything else
         // is a bot. Bots are drawn at the ground under them, so the recorded y
         // must equal `terrainHeight` there (`groundOffset` is 0 in this stub).
-        if (m === 0) goatDrawY = y;
+        // The goat's whole position is kept so the console test can show that
+        // movement stops while the overlay is open.
+        if (m === 0) { goatDrawY = y; goatDrawX = x; goatDrawZ = z; }
         else if (m < 1000) botDrawY.set(m, { x: x, y: y, z: z });
     },
     setModelShader: (_m, s) => { modelShaderCalls.push(s); },
@@ -192,6 +214,7 @@ const rl = Object.assign({}, constants, {
     isKeyDown: (k) => !!keys[k],
     isKeyPressed: (k) => !!pressed[k],
     isKeyReleased: () => false, isKeyUp: (k) => !keys[k],
+    getCharPressed: () => (chars.length > 0 ? chars.shift() : 0),
     beginDrawing: () => {}, clearBackground: () => {}, endDrawing: () => {
         // The splash's loading frames are not part of the scripted timeline.
         if (typeof sandbox.sceneReady === 'function' && !sandbox.sceneReady()) {
@@ -205,6 +228,16 @@ const rl = Object.assign({}, constants, {
             stats: statsText,
             weather: weatherText,
         });
+        // The console probe: snapshot the goat's position, the console's state
+        // and the active screen at the scripted frames.
+        if (consoleProbeFrames.has(frameIndex)) {
+            consoleProbe[frameIndex] = {
+                x: goatDrawX,
+                z: goatDrawZ,
+                state: JSON.parse(sandbox.sceneCommand('console').slice(3)),
+                ui: sandbox.sceneCommand('ui').slice(3),
+            };
+        }
         frameIndex += 1;
     },
     beginMode3D: () => {}, endMode3D: () => {},
@@ -471,6 +504,11 @@ try {
     terrainError = String(e);
 }
 
+// Console (M9): the snapshots taken at the scripted frames, and a shorthand.
+const cp = (i) => consoleProbe[i] ||
+    { x: null, z: null, state: { open: false, input: '', lines: [], history: [] }, ui: '' };
+const cpLines = (i) => cp(i).state.lines || [];
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -572,6 +610,21 @@ const checks = [
     ['the terrain mesh carries several materials', terrainMaterials >= 4, terrainMaterials],
     ['the goat stands on the terrain', terrainStandOk, goatDrawY],
     ['the herd stands on the terrain', herdStandsOk, botDrawY.size],
+    // Console (M9): the overlay opens, takes typed input, runs it through the
+    // same dispatcher as the stdin channel, and freezes the goat while open.
+    ['the console starts closed', cp(4008).state.open === false, cp(4008).state.open],
+    ['backquote opens the console', cp(4011).state.open === true, cp(4011).state.open],
+    ['the console echoes what was typed', cpLines(4016).indexOf('echo: > ping') >= 0, cpLines(4016)],
+    ['the console runs the command', cpLines(4016).indexOf('local: ok pong') >= 0, cpLines(4016)],
+    ['the console keeps command history', cp(4016).state.history.indexOf('ping') >= 0, cp(4016).state.history],
+    ['UP recalls the last command', cp(4016).state.input === 'ping', cp(4016).state.input],
+    ['ESC closes the console', cp(4018).state.open === false, cp(4018).state.open],
+    ['ESC does not open the menu', cp(4018).ui === 'hud', cp(4018).ui],
+    ['backquote reopens the console', cp(4021).state.open === true, cp(4021).state.open],
+    ['the goat moves while the console is closed',
+        cp(4007).x !== cp(4008).x || cp(4007).z !== cp(4008).z, [cp(4007), cp(4008)]],
+    ['the console freezes the goat',
+        cp(4009).x === cp(4011).x && cp(4009).z === cp(4011).z, [cp(4009), cp(4011)]],
 ];
 
 const failed = checks.filter((c) => !c[1]);

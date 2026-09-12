@@ -1,4 +1,4 @@
-// Part 11/12 of the goat scene: the stdin command channel.
+// Part 11/13 of the goat scene: the stdin command channel.
 // ---- control channel ------------------------------------------------------
 //
 // The host (`src/main.rs`) reads a line from stdin, calls `sceneCommand(line)`
@@ -20,13 +20,13 @@ const ctlHeld = {};
 
 const HELP = "help ping state stats time weather bots camera features fps " +
     "jump sleep wake restart kill health energy heal eat grass walk trot run back stop " +
-    "turn yaw pos phase pause resume step lighting shadows sky mute settings setting ui " +
+    "turn yaw pos phase pause resume step lighting shadows sky mute settings setting ui console " +
     "screenshot quit";
 
 // A movement key is down if a script holds it or the real keyboard does, and no
-// menu is swallowing input.
+// menu or the console is swallowing input.
 function ctlKeyDown(code) {
-    return uiScreen === "hud" && (ctlHeld[code] === true || rl.isKeyDown(code));
+    return uiScreen === "hud" && !consoleOpen && (ctlHeld[code] === true || rl.isKeyDown(code));
 }
 
 function ctlRelease(code) {
@@ -235,6 +235,34 @@ function sceneCommand(line) {
             }
             uiScreen = screen;
             return "ok ui " + uiScreen;
+        }
+
+        // ---- console (M9) ------------------------------------------------
+        case "console": {
+            const action = parts[1];
+            if (action === "open") {
+                if (!consoleOpen) consoleToggle();
+                return "ok console open";
+            }
+            if (action === "close") {
+                consoleClose();
+                return "ok console close";
+            }
+            if (action === "toggle") {
+                consoleToggle();
+                return "ok console " + (consoleOpen ? "open" : "close");
+            }
+            if (action === "say") {
+                consoleSubmit(parts.slice(2).join(" "));
+                return "ok console say";
+            }
+            return "ok " + JSON.stringify({
+                open: consoleOpen,
+                input: consoleInput,
+                caret: consoleCaret,
+                history: consoleHistory,
+                lines: consoleLines.map(function (line) { return line.kind + ": " + line.text; })
+            });
         }
 
         // ---- goat state --------------------------------------------------
