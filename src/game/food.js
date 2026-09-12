@@ -11,7 +11,9 @@
 // rain slowdown (see `rainSlowFactor` in weather.js), and satiety decays, so the
 // goat has to keep grazing to keep the benefit.
 
-const EAT_RANGE = 1.8;          // metres: a tuft closer than this is in reach
+const EAT_RANGE = 1.1;          // metres: a tuft closer than this is in reach
+                                // (the posed muzzle reaches ~0.8 m ahead, so a
+                                // tuft further out would be eaten from thin air)
 const EAT_ENERGY = 8;           // energy per tuft
 const EAT_SATIETY = 0.55;       // belly fill per tuft, 0..1
 const SATIETY_DECAY = 0.02;     // per second
@@ -92,10 +94,12 @@ function consumeTuft(target) {
     return true;
 }
 
-// Eat `target`: remove the tuft, top up energy, fill the belly, and switch to
-// the eat clip. Returns false when there is nothing to eat.
+// Eat `target`: remove the tuft, turn onto it, top up energy, fill the belly,
+// and switch to the eat clip. Returns false when there is nothing to eat.
 function startEat(target) {
     if (!consumeTuft(target)) return false;
+    // Face the tuft, so the head comes down where the grass actually was.
+    goat.yaw = Math.atan2(-(target.z - goat.pz), target.x - goat.px);
     stats.energy = Math.min(MAX_STAT, stats.energy + EAT_ENERGY);
     satiety = Math.min(1, satiety + EAT_SATIETY);
     mode = "eat";

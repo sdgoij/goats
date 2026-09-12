@@ -144,6 +144,8 @@ function botNewAction(b) {
             if (n > 1) b.var.eat = (b.var.eat + 1) % n;
             const info = clipAt("eat", b.var.eat);
             consumeTuft(t);
+            // Face the tuft so the head comes down onto it, like the player.
+            b.yaw = Math.atan2(-(t.z - b.z), t.x - b.x);
             b.satiety = Math.min(1, b.satiety + EAT_SATIETY);
             b.mode = "eat";
             b.eatTime = 0;

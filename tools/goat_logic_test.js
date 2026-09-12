@@ -50,6 +50,7 @@ const logs = [];
 let shadowPass = false;
 let shadowCubeDraws = 0;
 let menuDraws = 0;
+let cubeDraws = 0;
 
 const keys = {};
 const pressed = {};
@@ -157,7 +158,7 @@ const rl = Object.assign({}, constants, {
         frameIndex += 1;
     },
     beginMode3D: () => {}, endMode3D: () => {},
-    drawCube: () => { if (shadowPass) shadowCubeDraws += 1; }, drawGrid: () => {},
+    drawCube: () => { if (shadowPass) shadowCubeDraws += 1; cubeDraws += 1; }, drawGrid: () => {},
     drawSphere: () => {}, drawPoint3D: () => {}, drawRectangleGradientV: () => {},
     drawLine: () => {},
     drawRectangle: () => {}, drawRectangleLines: () => { menuDraws += 1; }, drawText: (text) => {
@@ -237,7 +238,7 @@ const playerIdles = [...new Set(timeline.map((r) => r.clip))].filter((n) => n &&
 
 // Grass is food. `run()` has finished, so exercise the mechanic through the
 // same command channel the host uses: find a tuft, stand on it, then eat it.
-const eatTest = { found: false, menu: false, ate: false, energyRose: false, satietyRose: false, gone: false, regrew: false };
+const eatTest = { found: false, menu: false, ate: false, energyRose: false, satietyRose: false, faced: false, gone: false, regrew: false };
 let rainEase = false;
 let botEats = 0;
 let botSatiety = 0;
@@ -251,7 +252,10 @@ try {
     const found = JSON.parse(sandbox.sceneCommand('grass').slice(3));
     if (found !== null && found !== undefined) {
         eatTest.found = true;
-        sandbox.sceneCommand('pos ' + found.x + ' ' + found.z);
+        // Stand half a metre short of the tuft, facing away, so the eat's facing
+        // snap is observable.
+        sandbox.sceneCommand('pos ' + (found.x - 0.5) + ' ' + found.z);
+        sandbox.sceneCommand('yaw 180');
         const before = JSON.parse(sandbox.sceneCommand('state').slice(3));
         eatTest.menu = before.foodInReach === true;
         const reply = sandbox.sceneCommand('eat');
@@ -259,6 +263,8 @@ try {
         eatTest.ate = reply.indexOf('ok') === 0;
         eatTest.energyRose = after.energy > before.energy;
         eatTest.satietyRose = after.satiety > 0;
+        // The goat turns onto the tuft (yaw 0 faces +x, where the tuft lies).
+        eatTest.faced = Math.abs(after.yaw) < 0.2;
         const again = JSON.parse(sandbox.sceneCommand('grass').slice(3));
         eatTest.gone = again === null || again.key !== found.key;
         // Run the food clock past the longest regrow delay; the tuft returns.
@@ -271,6 +277,25 @@ try {
     eatTest.error = String(e);
 }
 const botEatClips = [...botClipNames].filter((n) => n.indexOf('GoatEat') === 0).length;
+// Direct proof the visuals follow the model: drawn tufts drop when one is eaten.
+let tuftVanishes = false;
+let tuftDrawDrop = null;
+try {
+    const tuft = sandbox.nearestTuft(0, 0, 20);
+    if (tuft !== null) {
+        cubeDraws = 0;
+        sandbox.drawTufts({ px: 0, pz: 0 }, 0, 576, 180);
+        const drawnBefore = cubeDraws;
+        sandbox.consumeTuft(tuft);
+        cubeDraws = 0;
+        sandbox.drawTufts({ px: 0, pz: 0 }, 0, 576, 180);
+        const drawnAfter = cubeDraws;
+        tuftDrawDrop = drawnBefore - drawnAfter;
+        tuftVanishes = drawnAfter < drawnBefore;
+    }
+} catch (e) {
+    eatTest.drawError = String(e);
+}
 const bellyLog = logs.map((l) => /bellyMax ([\d.]+)/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
 const botBellyMax = bellyLog.length ? Math.max.apply(null, bellyLog) : 0;
 const botFed = botBellyMax > 0;
@@ -328,6 +353,7 @@ const checks = [
     ['the eat menu is drawn in reach', menuDraws > 0, menuDraws],
     ['grass in reach shows the eat menu', eatTest.menu, eatTest],
     ['eating consumes the nearest tuft', eatTest.ate && eatTest.gone, eatTest],
+    ['eating turns the goat onto the grass', eatTest.faced, eatTest],
     ['eating restores energy', eatTest.energyRose, eatTest],
     ['eating fills the belly', eatTest.satietyRose, eatTest],
     ['a full belly eases the rain slowdown', rainEase, rainEase],
@@ -336,6 +362,7 @@ const checks = [
     ['bots do not feed the player', botSatiety === 0, botSatiety],
     ['bots play the eating clip', botEatClips >= 1, botEatClips],
     ['eaten grass regrows', eatTest.regrew, eatTest],
+    ['eaten grass stops being drawn', tuftVanishes, tuftDrawDrop],
 ];
 
 const failed = checks.filter((c) => !c[1]);
