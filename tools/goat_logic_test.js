@@ -540,6 +540,16 @@ try {
     netTest.noTicket = sandbox.sceneCommand('connect') === 'error connect expects a ticket';
     netTest.joinQueued = sandbox.sceneCommand('connect endpointABC alice') === 'ok connect' &&
         sandbox.sceneNetDrain().indexOf('"ticket":"endpointABC"') >= 0;
+
+    // A username prompt: the command asks, the next console line answers. The
+    // outbox is cleared first because the join above queued an intent.
+    sandbox.sceneNetDrain();
+    netTest.promptReply = sandbox.sceneCommand('host');
+    const promptState = JSON.parse(sandbox.sceneCommand('console').slice(3));
+    netTest.promptAsked = netTest.promptReply === 'ok name?' && promptState.open === true &&
+        promptState.lines.some((l) => l.indexOf('Username?') >= 0);
+    sandbox.sceneCommand('console say carol');
+    netTest.promptAnswered = sandbox.sceneNetDrain().indexOf('"name":"carol"') >= 0;
 } catch (e) {
     netTest.error = String(e);
 }
@@ -676,6 +686,8 @@ const checks = [
     ['disconnect resets the view', netTest.reset, netTest],
     ['connect without a ticket is an error', netTest.noTicket, netTest],
     ['connect queues a join', netTest.joinQueued, netTest],
+    ['host without a name asks for one', netTest.promptAsked, netTest],
+    ['the prompt answer is used', netTest.promptAnswered, netTest],
 ];
 
 const failed = checks.filter((c) => !c[1]);

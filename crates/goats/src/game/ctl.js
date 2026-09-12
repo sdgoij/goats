@@ -269,9 +269,18 @@ function sceneCommand(line) {
 
         // ---- net (M10) ---------------------------------------------------
         case "host":
+            if (parts.length < 2) {
+                consoleAsk("Username?", function (answer) { return netHost(["host", answer]); });
+                return "ok name?";
+            }
             return netHost(parts);
         case "connect":
         case "join":
+            if (parts[1] === undefined) return "error connect expects a ticket";
+            if (parts.length < 3) {
+                consoleAsk("Username?", function (answer) { return netJoin(["connect", parts[1], answer]); });
+                return "ok name?";
+            }
             return netJoin(parts);
         case "leave":
         case "disconnect":

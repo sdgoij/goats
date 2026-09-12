@@ -38,6 +38,9 @@ let consoleLines = [];          // { text, kind }
 let consoleHistory = [];
 let consoleHistoryAt = 0;
 let consoleSeen = false;
+// Set while the console is asking a question: the next submitted line is the
+// answer, passed to `action`, rather than being dispatched as a command.
+let consolePrompt = null;
 
 // Append a line, dropping the oldest once the ring is full.
 function consolePush(text, kind) {
@@ -59,6 +62,9 @@ function consoleSystem(text) {
 
 function consoleClose() {
     consoleOpen = false;
+    // A pending question is abandoned with the console; the player runs the
+    // command again if they still want it.
+    consolePrompt = null;
 }
 
 function consoleToggle() {
@@ -82,19 +88,34 @@ function consoleToggle() {
     }
 }
 
+// Ask a question in the console. The next submitted line becomes the answer and
+// goes to `action`, whose reply is printed like any other command's. This is the
+// username prompt, so it opens the console to be typed into.
+function consoleAsk(question, action) {
+    consolePrompt = { question: question, action: action };
+    if (!consoleOpen) consoleToggle();
+    consoleInput = "";
+    consoleCaret = 0;
+    consolePush(question, "system");
+}
+
 // Run one submitted line: echo it, dispatch it, echo the reply.
 function consoleSubmit(line) {
     const text = String(line).trim();
     if (text === "") return;
-    consolePush("> " + text, "echo");
     if (consoleHistory.length === 0 || consoleHistory[consoleHistory.length - 1] !== text) {
         consoleHistory.push(text);
         if (consoleHistory.length > CONSOLE_HISTORY) consoleHistory.shift();
     }
     consoleHistoryAt = consoleHistory.length;
+    consolePush("> " + text, "echo");
+
+    // A pending question consumes the line instead of dispatching it.
+    const prompt = consolePrompt;
+    consolePrompt = null;
     let reply;
     try {
-        reply = sceneCommand(text);
+        reply = prompt !== null ? prompt.action(text) : sceneCommand(text);
     } catch (error) {
         reply = "error " + String(error);
     }
