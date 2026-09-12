@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+# The client becomes `crates/goats` in a later M10 step; for now the workspace
+# is introduced with the networking crates alongside the existing root package.
+[workspace]
+members = ["crates/session"]
+
 [dependencies]
 slag = { git = "https://github.com/sdgoij/slag", features = ["jit", "raylib", "raygui"] }
 # slag = { path = "./slag/crates/slag", features = ["jit", "raylib", "raygui"] }
