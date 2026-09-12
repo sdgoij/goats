@@ -193,7 +193,7 @@ gets on the free plan.
 | `Cargo.toml` | The workspace manifest: `crates/goats` (its `default-members`, so `cargo run` means the client) plus the networking crates |
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
 | `crates/goats/src/game/*.js` | The scene, split into 13 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console) |
-| `crates/session/` | The peer-to-peer transport: iroh sessions, dialing and accepting |
+| `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
 | `crates/proto/` | The session protocol: message types, framing and name rules (no iroh or tokio) |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
 | `goat_animated.glb` | Exported model (11 clips, textures embedded) — embedded into the binary |

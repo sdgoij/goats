@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-# The session layer is deliberately the only crate that depends on iroh and
-# tokio. `proto` will carry the message types with neither, so the wire format
-# stays testable in isolation and the client and the headless server share it.
+# The only crate that talks to iroh and tokio. `proto` is the wire vocabulary;
+# this crate is the transport and the session state machine built on it.
 [dependencies]
+proto = { path = "../proto" }
+serde = "1"
 iroh = "1.2.0"
-
-[dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+iroh-tickets = "1.0"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }

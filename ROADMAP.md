@@ -691,6 +691,13 @@ no display), which is the one check left for a machine with a GPU.
 All of it moves to Rust, because the JS engine has no sockets: the scene never
 touches the network, it only emits intents and consumes events.
 
+**Landed so far.** The workspace, the `proto` wire types and framing, and the
+iroh transport carrying the join handshake and the roster: the host assigns and
+de-dupes the name, answers `Welcome` with the canonical name and the current
+roster, and broadcasts `Roster` on every join and leave. Headless tests drive
+real loopback endpoints, so none of it needs a network. Remaining: the host
+bridge to the scene, the `goatsd` binary, and the client's host/join UI.
+
 **Repository.** Convert to a Cargo workspace, mirroring Slag's layout:
 
 ```
