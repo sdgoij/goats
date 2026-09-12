@@ -24,6 +24,7 @@ const KEYMAP_ROWS = [
     ["K", "cycle shadows"],
     ["B", "toggle the sky shader"],
     ["M", "mute audio"],
+    ["F11", "toggle fullscreen"],
     ["Mouse drag", "orbit the camera"],
     ["Mouse wheel", "zoom"],
     ["Arrow keys", "orbit the camera"],
@@ -55,6 +56,11 @@ function applySettings() {
     if (SETTINGS.shadow === 1 && shadowShader < 0) SETTINGS.shadow = 0;
     shadowMode = SETTINGS.shadow;
     if (skyShader >= 0) useSkyShader = SETTINGS.sky;
+    if (typeof rl.toggleFullscreen === "function" &&
+        typeof rl.isWindowFullscreen === "function" &&
+        SETTINGS.fullscreen !== rl.isWindowFullscreen()) {
+        rl.toggleFullscreen();
+    }
     setHerdSize(SETTINGS.herd);
 }
 
@@ -79,7 +85,7 @@ function drawMainMenu(sw, sh) {
 
 function drawSettings(sw, sh) {
     const w = 460;
-    const h = 396;
+    const h = 430;
     const x = Math.round((sw - w) / 2);
     const y = Math.round((sh - h) / 2);
     rl.guiPanel(x, y, w, h, "Settings");
@@ -99,7 +105,7 @@ function drawSettings(sw, sh) {
     if (Math.round(sfx.value) !== SETTINGS.sfx) SETTINGS.sfx = Math.round(sfx.value);
     cy += 46;
 
-    rl.guiGroupBox(lx, cy, lw, 118, "Graphics");
+    rl.guiGroupBox(lx, cy, lw, 148, "Graphics");
     cy += 26;
     const light = rl.guiToggle(lx + 10, cy, lw - 20, 24, "Light", SETTINGS.light);
     if (light.value !== SETTINGS.light) {
@@ -116,6 +122,12 @@ function drawSettings(sw, sh) {
     const sky = rl.guiToggle(lx + 10, cy, lw - 20, 24, "Sky shader", SETTINGS.sky);
     if (sky.value !== SETTINGS.sky) {
         SETTINGS.sky = sky.value;
+        applySettings();
+    }
+    cy += 30;
+    const full = rl.guiToggle(lx + 10, cy, lw - 20, 24, "Fullscreen", SETTINGS.fullscreen);
+    if (full.value !== SETTINGS.fullscreen) {
+        SETTINGS.fullscreen = full.value;
         applySettings();
     }
     cy += 46;

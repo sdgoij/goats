@@ -59,6 +59,7 @@
 //   K             cycle shadows (map / planar / off)
 //   B             toggle the sky shader
 //   M             mute audio
+//   F11           toggle fullscreen
 //   A / D         turn left / right
 //   mouse drag    orbit the camera        mouse wheel    zoom
 //   arrow keys    orbit the camera (keyboard fallback)
@@ -89,6 +90,7 @@ const SETTINGS = {
     light: true,    // lit shader on/off
     shadow: 2,      // 0 none, 1 planar, 2 shadow map
     sky: true,      // sky shader on/off
+    fullscreen: true,  // start (and toggle) full-screen
     herd: 7,        // bot goats, 0..10
 };
 

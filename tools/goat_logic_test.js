@@ -88,6 +88,7 @@ const constants = {
 const rl = Object.assign({}, constants, {
     color: () => ({}),
     initWindow: () => {}, setTargetFPS: () => {}, closeWindow: () => {}, setExitKey: () => {},
+    toggleFullscreen: () => {}, isWindowFullscreen: () => false,
     loadModel: () => { const h = modelLoads; modelLoads += 1; return h; },
     isModelValid: () => true,
     unloadModel: () => {},
@@ -298,7 +299,7 @@ let screenSet = false;
 try {
     const s = defaultSettings;
     settingsDefaults = s.bgm === 90 && s.sfx === 90 && s.light === true &&
-        s.shadow === 'map' && s.sky === true && s.herd === 7;
+        s.shadow === 'map' && s.sky === true && s.fullscreen === true && s.herd === 7;
     sandbox.sceneCommand('setting light off');
     sandbox.sceneCommand('setting shadow planar');
     sandbox.sceneCommand('setting sky off');
@@ -308,6 +309,10 @@ try {
     sandbox.sceneCommand('setting herd 3');
     const three = JSON.parse(sandbox.sceneCommand('bots').slice(3)).count;
     settingsApplied = f.lighting === false && f.shadows === 'planar' && f.sky === false;
+    sandbox.sceneCommand('setting fullscreen off');
+    const fsOff = JSON.parse(sandbox.sceneCommand('settings').slice(3)).fullscreen === false;
+    sandbox.sceneCommand('setting fullscreen on');
+    settingsApplied = settingsApplied && fsOff;
     herdGrew = nine === 9;
     herdShrank = three === 3;
     sandbox.sceneCommand('setting light on');

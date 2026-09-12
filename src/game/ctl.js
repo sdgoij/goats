@@ -176,6 +176,7 @@ function sceneCommand(line) {
                 lighting: useLighting,
                 shadows: shadowMode === SHADOW_MAP ? "map" : shadowMode === SHADOW_PLANAR ? "planar" : "off",
                 sky: useSkyShader,
+                fullscreen: typeof rl.isWindowFullscreen === "function" ? rl.isWindowFullscreen() : false,
                 muted: muted,
                 paused: paused,
                 fps: rl.getFPS()
@@ -191,6 +192,7 @@ function sceneCommand(line) {
                 light: SETTINGS.light,
                 shadow: SETTINGS.shadow === SHADOW_MAP ? "map" : SETTINGS.shadow === SHADOW_PLANAR ? "planar" : "off",
                 sky: SETTINGS.sky,
+                fullscreen: SETTINGS.fullscreen,
                 herd: SETTINGS.herd
             });
         case "setting": {
@@ -199,7 +201,7 @@ function sceneCommand(line) {
                 const v = ctlArg(parts, 2);
                 if (v === null) return "error setting " + key + " expects a number";
                 SETTINGS[key] = clamp(Math.round(v), 0, 100);
-            } else if (key === "light" || key === "sky") {
+            } else if (key === "light" || key === "sky" || key === "fullscreen") {
                 if (parts[2] === "on" || parts[2] === "off") SETTINGS[key] = parts[2] === "on";
                 else if (parts[2] === "toggle") SETTINGS[key] = !SETTINGS[key];
                 else return "error setting " + key + " expects on|off|toggle";

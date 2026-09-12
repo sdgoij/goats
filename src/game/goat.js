@@ -324,6 +324,11 @@ function sceneInit() {
     rl.setTargetFPS(60);
     // ESC is ours now: it opens the menu instead of closing the window.
     if (typeof rl.setExitKey === "function") rl.setExitKey(0);
+    // Full-screen by default; the Settings toggle and F11 flip it later.
+    if (SETTINGS.fullscreen && typeof rl.toggleFullscreen === "function" &&
+        typeof rl.isWindowFullscreen === "function" && !rl.isWindowFullscreen()) {
+        rl.toggleFullscreen();
+    }
     loadGoat();
     makeEyeTextures();
     makeSkyTextures();
@@ -352,6 +357,9 @@ function sceneFrame() {
     // whole pause (input is gated separately).
     const dt = uiIsOpen() ? 0 : Math.min(rl.getFrameTime(), 0.05);
     sceneFrames += 1;
+    // Full-screen can change the drawable size; keep the cached size current.
+    screenW = rl.getScreenWidth();
+    screenH = rl.getScreenHeight();
 
     // food: the nearest tuft decides whether the action menu shows, and the E
     // handler below eats it.
@@ -413,6 +421,10 @@ function sceneFrame() {
         SETTINGS.shadow = shadowMode;
     }
     if (press(rl.KEY_M)) setMuted(!muted);
+    if (press(rl.KEY_F11)) {
+        SETTINGS.fullscreen = !SETTINGS.fullscreen;
+        applySettings();
+    }
     if (press(rl.KEY_B) && skyShader >= 0) {
         useSkyShader = !useSkyShader;
         SETTINGS.sky = useSkyShader;
