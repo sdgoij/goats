@@ -42,7 +42,14 @@ async fn main() {
     println!("ticket {}", host.ticket());
     println!("goatsd: world seed {}", host.seed());
     println!("goatsd: paste that into a client's console with `connect <ticket> <name>`");
-    println!("goatsd: LAN only for now (no relay); Ctrl-C to stop");
+    println!(
+        "goatsd: {}; Ctrl-C to stop",
+        if session::internet_enabled() {
+            "internet mode (n0 relays + DNS discovery)"
+        } else {
+            "LAN only (set GOATS_INTERNET=1 for n0 relays + DNS discovery)"
+        }
+    );
     let _ = std::io::stdout().flush();
 
     let mut tick = tokio::time::interval(Duration::from_millis(16));

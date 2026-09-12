@@ -124,16 +124,36 @@ impl From<proto::Error> for Error {
 
 /// Binds an endpoint that can both host and dial.
 ///
-/// `presets::Minimal` binds local sockets with no relay, so this reaches peers
-/// on the same machine or LAN directly and contacts no third party. Switching
-/// to `presets::N0` (internet, via n0's relays and hole punching) is a one-line
-/// change when that is wanted.
+/// The default preset reaches peers directly -- the same machine or the LAN --
+/// and contacts no third party. Setting `GOATS_INTERNET` (to anything but empty
+/// or `0`) swaps in `presets::N0`: n0's public relays plus DNS discovery, so a
+/// ticket pasted across networks can dial. That is also why a default ticket is
+/// LAN-only by construction: `Minimal` disables relaying and address lookup, so
+/// the ticket carries only local addresses.
 async fn bind_endpoint() -> Result<Endpoint, Error> {
-    Endpoint::builder(presets::Minimal)
+    let builder = if internet_enabled() {
+        Endpoint::builder(presets::N0)
+    } else {
+        Endpoint::builder(presets::Minimal)
+    };
+    builder
         .alpns(vec![alpn()])
         .bind()
         .await
         .map_err(|error| Error::Bind(error.to_string()))
+}
+
+/// Whether `GOATS_INTERNET` asks for internet reach, so a host can say which
+/// mode it is in. Read at bind time.
+pub fn internet_enabled() -> bool {
+    internet_from(std::env::var("GOATS_INTERNET").ok().as_deref())
+}
+
+/// The env var's meaning, split out so it can be tested without touching the
+/// process environment. Unset, empty and `0` all mean LAN-only; anything else
+/// counts as on, the usual `VAR=1` idiom.
+fn internet_from(value: Option<&str>) -> bool {
+    matches!(value, Some(value) if !value.is_empty() && value != "0")
 }
 
 /// Encodes a message into a frame, writes it to a stream and finishes the
@@ -999,6 +1019,15 @@ mod tests {
     #[test]
     fn the_alpn_carries_the_protocol_version() {
         assert_eq!(alpn(), format!("goats/{PROTOCOL_VERSION}").into_bytes());
+    }
+
+    #[test]
+    fn the_internet_switch_reads_its_env_value() {
+        assert!(!internet_from(None));
+        assert!(!internet_from(Some("")));
+        assert!(!internet_from(Some("0")));
+        assert!(internet_from(Some("1")));
+        assert!(internet_from(Some("yes")));
     }
 
     #[tokio::test]
