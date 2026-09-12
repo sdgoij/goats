@@ -73,7 +73,7 @@ uses.
 | **M7** | Bot herd | M1, M4 | M | ✅ **Done** (collides, grazes, zoomies) |
 | **M8** | Heightfield terrain + materials | M4 (lighting) | M | ✅ **Done** (engine `makeModel`) |
 | **M9** | In-game console + character input | `getCharPressed` (upstream) | S–M | ✅ **Done** (engine binding + console; live keystroke check pending) |
-| **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | 🚧 **In progress** — the workspace and the iroh transport landed |
+| **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | Cheap once the channel exists, and it exercises it both ways |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | The actual gameplay payload |
 | **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
@@ -691,15 +691,18 @@ no display), which is the one check left for a machine with a GPU.
 All of it moves to Rust, because the JS engine has no sockets: the scene never
 touches the network, it only emits intents and consumes events.
 
-**Landed so far.** The workspace, the `proto` wire types and framing, the iroh
-transport carrying the join handshake and the roster, and the host bridge: a
-tokio thread owns the session, while the frame loop feeds the scene its events
-with `sceneNetEvent` and takes the scene's queued intents back with
-`sceneNetDrain`, never awaiting. The host assigns and de-dupes the name, answers
-`Welcome` with the canonical name and the current roster, and broadcasts
-`Roster` on every join and leave. Headless tests drive real loopback endpoints
-for the session and the scene end of the bridge, so none of it needs a network
-or a display. Remaining: the `goatsd` binary and the username prompt.
+**Landed.** The workspace (`crates/goats`, `proto`, `session`, `server`), the
+`proto` wire types and framing, the iroh transport carrying the join handshake
+and the roster, the host bridge, the `goatsd` binary and the username prompt. A
+tokio thread owns the session; the frame loop feeds the scene its events with
+`sceneNetEvent` and takes the scene's queued intents back with `sceneNetDrain`,
+never awaiting. The host assigns and de-dupes the name, answers `Welcome` with
+the canonical name and the current roster, and broadcasts `Roster` on every join
+and leave. Headless tests drive real loopback endpoints for the session and the
+scene end of the bridge, so none of it needs a network or a display.
+
+The one check left is a real two-window session on a machine with a display: run
+the client twice, `host` in one and `connect <ticket>` in the other.
 
 **Repository.** Convert to a Cargo workspace, mirroring Slag's layout:
 
@@ -730,14 +733,19 @@ stays stubbable by the harness.
 same ALPN and runs `session` in-process, so "Host" and "Join" share one code
 path. Host quitting ends the session (no migration).
 
-**The headless server runs the same JS.** `goatsd` evaluates the identical scene
-against a **null `rl` host module** — no window, no GL — the trick
+**The headless server runs the same JS.** `goatsd` will evaluate the identical
+scene against a **null `rl` host module** — no window, no GL — the trick
 `tools/goat_logic_test.js` already proves works: terrain, weather, bots and food
 simulate with every draw/audio call no-op'd, while `rl.color` and the
 model/texture builders return usable handles. That keeps one world model instead
 of a Rust re-implementation, and means the server needs no GPU. Watch the one
 binding the sim genuinely needs: `getFrameTime`, which the server replaces with a
 fixed timestep.
+
+**Deferred, deliberately.** `goatsd` is a lobby for now. Relaying presence does
+not need the simulation, and there is no consumer for a headless world until
+world sync (M12) exists to send it, so the null-`rl` scene is where M12 starts
+rather than something to build against nothing.
 
 **Protocol basics.** A version/`hello` handshake, the username prompt (server
 owns the canonical name), a roster, and input validation — message-size caps and
@@ -820,12 +828,12 @@ frame per QUIC datagram on the connection we already have.
   the result as one script, so every part shares a single top-level scope and the
   engine still needs no module system; the headless harness parses the same list
   out of the same file.
-- **Workspace.** ✅ **Started.** The repo is a Cargo workspace: `crates/goats`
-  (the client and the JS scene, and its `default-members`, so `cargo run` means
-  the client), `crates/proto` (the wire types, framing and name rules, with no
-  iroh or tokio) and `crates/session` (the iroh transport) have landed;
-  `crates/server` (the `goatsd` binary) follows. The assets stay at the repo root
-  and the client reaches them with `include_bytes!("../../../…")`.
+- **Workspace.** ✅ **Done.** The repo is a Cargo workspace: `crates/goats` (the
+  client and the JS scene, and its `default-members`, so `cargo run` means the
+  client), `crates/proto` (the wire types, framing and name rules, with no iroh
+  or tokio), `crates/session` (the iroh transport and session state machine) and
+  `crates/server` (`goatsd`). The assets stay at the repo root and the client
+  reaches them with `include_bytes!("../../../…")`.
 - **Host bridge.** ✅ **Done.** The JS↔Rust boundary is line/JSON in both
   directions: `sceneCommand` in, `sceneNetEvent(line)` for networking events, and
   `sceneNetDrain()` out — the host calls it each frame and it returns and clears

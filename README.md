@@ -130,6 +130,29 @@ page, where GitHub plays it.*
 | `` ` `` | open / close the console |
 | `Esc` | main menu / resume |
 
+## Multiplayer
+
+Sessions are peer-to-peer over [iroh](https://github.com/n0-computer/iroh): no
+account and no central server, the connection is encrypted, and a peer is
+addressed by its key. One player hosts; everyone else joins with the host's
+ticket.
+
+- **Host from the game**: press `` ` `` for the console and type `host`. It asks
+  for a username, then prints a ticket. The ticket also goes to stderr, because
+  text in the game window cannot be selected.
+- **Join**: `connect <ticket>` in the console; it asks for a username. Names are
+  first come, first served, so a duplicate becomes `bob #2`.
+- **Standalone server**: `cargo run --release -p server` runs `goatsd`, a
+  headless host that prints its ticket and logs joins, leaves and the roster.
+  Stop it with Ctrl-C.
+- `who` lists the roster; `leave` ends the session.
+
+It is LAN-only for now: the endpoint binds local sockets with no relay, so it
+reaches other machines on the same network and not the wider internet. Internet
+play (n0's relays and hole punching) is a one-line change in the session crate.
+
+The headless server is a lobby at this point: it does not simulate the world yet.
+
 ## Requirements
 
 - Rust with edition 2024 support (tested with 1.98).
@@ -182,7 +205,8 @@ cargo run             # debug builds work too; see "Troubleshooting"
 
 Pushing a `v*` tag publishes all three archives as a GitHub Release; an ordinary
 push only builds and keeps the artifacts. Because the model and every sound are
-embedded, an archive is just the executable plus this readme and the licence.
+embedded, an archive is just the two executables (the game and `goatsd`) plus
+this readme and the licence.
 The AArch64 job uses GitHub's hosted arm64 runners, which a public repository
 gets on the free plan.
 
@@ -194,6 +218,7 @@ gets on the free plan.
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
 | `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
 | `crates/goats/src/game/*.js` | The scene, split into 14 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net) |
+| `crates/server/` | `goatsd`: the standalone headless host (a session lobby for now) |
 | `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
 | `crates/proto/` | The session protocol: message types, framing and name rules (no iroh or tokio) |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
