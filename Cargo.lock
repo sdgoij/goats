@@ -3083,6 +3083,7 @@ dependencies = [
 name = "session"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "iroh",
  "iroh-tickets",
  "proto",

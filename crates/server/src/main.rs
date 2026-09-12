@@ -56,6 +56,7 @@ async fn main() {
 /// One line per event, so a session's comings and goings read as a log.
 fn report(event: Event) {
     let line = match event {
+        Event::Session { seed } => format!("session seed {seed}"),
         Event::Joined { name } => format!("{name} joined"),
         Event::Left { name } => format!("{name} left"),
         Event::Roster { names } => format!("roster {}", names.join(", ")),
@@ -67,6 +68,9 @@ fn report(event: Event) {
             }
         }
         Event::Notice(text) => format!("notice {text}"),
+        // Positions arrive many times a second; logging each would bury the
+        // session log, so they are not reported.
+        Event::Peer { .. } => return,
         Event::Disconnected => "disconnected".to_string(),
     };
     println!("{line}");

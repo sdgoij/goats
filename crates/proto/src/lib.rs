@@ -6,8 +6,9 @@
 //! `session`; this crate is only the words and the bytes.
 //!
 //! Payloads are JSON. The control messages are small and infrequent, and a
-//! readable frame is worth more here than the bytes it saves -- the high-rate
-//! transform channel M12 adds will want an encoding of its own.
+//! readable frame is worth more here than the bytes it saves. The high-rate
+//! transform channel also rides JSON, but as unreliable datagrams and without
+//! the length prefix of a stream frame.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// The wire version, bumped whenever a message changes shape. It is also the
 /// ALPN suffix, so a peer with a different major version fails the QUIC
 /// handshake before it reaches any of this.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -32,6 +33,11 @@ pub const MAX_CHAT_BYTES: usize = 512;
 
 /// The name a nameless player gets.
 pub const DEFAULT_NAME: &str = "goat";
+
+/// The largest datagram payload either end will accept, so a corrupt or hostile
+/// one cannot be decoded into something far larger than it is. Comfortably
+/// under the smallest MTU a QUIC datagram is guaranteed.
+pub const MAX_DATAGRAM_BYTES: usize = 1200;
 
 /// What a client sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,12 +57,14 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerMessage {
-    /// The handshake succeeded, with the canonical name the server assigned and
-    /// everyone already in the session.
+    /// The handshake succeeded, with the canonical name the server assigned,
+    /// everyone already in the session, and the session seed the world is built
+    /// from.
     Welcome {
         version: u16,
         name: String,
         roster: Vec<String>,
+        seed: u32,
     },
     /// The roster changed: someone joined or left.
     Roster {
@@ -85,6 +93,58 @@ pub enum ServerMessage {
     Error {
         message: String,
     },
+}
+
+/// How a goat is moving, mirroring the scene's `mode`. An enum rather than a
+/// string so a peer cannot put arbitrary text (or a megabyte of it) into every
+/// other player's datagram path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Gait {
+    Idle,
+    Walk,
+    Trot,
+    Run,
+    Jump,
+    Sleep,
+    Eat,
+    Dead,
+}
+
+/// One player's goat, as it travels over the unreliable datagram channel.
+///
+/// Positions are world-space; `phase` is the animation clock in `0..1`; `speed`
+/// is the ground speed in m/s, which a receiver can use to extrapolate between
+/// snapshots. Not `Eq` because of the floats.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeerState {
+    pub x: f32,
+    pub z: f32,
+    pub yaw: f32,
+    pub phase: f32,
+    pub speed: f32,
+    pub gait: Gait,
+}
+
+impl PeerState {
+    /// Whether every number is finite. A NaN or infinity would poison every
+    /// peer's interpolation, so the transport refuses to relay one.
+    pub fn is_finite(&self) -> bool {
+        self.x.is_finite()
+            && self.z.is_finite()
+            && self.yaw.is_finite()
+            && self.phase.is_finite()
+            && self.speed.is_finite()
+    }
+}
+
+/// A [`PeerState`] plus the name of the player it belongs to. A client sends
+/// the state alone; the server fills the name in from the connection it arrived
+/// on, which is what stops a peer from moving someone else's goat.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeerFrame {
+    pub name: String,
+    pub state: PeerState,
 }
 
 /// What can go wrong encoding, framing or decoding a message.
@@ -281,6 +341,7 @@ mod tests {
                 version: PROTOCOL_VERSION,
                 name: "bob #2".to_string(),
                 roster: vec!["alice".to_string()],
+                seed: 0x9e37_79b9,
             },
             ServerMessage::Roster {
                 names: vec!["alice".to_string(), "bob #2".to_string()],
@@ -307,6 +368,46 @@ mod tests {
             let payload = encode(reply).expect("encode");
             assert_eq!(&decode::<ServerMessage>(&payload).expect("decode"), reply);
         }
+    }
+
+    #[test]
+    fn peer_frames_round_trip() {
+        let frame = PeerFrame {
+            name: "alice".to_string(),
+            state: PeerState {
+                x: 1.5,
+                z: -2.25,
+                yaw: 0.75,
+                phase: 0.5,
+                speed: 1.25,
+                gait: Gait::Trot,
+            },
+        };
+        let payload = encode(&frame).expect("encode");
+        assert_eq!(decode::<PeerFrame>(&payload).expect("decode"), frame);
+
+        // The enum is the lowercase scene spelling, so the wire form is readable
+        // and a bad gait is a decode error rather than an unknown mode.
+        assert_eq!(encode(&Gait::Jump).expect("encode"), b"\"jump\"");
+        assert!(decode::<Gait>(b"\"gallop\"").is_err());
+    }
+
+    #[test]
+    fn non_finite_peer_states_are_refused() {
+        let mut state = PeerState {
+            x: 0.0,
+            z: 0.0,
+            yaw: 0.0,
+            phase: 0.0,
+            speed: 0.0,
+            gait: Gait::Idle,
+        };
+        assert!(state.is_finite());
+        state.x = f32::NAN;
+        assert!(!state.is_finite());
+        state.x = 0.0;
+        state.z = f32::INFINITY;
+        assert!(!state.is_finite());
     }
 
     #[test]

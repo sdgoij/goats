@@ -17,14 +17,20 @@
 //! channel M12 adds will want datagrams instead.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::{Endpoint, EndpointAddr};
 use iroh_tickets::Ticket;
 use iroh_tickets::endpoint::EndpointTicket;
 use proto::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
 use tokio::sync::{Mutex, mpsc};
+
+// The wire types the session exchanges, re-exported so an embedding host (the
+// client's network bridge) can name a pose without depending on `proto`
+// directly.
+pub use proto::{Gait, PeerFrame, PeerState};
 
 /// The ALPN, carrying the major wire version so a peer built against a
 /// different protocol fails the QUIC handshake instead of misreading messages.
@@ -33,8 +39,10 @@ pub fn alpn() -> Vec<u8> {
 }
 
 /// Something that happened in the session, for the host to hand to the scene.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    /// The seed the world is built from, sent once before everything else.
+    Session { seed: u32 },
     /// A player joined, with the name the server assigned them.
     Joined { name: String },
     /// A player left.
@@ -48,6 +56,9 @@ pub enum Event {
         text: String,
         direct: bool,
     },
+    /// A remote goat moved. `name` is the server's canonical name, not whatever
+    /// the datagram claimed.
+    Peer { name: String, state: PeerState },
     /// A line to print in the console.
     Notice(String),
     /// The connection to the host ended (client side only).
@@ -156,6 +167,8 @@ struct Server {
     /// The local player's name. They have no connection of their own; what they
     /// say arrives through `Host::say`.
     host: String,
+    /// The seed the world is built from, handed to every joiner.
+    seed: u32,
     /// Names in join order, the host first.
     roster: Vec<String>,
     connections: Vec<(String, Connection)>,
@@ -351,9 +364,29 @@ pub struct Host {
     endpoint: Endpoint,
     ticket: String,
     name: String,
+    seed: u32,
     server: Arc<Mutex<Server>>,
     sender: mpsc::UnboundedSender<Event>,
     events: mpsc::UnboundedReceiver<Event>,
+}
+
+/// A fresh session seed, mixed from the clock so two sessions rarely share one.
+/// Not a cryptographic value: it only has to make the weather and the food
+/// regrowth differ between sessions, and never be zero (xorshift32 is stuck at
+/// zero).
+fn new_seed() -> u32 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or(0x9e37_79b9_7f4a_7c15);
+    // splitmix64's finalizer, to spread the clock's low bits across the word.
+    let mut mixed = nanos ^ 0x9e37_79b9_7f4a_7c15;
+    mixed ^= mixed >> 30;
+    mixed = mixed.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed ^= mixed >> 27;
+    mixed = mixed.wrapping_mul(0x94d0_49bb_1331_11eb);
+    mixed ^= mixed >> 31;
+    (mixed as u32) | 1
 }
 
 impl Host {
@@ -364,13 +397,18 @@ impl Host {
         let ticket = EndpointTicket::new(endpoint.addr()).encode_string();
 
         let local_name = proto::sanitize_name(host_name);
+        let seed = new_seed();
         let server = Arc::new(Mutex::new(Server {
             host: local_name.clone(),
+            seed,
             roster: vec![local_name.clone()],
             connections: Vec::new(),
         }));
         let (events, receiver) = mpsc::unbounded_channel();
         let broadcaster = events.clone();
+        // The scene learns the seed before anything else, so it can build the
+        // same world the joiners will.
+        let _ = events.send(Event::Session { seed });
 
         let accepting = endpoint.clone();
         let state = server.clone();
@@ -391,6 +429,7 @@ impl Host {
             endpoint,
             ticket,
             name: local_name,
+            seed,
             server,
             sender: events,
             events: receiver,
@@ -408,6 +447,11 @@ impl Host {
         &self.name
     }
 
+    /// The seed joiners are told to build the world from.
+    pub fn seed(&self) -> u32 {
+        self.seed
+    }
+
     /// The endpoint id plus its current direct addresses.
     pub fn address(&self) -> EndpointAddr {
         self.endpoint.addr()
@@ -418,6 +462,25 @@ impl Host {
     /// host's own copy comes back as a [`Event::Chat`].
     pub async fn say(&self, text: &str) {
         route_chat(&self.server, &self.sender, &self.name, text).await;
+    }
+
+    /// Broadcasts the local player's goat to everyone else. Datagrams, so this
+    /// is fire-and-forget: a lost snapshot is replaced by the next one.
+    pub async fn publish(&self, state: &PeerState) {
+        if !state.is_finite() {
+            return;
+        }
+        let frame = PeerFrame {
+            name: self.name.clone(),
+            state: state.clone(),
+        };
+        let Ok(payload) = proto::encode(&frame) else {
+            return;
+        };
+        let datagram = Bytes::from(payload);
+        for connection in self.server.lock().await.every() {
+            let _ = connection.send_datagram(datagram.clone());
+        }
     }
 
     /// The next event, or `None` once the session is finished.
@@ -481,9 +544,10 @@ async fn handle_connection(
         return;
     }
 
-    let (assigned, roster) = {
+    let (assigned, roster, seed) = {
         let mut server = state.lock().await;
-        server.join(&name, connection.clone())
+        let (assigned, roster) = server.join(&name, connection.clone());
+        (assigned, roster, server.seed)
     };
 
     if send_to(
@@ -492,6 +556,7 @@ async fn handle_connection(
             version: PROTOCOL_VERSION,
             name: assigned.clone(),
             roster: roster.clone(),
+            seed,
         },
     )
     .await
@@ -526,6 +591,51 @@ async fn handle_connection(
         )
         .await;
     }
+
+    // Snapshot relay. The transform channel is datagrams: unreliable and
+    // unordered, so a lost position is simply replaced by the next one, and it
+    // never head-of-line-blocks the control streams. Each datagram is tagged
+    // with the name this connection was assigned, so a peer cannot move someone
+    // else's goat.
+    let relay_connection = connection.clone();
+    let relay_state = state.clone();
+    let relay_events = events.clone();
+    let relay_name = assigned.clone();
+    tokio::spawn(async move {
+        while let Ok(bytes) = relay_connection.read_datagram().await {
+            if bytes.len() > proto::MAX_DATAGRAM_BYTES {
+                continue;
+            }
+            let Ok(state) = proto::decode::<PeerState>(&bytes) else {
+                continue;
+            };
+            if !state.is_finite() {
+                continue;
+            }
+            // The host is a player too, so its scene sees the peer even though
+            // there is no connection for it to receive a datagram on.
+            if relay_events
+                .send(Event::Peer {
+                    name: relay_name.clone(),
+                    state: state.clone(),
+                })
+                .is_err()
+            {
+                break;
+            }
+            let frame = PeerFrame {
+                name: relay_name.clone(),
+                state,
+            };
+            let Ok(payload) = proto::encode(&frame) else {
+                continue;
+            };
+            let datagram = Bytes::from(payload);
+            for target in relay_state.lock().await.targets(Some(&relay_name)) {
+                let _ = target.send_datagram(datagram.clone());
+            }
+        }
+    });
 
     // Then serve them. Each message arrives on its own stream, like every other
     // control message, so the connection stays open until the peer closes it.
@@ -629,25 +739,54 @@ impl Client {
             .await
             .map_err(|error| Error::Accept(error.to_string()))?;
         let welcome: ServerMessage = read_message(&mut recv).await?;
-        let (name, roster) = match welcome {
+        let (name, roster, seed) = match welcome {
             ServerMessage::Welcome {
                 version,
                 name,
                 roster,
+                seed,
             } => {
                 if version != PROTOCOL_VERSION {
                     return Err(Error::Refused(format!(
                         "protocol version {version} is not supported"
                     )));
                 }
-                (name, roster)
+                (name, roster, seed)
             }
             ServerMessage::Error { message } => return Err(Error::Refused(message)),
             other => return Err(Error::Message(format!("unexpected reply: {other:?}"))),
         };
 
         let (events, receiver) = mpsc::unbounded_channel();
+        let _ = events.send(Event::Session { seed });
         let _ = events.send(Event::Roster { names: roster });
+
+        // Snapshots arrive as datagrams, on their own channel beside the
+        // control streams, so a burst of movement never queues behind chat.
+        let snapshot_connection = connection.clone();
+        let snapshot_events = events.clone();
+        tokio::spawn(async move {
+            while let Ok(bytes) = snapshot_connection.read_datagram().await {
+                if bytes.len() > proto::MAX_DATAGRAM_BYTES {
+                    continue;
+                }
+                let Ok(frame) = proto::decode::<PeerFrame>(&bytes) else {
+                    continue;
+                };
+                if !frame.state.is_finite() {
+                    continue;
+                }
+                if snapshot_events
+                    .send(Event::Peer {
+                        name: frame.name,
+                        state: frame.state,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
 
         // The host sends every later update down a fresh uni stream, so read
         // them until the connection ends.
@@ -727,6 +866,19 @@ impl Client {
         .await
     }
 
+    /// Sends the local player's goat to the host, which relays it to everyone
+    /// else. Datagrams, so a failure is not worth reporting: the next snapshot
+    /// is along in a few milliseconds.
+    pub fn publish(&self, state: &PeerState) {
+        if !state.is_finite() {
+            return;
+        }
+        let Ok(payload) = proto::encode(state) else {
+            return;
+        };
+        let _ = self.connection.send_datagram(Bytes::from(payload));
+    }
+
     /// The next event, or `None` once the session is finished.
     pub async fn next_event(&mut self) -> Option<Event> {
         self.events.recv().await
@@ -766,10 +918,23 @@ mod tests {
             let mut host = Host::start("host").await.expect("host");
             assert!(host.ticket().starts_with("endpoint"), "{}", host.ticket());
 
+            // Every session opens with the seed the world is built from.
+            let host_seed = match host.next_event().await.expect("host seed") {
+                Event::Session { seed } => seed,
+                other => panic!("expected a seed, got {other:?}"),
+            };
+            assert_ne!(host_seed, 0);
+
             let mut alice = Client::join(host.ticket(), "alice")
                 .await
                 .expect("join alice");
             assert_eq!(alice.name(), "alice");
+
+            // The joiner is given the same seed, so the world it builds matches.
+            match alice.next_event().await.expect("client seed") {
+                Event::Session { seed } => assert_eq!(seed, host_seed),
+                other => panic!("expected a seed, got {other:?}"),
+            }
 
             // The host hears about it, with the roster including itself.
             assert_eq!(
@@ -812,9 +977,18 @@ mod tests {
             let mut alice = Client::join(host.ticket(), "alice")
                 .await
                 .expect("join alice");
-            // Drain the join news on both sides.
+            // Drain the join news on both sides: the seed and the join pair on
+            // the host, and the seed on the joiner.
+            assert!(matches!(
+                host.next_event().await,
+                Some(Event::Session { .. })
+            ));
             assert!(host.next_event().await.is_some());
             assert!(host.next_event().await.is_some());
+            assert!(matches!(
+                alice.next_event().await,
+                Some(Event::Session { .. })
+            ));
             assert_eq!(
                 alice.next_event().await.expect("initial roster"),
                 Event::Roster {
@@ -885,6 +1059,95 @@ mod tests {
                 return event;
             }
         }
+    }
+
+    /// The next relayed goat snapshot, skipping the seed and roster noise.
+    async fn host_peer(host: &mut Host) -> Event {
+        loop {
+            if let event @ Event::Peer { .. } = host.next_event().await.expect("an event") {
+                return event;
+            }
+        }
+    }
+
+    async fn client_peer(client: &mut Client) -> Event {
+        loop {
+            if let event @ Event::Peer { .. } = client.next_event().await.expect("an event") {
+                return event;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_is_relayed_with_the_servers_name() {
+        within(async {
+            let mut host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+            let mut bob = Client::join(host.ticket(), "bob").await.expect("bob");
+
+            let alice_state = PeerState {
+                x: 1.0,
+                z: 2.0,
+                yaw: 0.5,
+                phase: 0.25,
+                speed: 3.0,
+                gait: proto::Gait::Run,
+            };
+            // Datagrams are unreliable, so a handful of attempts stand in for
+            // the twenty a second a real client sends.
+            for _ in 0..10 {
+                alice.publish(&alice_state);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+
+            // The host's scene sees Alice; the name is the server's, and Bob
+            // gets her too rather than the sender getting an echo.
+            match host_peer(&mut host).await {
+                Event::Peer { name, state } => {
+                    assert_eq!(name, "alice");
+                    assert_eq!(state, alice_state);
+                }
+                other => panic!("expected a peer, got {other:?}"),
+            }
+            match client_peer(&mut bob).await {
+                Event::Peer { name, state } => {
+                    assert_eq!(name, "alice");
+                    assert_eq!(state, alice_state);
+                }
+                other => panic!("expected a peer, got {other:?}"),
+            }
+
+            // And the host's own goat goes out to both clients.
+            let host_state = PeerState {
+                x: -4.0,
+                z: 0.5,
+                yaw: 0.0,
+                phase: 0.0,
+                speed: 0.0,
+                gait: proto::Gait::Idle,
+            };
+            for _ in 0..10 {
+                host.publish(&host_state).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            for client in [&mut alice, &mut bob] {
+                // Bob still has Alice's earlier snapshots queued, so step past
+                // whatever is already there until the host's goat arrives.
+                loop {
+                    if let Event::Peer { name, state } = client_peer(client).await
+                        && name == "host"
+                    {
+                        assert_eq!(state, host_state);
+                        break;
+                    }
+                }
+            }
+
+            alice.close().await;
+            bob.close().await;
+            host.close().await;
+        })
+        .await;
     }
 
     #[tokio::test]
