@@ -146,8 +146,8 @@ ticket.
   can be pasted. `copy` puts the ticket you were given back on the clipboard, and
   Ctrl+C copies the current line.
 - **Standalone server**: `cargo run --release -p server` runs `goatsd`, a
-  headless host that prints its ticket and logs joins, leaves, the roster and
-  chat. Stop it with Ctrl-C.
+  headless host. It runs the world itself and prints its ticket, the seed, and
+  joins, leaves, the roster and chat. Stop it with Ctrl-C.
 - **Chat**: in a session, type a line with no leading slash to say it to
   everyone. `@name <text>` (or `say` / `msg <name> <text>`) is a 1:1 whisper, and
   the console marks it as one. Offline, bare text is an error, and `who` lists
@@ -155,24 +155,25 @@ ticket.
 - **See each other**: every player's goat is relayed to the others about 20 times
   a second, so you can watch them move. Snapshots are unreliable datagrams and
   the scene interpolates between them.
+- **A shared herd**: the bots are simulated only by whoever hosts -- the game
+  window that ran `host`, or `goatsd` -- and broadcast about 10 times a second.
+  Everyone else mirrors them, so the herd stays where the host put it instead of
+  drifting apart when two players nudge the same goat.
 - `leave` ends the session.
 
 Chat is rate limited to a short burst and each line is capped and stripped of
-control characters, so a session cannot be flooded by one player. Movement is
-client-authoritative: the server relays each player's own goat rather than
-simulating it.
+control characters, so a session cannot be flooded by one player. Player
+movement is client-authoritative: the host relays each player's own goat rather
+than simulating it, while the bots it owns outright.
 
 It is LAN-only for now: the endpoint binds local sockets with no relay, so it
 reaches other machines on the same network and not the wider internet. Internet
 play (n0's relays and hole punching) is a one-line change in the session crate.
 
-The world is shared by seed, which the host picks at `host` and sends with the
-welcome; every client derives the weather, food regrowth and bleat streams from
-it. It is not yet fully server-owned: the bots still simulate on each client, so
-they can drift apart once players interact with them.
-
-The headless server is a lobby at present: it holds the session and relays goats
-and chat, but does not simulate the world.
+Beyond the bots, the world is shared by seed: the host picks one at `host` and
+sends it with the welcome, and every client derives the weather, food regrowth
+and bleat streams from it. The weather is still simulated per client rather than
+server-owned, so it can drift; that is the next slice.
 
 ## Requirements
 
@@ -239,7 +240,8 @@ gets on the free plan.
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
 | `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
 | `crates/goats/src/game/*.js` | The scene, split into 14 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net) |
-| `crates/server/` | `goatsd`: the standalone headless host (a session lobby for now) |
+| `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
+| `crates/server/src/headless_rl.js` | The null `rl` module the server evaluates the scene against (no window) |
 | `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
 | `crates/proto/` | The session protocol: message types, framing and name rules (no iroh or tokio) |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
@@ -273,6 +275,13 @@ order lives — the headless harness parses it out of
 `crates/goats/src/main.rs`, so adding a part is just adding the file to
 `crates/goats/src/game/` and one line to that list.
 
+`goatsd` evaluates the same parts, in the same order, against a stub `rl`
+(`crates/server/src/headless_rl.js`) instead of installing raylib: drawing and
+input do nothing, but the clock, the clip table and the terrain function are
+real, so the bots and the weather move exactly as they do in the game. A test
+asserts the server's part list matches the client's, so the two cannot silently
+simulate different games.
+
 The model bytes are compiled in with `include_bytes!`, so the model needs no
 files on disk at runtime (the audio does — see `sfx/`). `model.js` finds the
 clip it wants by name via the `rl` surface (`modelAnimationCount` /
@@ -285,8 +294,9 @@ the scene's queued intents back with `sceneNetDrain()`, without ever awaiting in
 the frame loop. `net.js` is the scene end of that channel; the console commands
 are `host`, `connect <ticket>`, `who`, `leave`, `say` and `msg` (with bare text
 and a leading `@name` both routed to chat). Chat and roster travel on reliable
-streams, one message per stream; goat snapshots travel as unreliable datagrams,
-which `net.js` turns into a remote goat per peer and eases toward the latest one.
+streams, one message per stream; goat snapshots and the server's bots travel as
+unreliable datagrams, which `net.js` turns into a remote goat per peer and a
+mirrored herd, and eases toward the latest of each.
 
 ## Model pipeline
 

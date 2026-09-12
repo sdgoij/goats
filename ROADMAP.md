@@ -77,7 +77,7 @@ uses.
 | **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | ✅ **Done** |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | ✅ **Done** (players sync; server-owned bots/weather are M12b) |
-| **M12b** | Server-owned world: headless `goatsd` scene, bot/weather authority | M12 | L | The world stops drifting once two players touch it |
+| **M12b** | Server-owned world: headless `goatsd` scene, bot authority | M12 | L | ✅ **Done** (the bots are the server's; weather is still per-client) |
 | **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
 
 ---
@@ -840,7 +840,8 @@ whisper both arrived in the other window.
   movement and lag compensation. Also settle `P` (pauses locally today) and the
   death/restart flow, both of which must become server-owned or be disabled.
 
-**Landed (player sync).** The wire version is 2. `Welcome` carries the session
+**Landed (player sync).** The wire version is 2 (M12b raises it to 3, when the
+datagram channel gains a tag). `Welcome` carries the session
 seed, which the host mixes from the clock at `host` and both ends hand to the
 scene as the first event; `sceneUseSeed` derives the weather, bot, food and
 audio xorshift streams from it with one draw each. Offline the streams keep
@@ -853,14 +854,9 @@ relayed. The scene keeps one goat model per peer (the same per-goat ownership
 the bots use), eases position, yaw and phase toward the newest snapshot on the
 short way around, and drops the model when the peer leaves.
 
-**Still open (M12b).** The bots and the weather are still simulated on every
-client, so once two players interact with a bot the goats drift; making that
-authoritative needs a headless scene in `goatsd`. The engine supports it —
-`install_rlx` plus a stub `rl` global runs the scene with no window, which is the
-shape the engine's own headless test uses — but the scene has to be driven with
-no display and the bots and weather moved behind the server. Until then the seed
-is partial by design: weather and food regrowth agree from the join moment, the
-initial layout does not.
+**Follow-on.** At this point the bots and the weather were still simulated on
+every client, so once two players interacted with a bot the goats drifted. That
+is what M12b addresses for the bots.
 
 **Verified.** `cargo test --workspace` (proto 12, session 7 — the new relay test
 sends real datagrams through a real host — goats 4), `node tools/goat_logic_test.js`
@@ -868,6 +864,40 @@ at ALL PASS (120, including the seed, pose-cadence and peer checks), `cargo fmt
 --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`
 clean. The visual check — two windows, each seeing the other's goat move — still
 needs a display.
+
+---
+
+## M12b — Server-owned world
+
+**Landed.** The wire version is 3: a `Datagram` enum now tags the transform
+channel, because it carries two kinds of traffic. `BotState` and `WorldState`
+carry the server's bots, and `Host::publish_world` broadcasts them about 10 times
+a second; the client's datagram reader emits `Event::World`. A client mirrors
+what it receives and does not run the bot AI at all (`netWorldLocal` gates
+`updateBots`), while the host — the game window that ran `host`, or `goatsd` —
+simulates the herd and publishes it. The relay accepts only `Datagram::Peer` from
+a client, so a client cannot move the bots.
+
+The headless half is `crates/server/src/headless.rs`: it evaluates the client's
+exact scene parts, in the client's order, against a null `rl`
+(`crates/server/src/headless_rl.js`) instead of installing raylib, then drives
+`sceneFrame` at a fixed 1/60 and reads the bots back as JSON. A test asserts the
+server's part list matches `crates/goats/src/main.rs`, so the two cannot silently
+diverge. `goatsd` seeds the sim from the session seed before `sceneInit`, so the
+world is generated from it rather than adopted after the fact — which closes the
+"the initial layout does not agree" gap the player-sync note left open.
+
+**Still open.** Weather is seed-shared and still simulated per client, so it can
+drift; moving it behind the server is the remaining slice. The scene also does
+the full render-side work every step (all no-ops, but real JavaScript): a release
+build keeps up with 60 Hz, a debug one does not, so `goatsd` wants `--release`.
+
+**Verified.** `cargo test --workspace` — proto 13, session 8, goats 4, server 3
+(one of which is `#[ignore]`d: three fresh sims, each re-JITing the scene, is
+~35 s) — the harness at ALL PASS (124, including the host-publishes and
+client-mirrors checks), `cargo fmt --all -- --check` and `cargo clippy
+--workspace --all-targets -- -D warnings` clean. The live check — a `goatsd`
+session whose bots move together for every client — needs a display.
 
 ---
 
