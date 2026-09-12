@@ -78,6 +78,7 @@ function ctlToggle(current, arg) {
 }
 
 const CTL_SHADOWS = { off: SHADOW_OFF, planar: SHADOW_PLANAR, map: SHADOW_MAP };
+const CTL_CLOUDS = { low: 0, medium: 1, high: 2 };
 
 function sceneCommand(line) {
     const parts = String(line).trim().split(/\s+/);
@@ -176,6 +177,7 @@ function sceneCommand(line) {
                 lighting: useLighting,
                 shadows: shadowMode === SHADOW_MAP ? "map" : shadowMode === SHADOW_PLANAR ? "planar" : "off",
                 sky: useSkyShader,
+                cloud: CLOUD_LEVELS[cloudLevel()],
                 fullscreen: typeof rl.isWindowFullscreen === "function" ? rl.isWindowFullscreen() : false,
                 muted: muted,
                 paused: paused,
@@ -192,6 +194,7 @@ function sceneCommand(line) {
                 light: SETTINGS.light,
                 shadow: SETTINGS.shadow === SHADOW_MAP ? "map" : SETTINGS.shadow === SHADOW_PLANAR ? "planar" : "off",
                 sky: SETTINGS.sky,
+                cloud: CLOUD_LEVELS[cloudLevel()],
                 fullscreen: SETTINGS.fullscreen,
                 herd: SETTINGS.herd
             });
@@ -209,6 +212,10 @@ function sceneCommand(line) {
                 const mode = CTL_SHADOWS[parts[2]];
                 if (mode === undefined) return "error setting shadow expects map|planar|off";
                 SETTINGS.shadow = mode;
+            } else if (key === "cloud") {
+                const level = CTL_CLOUDS[parts[2]];
+                if (level === undefined) return "error setting cloud expects low|medium|high";
+                SETTINGS.cloud = level;
             } else if (key === "herd") {
                 const v = ctlArg(parts, 2);
                 if (v === null) return "error setting herd expects a number";

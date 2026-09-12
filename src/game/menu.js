@@ -33,6 +33,7 @@ const KEYMAP_ROWS = [
 ];
 
 const SHADOW_LIST = "None;Planar;Shadow map";
+const CLOUD_LIST = "Low;Medium;High";
 
 // A menu is showing: the world is frozen and the game ignores its input.
 function uiIsOpen() {
@@ -97,7 +98,7 @@ function drawMainMenu(sw, sh) {
 
 function drawSettings(sw, sh) {
     const w = 460;
-    const h = 430;
+    const h = 460;
     const x = Math.round((sw - w) / 2);
     const y = Math.round((sh - h) / 2);
     rl.guiPanel(x, y, w, h, "Settings");
@@ -117,7 +118,7 @@ function drawSettings(sw, sh) {
     if (Math.round(sfx.value) !== SETTINGS.sfx) SETTINGS.sfx = Math.round(sfx.value);
     cy += 46;
 
-    rl.guiGroupBox(lx, cy, lw, 148, "Graphics");
+    rl.guiGroupBox(lx, cy, lw, 178, "Graphics");
     cy += 26;
     const light = rl.guiToggle(lx + 10, cy, lw - 20, 24, "Light", SETTINGS.light);
     if (light.value !== SETTINGS.light) {
@@ -134,6 +135,12 @@ function drawSettings(sw, sh) {
     const sky = rl.guiToggle(lx + 10, cy, lw - 20, 24, "Sky shader", SETTINGS.sky);
     if (sky.value !== SETTINGS.sky) {
         SETTINGS.sky = sky.value;
+        applySettings();
+    }
+    cy += 30;
+    const clouds = rl.guiComboBox(lx + 10, cy, lw - 20, 24, CLOUD_LIST, SETTINGS.cloud);
+    if (clouds.value >= 0 && clouds.value !== SETTINGS.cloud) {
+        SETTINGS.cloud = clouds.value;
         applySettings();
     }
     cy += 30;

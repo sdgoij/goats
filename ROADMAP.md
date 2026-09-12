@@ -44,12 +44,13 @@ covers more than it first appears:
 | Camera-facing billboards | ✅ | `drawBillboard` / `drawBillboardRec` (M0) |
 | 3D rain drops / splashes | ✅ | `drawLine3D` / `drawPoint3D` (M0) |
 | Read a bone's world transform | ✅ | `modelBonePosition` / `modelBoneTransform` (M0) |
-| Photoreal / volumetric clouds | ⚠️ 2.5D | sky shader (M5); true volumetrics are a stretch |
+| Photoreal / volumetric clouds | ✅ approx | raymarched slab, self-shadowed, with a phase function (M5b); not full radiative transfer |
 
 The practical consequence: **stats, sleep and death needed no engine work at all**,
 and day/night plus a first pass of weather needed only the M0 primitives. With M0
-and the M4 shader bindings landed upstream, the only remaining engine work is
-the photoreal cloud shader (M5).
+and the M4 shader bindings landed upstream, even the volumetric cloud shader
+(M5b) needed no new bindings -- the M4 surface already carried everything it
+uses.
 
 ---
 
@@ -63,7 +64,8 @@ the photoreal cloud shader (M5).
 | **M3** | Weather phase 1: clouds, 2D rain, wind, audio | M0 | M | ✅ **Done** (audio in M3b) |
 | **M3b** | Weather and goat audio | M3 | S | ✅ **Done** |
 | **M4** | Shaders: real lighting + cast shadows | M0 | L | ✅ **Done** (incl. M4b shadow map) |
-| **M5** | Weather phase 2: sky shader clouds | M4 | L | ✅ **Done** (2.5D shader; volumetrics deferred) |
+| **M5** | Weather phase 2: sky shader clouds | M4 | L | ✅ **Done** (2.5D shader) |
+| **M5b** | Volumetric clouds: raymarched slab | M5 | M | ✅ **Done** (self-shadowed, phase function, cirrus) |
 | **M6** | Weather affects gameplay | M3 | S | ✅ **Done** (rain slows, wet drains energy) |
 
 ---
@@ -366,7 +368,44 @@ less convincing.
 
 **Deferred:** true volumetrics (raymarching a participating medium). The roadmap
 flagged this as a research stretch; the 2.5D shader is the realistic target and
-is what shipped.
+is what shipped. (Overtaken by M5b, below.)
+
+---
+
+## M5b — Volumetric clouds ✅ Done
+
+The flat layer was replaced by a marched slab, which is what turns the clouds
+from a moving texture into a volume:
+
+- **Shape.** `cloudDensity` fBm-domain-warps the 2D field (`fbm2(q + warp*0.75)`)
+  and shears it with height, so the billows are billows rather than an extrusion,
+  and the layer parallaxes correctly. A soft base and a rounded top come from an
+  analytic height profile; the coverage threshold falls as `cloudiness` rises, so
+  the sky goes from a few puffs to solid overcast; high-frequency erosion (only
+  evaluated near a surface, where it reads) frays the edges.
+- **Light.** Each sample marches three steps toward the sun with a cheaper
+  two-octave density, giving real self-shadowing -- dark bases, lit tops. A
+  Henyey-Greenstein phase function adds the forward-scattering rim on the sun's
+  side, and a Beer-Powder term keeps dense interiors from glowing. Transmittance
+  is Beer-Lambert, composited front to back.
+- **Depth.** A thin, wind-sheared cirrus layer sits above the cumulus, and
+  distance haze blends far cloud into the horizon colour instead of aliasing.
+- **Atmosphere.** The gradient gained a forward-scattered glow that widens as the
+  sun approaches the horizon, the sun/moon disc, and a horizon haze band.
+
+Cost is step-count bound, so it is a setting: **Clouds — Low / Medium / High**
+(6 / 12 / 22 march steps). At 2560x1440 release sits at the 60 fps cap on Low
+and Medium; High read ~55, which is inside run-to-run noise (the billboard
+fallback read 55 in the same run), so the knob is there for weaker GPUs rather
+than for the default.
+
+Verified numerically rather than by eye: the shader compiles, the harness asserts
+the march is what gets installed, and frame statistics show overcast flatter
+than broken cloud (luma sd 0.090 vs 0.121), dusk dim with a still-lit sky band,
+and night dark with no glow. Whether it *looks* right is an eyeball call.
+
+**Still a stretch:** true radiative transfer (raymarching the atmosphere proper,
+multiple scattering) and temporal reprojection to buy back step count.
 
 ---
 
@@ -470,8 +509,10 @@ clip needed a small residual (max ~0.18) to keep the lowest vertex on the ground
 
 ## Open questions
 
-1. ~~**How photorealistic?**~~ **Settled:** a 2.5D sky shader (M5). Raymarched
-   volumetrics remain a possible later experiment, not a plan.
+1. ~~**How photorealistic?**~~ **Settled:** a raymarched cloud slab (M5b) over an
+   analytic atmosphere, tuned by the Clouds setting. True radiative transfer and
+   volumetric atmosphere scattering remain a possible later experiment, not a
+   plan.
 2. ~~**Eyelids:**~~ **Done:** real eyelids — a `LidL`/`LidR` bone pair with
    spherical-cap shells, closed by the `GoatSleep` clip. The swapped
    closed-eye sprite is gone.

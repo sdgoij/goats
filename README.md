@@ -50,12 +50,19 @@ page, where GitHub plays it.*
   into gameplay: a soaked goat moves up to ~30% slower and burns energy faster,
   on top of the existing night penalty. Press `B` to switch the sky between the
   cloud shader and the billboard fallback.
-- **Procedural sky (M5)**: the sky is one full-screen shader. Per pixel it
-  rebuilds the camera ray, draws the hour-of-day gradient, and samples animated
-  value-noise fBm on a flat cloud layer — the ray-to-plane projection is what
-  gives the clouds their parallax toward the horizon. Clouds are lit by
-  comparing density against a sample taken toward the sun, so they brighten on
-  the sun's side and pick up its dawn/dusk colour.
+- **Volumetric sky (M5/M5b)**: the sky is one full-screen shader. Per pixel it
+  rebuilds the camera ray, shades an analytic atmosphere (the hour-of-day
+  gradient, a forward-scattered glow that widens as the sun drops, a horizon
+  haze), and raymarches a slab of cloud between `CLOUD_BASE` and `CLOUD_TOP`.
+  The density field is fBm domain-warped in 2D and sheared with height, so the
+  billows have structure instead of being an extrusion; every sample marches a
+  few steps toward the sun, so the bases darken and the tops stay lit;
+  transmittance is Beer-Lambert with a Henyey-Greenstein phase term for the
+  bright rim on the sun's side, and a powder term keeps dense interiors from
+  glowing. A thin, wind-sheared cirrus layer sits above the cumulus, and
+  distance haze blends far cloud into the horizon. The **Clouds** setting (Low /
+  Medium / High — 6 / 12 / 22 march steps) trades quality for speed; `B`
+  switches to the billboard fallback.
 - **Real lighting and shadows (M4/M4b)**: a small custom GLSL program lights
   the scene. A directional sun (or moon at night) driven by the clock, plus a
   hemispheric ambient term, shades the goat and the terrain per fragment. The
@@ -314,11 +321,14 @@ culled. The field itself is generated per 2-unit cell from a hash of the cell, s
 it follows the goat and never leaves bare ground behind. `K` cycles the map, a
 planar fallback (the earlier M4 look) and off.
 
-The M5 sky reuses the same bindings. It is a full-screen pass (`beginShaderMode`
-+ `drawRectangle`) whose fragment shader reads `gl_FragCoord`, so the fragment
-side is independent of raylib's own projection; the JS side passes the camera
-basis, fov, hour-of-day colours, sun direction/colour, wind and cloudiness as
-uniforms. `B` falls back to the M2 gradient and the noise-puff billboards.
+The M5/M5b sky reuses the same bindings. It is a full-screen pass
+(`beginShaderMode` + `drawRectangle`) whose fragment shader reads `gl_FragCoord`,
+so the fragment side is independent of raylib's own projection; the JS side
+passes the camera basis, fov, hour-of-day colours, sun direction/colour, wind and
+cloudiness, the slab geometry and the march step count as uniforms. That step
+count is an `int` uniform (`SHADER_UNIFORM_INT`), so the shader's loop bound
+follows the Clouds setting rather than being baked in. `B` falls back to the M2
+gradient and the noise-puff billboards.
 
 ## The `rl` audio surface
 

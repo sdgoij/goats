@@ -90,6 +90,7 @@ const SETTINGS = {
     light: true,    // lit shader on/off
     shadow: 2,      // 0 none, 1 planar, 2 shadow map
     sky: true,      // sky shader on/off
+    cloud: 1,       // volumetric cloud quality: 0 low, 1 medium, 2 high
     fullscreen: true,  // start (and toggle) full-screen
     herd: 7,        // bot goats, 0..10
 };

@@ -280,6 +280,7 @@ function drawHud(move) {
     const status = clockText + "   speed " + curSpeed.toFixed(2) + " m/s   phase " +
         goat.phase.toFixed(2) + "   fps " + rl.getFPS() + "   light " + lightingText +
         "   sky " + (useSkyShader && skyShader >= 0 ? "shader" : "billboards") +
+            "   clouds " + CLOUD_LEVELS[cloudLevel()] +
         "   audio " + (audioReady ? (muted ? "muted" : "on") : "off") +
         "   herd " + BOTS.length;
 

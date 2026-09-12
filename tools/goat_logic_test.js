@@ -52,6 +52,9 @@ let shadowPass = false;
 let shadowCubeDraws = 0;
 let menuDraws = 0;
 let cubeDraws = 0;
+// The sky fragment shader's source, captured so the suite can assert the volume
+// march is what actually gets compiled.
+let skyFs = '';
 // Splash instrumentation: loading frames are those drawn before `sceneReady()`.
 let loadingFrames = 0;
 let progressBarCalls = 0;
@@ -117,8 +120,11 @@ const rl = Object.assign({}, constants, {
     drawModelEx: () => {},
     setModelShader: (_m, s) => { modelShaderCalls.push(s); },
     setModelTexture: (_m, index, tex) => { modelTextureCalls.push([index, tex]); },
-    loadShaderFromMemory: (vs, fs) => (vs.indexOf('shadowOn') >= 0 ? 1
-        : (vs.indexOf('vClip') >= 0 ? 2 : (fs.indexOf('cloudiness') >= 0 ? 3 : 0))),
+    loadShaderFromMemory: (vs, fs) => {
+        if (fs.indexOf('cloudiness') >= 0) skyFs = fs;
+        return vs.indexOf('shadowOn') >= 0 ? 1
+            : (vs.indexOf('vClip') >= 0 ? 2 : (fs.indexOf('cloudiness') >= 0 ? 3 : 0));
+    },
     isShaderValid: () => true,
     getShaderLocation: () => 0,
     beginShaderMode: () => {}, endShaderMode: () => {},
@@ -320,13 +326,15 @@ const botEatClips = [...botClipNames].filter((n) => n.indexOf('GoatEat') === 0).
 // Settings and screens are reachable through the command channel too.
 let settingsDefaults = false;
 let settingsApplied = false;
+let cloudLevels = false;
 let herdGrew = false;
 let herdShrank = false;
 let screenSet = false;
 try {
     const s = defaultSettings;
     settingsDefaults = s.bgm === 90 && s.sfx === 90 && s.light === true &&
-        s.shadow === 'map' && s.sky === true && s.fullscreen === true && s.herd === 7;
+        s.shadow === 'map' && s.sky === true && s.cloud === 'medium' &&
+        s.fullscreen === true && s.herd === 7;
     sandbox.sceneCommand('setting light off');
     sandbox.sceneCommand('setting shadow planar');
     sandbox.sceneCommand('setting sky off');
@@ -346,6 +354,13 @@ try {
     sandbox.sceneCommand('setting shadow map');
     sandbox.sceneCommand('setting sky on');
     sandbox.sceneCommand('setting herd 7');
+    sandbox.sceneCommand('setting cloud low');
+    const cloudLow = JSON.parse(sandbox.sceneCommand('settings').slice(3)).cloud === 'low';
+    sandbox.sceneCommand('setting cloud high');
+    const cloudHigh = JSON.parse(sandbox.sceneCommand('features').slice(3)).cloud === 'high';
+    sandbox.sceneCommand('setting cloud medium');
+    cloudLevels = cloudLow && cloudHigh &&
+        JSON.parse(sandbox.sceneCommand('settings').slice(3)).cloud === 'medium';
     screenSet = sandbox.sceneCommand('ui settings') === 'ok ui settings' &&
         sandbox.sceneCommand('ui') === 'ok settings';
     sandbox.sceneCommand('ui hud');
@@ -442,6 +457,12 @@ const checks = [
     ['eaten grass regrows', eatTest.regrew, eatTest],
     ['eaten grass stops being drawn', tuftVanishes, tuftDrawDrop],
     ['settings default to the spec', settingsDefaults, null],
+    ['cloud quality can be set', cloudLevels, null],
+    // The volumetric march, not the flat M5 layer: these markers only exist in
+    // the slab marcher.
+    ['the sky shader marches a volume',
+        skyFs.indexOf('sunTau') >= 0 && skyFs.indexOf('cloudSteps') >= 0 &&
+        skyFs.indexOf('slabY') >= 0 && skyFs.indexOf('hg(') >= 0, skyFs.length],
     ['settings apply to the world', settingsApplied, null],
     ['herd size grows the herd', herdGrew, null],
     ['herd size shrinks the herd', herdShrank, null],
