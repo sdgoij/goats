@@ -75,7 +75,7 @@ uses.
 | **M9** | In-game console + character input | `getCharPressed` (upstream) | S–M | ✅ **Done** (engine binding + console; live keystroke check pending) |
 | **M9b** | Console clipboard: paste a ticket | M9 | S | ✅ **Done** |
 | **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
-| **M11** | Chat: global, DMs, system lines | M10 | S–M | ✅ **Done** (unit + harness; live two-window chat not yet run) |
+| **M11** | Chat: global, DMs, system lines | M10 | S–M | ✅ **Done** |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | The actual gameplay payload |
 | **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
 
@@ -801,9 +801,9 @@ burst of 5 lines per 3s per player is the rate limit.
 
 **Verified.** `cargo test --workspace` (the loopback bridge test now carries a
 global line and a whisper end to end), `node tools/goat_logic_test.js` (113
-checks, including the console's chat and command routing) and clippy. The
-visual check — two windows, type into one, read it in the other — still needs a
-display.
+checks, including the console's chat and command routing) and clippy. The live
+two-window check also passed: two clients, one hosting, and global chat and a
+whisper both arrived in the other window.
 
 - Global: bare text broadcasts.
 - 1:1: a **leading** `@name text` is a DM, with `/msg name text` as the
