@@ -39,9 +39,12 @@ enum Command {
         speed: f32,
         gait: String,
     },
-    /// The server's bots, queued by the scene only while it is hosting. A client
-    /// never sends this; the runtime ignores it outside a host session.
-    World { bots: Vec<session::BotState> },
+    /// The server's world, queued by the scene only while it is hosting. A
+    /// client never sends this; the runtime ignores it outside a host session.
+    World {
+        bots: Vec<session::BotState>,
+        weather: session::WeatherState,
+    },
     /// Leave whatever session is running.
     Close,
 }
@@ -73,8 +76,12 @@ enum Event {
         name: String,
         state: session::PeerState,
     },
-    /// The server's bots, for a client to mirror instead of simulating.
-    World { bots: Vec<session::BotState> },
+    /// The server's world -- its bots and its sky -- for a client to mirror
+    /// instead of simulating.
+    World {
+        bots: Vec<session::BotState>,
+        weather: session::WeatherState,
+    },
     /// The roster changed.
     Roster { names: Vec<String> },
     /// A line for the console.
@@ -178,10 +185,11 @@ impl Live {
     }
 
     /// Sends the world. Only a host has one to send; a client silently drops it.
-    async fn publish_world(&self, bots: &[session::BotState]) {
+    async fn publish_world(&self, bots: &[session::BotState], weather: &session::WeatherState) {
         if let Live::Host(host) = self {
             host.publish_world(&session::WorldState {
                 bots: bots.to_vec(),
+                weather: weather.clone(),
             })
             .await;
         }
@@ -262,9 +270,9 @@ async fn run(
                     }
                 }
                 // The server's world: only meaningful while hosting.
-                Command::World { bots } => {
+                Command::World { bots, weather } => {
                     if let Some(session) = live.as_ref() {
-                        session.publish_world(&bots).await;
+                        session.publish_world(&bots, &weather).await;
                     }
                 }
                 other => live = start(other, live.take(), &events).await,
@@ -351,7 +359,7 @@ fn bridge(event: session::Event) -> Event {
         session::Event::Left { name } => Event::Left { name },
         session::Event::Chat { from, text, direct } => Event::Chat { from, text, direct },
         session::Event::Peer { name, state } => Event::Peer { name, state },
-        session::Event::World { bots } => Event::World { bots },
+        session::Event::World { bots, weather } => Event::World { bots, weather },
         session::Event::Roster { names } => Event::Roster { names },
         session::Event::Notice(text) => Event::Notice { text },
         session::Event::Disconnected => Event::Disconnected,
@@ -445,15 +453,17 @@ mod tests {
             .is_ok()
         );
         match serde_json::from_str::<Command>(
-            r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"trot","variant":1}]}"#,
+            r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"trot","variant":1}],"weather":{"kind":"rain","cloudiness":0.8,"rain_amount":0.6,"wind_x":1.4,"wind_z":0.2,"wind_sway":1.0,"world_time":9.25}}"#,
         )
         .expect("world")
         {
-            Command::World { bots } => {
+            Command::World { bots, weather } => {
                 assert_eq!(bots.len(), 1);
                 assert_eq!(bots[0].index, 0);
                 assert_eq!(bots[0].gait, session::Gait::Trot);
                 assert_eq!(bots[0].variant, 1);
+                assert_eq!(weather.kind, session::WeatherKind::Rain);
+                assert_eq!(weather.world_time, 9.25);
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -545,10 +555,20 @@ mod tests {
                 gait: session::Gait::Idle,
                 variant: 0,
             }],
+            weather: session::WeatherState {
+                kind: session::WeatherKind::Cloudy,
+                cloudiness: 0.7,
+                rain_amount: 0.0,
+                wind_x: 1.0,
+                wind_z: 0.0,
+                wind_sway: 0.6,
+                world_time: 3.0,
+            },
         }))
         .expect("encode");
         assert!(line.contains(r#""type":"world""#), "{line}");
         assert!(line.contains(r#""index":0"#), "{line}");
+        assert!(line.contains(r#""kind":"cloudy""#), "{line}");
     }
 
     /// Waits for the next event containing `wanted`. Events that do not match
@@ -631,12 +651,13 @@ mod tests {
         // the joiner mirrors them.
         for _ in 0..10 {
             host.send(
-                r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"walk","variant":0}]}"#,
+                r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"walk","variant":0}],"weather":{"kind":"clear","cloudiness":0.05,"rain_amount":0.0,"wind_x":1.0,"wind_z":0.2,"wind_sway":0.4,"world_time":8.0}}"#,
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let world = wait_for(&mut client, "\"type\":\"world\"");
         assert!(world.contains("\"index\":0"), "{world}");
         assert!(world.contains("\"gait\":\"walk\""), "{world}");
+        assert!(world.contains("\"kind\":\"clear\""), "{world}");
     }
 }

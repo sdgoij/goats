@@ -439,11 +439,20 @@ function sceneFrame() {
 
     // day/night: advance the clock, then refresh the sky and the ambient
     // tint the whole scene is drawn with.
-    const fast = ctlKeyDown(rl.KEY_T);
+    // The clock and the weather are server-owned in a client session; the local
+    // T accelerator and the C force are for the host and offline play.
+    const fast = netWeatherLocal() && ctlKeyDown(rl.KEY_T);
     worldTime = mod24(worldTime + (dt / DAY_LENGTH) * 24 * (fast ? TIME_FAST : 1));
     const sky = skySample(worldTime);
-    updateWind(dt);
-    updateWeather(dt);
+    if (netWeatherLocal()) {
+        updateWind(dt);
+        updateWeather(dt);
+    } else {
+        // The server's wind and cloudiness arrive over the wire. Only the visual
+        // sway clock and this goat's own effects are ours to keep.
+        swayTime += dt;
+        updateWeatherEffects();
+    }
     updateClouds(dt);
     updateRain(dt);
     updateAudio(dt);
@@ -475,7 +484,7 @@ function sceneFrame() {
 
     // input
     if (press(rl.KEY_P)) paused = !paused;
-    if (press(rl.KEY_C)) forceWeather();
+    if (press(rl.KEY_C) && netWeatherLocal()) forceWeather();
     if (press(rl.KEY_L) && litShader >= 0) {
         useLighting = !useLighting;
         SETTINGS.light = useLighting;

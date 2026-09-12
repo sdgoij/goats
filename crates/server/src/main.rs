@@ -87,8 +87,8 @@ async fn main() {
 /// Hands one world snapshot to the session, which broadcasts it to the clients.
 /// A malformed read is logged rather than fatal: the next one is 100 ms away.
 async fn publish_world(host: &Host, json: &str) {
-    match serde_json::from_str::<Vec<session::BotState>>(json) {
-        Ok(bots) => host.publish_world(&WorldState { bots }).await,
+    match serde_json::from_str::<WorldState>(json) {
+        Ok(world) => host.publish_world(&world).await,
         Err(error) => eprintln!("goatsd: bad world snapshot: {error}"),
     }
 }

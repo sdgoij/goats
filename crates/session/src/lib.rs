@@ -30,7 +30,9 @@ use tokio::sync::{Mutex, mpsc};
 // The wire types the session exchanges, re-exported so an embedding host (the
 // client's network bridge) can name a pose or a world without depending on
 // `proto` directly.
-pub use proto::{BotState, Datagram, Gait, PeerFrame, PeerState, WorldState};
+pub use proto::{
+    BotState, Datagram, Gait, PeerFrame, PeerState, WeatherKind, WeatherState, WorldState,
+};
 
 /// The ALPN, carrying the major wire version so a peer built against a
 /// different protocol fails the QUIC handshake instead of misreading messages.
@@ -59,8 +61,12 @@ pub enum Event {
     /// A remote goat moved. `name` is the server's canonical name, not whatever
     /// the datagram claimed.
     Peer { name: String, state: PeerState },
-    /// The server's bots, for a client to mirror instead of simulating.
-    World { bots: Vec<BotState> },
+    /// The server's world -- its bots and its sky -- for a client to mirror
+    /// instead of simulating.
+    World {
+        bots: Vec<BotState>,
+        weather: WeatherState,
+    },
     /// A line to print in the console.
     Notice(String),
     /// The connection to the host ended (client side only).
@@ -813,7 +819,10 @@ impl Client {
                         if !world.is_finite() {
                             continue;
                         }
-                        Event::World { bots: world.bots }
+                        Event::World {
+                            bots: world.bots,
+                            weather: world.weather,
+                        }
                     }
                 };
                 if snapshot_events.send(event).is_err() {
@@ -1156,13 +1165,25 @@ mod tests {
                         variant: 2,
                     },
                 ],
+                weather: WeatherState {
+                    kind: WeatherKind::Rain,
+                    cloudiness: 0.8,
+                    rain_amount: 0.6,
+                    wind_x: 1.4,
+                    wind_z: 0.2,
+                    wind_sway: 1.0,
+                    world_time: 9.25,
+                },
             };
             for _ in 0..10 {
                 host.publish_world(&world).await;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             match client_world(&mut alice).await {
-                Event::World { bots } => assert_eq!(bots, world.bots),
+                Event::World { bots, weather } => {
+                    assert_eq!(bots, world.bots);
+                    assert_eq!(weather, world.weather);
+                }
                 other => panic!("expected a world, got {other:?}"),
             }
 

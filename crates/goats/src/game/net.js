@@ -146,8 +146,8 @@ function sceneNetEvent(line) {
             netPeerState(String(event.name), event.state);
             break;
         case "world":
-            // The server's bots. Not printed either.
-            netApplyWorld(event.bots);
+            // The server's world. Not printed either.
+            netApplyWorld(event.bots, event.weather);
             break;
         case "chat":
             consoleNet("net: " + (event.direct ? "dm " : "") +
@@ -369,12 +369,13 @@ function netMaybePublishWorld() {
     if (netMode !== "host") return;   // only the host owns the world
     if (sceneFrames - netWorldFrame < NET_WORLD_EVERY) return;
     netWorldFrame = sceneFrames;
-    netQueue({ type: "world", bots: sceneWorldBots() });
+    netQueue({ type: "world", bots: sceneWorldBots(), weather: sceneWeatherState() });
 }
 
-// Mirror the server's bots: match the count, then move each one into place. A
-// client never runs the bot AI, so this is the whole of its bot state.
-function netApplyWorld(bots) {
+// Mirror the server's world: its sky and its bots. A client runs neither the
+// weather state machine nor the bot AI, so this is the whole of both.
+function netApplyWorld(bots, weather) {
+    applyWeatherState(weather);
     if (!Array.isArray(bots)) return;
     if (BOTS.length !== bots.length) setHerdSize(bots.length);
     for (let i = 0; i < bots.length && i < BOTS.length; i++) {

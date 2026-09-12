@@ -56,10 +56,13 @@ const SCENE: &str = concat!(
     include_str!("../../goats/src/game/net.js"),
 );
 
-/// Appended to the scene: the one seam the server needs, a JSON view of the bots
-/// for the session to broadcast. It can be a one-liner because `sceneWorldBots`
-/// and `JSON` are already the scene's.
-const GLUE: &str = "\nfunction sceneWorldJson() { return JSON.stringify(sceneWorldBots()); }\n";
+/// Appended to the scene: the one seam the server needs, a JSON view of the
+/// world the session broadcasts. It can be a one-liner because `sceneWorldBots`,
+/// `sceneWeatherState` and `JSON` are already the scene's.
+const GLUE: &str = concat!(
+    "\nfunction sceneWorldJson() { return JSON.stringify({",
+    " bots: sceneWorldBots(), weather: sceneWeatherState() }); }\n",
+);
 
 /// A running headless scene.
 pub struct Sim {
@@ -180,12 +183,17 @@ mod tests {
         // The scene needs ~16 frames to load (9 + the herd) and a few more to
         // settle. Each frame is real work, so this stays small.
         let json = run_world(0x1234_5678, 40);
-        assert!(json.starts_with('['), "expected a bot array, got {json}");
-        assert_ne!(json, "[]", "the server should own a herd");
-        // Every bot carries the fields the session broadcasts.
+        assert!(json.starts_with('{'), "expected a world object, got {json}");
+        assert!(json.contains("\"bots\":"), "{json}");
+        assert!(json.contains("\"weather\":"), "{json}");
+        // The bots carry the fields the session broadcasts.
         assert!(json.contains("\"index\":"), "{json}");
         assert!(json.contains("\"gait\":"), "{json}");
         assert!(json.contains("\"phase\":"), "{json}");
+        // And the sky does too.
+        assert!(json.contains("\"kind\":"), "{json}");
+        assert!(json.contains("\"cloudiness\":"), "{json}");
+        assert!(json.contains("\"world_time\":"), "{json}");
     }
 
     #[test]

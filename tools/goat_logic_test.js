@@ -645,7 +645,7 @@ try {
     syncTest.poseThrottled = sandbox.sceneNetDrain().indexOf('"type":"pose"') < 0;
     // A host also owns the world and publishes its bots.
     syncTest.world = first.indexOf('"type":"world"') >= 0 &&
-        first.indexOf('"bots"') >= 0;
+        first.indexOf('"bots"') >= 0 && first.indexOf('"weather"') >= 0;
 
     // A snapshot becomes a goat; a later one moves it; leaving removes it.
     sandbox.sceneNetEvent('{"type":"peer","name":"alice","state":{"x":3,"z":4,"yaw":0,"phase":0,"speed":0,"gait":"idle"}}');
@@ -657,19 +657,27 @@ try {
     syncTest.peerLeft = sandbox.scenePeers().length === 0;
     sandbox.sceneNetEvent('{"type":"disconnected"}');
 
-    // A client mirrors the server's bots and does not publish a world of its own.
+    // A client mirrors the server's bots and sky, and publishes no world of its
+    // own.
     sandbox.sceneNetEvent('{"type":"welcome","name":"eve"}');
-    syncTest.clientNotLocal = sandbox.netWorldLocal() === false;
-    sandbox.sceneNetEvent('{"type":"world","bots":[' +
+    syncTest.clientNotLocal = sandbox.netWorldLocal() === false &&
+        sandbox.netWeatherLocal() === false;
+    sandbox.sceneNetEvent('{"type":"world","weather":' +
+        '{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,' +
+        '"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5},"bots":[' +
         '{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0},' +
         '{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2}]}');
     const mirrored = sandbox.sceneWorldBots();
     syncTest.mirror = mirrored.length === 2 && mirrored[0].x === 9 &&
         mirrored[1].z === -9 && mirrored[1].gait === 'idle';
+    const mirroredWeather = sandbox.sceneWeatherState();
+    syncTest.weatherMirror = mirroredWeather.kind === 'rain' &&
+        mirroredWeather.rain_amount === 0.8 && mirroredWeather.world_time === 21.5;
     syncTest.clientIsNotAuthority =
         sandbox.sceneNetDrain().indexOf('"type":"world"') < 0;
     sandbox.sceneNetEvent('{"type":"disconnected"}');
-    syncTest.worldLocalOffline = sandbox.netWorldLocal() === true;
+    syncTest.worldLocalOffline = sandbox.netWorldLocal() === true &&
+        sandbox.netWeatherLocal() === true;
 } catch (e) {
     syncTest.error = String(e);
 }
@@ -847,9 +855,10 @@ const checks = [
     ['leaving removes the remote goat', syncTest.peerLeft, syncTest],
     ['a host publishes its bots', syncTest.world, syncTest],
     ['a client mirrors the server bots', syncTest.mirror, syncTest],
+    ['a client mirrors the server weather', syncTest.weatherMirror, syncTest],
     ['a client does not simulate or publish the bots',
         syncTest.clientNotLocal && syncTest.clientIsNotAuthority, syncTest],
-    ['offline simulates the bots locally', syncTest.worldLocalOffline, syncTest],
+    ['offline simulates the bots and the weather locally', syncTest.worldLocalOffline, syncTest],
     ['no world sync errors', syncTest.error === undefined, syncTest.error],
 ];
 

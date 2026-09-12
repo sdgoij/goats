@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// The wire version, bumped whenever a message changes shape. It is also the
 /// ALPN suffix, so a peer with a different major version fails the QUIC
 /// handshake before it reaches any of this.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -170,17 +170,57 @@ impl BotState {
     }
 }
 
-/// The server's world, as far as a client has to mirror it: the bots. Weather is
-/// still seed-shared and simulated per client for now; it joins this once the
-/// server owns it in full.
+/// Which weather the server has settled into. The scene's own spelling, so the
+/// JSON crosses the bridge unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeatherKind {
+    Clear,
+    Cloudy,
+    Rain,
+    Clearing,
+}
+
+/// The server's sky, as far as a client has to mirror it: which state it is in,
+/// how far the overcast and the rain have eased, the wind, and the clock.
+///
+/// Deliberately only the inputs. A goat's speed and energy drain under the
+/// weather depend on its own belly, so each client recomputes those rather than
+/// taking a number that only fits the server's goat.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeatherState {
+    pub kind: WeatherKind,
+    pub cloudiness: f32,
+    pub rain_amount: f32,
+    pub wind_x: f32,
+    pub wind_z: f32,
+    pub wind_sway: f32,
+    /// Hours into the day, `0..24`.
+    pub world_time: f32,
+}
+
+impl WeatherState {
+    pub fn is_finite(&self) -> bool {
+        self.cloudiness.is_finite()
+            && self.rain_amount.is_finite()
+            && self.wind_x.is_finite()
+            && self.wind_z.is_finite()
+            && self.wind_sway.is_finite()
+            && self.world_time.is_finite()
+    }
+}
+
+/// The server's world, as far as a client has to mirror it: the bots and the
+/// sky. Both are simulated only by whoever hosts and applied by everyone else.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldState {
     pub bots: Vec<BotState>,
+    pub weather: WeatherState,
 }
 
 impl WorldState {
     pub fn is_finite(&self) -> bool {
-        self.bots.iter().all(BotState::is_finite)
+        self.weather.is_finite() && self.bots.iter().all(BotState::is_finite)
     }
 }
 
@@ -481,11 +521,28 @@ mod tests {
                     variant: 1,
                 },
             ],
+            weather: WeatherState {
+                kind: WeatherKind::Rain,
+                cloudiness: 0.9,
+                rain_amount: 0.75,
+                wind_x: 1.2,
+                wind_z: -0.3,
+                wind_sway: 1.1,
+                world_time: 13.5,
+            },
         };
         let datagram = Datagram::World(world.clone());
         let bytes = encode(&datagram).expect("encode");
         assert_eq!(decode::<Datagram>(&bytes).expect("decode"), datagram);
         assert!(world.is_finite());
+
+        // The weather kind is the scene's own spelling, so nothing has to map
+        // it at the bridge.
+        assert_eq!(
+            encode(&WeatherKind::Clearing).expect("encode"),
+            b"\"clearing\""
+        );
+        assert!(decode::<WeatherKind>(b"\"hail\"").is_err());
 
         let peer = Datagram::Peer(PeerFrame {
             name: "alice".to_string(),
@@ -501,19 +558,13 @@ mod tests {
         let bytes = encode(&peer).expect("encode");
         assert_eq!(decode::<Datagram>(&bytes).expect("decode"), peer);
 
-        // A hostile bot position is caught rather than relayed into every
-        // client's renderer.
-        let broken = WorldState {
-            bots: vec![BotState {
-                index: 0,
-                x: f32::NAN,
-                z: 0.0,
-                yaw: 0.0,
-                phase: 0.0,
-                gait: Gait::Idle,
-                variant: 0,
-            }],
-        };
+        // A hostile bot position or weather value is caught rather than relayed
+        // into every client's renderer.
+        let mut broken = world.clone();
+        broken.bots[0].x = f32::NAN;
+        assert!(!broken.is_finite());
+        let mut broken = world.clone();
+        broken.weather.wind_x = f32::INFINITY;
         assert!(!broken.is_finite());
     }
 

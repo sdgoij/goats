@@ -44,6 +44,11 @@ let weatherDrain = 1.0;      // multiplier on its energy drain
 let swayTime = 0.0;
 let weatherText = "";
 let rngState = 0x9e3779b9;
+// The rain's own stream. Kept separate so a client -- which does not run the
+// weather state machine, and so never advances `rngState` -- still gets varied
+// streaks, and so offline rain does not perturb the weather sequence the harness
+// asserts on.
+let rainSeed = 0x13579bdf;
 
 // Derive every scene PRNG from the session seed, so two players in the same
 // session run the same weather, food regrowth and bleat variety. Offline the
@@ -70,6 +75,41 @@ function sceneUseSeed(seed) {
 // lexical `let`s out of the scene realm directly.
 function sceneStreams() {
     return { weather: rngState, bots: botRngState, food: foodRngState, audio: audioSeed };
+}
+
+// Offline and the host run the weather state machine; a client takes the
+// server's and only recomputes the per-goat effects.
+function netWeatherLocal() {
+    return netMode !== "client";
+}
+
+// The weather as the wire sees it. Snake_case keys, so `proto::WeatherState`
+// deserialises it unchanged.
+function sceneWeatherState() {
+    return {
+        kind: weatherKind,
+        cloudiness: netRound3(cloudiness),
+        rain_amount: netRound3(rainAmount),
+        wind_x: netRound3(windX),
+        wind_z: netRound3(windZ),
+        wind_sway: netRound3(windSway),
+        world_time: netRound3(worldTime),
+    };
+}
+
+// Take the server's sky. The wind and the eased amounts come straight from it;
+// `weatherSpeed`/`weatherDrain` are recomputed here, because they depend on this
+// goat's own belly.
+function applyWeatherState(state) {
+    if (!state) return;
+    weatherKind = state.kind;
+    cloudiness = state.cloudiness;
+    rainAmount = state.rain_amount;
+    windX = state.wind_x;
+    windZ = state.wind_z;
+    windSway = state.wind_sway;
+    worldTime = state.world_time;
+    updateWeatherEffects();
 }
 
 // Deterministic PRNG (xorshift32) so a run's weather is reproducible and the
@@ -194,6 +234,14 @@ function updateWeather(dt) {
     const k = Math.min(1, dt * 0.6);
     cloudiness += (target.cloud - cloudiness) * k;
     rainAmount += (target.rain - rainAmount) * k;
+    updateWeatherEffects();
+}
+
+// The per-goat side of the weather: how much it slows the goat down, how much
+// extra energy it burns, and the HUD line. Split out because a client applies
+// the server's cloudiness/rain/wind and still has to run this every frame -- the
+// belly is its own.
+function updateWeatherEffects() {
     const windNorm = Math.min(1, windSway / WIND_NORM);
     // Gate on rain: "clear" stays exactly neutral, and wind only bites when the
     // goat is actually wet. A full belly (`satiety`, food.js) takes the edge off
@@ -249,7 +297,12 @@ function updateRain(dt) {
         d.x += windX * 0.02 * dt;
         if (d.y > 1.05) {
             d.y = d.y - 1.1;
-            d.x = hash(i * 13.1 + rngState * 0.0001);
+            rainSeed ^= rainSeed << 13;
+            rainSeed >>>= 0;
+            rainSeed ^= rainSeed >>> 17;
+            rainSeed ^= rainSeed << 5;
+            rainSeed >>>= 0;
+            d.x = hash(i * 13.1 + rainSeed * 0.0001);
         }
         if (d.x > 1.1) d.x = d.x - 1.2;
         else if (d.x < -0.1) d.x = d.x + 1.2;
