@@ -318,4 +318,53 @@ mod tests {
         .expect("encode");
         assert_eq!(line, r#"{"type":"roster","names":["host"]}"#);
     }
+
+    /// Waits for the next event containing `wanted`. Events that do not match
+    /// are dropped, so the order the assertions below read is the real order.
+    fn wait_for(net: &mut Net, wanted: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            while let Some(line) = net.next_event() {
+                if line.contains(wanted) {
+                    return line;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("no event containing {wanted:?}");
+    }
+
+    /// The whole bridge, end to end and with no window: two `Net` handles, a
+    /// real host, a real ticket, and a real joiner. This is the automation of
+    /// the two-window check -- everything except the game window itself.
+    #[test]
+    fn two_bridges_meet_over_loopback() {
+        let mut host = Net::start();
+        host.send(r#"{"type":"host","name":"bob"}"#);
+
+        // The ticket is what a joiner needs, and it has to be a real one.
+        let ticket_line = wait_for(&mut host, "\"type\":\"ticket\"");
+        let ticket = serde_json::from_str::<serde_json::Value>(&ticket_line).expect("ticket json")
+            ["ticket"]
+            .as_str()
+            .expect("a ticket string")
+            .to_string();
+        assert!(ticket.starts_with("endpoint"), "{ticket}");
+
+        let mut client = Net::start();
+        client.send(&format!(
+            r#"{{"type":"join","ticket":"{ticket}","name":"alice"}}"#
+        ));
+
+        // The joiner is welcomed under the name it asked for, and the host hears
+        // about it on its own event stream.
+        let welcome = wait_for(&mut client, "\"type\":\"welcome\"");
+        assert!(welcome.contains("\"name\":\"alice\""), "{welcome}");
+        wait_for(&mut host, "\"type\":\"joined\"");
+
+        // Both sides get the roster, and it names the joiner.
+        wait_for(&mut client, "\"type\":\"roster\"");
+        let roster = wait_for(&mut host, "\"type\":\"roster\"");
+        assert!(roster.contains("alice"), "{roster}");
+    }
 }
