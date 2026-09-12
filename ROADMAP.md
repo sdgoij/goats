@@ -812,10 +812,10 @@ frame per QUIC datagram on the connection we already have.
   out of the same file.
 - **Workspace.** ✅ **Started.** The repo is a Cargo workspace: `crates/goats`
   (the client and the JS scene, and its `default-members`, so `cargo run` means
-  the client) and `crates/session` (the iroh transport) have landed; `crates/proto`
-  (serde types, no iroh/tokio) and `crates/server` (the `goatsd` binary) follow.
-  The assets stay at the repo root and the client reaches them with
-  `include_bytes!("../../../…")`.
+  the client), `crates/proto` (the wire types, framing and name rules, with no
+  iroh or tokio) and `crates/session` (the iroh transport) have landed;
+  `crates/server` (the `goatsd` binary) follows. The assets stay at the repo root
+  and the client reaches them with `include_bytes!("../../../…")`.
 - **Host bridge.** The JS↔Rust boundary stays line/JSON: `sceneCommand` in,
   `sceneNetEvent` out, one more host callback back. The synchronous frame loop
   drains an `mpsc` and never awaits (iroh is Tokio); the harness stubs the same
