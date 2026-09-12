@@ -390,6 +390,14 @@ from a moving texture into a volume:
   is Beer-Lambert, composited front to back.
 - **Depth.** A thin, wind-sheared cirrus layer sits above the cumulus, and
   distance haze blends far cloud into the horizon colour instead of aliasing.
+- **Anti-aliasing.** The steps grow exponentially with distance (`growth` up to
+  1.4), so samples stay dense near the camera and stretch where a cloud covers
+  fewer pixels, and the high-frequency erosion fades out with distance. There is
+  deliberately *no* per-pixel jitter on the march start: randomising the offset
+  per pixel is itself what reads as pixelated noise.
+- **Bodies.** The sun and moon discs are *not* drawn here. `drawCelestial`
+  (world.js) already puts textured sprites over this pass, so a disc in the
+  shader doubles it; the shader adds only the wide atmospheric glow.
 - **Atmosphere.** The gradient gained a forward-scattered glow that widens as the
   sun approaches the horizon, the sun/moon disc, and a horizon haze band.
 
@@ -400,12 +408,52 @@ fallback read 55 in the same run), so the knob is there for weaker GPUs rather
 than for the default.
 
 Verified numerically rather than by eye: the shader compiles, the harness asserts
-the march is what gets installed, and frame statistics show overcast flatter
-than broken cloud (luma sd 0.090 vs 0.121), dusk dim with a still-lit sky band,
-and night dark with no glow. Whether it *looks* right is an eyeball call.
+the march is what gets installed (and that no disc has crept back in), and frame
+statistics behave -- overcast is flatter than broken cloud (luma sd 0.090 vs
+0.121), dusk dim with a still-lit sky band, and night dark with no glow. The
+aliasing fix was measured the same way: mean high-frequency energy in the sky
+band fell 74-97% horizontally across the three quality levels, which pins the
+speckle on the march rather than on the noise field. Whether it *looks* right is
+still an eyeball call.
 
 **Still a stretch:** true radiative transfer (raymarching the atmosphere proper,
-multiple scattering) and temporal reprojection to buy back step count.
+multiple scattering).
+
+### Investigated: temporal reprojection (not shipped)
+
+Temporal accumulation is the textbook way to trade march quality for frame
+history: render the sky into one of two ping-pong targets, reproject the previous
+frame through the previous camera basis, blend, and let a *per-frame* jitter
+(rather than a per-pixel one) resolve the stepping.
+
+It was implemented, measured, and **deliberately reverted**. Two findings:
+
+- **It no longer solves the problem it exists for.** With the deterministic march
+  (exponential stepping, no per-pixel jitter) the static image already measures
+  0.00032 mean high-frequency energy in the sky band at Medium -- lower than the
+  pre-alias-fix High (0.00321). An accumulator needs a per-frame jitter to have
+  anything to average, and reintroducing it *raises* static noise to 0.00082
+  while costing ~10% of the frame (60 -> 54 fps at 2560x1440): nothing to gain,
+  measurable loss.
+- **It cannot be done correctly on the current engine surface.** The history
+  sampler costs a texture unit, and raylib's batch system has only
+  `RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS = 4`. `rlSetUniformSampler` *silently does
+  nothing* once they are full, so the sky's two samplers (history + present)
+  starve the lit shader's bindings: the terrain's albedo sampler ends up reading
+  the sky target, darkening the whole ground by a uniform ~9% (ground luma 0.611
+  -> 0.554 with the camera frozen, and unchanged by turning shadows off, which
+  is what fingered the albedo sampler rather than the shadow one).
+
+What would unblock it:
+
+1. **Do not sample through `setShaderValueTexture`.** The engine's `drawTexture`
+   blits a render texture through raylib's normal batch path, so drawing the
+   history as the quad and sampling `texture0` should cost no registry slot.
+   That is the route to try first, and needs no engine change.
+2. **A per-pixel reprojection depth.** Carrying it in the target's alpha does not
+   survive raylib's alpha-blended 2D drawing; it needs `BLEND_ALPHA_PREMULTIPLY`
+   (or no blending) exposed, or a second target. Failing that, the slab geometry
+   (`(cloudBase - camY) / dir.y`) is a serviceable depth proxy.
 
 ---
 

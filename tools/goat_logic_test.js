@@ -463,6 +463,10 @@ const checks = [
     ['the sky shader marches a volume',
         skyFs.indexOf('sunTau') >= 0 && skyFs.indexOf('cloudSteps') >= 0 &&
         skyFs.indexOf('slabY') >= 0 && skyFs.indexOf('hg(') >= 0, skyFs.length],
+    // The sun and moon discs come from `drawCelestial` as sprites over this pass,
+    // so a smoothstep on the sun dot here would draw a second disc.
+    ['the sky shader leaves the discs to drawCelestial',
+        skyFs.indexOf('smoothstep(0.999') < 0, skyFs.indexOf('smoothstep(0.999')],
     ['settings apply to the world', settingsApplied, null],
     ['herd size grows the herd', herdGrew, null],
     ['herd size shrinks the herd', herdShrank, null],

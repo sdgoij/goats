@@ -98,7 +98,7 @@ const SKY_FS = [
     "}",
     // ---- the cumulus slab ----
     "float slabY(vec3 p) { return (p.y - cloudBase) / max(cloudTop - cloudBase, 1e-3); }",
-    "float cloudDensity(vec3 p, vec2 drift, bool detail) {",
+    "float cloudDensity(vec3 p, vec2 drift, float detailAmt) {",
     "    float y = slabY(p);",
     "    if (y < 0.0 || y > 1.0) return 0.0;",
     // Shear with height (so it is not an extrusion) plus the wind drift.
@@ -114,8 +114,8 @@ const SKY_FS = [
     "    float cover = mix(0.78, 0.14, cloudiness);",
     "    d = max(0.0, d - cover) / max(1.0 - cover, 1e-3);",
     // Erode the edges, but only near a surface -- that is where it reads.
-    "    if (detail && d > 0.02 && d < 0.55) {",
-    "        d -= cloudDetail * fbm2(q * 3.3 + 13.0) * (0.55 - d) * 1.6;",
+    "    if (detailAmt > 0.001 && d > 0.02 && d < 0.55) {",
+    "        d -= detailAmt * fbm2(q * 2.6 + 13.0) * (0.55 - d) * 1.6;",
     "    }",
     "    return clamp(d, 0.0, 1.0);",
     "}",
@@ -124,7 +124,7 @@ const SKY_FS = [
     "    float stepLen = (cloudTop - cloudBase) * 0.28;",
     "    vec3 step = sunDir * stepLen;",
     "    float tau = 0.0;",
-    "    for (int i = 0; i < 3; i++) { p += step; tau += cloudDensity(p, drift, false); }",
+    "    for (int i = 0; i < 3; i++) { p += step; tau += cloudDensity(p, drift, 0.0); }",
     "    return tau * stepLen;",
     "}",
     // Henyey-Greenstein: a forward lobe is the bright rim on the sun's side, a
@@ -142,8 +142,8 @@ const SKY_FS = [
     "    float low = 1.0 - clamp(sunDir.y, 0.0, 1.0);",
     // Forward-scattered glow, wide and warm when the sun is near the horizon.
     "    col += sunColor.rgb * pow(mu, mix(26.0, 3.0, low)) * (0.05 + 0.20 * low) * (1.0 - nightDim);",
-    // The disc itself: the sun by day, the moon by night.
-    "    col += sunColor.rgb * smoothstep(0.99966, 0.99993, mu) * 1.4 * (1.0 - nightDim * 0.4);",
+    // NOTE: the sun and moon discs themselves are drawn by `drawCelestial`
+    // (world.js) as sprites over this pass, so the shader must not draw one too.
     // Haze hugging the horizon.
     "    col = mix(col, horizonColor, smoothstep(0.13, 0.0, dir.y) * 0.32);",
     "    return col;",
@@ -154,11 +154,11 @@ const SKY_FS = [
     "    float t = (cirrusHeight - camPos.y) / dir.y;",
     "    if (t <= 0.0) return behind;",
     "    vec2 p = (camPos.xz + dir.xz * t) * cloudScale * 1.7 + wind * time * 0.006;",
-    "    float n = fbm2(vec2(p.x * 0.30, p.y * 2.6));",
+    "    float n = fbm2(vec2(p.x * 0.24, p.y * 1.9));",
     "    float cover = mix(0.82, 0.42, cirrus);",
     "    float mask = smoothstep(cover, cover + 0.28, n);",
     "    vec3 c = mix(cloudShadow, cloudLit, 0.55 + 0.45 * clamp(sunDir.y, 0.0, 1.0));",
-    "    return mix(behind, c, mask * cirrus * exp(-t * 0.0018) * 0.85);",
+    "    return mix(behind, c, mask * cirrus * exp(-t * 0.0035) * 0.85);",
     "}",
     // ---- the march ----
     "vec3 cumulus(vec3 behind, vec3 dir) {",
@@ -170,18 +170,32 @@ const SKY_FS = [
     "    t0 = max(t0, 0.0);",
     "    if (t1 <= t0) return behind;",
     "    float span = min(t1 - t0, MAX_DIST);",
-    "    float dt = span / float(cloudSteps);",
+    // Exponential stepping: samples stay dense near the camera and stretch with
+    // distance, where a cloud covers fewer pixels. A uniform step pattern
+    // aliases badly at grazing angles, and that aliasing *is* what reads as
+    // pixelated noise.
+    "    float growth = mix(1.0, 1.4, clamp(span / 120.0, 0.0, 1.0));",
+    "    float dt;",
+    "    if (growth > 1.0001) {",
+    "        dt = span * (growth - 1.0) / (pow(growth, float(cloudSteps)) - 1.0);",
+    "    } else {",
+    "        dt = span / float(cloudSteps);",
+    "    }",
     "    vec2 drift = wind * time * 0.01;",
     "    float cosT = dot(dir, sunDir);",
     "    float ph = hg(cosT, 0.72) * 0.75 + hg(cosT, -0.28) * 0.40;",
-    // Dither the first sample so the fixed step pattern does not band.
+    // No per-pixel jitter: randomising the start offset per pixel is exactly the
+    // speckle it was meant to hide, and the exponential steps already stagger the
+    // samples.
     "    float trans = 1.0;",
     "    vec3 scatter = vec3(0.0);",
-    "    float t = t0 + hash21(gl_FragCoord.xy) * dt;",
+    "    float t = t0 + dt * 0.5;",
     "    for (int i = 0; i < cloudSteps; i++) {",
     "        if (t > t0 + span || trans < 0.02) break;",
     "        vec3 pos = camPos + dir * t;",
-    "        float dens = cloudDensity(pos, drift, true);",
+    // The erosion is the highest-frequency term, so it fades with distance
+    // rather than aliasing.
+    "        float dens = cloudDensity(pos, drift, cloudDetail / (1.0 + t * 0.05));",
     "        if (dens > 0.01) {",
     "            float tau = sunTau(pos, drift);",
     // Beer-Lambert along the sun ray, plus the powder term that darkens dense
@@ -199,6 +213,7 @@ const SKY_FS = [
     "            trans *= 1.0 - a;",
     "        }",
     "        t += dt;",
+    "        dt *= growth;",
     "    }",
     "    return behind * trans + scatter;",
     "}",
@@ -210,8 +225,6 @@ const SKY_FS = [
     "    vec3 sky = skyBackground(dir);",
     "    sky = cirrusLayer(dir, sky);",
     "    if (cloudiness > 0.01) sky = cumulus(sky, dir);",
-    // A last half-LSB dither keeps the gradient from banding.
-    "    sky += (hash21(gl_FragCoord.xy + 17.0) - 0.5) / 255.0;",
     "    finalColor = vec4(clamp(sky, 0.0, 1.0), 1.0);",
     "}",
 ].join("\n");
