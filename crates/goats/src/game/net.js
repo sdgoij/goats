@@ -23,8 +23,11 @@ function netQueue(intent) {
 }
 
 // Called by the host once a frame; returns and clears the queued intents. An
-// empty string means "nothing to send", which is the common case.
+// empty string means "nothing to send", which is the common case. The local
+// goat's pose is queued here rather than by the scene, because this is the one
+// place that runs exactly once a frame.
 function sceneNetDrain() {
+    netMaybePublish();
     if (netOutbox.length === 0) return "";
     const text = netOutbox.join("\n");
     netOutbox = [];
@@ -88,6 +91,7 @@ function netReset() {
     netName = "";
     netTicket = "";
     netRoster = [];
+    netPeersClear();
 }
 
 // ---- events ----------------------------------------------------------------
@@ -103,9 +107,18 @@ function sceneNetEvent(line) {
         return;
     }
     switch (event.type) {
+        case "session":
+            // The world is shared by seed: the first event of every session,
+            // before any roster or chat line.
+            sceneUseSeed(event.seed);
+            consoleNet("net: world seed " + String(event.seed));
+            break;
         case "hosting":
             netMode = "host";
             netName = String(event.name);
+            // Publish promptly now that a session exists, rather than waiting
+            // for the next throttle window.
+            netPoseFrame = -NET_POSE_EVERY;
             consoleNet("net: hosting as " + netName);
             break;
         case "ticket":
@@ -116,13 +129,19 @@ function sceneNetEvent(line) {
         case "welcome":
             netMode = "client";
             netName = String(event.name);
+            netPoseFrame = -NET_POSE_EVERY;
             consoleNet("net: joined as " + netName);
             break;
         case "joined":
             consoleNet("net: " + event.name + " joined");
             break;
         case "left":
+            netPeerRemove(String(event.name));
             consoleNet("net: " + event.name + " left");
+            break;
+        case "peer":
+            // Positions arrive many times a second, so they are not printed.
+            netPeerState(String(event.name), event.state);
             break;
         case "chat":
             consoleNet("net: " + (event.direct ? "dm " : "") +
@@ -146,4 +165,161 @@ function sceneNetEvent(line) {
         default:
             consoleNet("net: unknown event " + String(line));
     }
+}
+
+// ---- remote goats ----------------------------------------------------------
+//
+// Each peer is one more goat model, driven by the snapshots the server relays.
+// A snapshot is a target, not a teleport: the render position eases toward it,
+// so 20 Hz arrivals read as movement instead of a stutter. A peer's model is
+// loaded the first time it is seen and unloaded when it leaves, the same
+// ownership rule the bots follow (CPU skinning gives each goat its own model).
+
+const NET_POSE_EVERY = 3;    // frames between snapshots (~20 Hz at 60 fps)
+const NET_PEER_SMOOTH = 12;  // how fast a remote goat converges, per second
+let PEERS = [];
+let netPoseFrame = -NET_POSE_EVERY;
+
+function netPeersClear() {
+    if (typeof rl.unloadModel === "function") {
+        for (let i = 0; i < PEERS.length; i++) rl.unloadModel(PEERS[i].model);
+    }
+    PEERS = [];
+}
+
+function netPeerFind(name) {
+    for (let i = 0; i < PEERS.length; i++) {
+        if (PEERS[i].name === name) return i;
+    }
+    return -1;
+}
+
+function netPeerRemove(name) {
+    const i = netPeerFind(name);
+    if (i < 0) return;
+    if (typeof rl.unloadModel === "function") rl.unloadModel(PEERS[i].model);
+    PEERS.splice(i, 1);
+}
+
+// A snapshot from the server. The first one also creates the goat, placed
+// exactly where it is so it does not slide in from the origin.
+function netPeerState(name, state) {
+    if (!state || typeof state.x !== "number") return;
+    const found = netPeerFind(name);
+    if (found < 0) {
+        // No model to drive (headless, or the goat model itself failed to
+        // load): drop the snapshot rather than track a ghost.
+        if (typeof rl.loadModel !== "function" || !haveModel) return;
+        const handle = rl.loadModel(MODEL_PATH);
+        if (handle < 0) return;
+        if (litShader >= 0) rl.setModelShader(handle, litShader);
+        if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
+        PEERS.push({
+            name: name,
+            model: handle,
+            x: state.x, z: state.z, yaw: state.yaw, phase: state.phase,
+            tx: state.x, tz: state.z, tyaw: state.yaw, tphase: state.phase,
+            gait: state.gait,
+        });
+        return;
+    }
+    const p = PEERS[found];
+    p.tx = state.x;
+    p.tz = state.z;
+    p.tyaw = state.yaw;
+    p.tphase = state.phase;
+    p.gait = state.gait;
+}
+
+// Ease every remote goat toward its last snapshot. Phase and yaw take the short
+// way around, so neither spins the long way when a value wraps.
+function updatePeers(dt) {
+    if (PEERS.length === 0) return;
+    const k = Math.min(1, dt * NET_PEER_SMOOTH);
+    for (let i = 0; i < PEERS.length; i++) {
+        const p = PEERS[i];
+        p.x += (p.tx - p.x) * k;
+        p.z += (p.tz - p.z) * k;
+        let dy = p.tyaw - p.yaw;
+        while (dy > Math.PI) dy -= 2 * Math.PI;
+        while (dy < -Math.PI) dy += 2 * Math.PI;
+        p.yaw += dy * k;
+        let dp = p.tphase - p.phase;
+        if (dp > 0.5) dp -= 1;
+        else if (dp < -0.5) dp += 1;
+        p.phase = mod1(p.phase + dp * k);
+    }
+}
+
+// The clip role a peer's gait plays, falling back like `clipRole` does.
+function peerRole(p) {
+    if (p.gait === "dead" && CLIP.death) return "death";
+    if (p.gait === "sleep" && CLIP.sleep) return "sleep";
+    if (p.gait === "eat" && CLIP.eat) return "eat";
+    if (p.gait === "jump" && CLIP.jump) return "jump";
+    if (p.gait === "run" && CLIP.run) return "run";
+    if (p.gait === "trot" && CLIP.trot) return "trot";
+    if (p.gait === "walk" && CLIP.walk) return "walk";
+    if (CLIP.idle) return "idle";
+    return "walk";
+}
+
+function drawPeers(tint) {
+    for (let i = 0; i < PEERS.length; i++) {
+        const p = PEERS[i];
+        const dx = p.x - goat.px;
+        const dz = p.z - goat.pz;
+        if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) {
+            rl.drawCube(p.x, terrainHeight(p.x, p.z) + 0.06, p.z, 1.3, 0.012, 1.75, ambShadow);
+        }
+        poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);
+        rl.drawModelEx(p.model, p.x, terrainHeight(p.x, p.z) + groundOffset, p.z,
+            0, 1, 0, (p.yaw * 180) / Math.PI, 1, 1, 1, tint);
+    }
+}
+
+function drawPeersShadow() {
+    for (let i = 0; i < PEERS.length; i++) {
+        const p = PEERS[i];
+        const dx = p.x - goat.px;
+        const dz = p.z - goat.pz;
+        if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) continue;
+        rl.setModelShader(p.model, depthShader);
+        rl.setModelTexture(p.model, SHADOW_MAP_INDEX, -1);
+        poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);
+        rl.drawModelEx(p.model, p.x, terrainHeight(p.x, p.z) + groundOffset, p.z,
+            0, 1, 0, (p.yaw * 180) / Math.PI, 1, 1, 1, rl.WHITE);
+        rl.setModelTexture(p.model, SHADOW_MAP_INDEX, shadowColor);
+        rl.setModelShader(p.model, litShader);
+    }
+}
+
+// The local goat's snapshot, queued at a fraction of the frame rate when this
+// player is in a session. Fire-and-forget: a dropped one is replaced by the
+// next, which is why the channel is a datagram.
+function netMaybePublish() {
+    if (!netInSession()) return;
+    if (sceneFrames - netPoseFrame < NET_POSE_EVERY) return;
+    netPoseFrame = sceneFrames;
+    const round3 = function (v) { return Math.round(v * 1000) / 1000; };
+    netQueue({
+        type: "pose",
+        x: round3(goat.px),
+        z: round3(goat.pz),
+        yaw: round3(goat.yaw),
+        phase: round3(goat.phase),
+        speed: round3(curSpeed),
+        gait: mode,
+    });
+}
+
+// The remote goats as the harness sees them: names, render and target positions,
+// and the gait being played.
+function scenePeers() {
+    const out = [];
+    for (let i = 0; i < PEERS.length; i++) {
+        const p = PEERS[i];
+        out.push({ name: p.name, x: p.x, z: p.z, tx: p.tx, tz: p.tz, gait: p.gait });
+    }
+    return out;
 }

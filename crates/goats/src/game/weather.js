@@ -45,6 +45,33 @@ let swayTime = 0.0;
 let weatherText = "";
 let rngState = 0x9e3779b9;
 
+// Derive every scene PRNG from the session seed, so two players in the same
+// session run the same weather, food regrowth and bleat variety. Offline the
+// streams keep the constants above, which is what makes the harness stable.
+// Each stream is a separate xorshift draw from the seed rather than the seed
+// itself, so they do not move in lockstep.
+function sceneUseSeed(seed) {
+    let s = (seed | 0) || 1;
+    const next = function () {
+        s ^= s << 13;
+        s >>>= 0;
+        s ^= s >>> 17;
+        s ^= s << 5;
+        s >>>= 0;
+        return s;
+    };
+    rngState = next() || 1;
+    botRngState = next() || 1;
+    foodRngState = next() || 1;
+    audioSeed = next() || 1;
+}
+
+// The four stream states. A seam for the headless harness, which cannot read
+// lexical `let`s out of the scene realm directly.
+function sceneStreams() {
+    return { weather: rngState, bots: botRngState, food: foodRngState, audio: audioSeed };
+}
+
 // Deterministic PRNG (xorshift32) so a run's weather is reproducible and the
 // headless harness stays stable.
 function rnd() {

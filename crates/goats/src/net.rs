@@ -28,6 +28,17 @@ enum Command {
     Join { ticket: String, name: String },
     /// Say something. A leading `@name` whispers; the server routes it.
     Say { text: String },
+    /// The local goat's pose, sent on the unreliable transform channel. Queued
+    /// by the scene at a fraction of the frame rate, not every frame.
+    Pose {
+        x: f32,
+        z: f32,
+        yaw: f32,
+        phase: f32,
+        #[serde(default)]
+        speed: f32,
+        gait: String,
+    },
     /// Leave whatever session is running.
     Close,
 }
@@ -36,6 +47,8 @@ enum Command {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Event {
+    /// The session seed, which the world is built from. Sent once, first.
+    Session { seed: u32 },
     /// This player is hosting, under this name.
     Hosting { name: String },
     /// The ticket to hand out.
@@ -51,6 +64,11 @@ enum Event {
         from: String,
         text: String,
         direct: bool,
+    },
+    /// A remote goat moved. `name` is the server's canonical name.
+    Peer {
+        name: String,
+        state: session::PeerState,
     },
     /// The roster changed.
     Roster { names: Vec<String> },
@@ -144,6 +162,15 @@ impl Live {
             Live::Client(client) => client.say(text).await.err().map(|error| error.to_string()),
         }
     }
+
+    /// Sends this player's goat. Fire-and-forget: the channel is unreliable, so
+    /// a dropped snapshot is simply replaced by the next one.
+    async fn publish(&self, state: &session::PeerState) {
+        match self {
+            Live::Host(host) => host.publish(state).await,
+            Live::Client(client) => client.publish(state),
+        }
+    }
 }
 
 /// The runtime thread: run one command at a time, forwarding session events
@@ -196,6 +223,29 @@ async fn run(
                         },
                     ),
                 },
+                // Poses also need the live session, and are just as silent when
+                // there is none: the scene only queues them in a session.
+                Command::Pose {
+                    x,
+                    z,
+                    yaw,
+                    phase,
+                    speed,
+                    gait,
+                } => {
+                    if let Some(session) = live.as_ref() {
+                        session
+                            .publish(&session::PeerState {
+                                x,
+                                z,
+                                yaw,
+                                phase,
+                                speed,
+                                gait: parse_gait(&gait),
+                            })
+                            .await;
+                    }
+                }
                 other => live = start(other, live.take(), &events).await,
             },
             Outcome::Command(None) => break,
@@ -218,7 +268,7 @@ async fn start(
     match command {
         Command::Close => None,
         // Handled in `run`, which has the live session in hand.
-        Command::Say { .. } => None,
+        Command::Say { .. } | Command::Pose { .. } => None,
         Command::Host { name } => match session::Host::start(&name).await {
             Ok(host) => {
                 // The console shows the ticket, but it cannot be selected in a
@@ -275,12 +325,30 @@ async fn start(
 /// Maps a session event onto the line the scene understands.
 fn bridge(event: session::Event) -> Event {
     match event {
+        session::Event::Session { seed } => Event::Session { seed },
         session::Event::Joined { name } => Event::Joined { name },
         session::Event::Left { name } => Event::Left { name },
         session::Event::Chat { from, text, direct } => Event::Chat { from, text, direct },
+        session::Event::Peer { name, state } => Event::Peer { name, state },
         session::Event::Roster { names } => Event::Roster { names },
         session::Event::Notice(text) => Event::Notice { text },
         session::Event::Disconnected => Event::Disconnected,
+    }
+}
+
+/// The scene spells a gait with a string, because that is what `mode` is there;
+/// an unknown one falls back to idle rather than being an error, since a bad
+/// pose is not worth dropping the connection over.
+fn parse_gait(name: &str) -> session::Gait {
+    match name {
+        "walk" => session::Gait::Walk,
+        "trot" => session::Gait::Trot,
+        "run" => session::Gait::Run,
+        "jump" => session::Gait::Jump,
+        "sleep" => session::Gait::Sleep,
+        "eat" => session::Gait::Eat,
+        "dead" => session::Gait::Dead,
+        _ => session::Gait::Idle,
     }
 }
 
@@ -329,6 +397,31 @@ mod tests {
             Command::Say { text } => assert_eq!(text, "hi"),
             other => panic!("unexpected {other:?}"),
         }
+        match serde_json::from_str::<Command>(
+            r#"{"type":"pose","x":1.0,"z":2.0,"yaw":0.5,"phase":0.25,"speed":3.0,"gait":"run"}"#,
+        )
+        .expect("pose")
+        {
+            Command::Pose {
+                x,
+                z,
+                yaw,
+                phase,
+                speed,
+                gait,
+            } => {
+                assert_eq!((x, z, yaw, phase, speed), (1.0, 2.0, 0.5, 0.25, 3.0));
+                assert_eq!(gait, "run");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // `speed` may be omitted; the scene's placeholder before a gait exists.
+        assert!(
+            serde_json::from_str::<Command>(
+                r#"{"type":"pose","x":0,"z":0,"yaw":0,"phase":0,"gait":"idle"}"#
+            )
+            .is_ok()
+        );
         // An unknown intent is rejected, not silently ignored.
         assert!(serde_json::from_str::<Command>(r#"{"type":"nope"}"#).is_err());
     }
@@ -343,6 +436,9 @@ mod tests {
 
         let line = serde_json::to_string(&Event::Disconnected).expect("encode");
         assert_eq!(line, r#"{"type":"disconnected"}"#);
+
+        let line = serde_json::to_string(&Event::Session { seed: 7 }).expect("encode");
+        assert_eq!(line, r#"{"type":"session","seed":7}"#);
 
         let line = serde_json::to_string(&Event::Chat {
             from: "alice".to_string(),
@@ -383,6 +479,26 @@ mod tests {
             line,
             r#"{"type":"chat","from":"alice","text":"psst","direct":true}"#
         );
+
+        let line =
+            serde_json::to_string(&bridge(session::Event::Session { seed: 7 })).expect("encode");
+        assert_eq!(line, r#"{"type":"session","seed":7}"#);
+
+        let line = serde_json::to_string(&bridge(session::Event::Peer {
+            name: "alice".to_string(),
+            state: session::PeerState {
+                x: 1.0,
+                z: 2.0,
+                yaw: 0.0,
+                phase: 0.0,
+                speed: 0.0,
+                gait: session::Gait::Idle,
+            },
+        }))
+        .expect("encode");
+        assert!(line.contains(r#""type":"peer""#), "{line}");
+        assert!(line.contains(r#""name":"alice""#), "{line}");
+        assert!(line.contains(r#""gait":"idle""#), "{line}");
     }
 
     /// Waits for the next event containing `wanted`. Events that do not match
@@ -446,5 +562,19 @@ mod tests {
         host.send(r#"{"type":"say","text":"@alice psst"}"#);
         let whisper = wait_for(&mut client, "\"direct\":true");
         assert!(whisper.contains("\"text\":\"psst\""), "{whisper}");
+
+        // A pose crosses on the datagram channel, not a stream, and the host's
+        // scene sees the joiner's goat under the canonical name. Datagrams are
+        // unreliable, so a small burst stands in for the stream a real client
+        // sends.
+        for _ in 0..10 {
+            client.send(
+                r#"{"type":"pose","x":1.5,"z":-2.0,"yaw":0.25,"phase":0.5,"speed":2.0,"gait":"trot"}"#,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let peer = wait_for(&mut host, "\"type\":\"peer\"");
+        assert!(peer.contains("\"name\":\"alice\""), "{peer}");
+        assert!(peer.contains("\"gait\":\"trot\""), "{peer}");
     }
 }

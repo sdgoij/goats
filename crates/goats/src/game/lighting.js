@@ -437,6 +437,7 @@ function renderShadowMap() {
     setMatrixOn(depthShader, depthUniforms.lightVP, LIGHT_MATRIX);
     drawModelGoat(goat, rl.WHITE);
     drawBotsShadow();
+    drawPeersShadow();
     rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
     rl.setModelShader(model, litShader);
     rl.endMode3D();

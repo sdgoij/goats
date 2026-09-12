@@ -611,6 +611,7 @@ function sceneFrame() {
         curClipName = info !== null && info !== undefined ? rl.modelAnimationName(model, info.index) : "";
     }
     updateBots(dt);
+    updatePeers(dt);
     resolveGoatCollisions();
     // The heightfield follows the goat: rebuild the grid if it has left the one
     // it was built around, before either the shadow pass or the visible one reads
@@ -666,6 +667,7 @@ function sceneFrame() {
             drawEyes();
         }
         drawBots(rl.WHITE);
+        drawPeers(rl.WHITE);
         if (shadowMode === SHADOW_MAP && shadowStrengthNow > 0.001) lightingText = "lit + shadow map";
         else if (shadowMode === SHADOW_PLANAR && LIGHT_DIR[1] > 0.06) lightingText = "lit + planar shadow";
         else lightingText = "lit";
@@ -681,6 +683,7 @@ function sceneFrame() {
             drawGoat(goat);
         }
         drawBots(ambTint);
+        drawPeers(ambTint);
         lightingText = litShader < 0 ? "cube shader" : "off";
     }
     rl.endMode3D();

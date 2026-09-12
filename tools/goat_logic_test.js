@@ -620,6 +620,43 @@ try {
     chatTest.error = String(e);
 }
 
+// World sync (M12): the seed handshake re-keys the streams, the local pose goes
+// out on the datagram cadence, and peer snapshots become remote goats.
+let syncTest = {};
+try {
+    // A session seed re-keys every stream, reproducibly, and a different seed
+    // builds a different world.
+    const before = sandbox.sceneStreams();
+    sandbox.sceneNetEvent('{"type":"session","seed":4242}');
+    const a = sandbox.sceneStreams();
+    sandbox.sceneNetEvent('{"type":"session","seed":4242}');
+    const b = sandbox.sceneStreams();
+    sandbox.sceneNetEvent('{"type":"session","seed":99}');
+    const c = sandbox.sceneStreams();
+    syncTest.seeded = a.weather !== before.weather && a.weather === b.weather &&
+        a.bots === b.bots && a.food === b.food && a.audio === b.audio;
+    syncTest.seedDiffers = c.weather !== a.weather;
+
+    // In a session the local goat is published, once per throttle window and
+    // not again in the same frame.
+    sandbox.sceneNetEvent('{"type":"hosting","name":"bob"}');
+    const first = sandbox.sceneNetDrain();
+    syncTest.pose = first.indexOf('"type":"pose"') >= 0 && first.indexOf('"gait"') >= 0;
+    syncTest.poseThrottled = sandbox.sceneNetDrain().indexOf('"type":"pose"') < 0;
+
+    // A snapshot becomes a goat; a later one moves it; leaving removes it.
+    sandbox.sceneNetEvent('{"type":"peer","name":"alice","state":{"x":3,"z":4,"yaw":0,"phase":0,"speed":0,"gait":"idle"}}');
+    sandbox.sceneNetEvent('{"type":"peer","name":"alice","state":{"x":5,"z":6,"yaw":1,"phase":0.5,"speed":2,"gait":"trot"}}');
+    const peers = sandbox.scenePeers();
+    syncTest.peerAdded = peers.length === 1 && peers[0].name === 'alice' &&
+        peers[0].tx === 5 && peers[0].tz === 6 && peers[0].gait === 'trot';
+    sandbox.sceneNetEvent('{"type":"left","name":"alice"}');
+    syncTest.peerLeft = sandbox.scenePeers().length === 0;
+    sandbox.sceneNetEvent('{"type":"disconnected"}');
+} catch (e) {
+    syncTest.error = String(e);
+}
+
 // Console (M9): the snapshots taken at the scripted frames, and a shorthand.
 const cp = (i) => consoleProbe[i] ||
     { x: null, z: null, state: { open: false, input: '', lines: [], history: [] }, ui: '' };
@@ -784,6 +821,14 @@ const checks = [
     ['slash commands still reach commands', chatTest.slashCommand, chatTest],
     ['bare text is an error offline', chatTest.offline, chatTest],
     ['chat lines print, whispers marked', chatTest.printed, chatTest],
+    // World sync (M12): seed handshake and the snapshot channel, scene end.
+    ['a session seed re-keys every stream', syncTest.seeded, syncTest],
+    ['a different seed builds a different world', syncTest.seedDiffers, syncTest],
+    ['a session publishes the goat pose', syncTest.pose, syncTest],
+    ['the pose channel is throttled per frame', syncTest.poseThrottled, syncTest],
+    ['a peer snapshot becomes a remote goat', syncTest.peerAdded, syncTest],
+    ['leaving removes the remote goat', syncTest.peerLeft, syncTest],
+    ['no world sync errors', syncTest.error === undefined, syncTest.error],
 ];
 
 const failed = checks.filter((c) => !c[1]);
