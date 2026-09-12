@@ -742,9 +742,10 @@ crates/server    bin `goatsd`: session + a headless frame loop
 **Transport.** `iroh`, pinned exactly (1.2.0 at the time of writing). One ALPN
 per major protocol version (`goats/1`) so a mismatched build fails cleanly
 instead of deserialising garbage. Joining is copy-pasting an `iroh-tickets`
-ticket. `presets::N0` reaches peers over n0's public relays with DNS lookup;
-self-hosting `iroh-relay` or LAN-only direct addresses are later options (see
-the open questions). `bevy_iroh` is worth **trialling** and pinning — it
+ticket. LAN/direct is the default and contacts no third party;
+`GOATS_INTERNET=1` swaps the preset to `presets::N0`, which reaches peers over
+n0's public relays with DNS lookup. Self-hosting `iroh-relay` remains a later
+option (see the open questions). `bevy_iroh` is worth **trialling** and pinning — it
 advertises replication, rooms, presence and voice, which is exactly the shape we
 want — but it is Bevy-shaped and days old, so plain `iroh` plus our own
 `session` layer is the fallback, not a rewrite.
@@ -1059,10 +1060,13 @@ indicator on the roster. Uplink is the limit: full mesh is ~24–32 kbps upstrea
    (simple, low-latency, trusts the client) is what we ship first;
    server-authoritative movement, prediction and reconciliation wait until the
    sandbox actually needs them.
-10. **Reach.** Internet play out of the box via `presets::N0` (n0's public
-    relays plus DNS), or LAN/direct-only to start and no third-party
-    infrastructure at all? The first is frictionless, the second has no external
-    dependency.
+10. ~~**Reach.**~~ **Settled:** LAN/direct is the default and needs no third
+    party at all; `GOATS_INTERNET=1` swaps the preset to `presets::N0` (n0's
+    public relays plus DNS discovery) for internet reach. Worth knowing: a
+    default ticket is LAN-only *by construction*, because `Minimal` disables
+    relaying and address lookup, so the ticket's addresses are local ones. The n0
+    path is implemented but unverified — it needs a run across two real networks,
+    and it makes the endpoint's addresses resolvable through n0's DNS.
 11. **Bots and weather in multiplayer.** Server-owned (recommended — bots
     collide with players, so they diverge the moment anyone interacts) or
     cosmetic per client?

@@ -167,9 +167,13 @@ control characters, so a session cannot be flooded by one player. Player
 movement is client-authoritative: the host relays each player's own goat rather
 than simulating it, while the bots it owns outright.
 
-It is LAN-only for now: the endpoint binds local sockets with no relay, so it
-reaches other machines on the same network and not the wider internet. Internet
-play (n0's relays and hole punching) is a one-line change in the session crate.
+By default the endpoint binds local sockets with no relay, so it reaches other
+machines on the same network and not the wider internet — and, since that preset
+disables relaying and address lookup too, a ticket only carries local addresses.
+Set `GOATS_INTERNET=1` on every participant to use n0's public relays plus DNS
+discovery instead, which is what lets a ticket pasted across networks dial. That
+path is implemented but unverified: it needs two real networks to test, and it
+makes an endpoint's addresses resolvable through n0's DNS.
 
 The sky and the meadow are the server's as well: the weather state machine, its
 easing, the day/night clock, the PRNG streams and the eaten grass all run only on
