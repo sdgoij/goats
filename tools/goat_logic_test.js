@@ -643,6 +643,9 @@ try {
     const first = sandbox.sceneNetDrain();
     syncTest.pose = first.indexOf('"type":"pose"') >= 0 && first.indexOf('"gait"') >= 0;
     syncTest.poseThrottled = sandbox.sceneNetDrain().indexOf('"type":"pose"') < 0;
+    // A host also owns the world and publishes its bots.
+    syncTest.world = first.indexOf('"type":"world"') >= 0 &&
+        first.indexOf('"bots"') >= 0;
 
     // A snapshot becomes a goat; a later one moves it; leaving removes it.
     sandbox.sceneNetEvent('{"type":"peer","name":"alice","state":{"x":3,"z":4,"yaw":0,"phase":0,"speed":0,"gait":"idle"}}');
@@ -653,6 +656,20 @@ try {
     sandbox.sceneNetEvent('{"type":"left","name":"alice"}');
     syncTest.peerLeft = sandbox.scenePeers().length === 0;
     sandbox.sceneNetEvent('{"type":"disconnected"}');
+
+    // A client mirrors the server's bots and does not publish a world of its own.
+    sandbox.sceneNetEvent('{"type":"welcome","name":"eve"}');
+    syncTest.clientNotLocal = sandbox.netWorldLocal() === false;
+    sandbox.sceneNetEvent('{"type":"world","bots":[' +
+        '{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0},' +
+        '{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2}]}');
+    const mirrored = sandbox.sceneWorldBots();
+    syncTest.mirror = mirrored.length === 2 && mirrored[0].x === 9 &&
+        mirrored[1].z === -9 && mirrored[1].gait === 'idle';
+    syncTest.clientIsNotAuthority =
+        sandbox.sceneNetDrain().indexOf('"type":"world"') < 0;
+    sandbox.sceneNetEvent('{"type":"disconnected"}');
+    syncTest.worldLocalOffline = sandbox.netWorldLocal() === true;
 } catch (e) {
     syncTest.error = String(e);
 }
@@ -828,6 +845,11 @@ const checks = [
     ['the pose channel is throttled per frame', syncTest.poseThrottled, syncTest],
     ['a peer snapshot becomes a remote goat', syncTest.peerAdded, syncTest],
     ['leaving removes the remote goat', syncTest.peerLeft, syncTest],
+    ['a host publishes its bots', syncTest.world, syncTest],
+    ['a client mirrors the server bots', syncTest.mirror, syncTest],
+    ['a client does not simulate or publish the bots',
+        syncTest.clientNotLocal && syncTest.clientIsNotAuthority, syncTest],
+    ['offline simulates the bots locally', syncTest.worldLocalOffline, syncTest],
     ['no world sync errors', syncTest.error === undefined, syncTest.error],
 ];
 

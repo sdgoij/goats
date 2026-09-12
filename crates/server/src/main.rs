@@ -71,6 +71,8 @@ fn report(event: Event) {
         // Positions arrive many times a second; logging each would bury the
         // session log, so they are not reported.
         Event::Peer { .. } => return,
+        // The lobby has no world of its own to report yet.
+        Event::World { .. } => return,
         Event::Disconnected => "disconnected".to_string(),
     };
     println!("{line}");

@@ -28,9 +28,9 @@ use proto::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
 use tokio::sync::{Mutex, mpsc};
 
 // The wire types the session exchanges, re-exported so an embedding host (the
-// client's network bridge) can name a pose without depending on `proto`
-// directly.
-pub use proto::{Gait, PeerFrame, PeerState};
+// client's network bridge) can name a pose or a world without depending on
+// `proto` directly.
+pub use proto::{BotState, Datagram, Gait, PeerFrame, PeerState, WorldState};
 
 /// The ALPN, carrying the major wire version so a peer built against a
 /// different protocol fails the QUIC handshake instead of misreading messages.
@@ -59,6 +59,8 @@ pub enum Event {
     /// A remote goat moved. `name` is the server's canonical name, not whatever
     /// the datagram claimed.
     Peer { name: String, state: PeerState },
+    /// The server's bots, for a client to mirror instead of simulating.
+    World { bots: Vec<BotState> },
     /// A line to print in the console.
     Notice(String),
     /// The connection to the host ended (client side only).
@@ -470,16 +472,35 @@ impl Host {
         if !state.is_finite() {
             return;
         }
-        let frame = PeerFrame {
+        let datagram = Datagram::Peer(PeerFrame {
             name: self.name.clone(),
             state: state.clone(),
-        };
-        let Ok(payload) = proto::encode(&frame) else {
+        });
+        self.broadcast(datagram).await;
+    }
+
+    /// Broadcasts the server's bots. Only the host may send these, which is what
+    /// makes the world authoritative: a client mirrors what it is told and does
+    /// not simulate.
+    pub async fn publish_world(&self, world: &WorldState) {
+        if !world.is_finite() {
+            return;
+        }
+        self.broadcast(Datagram::World(world.clone())).await;
+    }
+
+    /// Sends one datagram to every connected player. Fire-and-forget, and
+    /// silently dropped when it exceeds the datagram budget.
+    async fn broadcast(&self, datagram: Datagram) {
+        let Ok(payload) = proto::encode(&datagram) else {
             return;
         };
-        let datagram = Bytes::from(payload);
+        if payload.len() > proto::MAX_DATAGRAM_BYTES {
+            return;
+        }
+        let bytes = Bytes::from(payload);
         for connection in self.server.lock().await.every() {
-            let _ = connection.send_datagram(datagram.clone());
+            let _ = connection.send_datagram(bytes.clone());
         }
     }
 
@@ -606,10 +627,13 @@ async fn handle_connection(
             if bytes.len() > proto::MAX_DATAGRAM_BYTES {
                 continue;
             }
-            let Ok(state) = proto::decode::<PeerState>(&bytes) else {
+            // Only a player's own goat may come up from a client. A client that
+            // sends world state has it dropped rather than relayed, so it cannot
+            // move the bots.
+            let Ok(Datagram::Peer(frame)) = proto::decode::<Datagram>(&bytes) else {
                 continue;
             };
-            if !state.is_finite() {
+            if !frame.state.is_finite() {
                 continue;
             }
             // The host is a player too, so its scene sees the peer even though
@@ -617,17 +641,19 @@ async fn handle_connection(
             if relay_events
                 .send(Event::Peer {
                     name: relay_name.clone(),
-                    state: state.clone(),
+                    state: frame.state.clone(),
                 })
                 .is_err()
             {
                 break;
             }
-            let frame = PeerFrame {
+            // Re-tag with the name this connection was assigned; the name in the
+            // client's frame is ignored.
+            let tagged = Datagram::Peer(PeerFrame {
                 name: relay_name.clone(),
-                state,
-            };
-            let Ok(payload) = proto::encode(&frame) else {
+                state: frame.state,
+            });
+            let Ok(payload) = proto::encode(&tagged) else {
                 continue;
             };
             let datagram = Bytes::from(payload);
@@ -770,19 +796,27 @@ impl Client {
                 if bytes.len() > proto::MAX_DATAGRAM_BYTES {
                     continue;
                 }
-                let Ok(frame) = proto::decode::<PeerFrame>(&bytes) else {
+                let Ok(datagram) = proto::decode::<Datagram>(&bytes) else {
                     continue;
                 };
-                if !frame.state.is_finite() {
-                    continue;
-                }
-                if snapshot_events
-                    .send(Event::Peer {
-                        name: frame.name,
-                        state: frame.state,
-                    })
-                    .is_err()
-                {
+                let event = match datagram {
+                    Datagram::Peer(frame) => {
+                        if !frame.state.is_finite() {
+                            continue;
+                        }
+                        Event::Peer {
+                            name: frame.name,
+                            state: frame.state,
+                        }
+                    }
+                    Datagram::World(world) => {
+                        if !world.is_finite() {
+                            continue;
+                        }
+                        Event::World { bots: world.bots }
+                    }
+                };
+                if snapshot_events.send(event).is_err() {
                     break;
                 }
             }
@@ -868,14 +902,22 @@ impl Client {
 
     /// Sends the local player's goat to the host, which relays it to everyone
     /// else. Datagrams, so a failure is not worth reporting: the next snapshot
-    /// is along in a few milliseconds.
+    /// is along in a few milliseconds. The name is left blank -- the server
+    /// stamps the canonical one on the way through.
     pub fn publish(&self, state: &PeerState) {
         if !state.is_finite() {
             return;
         }
-        let Ok(payload) = proto::encode(state) else {
+        let datagram = Datagram::Peer(PeerFrame {
+            name: String::new(),
+            state: state.clone(),
+        });
+        let Ok(payload) = proto::encode(&datagram) else {
             return;
         };
+        if payload.len() > proto::MAX_DATAGRAM_BYTES {
+            return;
+        }
         let _ = self.connection.send_datagram(Bytes::from(payload));
     }
 
@@ -1076,6 +1118,58 @@ mod tests {
                 return event;
             }
         }
+    }
+
+    /// The next server world snapshot, skipping seed, roster and peer noise.
+    async fn client_world(client: &mut Client) -> Event {
+        loop {
+            if let event @ Event::World { .. } = client.next_event().await.expect("an event") {
+                return event;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_servers_world_reaches_its_clients() {
+        within(async {
+            let host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+
+            let world = WorldState {
+                bots: vec![
+                    BotState {
+                        index: 0,
+                        x: 1.0,
+                        z: 2.0,
+                        yaw: 0.5,
+                        phase: 0.25,
+                        gait: proto::Gait::Walk,
+                        variant: 0,
+                    },
+                    BotState {
+                        index: 1,
+                        x: -3.0,
+                        z: 0.0,
+                        yaw: 0.0,
+                        phase: 0.75,
+                        gait: proto::Gait::Idle,
+                        variant: 2,
+                    },
+                ],
+            };
+            for _ in 0..10 {
+                host.publish_world(&world).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            match client_world(&mut alice).await {
+                Event::World { bots } => assert_eq!(bots, world.bots),
+                other => panic!("expected a world, got {other:?}"),
+            }
+
+            alice.close().await;
+            host.close().await;
+        })
+        .await;
     }
 
     #[tokio::test]

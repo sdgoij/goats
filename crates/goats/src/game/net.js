@@ -28,6 +28,7 @@ function netQueue(intent) {
 // place that runs exactly once a frame.
 function sceneNetDrain() {
     netMaybePublish();
+    netMaybePublishWorld();
     if (netOutbox.length === 0) return "";
     const text = netOutbox.join("\n");
     netOutbox = [];
@@ -119,6 +120,7 @@ function sceneNetEvent(line) {
             // Publish promptly now that a session exists, rather than waiting
             // for the next throttle window.
             netPoseFrame = -NET_POSE_EVERY;
+            netWorldFrame = -NET_WORLD_EVERY;
             consoleNet("net: hosting as " + netName);
             break;
         case "ticket":
@@ -142,6 +144,10 @@ function sceneNetEvent(line) {
         case "peer":
             // Positions arrive many times a second, so they are not printed.
             netPeerState(String(event.name), event.state);
+            break;
+        case "world":
+            // The server's bots. Not printed either.
+            netApplyWorld(event.bots);
             break;
         case "chat":
             consoleNet("net: " + (event.direct ? "dm " : "") +
@@ -177,8 +183,10 @@ function sceneNetEvent(line) {
 
 const NET_POSE_EVERY = 3;    // frames between snapshots (~20 Hz at 60 fps)
 const NET_PEER_SMOOTH = 12;  // how fast a remote goat converges, per second
+const NET_WORLD_EVERY = 6;   // frames between world snapshots (~10 Hz at 60 fps)
 let PEERS = [];
 let netPoseFrame = -NET_POSE_EVERY;
+let netWorldFrame = -NET_WORLD_EVERY;
 
 function netPeersClear() {
     if (typeof rl.unloadModel === "function") {
@@ -301,16 +309,97 @@ function netMaybePublish() {
     if (!netInSession()) return;
     if (sceneFrames - netPoseFrame < NET_POSE_EVERY) return;
     netPoseFrame = sceneFrames;
-    const round3 = function (v) { return Math.round(v * 1000) / 1000; };
     netQueue({
         type: "pose",
-        x: round3(goat.px),
-        z: round3(goat.pz),
-        yaw: round3(goat.yaw),
-        phase: round3(goat.phase),
-        speed: round3(curSpeed),
+        x: netRound3(goat.px),
+        z: netRound3(goat.pz),
+        yaw: netRound3(goat.yaw),
+        phase: netRound3(goat.phase),
+        speed: netRound3(curSpeed),
         gait: mode,
     });
+}
+
+// ---- the server's world ----------------------------------------------------
+//
+// The bots collide with players, so they diverge the moment two players touch
+// them. The host is therefore the only side that simulates them, and everyone
+// else mirrors what it sends: `netWorldLocal` is what the frame loop gates the
+// bot update on, and `netApplyWorld` is the mirror end.
+
+function netRound3(v) {
+    return Math.round(v * 1000) / 1000;
+}
+
+// Offline and the host simulate the bots; a client does not.
+function netWorldLocal() {
+    return netMode !== "client";
+}
+
+// A one-shot gait is posed from its own clock when it is drawn, so the wire
+// carries the fraction through the clip rather than the bot's private timer.
+function netBotPhase(b) {
+    if (b.mode === "jump") return Math.min(b.jumpTime / b.jumpDur, 1);
+    if (b.mode === "eat") return Math.min(b.eatTime / b.eatDur, 1);
+    return b.phase;
+}
+
+// The bots as the wire sees them. `index` picks the coat and scale from the
+// shared table, so only what moves is sent.
+function sceneWorldBots() {
+    const out = [];
+    for (let i = 0; i < BOTS.length; i++) {
+        const b = BOTS[i];
+        const role = botRole(b);
+        const variant = b.var[role];
+        out.push({
+            index: i,
+            x: netRound3(b.x),
+            z: netRound3(b.z),
+            yaw: netRound3(b.yaw),
+            phase: netRound3(netBotPhase(b)),
+            gait: b.mode,
+            variant: variant === undefined ? 0 : variant,
+        });
+    }
+    return out;
+}
+
+function netMaybePublishWorld() {
+    if (netMode !== "host") return;   // only the host owns the world
+    if (sceneFrames - netWorldFrame < NET_WORLD_EVERY) return;
+    netWorldFrame = sceneFrames;
+    netQueue({ type: "world", bots: sceneWorldBots() });
+}
+
+// Mirror the server's bots: match the count, then move each one into place. A
+// client never runs the bot AI, so this is the whole of its bot state.
+function netApplyWorld(bots) {
+    if (!Array.isArray(bots)) return;
+    if (BOTS.length !== bots.length) setHerdSize(bots.length);
+    for (let i = 0; i < bots.length && i < BOTS.length; i++) {
+        const s = bots[i];
+        const b = BOTS[i];
+        b.x = s.x;
+        b.z = s.z;
+        b.yaw = s.yaw;
+        b.mode = s.gait;
+        b.phase = s.phase;
+        // A one-shot gait is posed from its own clock in `drawBots`, so point
+        // that clock at the fraction the server resolved.
+        if (s.gait === "jump") {
+            b.jumpDur = 1;
+            b.jumpTime = s.phase;
+        } else if (s.gait === "eat") {
+            b.eatDur = 1;
+            b.eatTime = s.phase;
+        }
+        const v = s.variant | 0;
+        b.var.idle = v;
+        b.var.sleep = v;
+        b.var.jump = v;
+        b.var.eat = v;
+    }
 }
 
 // The remote goats as the harness sees them: names, render and target positions,

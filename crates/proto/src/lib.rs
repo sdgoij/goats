@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// The wire version, bumped whenever a message changes shape. It is also the
 /// ALPN suffix, so a peer with a different major version fails the QUIC
 /// handshake before it reaches any of this.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -145,6 +145,54 @@ impl PeerState {
 pub struct PeerFrame {
     pub name: String,
     pub state: PeerState,
+}
+
+/// One server-owned bot goat. `index` selects its coat and scale from the shared
+/// `BOT_SPEC` table, so only what moves is on the wire. `phase` is the resolved
+/// animation clock: for a one-shot gait (`jump`, `eat`) the server sends the
+/// fraction through that clip rather than the raw timer, so a receiver poses it
+/// without knowing the bot's private clocks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BotState {
+    pub index: u16,
+    pub x: f32,
+    pub z: f32,
+    pub yaw: f32,
+    pub phase: f32,
+    pub gait: Gait,
+    /// Which idle/jump/eat variant the bot is playing, so its clip cycles too.
+    pub variant: i32,
+}
+
+impl BotState {
+    pub fn is_finite(&self) -> bool {
+        self.x.is_finite() && self.z.is_finite() && self.yaw.is_finite() && self.phase.is_finite()
+    }
+}
+
+/// The server's world, as far as a client has to mirror it: the bots. Weather is
+/// still seed-shared and simulated per client for now; it joins this once the
+/// server owns it in full.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldState {
+    pub bots: Vec<BotState>,
+}
+
+impl WorldState {
+    pub fn is_finite(&self) -> bool {
+        self.bots.iter().all(BotState::is_finite)
+    }
+}
+
+/// One datagram. The transform channel carries two kinds of traffic -- a
+/// player's own goat, relayed between peers, and the server's bots -- so the
+/// payload is tagged. Only the server may send [`Datagram::World`]; a client
+/// that sends one has it dropped rather than forwarded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Datagram {
+    Peer(PeerFrame),
+    World(WorldState),
 }
 
 /// What can go wrong encoding, framing or decoding a message.
@@ -408,6 +456,65 @@ mod tests {
         state.x = 0.0;
         state.z = f32::INFINITY;
         assert!(!state.is_finite());
+    }
+
+    #[test]
+    fn world_and_datagrams_round_trip() {
+        let world = WorldState {
+            bots: vec![
+                BotState {
+                    index: 0,
+                    x: 1.0,
+                    z: -1.0,
+                    yaw: 0.0,
+                    phase: 0.5,
+                    gait: Gait::Idle,
+                    variant: 2,
+                },
+                BotState {
+                    index: 1,
+                    x: 2.0,
+                    z: 3.0,
+                    yaw: 1.0,
+                    phase: 0.25,
+                    gait: Gait::Eat,
+                    variant: 1,
+                },
+            ],
+        };
+        let datagram = Datagram::World(world.clone());
+        let bytes = encode(&datagram).expect("encode");
+        assert_eq!(decode::<Datagram>(&bytes).expect("decode"), datagram);
+        assert!(world.is_finite());
+
+        let peer = Datagram::Peer(PeerFrame {
+            name: "alice".to_string(),
+            state: PeerState {
+                x: 0.0,
+                z: 0.0,
+                yaw: 0.0,
+                phase: 0.0,
+                speed: 0.0,
+                gait: Gait::Walk,
+            },
+        });
+        let bytes = encode(&peer).expect("encode");
+        assert_eq!(decode::<Datagram>(&bytes).expect("decode"), peer);
+
+        // A hostile bot position is caught rather than relayed into every
+        // client's renderer.
+        let broken = WorldState {
+            bots: vec![BotState {
+                index: 0,
+                x: f32::NAN,
+                z: 0.0,
+                yaw: 0.0,
+                phase: 0.0,
+                gait: Gait::Idle,
+                variant: 0,
+            }],
+        };
+        assert!(!broken.is_finite());
     }
 
     #[test]

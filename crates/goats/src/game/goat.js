@@ -610,7 +610,9 @@ function sceneFrame() {
         const info = playerClip(curRole);
         curClipName = info !== null && info !== undefined ? rl.modelAnimationName(model, info.index) : "";
     }
-    updateBots(dt);
+    // The bots are server-owned in a session: only the host simulates them, and
+    // a client mirrors the snapshots it receives instead.
+    if (netWorldLocal()) updateBots(dt);
     updatePeers(dt);
     resolveGoatCollisions();
     // The heightfield follows the goat: rebuild the grid if it has left the one
