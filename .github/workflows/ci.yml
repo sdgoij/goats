@@ -41,7 +41,7 @@ jobs:
           node-version: 22
       - name: Syntax-check every scene part
         shell: bash
-        run: for f in src/game/*.js tools/*.js; do node --check "$f"; done
+        run: for f in crates/goats/src/game/*.js tools/*.js; do node --check "$f"; done
       - name: Run the goat logic harness
         run: node tools/goat_logic_test.js
 
@@ -93,6 +93,11 @@ jobs:
 
       - name: Build
         run: cargo build --release
+
+      # The networking crates carry their own tests (the transport's loopback
+      # session); the scene is covered by the harness above.
+      - name: Test the workspace
+        run: cargo test --workspace
 
       # Ship the licence and the readme alongside the self-contained binary.
       - name: Package (Windows)

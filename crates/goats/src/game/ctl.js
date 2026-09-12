@@ -1,9 +1,10 @@
 // Part 11/13 of the goat scene: the stdin command channel.
 // ---- control channel ------------------------------------------------------
 //
-// The host (`src/main.rs`) reads a line from stdin, calls `sceneCommand(line)`
-// and prints the returned string to stdout -- one line in, one line out. All
-// engine logging goes to stderr, so stdout carries command responses only.
+// The host (`crates/goats/src/main.rs`) reads a line from stdin, calls
+// `sceneCommand(line)` and prints the returned string to stdout -- one line in,
+// one line out. All engine logging goes to stderr, so stdout carries command
+// responses only.
 //
 // Commands are dispatched between frames, so each one takes effect at a frame
 // boundary. Every response is `ok ...` or `error ...`; queries return JSON

@@ -315,9 +315,10 @@ function drawHud(move) {
 
 // ---- host-driven frame loop ----------------------------------------------
 //
-// The host (`src/main.rs`) owns the loop so it can interleave commands from
-// stdin between frames: it calls `sceneInit()` once, then `sceneFrame()` until
-// it returns false, then `sceneShutdown()`. `run()` is the standalone driver
+// The host (`crates/goats/src/main.rs`) owns the loop so it can interleave
+// commands from stdin between frames: it calls `sceneInit()` once, then
+// `sceneFrame()` until it returns false, then `sceneShutdown()`. `run()` is the
+// standalone driver
 // kept for the headless harness (`tools/goat_logic_test.js`).
 
 // ---- loading -------------------------------------------------------------

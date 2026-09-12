@@ -5,9 +5,9 @@
 // natively and stream, so the long wind/rain files cost almost no memory.
 // Bleats and thunder are short `Sound` effects, fired with a little pitch
 // variation so repeats do not sound identical. Every path below is embedded in
-// the binary by the host (`src/main.rs`), which registers each name with
-// `register_raylib_asset`; the loader looks the bytes up by name, so the game
-// needs no files on disk and a missing name just falls back to `sfx/`.
+// the binary by the host (`crates/goats/src/main.rs`), which registers each name
+// with `register_raylib_asset`; the loader looks the bytes up by name, so the
+// game needs no files on disk and a missing name just falls back to `sfx/`.
 
 const MUSIC_PATH = "sfx/jkstudios-rage-2-187959.mp3";
 const RAIN_PATH = "sfx/WE Heavy Outside Rain 1.ogg";

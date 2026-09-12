@@ -3,7 +3,8 @@
 //! This is the only crate that depends on iroh and tokio. It owns dialing,
 //! accepting and framing; the scene never touches it directly, because the JS
 //! engine has no sockets. The embedding host drives this crate and bridges it
-//! to the scene over the line-based command channel (see `src/main.rs`).
+//! to the scene over the line-based command channel (see
+//! `crates/goats/src/main.rs`).
 //!
 //! Nothing here knows about goats yet -- that is `proto`'s job. This module is
 //! the transport: bind an endpoint, hand out its address, dial one, and move

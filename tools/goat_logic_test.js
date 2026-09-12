@@ -1,4 +1,4 @@
-// Headless harness for the scene in src/game/: stubs the `rl` surface, drives a scripted
+// Headless harness for the scene in crates/goats/src/game/: stubs the `rl` surface, drives a scripted
 // input timeline, and checks the clip each frame plus the reported stats.
 //
 //   node tools/goat_logic_test.js
@@ -260,13 +260,13 @@ const sandbox = {
 };
 vm.createContext(sandbox);
 
-// src/main.rs is the single source of truth for the running order: the host
-// joins the parts with `concat!`, and we parse that same list here so the two
-// can never drift apart.
-const gameDir = path.join(__dirname, '..', 'src', 'game');
-const mainRs = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.rs'), 'utf8');
+// crates/goats/src/main.rs is the single source of truth for the running order:
+// the host joins the parts with `concat!`, and we parse that same list here so
+// the two can never drift apart.
+const gameDir = path.join(__dirname, '..', 'crates', 'goats', 'src', 'game');
+const mainRs = fs.readFileSync(path.join(__dirname, '..', 'crates', 'goats', 'src', 'main.rs'), 'utf8');
 const parts = [...mainRs.matchAll(/include_str!\("game\/([^"]+)"\)/g)].map((m) => m[1]);
-if (parts.length === 0) throw new Error('no src/game parts found in src/main.rs');
+if (parts.length === 0) throw new Error('no scene parts found in crates/goats/src/main.rs');
 const source = parts.map((name) => fs.readFileSync(path.join(gameDir, name), 'utf8')).join('');
 let thrown = null;
 let defaultSettings = {};
@@ -275,8 +275,9 @@ let readyBefore = null;
 let hasLoadStep = false;
 try {
     // The scene no longer self-drives (the host owns the loop -- see
-    // src/main.rs), so evaluate it, read the settings defaults before the
-    // scripted input (which presses L and friends), then start the driver.
+    // crates/goats/src/main.rs), so evaluate it, read the settings defaults
+    // before the scripted input (which presses L and friends), then start the
+    // driver.
     vm.runInContext(source, sandbox, { filename: 'game.js' });
     readyBefore = typeof sandbox.sceneReady === 'function' ? sandbox.sceneReady() : null;
     hasLoadStep = typeof sandbox.sceneLoadStep === 'function';
@@ -331,8 +332,8 @@ const botIdles = [...botClipNames].filter((n) => n.indexOf('GoatIdle') === 0);
 const playerIdles = [...new Set(timeline.map((r) => r.clip))].filter((n) => n && n.indexOf('GoatIdle') === 0);
 
 // Embedding drift check: every asset the scene asks for must appear in the
-// `ASSETS` table in src/main.rs, otherwise the binary silently falls back to a
-// file on disk and stops being self-contained.
+// `ASSETS` table in crates/goats/src/main.rs, otherwise the binary silently
+// falls back to a file on disk and stops being self-contained.
 const embeddedNames = new Set(
     [...mainRs.matchAll(/\(\s*"([^"]+)"\s*,\s*include_bytes!/g)].map((m) => m[1]));
 const requestedAssets = [...new Set([...modelPaths, ...musicLoads, ...soundLoads])];

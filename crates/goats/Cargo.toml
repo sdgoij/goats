@@ -1,0 +1,9 @@
+[package]
+name = "goats"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+slag = { git = "https://github.com/sdgoij/slag", features = ["jit", "raylib", "raygui"] }
+# slag = { path = "../../slag/crates/slag", features = ["jit", "raylib", "raygui"] }

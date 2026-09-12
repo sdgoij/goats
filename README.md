@@ -7,9 +7,10 @@ A JavaScript-driven 3D goat sandbox. A rigged, animated goat authored in Blender
 is loaded and played back inside the [Slag](https://github.com/sdgoij/slag)
 JavaScript engine through its raylib host module (`rl`).
 
-Almost everything that moves is JavaScript: `src/main.rs` is a thin host that
-embeds the model and evaluates the scene from `src/game/`, which drives the gait
-state machine, camera, HUD and the heightfield terrain.
+Almost everything that moves is JavaScript: `crates/goats/src/main.rs` is a thin
+host that embeds the model and evaluates the scene from
+`crates/goats/src/game/`, which drives the gait state machine, camera, HUD and
+the heightfield terrain.
 
 Prebuilt binaries for Windows x86-64 and Linux x86-64/AArch64 are attached to
 each [release](https://github.com/sdgoij/goats/releases); to build it yourself:
@@ -142,7 +143,7 @@ page, where GitHub plays it.*
 
 ## Building
 
-The default `Cargo.toml` pins Slag from GitHub:
+The client's manifest, `crates/goats/Cargo.toml`, pins Slag from GitHub:
 
 ```toml
 slag = { git = "https://github.com/sdgoij/slag", features = ["jit", "raylib", "raygui"] }
@@ -153,7 +154,7 @@ path dependency (the `slag/` directory in this repo is ignored by git and is
 exactly such a checkout):
 
 ```toml
-slag = { path = "./slag/crates/slag", features = ["jit", "raylib", "raygui"] }
+slag = { path = "../../slag/crates/slag", features = ["jit", "raylib", "raygui"] }
 ```
 
 Then:
@@ -189,8 +190,10 @@ gets on the free plan.
 
 | Path | What it is |
 | --- | --- |
-| `src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
-| `src/game/*.js` | The scene, split into 13 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console) |
+| `Cargo.toml` | The workspace manifest: `crates/goats` (its `default-members`, so `cargo run` means the client) plus the networking crates |
+| `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
+| `crates/goats/src/game/*.js` | The scene, split into 13 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console) |
+| `crates/session/` | The peer-to-peer transport: iroh sessions, dialing and accepting |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
 | `goat_animated.glb` | Exported model (11 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials (its `.blend1` auto-backup is git-ignored) |
@@ -203,7 +206,7 @@ gets on the free plan.
 
 ## How it is wired
 
-`src/main.rs` is small:
+`crates/goats/src/main.rs` is small:
 
 ```rust
 let mut context = Context::new().unwrap();
@@ -218,8 +221,9 @@ The scene is split for readability but compiled as one script: `SCENE` is a
 `concat!` of the parts in the order they are listed, so every part shares a
 single top-level scope (functions hoist across the whole thing, and the
 top-level `const`s run in file order). That `concat!` list is the only place the
-order lives — the headless harness parses it out of `src/main.rs`, so adding a
-part is just adding the file to `src/game/` and one line to `src/main.rs`.
+order lives — the headless harness parses it out of
+`crates/goats/src/main.rs`, so adding a part is just adding the file to
+`crates/goats/src/game/` and one line to that list.
 
 The model bytes are compiled in with `include_bytes!`, so the model needs no
 files on disk at runtime (the audio does — see `sfx/`). `model.js` finds the

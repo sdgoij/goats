@@ -6,9 +6,9 @@ they land.
 
 Guiding principles:
 
-- **Gameplay lives in JavaScript.** The scene, rules and stats stay in `src/game/`;
-  engine work is limited to small, generic additions like a few 3D primitives and
-  shader plumbing.
+- **Gameplay lives in JavaScript.** The scene, rules and stats stay in
+  `crates/goats/src/game/`; engine work is limited to small, generic additions
+  like a few 3D primitives and shader plumbing.
 - **Blender is the source of truth for the goat.** New poses are authored as
   clips in `goat.blend` and re-exported, exactly like walk / trot / run / jump.
 - **Verify numerically.** Every animation is checked for ground contact, IK
@@ -73,7 +73,7 @@ uses.
 | **M7** | Bot herd | M1, M4 | M | ✅ **Done** (collides, grazes, zoomies) |
 | **M8** | Heightfield terrain + materials | M4 (lighting) | M | ✅ **Done** (engine `makeModel`) |
 | **M9** | In-game console + character input | `getCharPressed` (upstream) | S–M | ✅ **Done** (engine binding + console; live keystroke check pending) |
-| **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | The console gives chat, status and errors somewhere to land |
+| **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | 🚧 **In progress** — the workspace and the iroh transport landed |
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | Cheap once the channel exists, and it exercises it both ways |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | The actual gameplay payload |
 | **M13** | Voice chat | M10 (M12 for attenuation) | L | Needs positions, the media channel and the audio-stream binding |
@@ -260,7 +260,7 @@ tracks the time of day.
 
 Goal: believable clouds, rain and wind, with audio (see M3b).
 
-Shipped in the scene (`src/game/`):
+Shipped in the scene (`crates/goats/src/game/`):
 
 - **Weather state machine**: a seeded xorshift32 walks `clear → cloudy → rain →
   clearing` with per-state hold times, targets for cloudiness and rain, and a
@@ -314,7 +314,7 @@ Bindings added upstream in `sdgoij/slag`:
 | `setModelTexture` | point a material map at a texture (how the shadow map reaches a model draw) |
 | `loadRenderTexture`, `isRenderTextureValid`, `unloadRenderTexture`, `beginTextureMode`, `endTextureMode`, `renderTextureSize`, `renderTextureColor`, `renderTextureDepth` | offscreen passes and shadow maps |
 
-Shipped in the scene (`src/game/`):
+Shipped in the scene (`crates/goats/src/game/`):
 
 - **Directional lighting.** A custom program lights the scene per fragment from a
   sun (or the moon after dusk) driven by the M2 clock, with a hemispheric ambient
@@ -616,9 +616,10 @@ a case in the `rl` surface test:
 
 ### JS plumbing
 
-A new part, `src/game/console.js`, appended after `menu.js` (part 13/13), plus
-one line in `src/main.rs`'s `concat!` — which also updates the part list in
-`core.js`'s header comment and the README Layout row (`12 parts` → `13`).
+A new part, `crates/goats/src/game/console.js`, appended after `menu.js` (part
+13/13), plus one line in the crate host's `concat!` — which also updates the
+part list in `core.js`'s header comment and the README Layout row (`12 parts`
+→ `13`).
 
 - **`consoleOpen` is an overlay flag, not a `uiScreen` value.** Menus freeze the
   world (`dt` is forced to 0 while one is open); the console must *not* pause,
@@ -664,8 +665,9 @@ suppression.
 
 **What landed.** `getCharPressed` and `KEY_GRAVE` (96) added to the engine's
 raylib surface (upstream Slag; exercised locally through the `./slag` path
-dependency, which must not be committed). `src/game/console.js` as part 13/13,
-which renumbered the other twelve headers. The console gate in `ctlKeyDown` and
+dependency, which must not be committed). `crates/goats/src/game/console.js` as
+part 13/13, which renumbered the other twelve headers. The console gate in
+`ctlKeyDown` and
 `press`; Escape precedence and the mouse-wheel guard in the frame loop; a
 `console` verb on the dispatcher (`open` / `close` / `toggle` / `say`, plus a
 query returning the input, caret, history and scrollback); and the README and
@@ -801,17 +803,19 @@ frame per QUIC datagram on the connection we already have.
 
 ## Cross-cutting work
 
-- **Splitting the scene.** ✅ **Done.** The scene is `src/game/*.js` in twelve
-  parts (core, model, world, lighting, sky, audio, weather, food, bots, goat,
-  ctl, menu), joined in the order listed in `src/main.rs` — a thirteenth,
-  `console.js`, arrives with M9. The host concatenates them and evaluates the
-  result as one script, so every part shares a single top-level scope and the
+- **Splitting the scene.** ✅ **Done.** The scene is
+  `crates/goats/src/game/*.js` in thirteen parts (core, model, world, lighting,
+  sky, audio, weather, food, bots, goat, ctl, menu, console), joined in the order
+  listed in `crates/goats/src/main.rs`. The host concatenates them and evaluates
+  the result as one script, so every part shares a single top-level scope and the
   engine still needs no module system; the headless harness parses the same list
-  out of `src/main.rs`.
-- **Workspace.** M10 turns the repo into a Cargo workspace — `crates/goats`
-  (client + JS), `crates/proto` (serde types, no iroh/tokio), `crates/session`
-  (tokio + iroh, no window) and `crates/server` (bin `goatsd`), mirroring Slag's
-  layout. M9 deliberately needs none of it.
+  out of the same file.
+- **Workspace.** ✅ **Started.** The repo is a Cargo workspace: `crates/goats`
+  (the client and the JS scene, and its `default-members`, so `cargo run` means
+  the client) and `crates/session` (the iroh transport) have landed; `crates/proto`
+  (serde types, no iroh/tokio) and `crates/server` (the `goatsd` binary) follow.
+  The assets stay at the repo root and the client reaches them with
+  `include_bytes!("../../../…")`.
 - **Host bridge.** The JS↔Rust boundary stays line/JSON: `sceneCommand` in,
   `sceneNetEvent` out, one more host callback back. The synchronous frame loop
   drains an `mpsc` and never awaits (iroh is Tokio); the harness stubs the same
@@ -853,8 +857,9 @@ frame per QUIC datagram on the connection we already have.
    slow the goat and drain energy faster.
 5. **Weather determinism:** currently seeded, so a run is reproducible and the
    harness is stable. Keep, or make it random per run?
-6. ~~**Scene splitting?**~~ **Settled:** nine files in `src/game/`, joined in
-   the order listed in `src/main.rs`.
+6. ~~**Scene splitting?**~~ **Settled:** thirteen files in
+   `crates/goats/src/game/`, joined in the order listed in
+   `crates/goats/src/main.rs`.
 7. ~~**Shadow scope:**~~ **Done:** the goat *and* the grass inside the shadow
    box cast into the depth pass. Tufts outside the box are culled (their shadow
    could not be sampled anyway). Props would follow the same path if added. One

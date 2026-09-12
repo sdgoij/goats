@@ -3,9 +3,10 @@
 //
 // A walking, running, jumping goat for the Slag x raylib sandbox.
 //
-// The scene is split across `src/game/*.js`, which the host concatenates into
-// one script in the order listed in `src/main.rs` -- the pieces therefore share
-// a single top-level scope, exactly as when this was one file. The parts, in
+// The scene is split across `crates/goats/src/game/*.js`, which the host
+// concatenates into one script in the order listed in
+// `crates/goats/src/main.rs` -- the pieces therefore share a single top-level
+// scope, exactly as when this was one file. The parts, in
 // that order:
 //
 //   core.js      tuning, stats, palette, maths helpers

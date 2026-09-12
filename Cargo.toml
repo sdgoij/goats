@@ -1,14 +1,9 @@
-[package]
-name = "goats"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
-
-# The client becomes `crates/goats` in a later M10 step; for now the workspace
-# is introduced with the networking crates alongside the existing root package.
+# The goats workspace: the client and the JS scene, plus the networking crates
+# the multiplayer milestone adds. The assets (the model, `sfx/`, `tex/`) stay at
+# the repository root; the client reaches them with a relative `include_bytes!`.
 [workspace]
-members = ["crates/session"]
-
-[dependencies]
-slag = { git = "https://github.com/sdgoij/slag", features = ["jit", "raylib", "raygui"] }
-# slag = { path = "./slag/crates/slag", features = ["jit", "raylib", "raygui"] }
+resolver = "3"
+members = ["crates/goats", "crates/session"]
+# `cargo run` and a bare `cargo build` mean the client, so the README's
+# `cargo run --release` keeps working. Use `--workspace` to build or test all.
+default-members = ["crates/goats"]
