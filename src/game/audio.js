@@ -2,14 +2,16 @@
 // ---- audio ---------------------------------------------------------------
 //
 // The background track and the weather beds are `Music` streams: they loop
-// natively and stream from disk, so the long wind/rain files cost almost no
-// memory. Bleats and thunder are short `Sound` effects, fired with a little
-// pitch variation so repeats do not sound identical. Everything loads from
-// `sfx/` on disk and fails silently if a file is missing.
+// natively and stream, so the long wind/rain files cost almost no memory.
+// Bleats and thunder are short `Sound` effects, fired with a little pitch
+// variation so repeats do not sound identical. Every path below is embedded in
+// the binary by the host (`src/main.rs`), which registers each name with
+// `register_raylib_asset`; the loader looks the bytes up by name, so the game
+// needs no files on disk and a missing name just falls back to `sfx/`.
 
 const MUSIC_PATH = "sfx/jkstudios-rage-2-187959.mp3";
-const RAIN_PATH = "sfx/WE Heavy Outside Rain 1.wav";
-const WIND_PATH = "sfx/WE Light Wind Whistle 1.wav";
+const RAIN_PATH = "sfx/WE Heavy Outside Rain 1.ogg";
+const WIND_PATH = "sfx/WE Light Wind Whistle 1.ogg";
 const BLEAT_PATHS = [
     "sfx/dragon-studio-goat-baa-390303.mp3",
     "sfx/dragon-studio-goat-kid-bleating-390290.mp3",
@@ -19,9 +21,9 @@ const BLEAT_PATHS = [
     "sfx/freesound_community-happy-goat-6463.mp3",
 ];
 const THUNDER_PATHS = [
-    "sfx/WE Thunder 1.wav",
-    "sfx/WE Thunder 26.wav",
-    "sfx/WE Thunder 29.wav",
+    "sfx/WE Thunder 1.ogg",
+    "sfx/WE Thunder 26.ogg",
+    "sfx/WE Thunder 29.ogg",
 ];
 
 const MUSIC_VOLUME = 0.20;   // the background track sits well under the sfx

@@ -1,11 +1,13 @@
 //! A tiny "GOAT" sandbox written in JavaScript, driven through the `rl` host
 //! module's 3D surface.
 //!
-//! The goat is the animated `.glb` baked from the Blender rig, embedded into
-//! the binary so the model needs no files on disk (`rl.loadModel` learns about
-//! embedded assets the same way `rl.loadTexture` does). The scene script is
-//! split across `src/game/*.js` and concatenated into one script here, so the
-//! parts share a single top-level scope.
+//! The goat model and every sound the scene plays are embedded into the binary
+//! (see `ASSETS`) so the game needs no files on disk: the host registers each
+//! one with `register_raylib_asset`, and `rl.loadModel`/`rl.loadSound`/
+//! `rl.loadMusic` look the bytes up by name before falling back to the
+//! filesystem. The scene script is split across `src/game/*.js` and
+//! concatenated into one script here, so the parts share a single top-level
+//! scope.
 //!
 //! The host owns the frame loop -- the scene exposes `sceneInit`/`sceneFrame`/
 //! `sceneShutdown` instead of running itself -- so it can interleave commands
@@ -20,8 +22,71 @@ use std::io::{BufRead, Write};
 
 use slag::{Context, HostCallbacks, JsValue};
 
-/// The animated goat (walk / trot / idle clips), baked from the Blender rig.
-static GOAT_GLB: &[u8] = include_bytes!("../goat_animated.glb");
+/// Every asset the scene loads, embedded so the binary is self-contained. The
+/// name is exactly the path the scene hands to `rl.loadModel`/`rl.loadSound`/
+/// `rl.loadMusic`, and the engine resolves the bytes by that name before
+/// falling back to the filesystem. The WAV ambience beds are shipped as Ogg
+/// Vorbis: 71 MB of PCM would dwarf the rest of the binary, while the Ogg loops
+/// are 3.6 MB for the same 60 s at the same sample rate.
+///
+/// The headless harness (`tools/goat_logic_test.js`) parses this table and
+/// checks every path the scene requests against it, so the two cannot drift
+/// apart -- a path missed here would silently load from disk instead.
+static ASSETS: &[(&str, &[u8])] = &[
+    // The animated goat (walk / trot / run / jump / idle / sleep / eat / death).
+    ("goat_animated.glb", include_bytes!("../goat_animated.glb")),
+    // The background track and the two weather beds (60 s loops).
+    (
+        "sfx/jkstudios-rage-2-187959.mp3",
+        include_bytes!("../sfx/jkstudios-rage-2-187959.mp3"),
+    ),
+    (
+        "sfx/WE Heavy Outside Rain 1.ogg",
+        include_bytes!("../sfx/WE Heavy Outside Rain 1.ogg"),
+    ),
+    (
+        "sfx/WE Light Wind Whistle 1.ogg",
+        include_bytes!("../sfx/WE Light Wind Whistle 1.ogg"),
+    ),
+    // The bleats, picked at random with a little pitch variation.
+    (
+        "sfx/dragon-studio-goat-baa-390303.mp3",
+        include_bytes!("../sfx/dragon-studio-goat-baa-390303.mp3"),
+    ),
+    (
+        "sfx/dragon-studio-goat-kid-bleating-390290.mp3",
+        include_bytes!("../sfx/dragon-studio-goat-kid-bleating-390290.mp3"),
+    ),
+    (
+        "sfx/dragon-studio-goat-sound-390298.mp3",
+        include_bytes!("../sfx/dragon-studio-goat-sound-390298.mp3"),
+    ),
+    (
+        "sfx/dragon-studio-goat-sound-effect-390305.mp3",
+        include_bytes!("../sfx/dragon-studio-goat-sound-effect-390305.mp3"),
+    ),
+    (
+        "sfx/mightuser-1-goat-sound-effect-259473.mp3",
+        include_bytes!("../sfx/mightuser-1-goat-sound-effect-259473.mp3"),
+    ),
+    (
+        "sfx/freesound_community-happy-goat-6463.mp3",
+        include_bytes!("../sfx/freesound_community-happy-goat-6463.mp3"),
+    ),
+    // Thunder for the heavy-rain phase.
+    (
+        "sfx/WE Thunder 1.ogg",
+        include_bytes!("../sfx/WE Thunder 1.ogg"),
+    ),
+    (
+        "sfx/WE Thunder 26.ogg",
+        include_bytes!("../sfx/WE Thunder 26.ogg"),
+    ),
+    (
+        "sfx/WE Thunder 29.ogg",
+        include_bytes!("../sfx/WE Thunder 29.ogg"),
+    ),
+];
 
 /// The scene, joined from `src/game/` in the order listed here. `concat!` needs
 /// the parts spelled out, so this list *is* the running order -- and it is the
@@ -60,7 +125,11 @@ fn main() {
     context.set_host_callbacks(callbacks);
     slag::install_jit(&mut context).unwrap();
     context.install_raylib().unwrap();
-    context.register_raylib_asset("goat_animated.glb", GOAT_GLB);
+    // Register every embedded asset before the scene runs; the loaders resolve
+    // these names to the bytes above rather than reading from disk.
+    for &(name, data) in ASSETS {
+        context.register_raylib_asset(name, data);
+    }
     // The scene only defines its frame functions here; the loop below drives it.
     context.eval(SCENE).unwrap();
 

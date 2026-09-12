@@ -32,6 +32,7 @@ const clipFrames = CLIPS.map((c) => Math.round(c.dur * 60) + 1);
 let frameIndex = 0;
 let lastPosed = null;
 let modelLoads = 0;
+const modelPaths = [];
 let botPoses = 0;
 let botJumps = 0;
 const botClipNames = new Set();
@@ -94,7 +95,7 @@ const rl = Object.assign({}, constants, {
     color: () => ({}),
     initWindow: () => {}, setTargetFPS: () => {}, closeWindow: () => {}, setExitKey: () => {},
     toggleFullscreen: () => {}, isWindowFullscreen: () => false,
-    loadModel: () => { const h = modelLoads; modelLoads += 1; return h; },
+    loadModel: (p) => { modelPaths.push(p); const h = modelLoads; modelLoads += 1; return h; },
     isModelValid: () => true,
     unloadModel: () => {},
     modelBounds: () => ({ minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 1.47, maxZ: 0 }),
@@ -265,6 +266,14 @@ const gapVals = logs.map((l) => /gap (-?[\d.]+)/.exec(l)).filter(Boolean).map((m
 const minGap = gapVals.length ? Math.min.apply(null, gapVals) : null;
 const botIdles = [...botClipNames].filter((n) => n.indexOf('GoatIdle') === 0);
 const playerIdles = [...new Set(timeline.map((r) => r.clip))].filter((n) => n && n.indexOf('GoatIdle') === 0);
+
+// Embedding drift check: every asset the scene asks for must appear in the
+// `ASSETS` table in src/main.rs, otherwise the binary silently falls back to a
+// file on disk and stops being self-contained.
+const embeddedNames = new Set(
+    [...mainRs.matchAll(/\(\s*"([^"]+)"\s*,\s*include_bytes!/g)].map((m) => m[1]));
+const requestedAssets = [...new Set([...modelPaths, ...musicLoads, ...soundLoads])];
+const missingAssets = requestedAssets.filter((p) => !embeddedNames.has(p));
 
 // Grass is food. `run()` has finished, so exercise the mechanic through the
 // same command channel the host uses: find a tuft, stand on it, then eat it.
@@ -446,6 +455,10 @@ const checks = [
         [progressBarCalls, loadingFrames]],
     ['the splash names the game and step count',
         splashTitle && splashStep === 'loading 14 / 15', [splashTitle, splashStep]],
+    // Self-contained binary: the scene must not reach the filesystem for assets.
+    ['every requested asset is embedded', requestedAssets.length >= 10 && missingAssets.length === 0,
+        missingAssets],
+    ['the embedded table covers model and audio', embeddedNames.size >= 13, embeddedNames.size],
 ];
 
 const failed = checks.filter((c) => !c[1]);
