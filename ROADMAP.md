@@ -73,7 +73,7 @@ uses.
 | **M7** | Bot herd | M1, M4 | M | ✅ **Done** (collides, grazes, zoomies) |
 | **M8** | Heightfield terrain + materials | M4 (lighting) | M | ✅ **Done** (engine `makeModel`) |
 | **M9** | In-game console + character input | `getCharPressed` (upstream) | S–M | ✅ **Done** (engine binding + console; live keystroke check pending) |
-| **M9b** | Console clipboard: paste a ticket | M9 | S | ✅ **Done** (the engine binding still needs its upstream PR) |
+| **M9b** | Console clipboard: paste a ticket | M9 | S | ✅ **Done** |
 | **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | Cheap once the channel exists, and it exercises it both ways |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | The actual gameplay payload |
@@ -704,9 +704,8 @@ Verified: the harness sets a stub clipboard, presses Ctrl+V and Ctrl+C on
 scripted frames, and checks the pasted line plus both writes back (five checks),
 taking it to 105. The rl surface test covers the two new bindings.
 
-**Pending:** those bindings are not upstream yet -- they live in the local Slag
-checkout -- so `rl.getClipboardText` is undefined until the engine PR lands and
-`Cargo.lock` is bumped. The console reports the missing binding until then.
+**Pending:** nothing. The bindings landed upstream (Slag `d8dd8c4`), so the
+clipboard works in a normal build; `Cargo.lock` pins that rev.
 
 ---
 
