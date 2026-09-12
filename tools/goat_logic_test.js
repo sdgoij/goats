@@ -24,6 +24,8 @@ const CLIPS = [
     { name: 'GoatSleep', dur: 8.0 },
     { name: 'GoatSleep2', dur: 8.0 },
     { name: 'GoatDeath', dur: 2.33333 },
+    { name: 'GoatEat', dur: 2.5 },
+    { name: 'GoatEat2', dur: 2.16667 },
 ];
 const clipFrames = CLIPS.map((c) => Math.round(c.dur * 60) + 1);
 
@@ -47,6 +49,7 @@ const timeline = [];
 const logs = [];
 let shadowPass = false;
 let shadowCubeDraws = 0;
+let menuDraws = 0;
 
 const keys = {};
 const pressed = {};
@@ -75,7 +78,7 @@ const constants = {
     KEY_LEFT_SHIFT: 340, KEY_RIGHT_SHIFT: 344,
     KEY_LEFT_CONTROL: 341, KEY_RIGHT_CONTROL: 345,
     KEY_A: 65, KEY_D: 68, KEY_R: 82, KEY_S: 83, KEY_W: 87, KEY_P: 80, KEY_Z: 90, KEY_T: 84,
-    KEY_C: 67, KEY_L: 76, KEY_K: 75, KEY_M: 77, KEY_B: 66,
+    KEY_C: 67, KEY_L: 76, KEY_K: 75, KEY_M: 77, KEY_B: 66, KEY_E: 69,
     WHITE: {}, RAYWHITE: {},
     SHADER_UNIFORM_FLOAT: 0, SHADER_UNIFORM_VEC2: 1, SHADER_UNIFORM_VEC3: 2,
     SHADER_UNIFORM_VEC4: 3, SHADER_UNIFORM_INT: 4, SHADER_UNIFORM_UINT: 8,
@@ -157,7 +160,7 @@ const rl = Object.assign({}, constants, {
     drawCube: () => { if (shadowPass) shadowCubeDraws += 1; }, drawGrid: () => {},
     drawSphere: () => {}, drawPoint3D: () => {}, drawRectangleGradientV: () => {},
     drawLine: () => {},
-    drawRectangle: () => {}, drawText: (text) => {
+    drawRectangle: () => {}, drawRectangleLines: () => { menuDraws += 1; }, drawText: (text) => {
         const s = String(text);
         if (s.indexOf('speed ') >= 0) speedText = s;
         else if (s.indexOf('health ') >= 0) statsText = s;
@@ -232,6 +235,31 @@ const minGap = gapVals.length ? Math.min.apply(null, gapVals) : null;
 const botIdles = [...botClipNames].filter((n) => n.indexOf('GoatIdle') === 0);
 const playerIdles = [...new Set(timeline.map((r) => r.clip))].filter((n) => n && n.indexOf('GoatIdle') === 0);
 
+// Grass is food. `run()` has finished, so exercise the mechanic through the
+// same command channel the host uses: find a tuft, stand on it, then eat it.
+const eatTest = { found: false, menu: false, ate: false, energyRose: false, satietyRose: false, gone: false };
+let rainEase = false;
+try {
+    sandbox.sceneCommand('energy 40');
+    const found = JSON.parse(sandbox.sceneCommand('grass').slice(3));
+    if (found !== null && found !== undefined) {
+        eatTest.found = true;
+        sandbox.sceneCommand('pos ' + found.x + ' ' + found.z);
+        const before = JSON.parse(sandbox.sceneCommand('state').slice(3));
+        eatTest.menu = before.foodInReach === true;
+        const reply = sandbox.sceneCommand('eat');
+        const after = JSON.parse(sandbox.sceneCommand('state').slice(3));
+        eatTest.ate = reply.indexOf('ok') === 0;
+        eatTest.energyRose = after.energy > before.energy;
+        eatTest.satietyRose = after.satiety > 0;
+        const again = JSON.parse(sandbox.sceneCommand('grass').slice(3));
+        eatTest.gone = again === null || again.key !== found.key;
+    }
+    rainEase = sandbox.rainSlowFactor(0) > sandbox.rainSlowFactor(1);
+} catch (e) {
+    eatTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -280,6 +308,14 @@ const checks = [
     ['bots get the zoomies (run + jump)', botJumps > 0, botJumps],
     ['bots play several idle variants', botIdles.length >= 2, botIdles],
     ['the player cycles idle variants', playerIdles.length >= 2, playerIdles],
+    ['grass tufts are found', eatTest.found, eatTest],
+    ['the model has eating clips', logs.some((l) => l.indexOf("'GoatEat") >= 0), logs.filter((l) => l.indexOf('GoatEat') >= 0).length],
+    ['the eat menu is drawn in reach', menuDraws > 0, menuDraws],
+    ['grass in reach shows the eat menu', eatTest.menu, eatTest],
+    ['eating consumes the nearest tuft', eatTest.ate && eatTest.gone, eatTest],
+    ['eating restores energy', eatTest.energyRose, eatTest],
+    ['eating fills the belly', eatTest.satietyRose, eatTest],
+    ['a full belly eases the rain slowdown', rainEase, rainEase],
 ];
 
 const failed = checks.filter((c) => !c[1]);

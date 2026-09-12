@@ -1,4 +1,4 @@
-// Part 2/10 of the goat scene: the animated model and the cube fallback.
+// Part 2/11 of the goat scene: the animated model and the cube fallback.
 // ---- the model goat ------------------------------------------------------
 
 let model = -1;
@@ -9,9 +9,9 @@ let groundOffset = 0;
 // { index, frames, duration } or null when that clip is absent. `CLIP[role]` is
 // the default; `VARIANTS[role]` holds every clip for roles that have more than
 // one (idle/sleep/jump), so different goats can play different versions.
-const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null };
-const VARIANTS = { idle: [], sleep: [], jump: [] };
-const playerVariant = { idle: 0, sleep: -1, jump: -1 };
+const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null, eat: null };
+const VARIANTS = { idle: [], sleep: [], jump: [], eat: [] };
+const playerVariant = { idle: 0, sleep: -1, jump: -1, eat: -1 };
 
 // Model-space eye points baked in Blender for the death pose, used to place the
 // X-eye sprites (glTF Y-up, from the rig). Sleeping eyes are real eyelid
@@ -98,6 +98,8 @@ function loadGoat() {
     const idle = findClips(names, "idle");
     const jump = findClips(names, "jump");
     const sleep = findClips(names, "sleep");
+    // "eat" alone would also match "death"; the clips are GoatEat/GoatEat2.
+    const eat = findClips(names, "goateat");
     const run = findClip(names, "run");
     const trot = findClip(names, "trot");
     const walk = findClip(names, "walk");
@@ -105,9 +107,11 @@ function loadGoat() {
     CLIP.idle = idle.length > 0 ? clipInfo(idle[0]) : null;
     CLIP.jump = jump.length > 0 ? clipInfo(jump[0]) : null;
     CLIP.sleep = sleep.length > 0 ? clipInfo(sleep[0]) : null;
+    CLIP.eat = eat.length > 0 ? clipInfo(eat[0]) : null;
     VARIANTS.idle = idle.map(clipInfo);
     VARIANTS.jump = jump.map(clipInfo);
     VARIANTS.sleep = sleep.map(clipInfo);
+    VARIANTS.eat = eat.map(clipInfo);
     CLIP.run = run >= 0 ? clipInfo(run) : null;
     CLIP.trot = trot >= 0 ? clipInfo(trot) : null;
     CLIP.walk = walk >= 0 ? clipInfo(walk) : null;
@@ -156,6 +160,13 @@ function cyclePlayerVariant(role) {
 
 function playerClip(role) {
     return clipAt(role, playerVariant[role]);
+}
+
+// Length of the one-shot eat clip (the player's current variant), or the
+// fallback when the model has no eat clip.
+function eatDuration() {
+    const info = playerClip("eat");
+    return info !== null && info !== undefined ? info.duration : EAT_FALLBACK_TIME;
 }
 
 function poseModel(role, phase) {

@@ -1,4 +1,4 @@
-// Part 10/10 of the goat scene: the stdin command channel.
+// Part 11/11 of the goat scene: the stdin command channel.
 // ---- control channel ------------------------------------------------------
 //
 // The host (`src/main.rs`) reads a line from stdin, calls `sceneCommand(line)`
@@ -19,7 +19,7 @@ let ctlStep = 0;
 const ctlHeld = {};
 
 const HELP = "help ping state stats time weather bots camera features fps " +
-    "jump sleep wake restart kill health energy heal walk trot run back stop " +
+    "jump sleep wake restart kill health energy heal eat grass walk trot run back stop " +
     "turn yaw pos phase pause resume step lighting shadows sky mute screenshot quit";
 
 // A movement key is down if a script holds it or the real keyboard does.
@@ -96,6 +96,8 @@ function sceneCommand(line) {
                 energy: ctlRound(stats.energy),
                 exhausted: exhausted,
                 paused: paused,
+                satiety: ctlRound(satiety),
+                foodInReach: nearestTuft(goat.px, goat.pz, EAT_RANGE) !== null,
                 x: ctlRound(goat.px),
                 y: ctlRound(goat.py),
                 z: ctlRound(goat.pz),
@@ -218,6 +220,26 @@ function sceneCommand(line) {
             stats.energy = MAX_STAT;
             exhausted = false;
             return "ok heal";
+
+        // ---- food --------------------------------------------------------
+        case "grass": {
+            const range = ctlArg(parts, 1) || 60;
+            const t = nearestTuft(goat.px, goat.pz, range);
+            if (t === null) return "ok null";
+            return "ok " + JSON.stringify({
+                x: ctlRound(t.x),
+                z: ctlRound(t.z),
+                dist: ctlRound(Math.sqrt(t.d2)),
+                inReach: t.d2 <= EAT_RANGE * EAT_RANGE,
+                key: tuftKey(t.cx, t.cz)
+            });
+        }
+        case "eat": {
+            const t = nearestTuft(goat.px, goat.pz, EAT_RANGE);
+            if (t === null) return "error no grass in reach";
+            startEat(t);
+            return "ok eat";
+        }
 
         // ---- movement ----------------------------------------------------
         case "walk":

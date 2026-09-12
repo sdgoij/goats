@@ -1,4 +1,4 @@
-// Part 4/10 of the goat scene: the lit shader, the directional light, and both
+// Part 4/11 of the goat scene: the lit shader, the directional light, and both
 // the planar and shadow-map cast shadows.
 // ---- lighting (M4): directional light and projected cast shadows ---------
 //

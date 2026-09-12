@@ -1,4 +1,4 @@
-// Part 7/10 of the goat scene: the weather state machine, wind and effects.
+// Part 7/11 of the goat scene: the weather state machine, wind and effects.
 // ---- weather -------------------------------------------------------------
 
 const WIND_BASE = 1.6;              // m/s
@@ -139,6 +139,13 @@ function updateWind(dt) {
     windSway = Math.min(1.4, speed / WIND_BASE) * (0.55 + 0.45 * cloudiness);
 }
 
+// The rain's slowdown share, eased by how full the goat's belly is: `satiety`
+// (food.js) scales it down by up to RAIN_SHELTER, so a grazed goat keeps more
+// of its speed in the wet. Wind is not affected.
+function rainSlowFactor(sat) {
+    return RAIN_SLOW * (1 - RAIN_SHELTER * clamp(sat, 0, 1));
+}
+
 function updateWeather(dt) {
     weatherTimer -= dt;
     if (weatherTimer <= 0) {
@@ -153,8 +160,9 @@ function updateWeather(dt) {
     rainAmount += (target.rain - rainAmount) * k;
     const windNorm = Math.min(1, windSway / WIND_NORM);
     // Gate on rain: "clear" stays exactly neutral, and wind only bites when the
-    // goat is actually wet.
-    weatherSpeed = 1 - (RAIN_SLOW + WIND_SLOW * windNorm) * rainAmount;
+    // goat is actually wet. A full belly (`satiety`, food.js) takes the edge off
+    // the rain's slowdown.
+    weatherSpeed = 1 - (rainSlowFactor(satiety) + WIND_SLOW * windNorm) * rainAmount;
     weatherDrain = 1 + (WET_DRAIN + WIND_DRAIN * windNorm) * rainAmount;
     weatherText = weatherKind + "   wind " +
         Math.sqrt(windX * windX + windZ * windZ).toFixed(1) + " m/s";
@@ -247,6 +255,10 @@ function drawTufts(g, tuftCol, cull2, detail2) {
             h = (h ^ (h >>> 16)) >>> 0;
             const a = h / 4294967296;             // existence (and z jitter)
             if (a < 0.45) continue;
+            // Eaten cells are skipped entirely, so the field thins as the goat
+            // grazes. The key mirrors `tuftKey` in food.js, inlined to keep the
+            // per-cell call depth down.
+            if (EATEN.has((cx + 4096) * 8192 + (cz + 4096))) continue;
             let h2 = (cx * 1103515245 + cz * 12345) | 0;
             h2 = Math.imul(h2 ^ (h2 >>> 15), 2246822519);
             h2 = (h2 ^ (h2 >>> 13)) >>> 0;

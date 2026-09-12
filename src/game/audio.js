@@ -1,4 +1,4 @@
-// Part 6/10 of the goat scene: music streams, weather beds and goat bleats.
+// Part 6/11 of the goat scene: music streams, weather beds and goat bleats.
 // ---- audio ---------------------------------------------------------------
 //
 // The background track and the weather beds are `Music` streams: they loop

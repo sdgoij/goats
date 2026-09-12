@@ -1,10 +1,11 @@
-// Part 9/10 of the goat scene: the gait state machine, HUD and frame loop.
+// Part 10/11 of the goat scene: the gait state machine, HUD and frame loop.
 // ---- gait state ----------------------------------------------------------
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
 let paused = false;
 let mode = "idle";       // idle | walk | trot | run | jump | sleep | dead
 let jumpTime = 0;        // seconds into the current jump
+let eatTime = 0;         // seconds into the current meal
 let jumpSpeed = 0;       // ground speed frozen at take-off
 let jumpDir = 0;         // travel direction (-1/0/1) frozen at take-off
 let sleepTime = 0;       // seconds slept since last awake
@@ -32,12 +33,17 @@ let sceneFrames = 0;
 let curRole = "walk";
 let curSpeed = 0;
 let curClipName = "";
+// Nearest edible tuft this frame, and whether it is close enough to eat; the
+// HUD's action menu and the E handler read these.
+let foodTarget = null;
+let foodReady = false;
 
 // Which clip role is driving the pose right now, falling back to the walk for
 // any role the model does not provide.
 function clipRole() {
     if (mode === "dead" && CLIP.death) return "death";
     if (mode === "sleep" && CLIP.sleep) return "sleep";
+    if (mode === "eat" && CLIP.eat) return "eat";
     if (mode === "jump" && CLIP.jump) return "jump";
     if (mode === "run" && CLIP.run) return "run";
     if (mode === "trot" && CLIP.trot) return "trot";
@@ -131,6 +137,7 @@ function restart() {
     goat.pz = 0;
     goat.yaw = 0;
     goat.phase = 0;
+    satiety = 0;          // a new life starts hungry
     mode = "idle";
 }
 
@@ -264,6 +271,7 @@ function drawHud(move) {
     else if (paused) state = "paused (P to resume)";
     else if (mode === "sleep") state = "sleeping (Z to wake)";
     else if (mode === "jump") state = "jumping";
+    else if (mode === "eat") state = "eating";
     else if (move > 0 && mode === "run") state = "running";
     else if (move > 0 && mode === "trot") state = "trotting";
     else if (move > 0) state = "walking forward";
@@ -279,7 +287,7 @@ function drawHud(move) {
         "   audio " + (audioReady ? (muted ? "muted" : "on") : "off") +
         "   herd " + BOTS.length;
     rl.drawText("Slag goat  -  " + how, 10, 8, 18, rl.RAYWHITE);
-    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   Z sleep   T time   L light   K shadow   B sky   M audio   A/D turn   P: pause   ESC: quit",
+    rl.drawText("W/S walk   CTRL trot   SHIFT run   SPACE jump   E eat   Z sleep   T time   L light   K shadow   B sky   M audio   A/D turn   P: pause   ESC: quit",
         10, 32, 14, rl.RAYWHITE);
 
     // Health and energy bars, top-right.
@@ -291,9 +299,21 @@ function drawHud(move) {
     rl.drawRectangle(bx, 30, bw, 14, rl.color(28, 28, 34, 220));
     rl.drawRectangle(bx + 1, 31, Math.round((bw - 2) * stats.energy / MAX_STAT), 12,
         rl.color(222, 190, 62, 255));
-    rl.drawText("health " + Math.round(stats.health) + "   energy " + Math.round(stats.energy),
-        bx, 50, 14, rl.RAYWHITE);
+    rl.drawText("health " + Math.round(stats.health) + "   energy " + Math.round(stats.energy) +
+        "   belly " + Math.round(satiety * 100) + "%", bx, 50, 14, rl.RAYWHITE);
     if (mode === "sleep") rl.drawText("Z z z", bx, 70, 20, rl.RAYWHITE);
+
+    // Action menu: a grass tuft is within reach, so offer the Eat action.
+    if (foodReady) {
+        const mw = 132;
+        const mh = 34;
+        const mx = rl.getScreenWidth() - mw - 12;
+        const my = h - mh - 12;
+        rl.drawRectangle(mx, my, mw, mh, rl.color(24, 26, 32, 220));
+        rl.drawRectangleLines(mx, my, mw, mh, rl.color(232, 201, 116, 255));
+        rl.drawText("Eat", mx + 12, my + 9, 18, rl.RAYWHITE);
+        rl.drawText("(E)", mx + mw - 34, my + 11, 16, rl.color(232, 201, 116, 255));
+    }
 
     rl.drawText(weatherText, 10, h - 44, 14, rl.RAYWHITE);
     rl.drawText(status + "   " + state, 10, h - 24, 14, rl.RAYWHITE);
@@ -331,6 +351,12 @@ function sceneFrame() {
     const dt = Math.min(rl.getFrameTime(), 0.05);
     sceneFrames += 1;
 
+    // food: the nearest tuft decides whether the action menu shows, and the E
+    // handler below eats it.
+    foodTarget = nearestTuft(goat.px, goat.pz, EAT_RANGE);
+    foodReady = foodTarget !== null && mode !== "dead" && mode !== "sleep" &&
+        mode !== "jump" && mode !== "eat";
+
     // day/night: advance the clock, then refresh the sky and the ambient
     // tint the whole scene is drawn with.
     const fast = ctlKeyDown(rl.KEY_T);
@@ -341,6 +367,7 @@ function sceneFrame() {
     updateClouds(dt);
     updateRain(dt);
     updateAudio(dt);
+    updateFood(dt);
     // overcast skies wash the gradient toward grey
     const grey = Math.min(0.75, cloudiness * 0.75);
     skyTop = lerpColor(sky.top, OVERCAST_TOP, grey);
@@ -393,7 +420,7 @@ function sceneFrame() {
     const trotting = ctlKeyDown(rl.KEY_LEFT_CONTROL) || ctlKeyDown(rl.KEY_RIGHT_CONTROL);
     let gait = running ? "run" : trotting ? "trot" : "walk";
     if (exhausted) gait = "walk";   // an exhausted goat cannot run or trot
-    if (mode !== "sleep" && mode !== "dead") goat.yaw += turn * TURN_RATE * dt;
+    if (mode !== "sleep" && mode !== "dead" && mode !== "eat") goat.yaw += turn * TURN_RATE * dt;
 
     // state machine: jump, sleep and death lock the mode; everything else
     // follows the requested gait.
@@ -408,6 +435,13 @@ function sceneFrame() {
         if (jumpTime >= jumpDuration()) {
             mode = move !== 0 ? gait : "idle";
         }
+    } else if (mode === "eat") {
+        eatTime += dt;
+        if (eatTime >= eatDuration()) {
+            mode = move !== 0 ? gait : "idle";
+        }
+    } else if (rl.isKeyPressed(rl.KEY_E) && foodReady) {
+        startEat(foodTarget);
     } else if (rl.isKeyPressed(rl.KEY_Z)) {
         startSleep();
     } else if (rl.isKeyPressed(rl.KEY_SPACE)) {
@@ -454,6 +488,9 @@ function sceneFrame() {
             goat.py = haveModel ? 0 : V_DROP;
         } else if (mode === "dead") {
             goat.py = haveModel ? 0 : V_DROP;
+        } else if (mode === "eat") {
+            // The meal is posed from `eatTime`; the goat stays put.
+            goat.py = haveModel ? 0 : V_DROP;
         } else {
             goat.phase = mod1(goat.phase + dt / loopDuration());
             const speed = groundSpeed();
@@ -471,6 +508,8 @@ function sceneFrame() {
             poseModel("jump", Math.min(jumpTime / CLIP.jump.duration, 1));
         } else if (mode === "dead" && CLIP.death) {
             poseModel("death", Math.min(deathTime / CLIP.death.duration, 1));
+        } else if (mode === "eat" && CLIP.eat) {
+            poseModel("eat", Math.min(eatTime / CLIP.eat.duration, 1));
         } else {
             poseModel(curRole, goat.phase);
         }

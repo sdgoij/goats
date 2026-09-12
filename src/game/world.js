@@ -1,4 +1,4 @@
-// Part 3/10 of the goat scene: grass, the day/night curve, sun, moon and stars.
+// Part 3/11 of the goat scene: grass, the day/night curve, sun, moon and stars.
 // ---- scenery -------------------------------------------------------------
 
 // Grass is generated procedurally around the goat in `drawTufts` (weather.js),

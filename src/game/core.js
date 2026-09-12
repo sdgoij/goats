@@ -1,4 +1,4 @@
-// Part 1/10 of the goat scene: tuning, stats, palette and maths helpers. This
+// Part 1/11 of the goat scene: tuning, stats, palette and maths helpers. This
 // file also carries the scene's overall header comment.
 //
 // A walking, running, jumping goat for the Slag x raylib sandbox.
@@ -15,6 +15,7 @@
 //   sky.js       2.5D procedural cloud shader
 //   audio.js     music streams, weather beds, goat bleats
 //   weather.js   the weather state machine and wind
+//   food.js      grass as food: eating, satiety, the reach check
 //   bots.js      the autonomous bot herd
 //   goat.js      the gait state machine, HUD and frame loop
 //   ctl.js       the stdin command channel
@@ -48,6 +49,7 @@
 //   CTRL + W/S    trot
 //   SHIFT + W/S   run
 //   SPACE         jump
+//   E             eat the grass in reach
 //   Z             sleep / wake
 //   R             restart after death
 //   T (hold)      fast-forward the clock

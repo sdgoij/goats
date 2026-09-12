@@ -35,6 +35,7 @@ const SCENE: &str = concat!(
     include_str!("game/sky.js"),
     include_str!("game/audio.js"),
     include_str!("game/weather.js"),
+    include_str!("game/food.js"),
     include_str!("game/bots.js"),
     include_str!("game/goat.js"),
     include_str!("game/ctl.js"),
