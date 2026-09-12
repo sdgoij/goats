@@ -73,6 +73,7 @@ uses.
 | **M7** | Bot herd | M1, M4 | M | ✅ **Done** (collides, grazes, zoomies) |
 | **M8** | Heightfield terrain + materials | M4 (lighting) | M | ✅ **Done** (engine `makeModel`) |
 | **M9** | In-game console + character input | `getCharPressed` (upstream) | S–M | ✅ **Done** (engine binding + console; live keystroke check pending) |
+| **M9b** | Console clipboard: paste a ticket | M9 | S | ✅ **Done** (the engine binding still needs its upstream PR) |
 | **M10** | Networking foundation: workspace, proto/session/server, join by ticket | M9 | L | ✅ **Done** (the two-window session check still needs a display) |
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | Cheap once the channel exists, and it exercises it both ways |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | The actual gameplay payload |
@@ -683,6 +684,29 @@ closing the console without opening the menu, reopen, and the goat moving while
 closed but frozen while open — taking it to 88 passing checks.
 **Not verified here:** an actual keystroke in a live window (this environment has
 no display), which is the one check left for a machine with a GPU.
+
+---
+
+## M9b — Console clipboard (paste a ticket)
+
+A ticket is forty-odd characters of base32, and asking a person to type one is
+asking for a typo. So the console reads the clipboard on Ctrl+V; `copy` with no
+argument puts the ticket you were given back onto it; Ctrl+C copies the current
+line.
+
+Two more engine bindings carry it: `getClipboardText` and `setClipboardText`,
+which are raylib's own clipboard. Without them the console says the binding is
+missing rather than silently doing nothing. The paste path drops control
+characters -- a ticket copied out of a terminal arrives with a newline -- and
+respects the input's length limit, so a stray paste cannot overflow the field.
+
+Verified: the harness sets a stub clipboard, presses Ctrl+V and Ctrl+C on
+scripted frames, and checks the pasted line plus both writes back (five checks),
+taking it to 105. The rl surface test covers the two new bindings.
+
+**Pending:** those bindings are not upstream yet -- they live in the local Slag
+checkout -- so `rl.getClipboardText` is undefined until the engine PR lands and
+`Cargo.lock` is bumped. The console reports the missing binding until then.
 
 ---
 

@@ -142,6 +142,9 @@ ticket.
   text in the game window cannot be selected.
 - **Join**: `connect <ticket>` in the console; it asks for a username. Names are
   first come, first served, so a duplicate becomes `bob #2`.
+- **Paste, don't type**: the console reads the clipboard on Ctrl+V, so the ticket
+  can be pasted. `copy` puts the ticket you were given back on the clipboard, and
+  Ctrl+C copies the current line.
 - **Standalone server**: `cargo run --release -p server` runs `goatsd`, a
   headless host that prints its ticket and logs joins, leaves and the roster.
   Stop it with Ctrl-C.
