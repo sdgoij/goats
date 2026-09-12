@@ -13,6 +13,8 @@
 // ---- bot herd ------------------------------------------------------------
 
 const BOT_COUNT = 6;
+// How far a bot will look for grass to walk to when it decides to graze.
+const GRAZE_SEEK_RANGE = 12;
 
 // Coat colour (for the procedural fleece), body scale, and temperament.
 // `bold` scales a bot's cruising speed; `lazy` biases it toward standing still.
@@ -32,9 +34,11 @@ const BOT_TEX = [];
 // seeded and the harness asserts on the exact weather it produces, so drawing
 // from it here would shift every later value.
 let botRngState = 0x2545f491;
-// Highest belly any bot has reached this run; logged every 240 frames so the
-// harness can see the herd actually fed itself.
+// Highest belly any bot has reached this run, and how many times a bot has set
+// off to walk to a tuft; both logged every 240 frames so the harness can see the
+// herd actually fed itself.
 let botBellyMax = 0;
+let botGrazeWalks = 0;
 function botRnd() {
     botRngState ^= botRngState << 13;
     botRngState >>>= 0;
@@ -98,6 +102,7 @@ function loadBots() {
             eatDur: 1,
             eatCool: 0,    // seconds before this bot will graze again
             satiety: 0,    // 0..1, eases this bot's rain slowdown while it lasts
+            graze: false,  // walking to a tuft to eat when it arrives
             // Which clip variant this bot plays per role; -1 so the first cycle
             // lands on index 0, and walk/trot/run have only one clip each.
             var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0 },
@@ -130,32 +135,53 @@ function botRole(b) {
     return "walk";
 }
 
-// Pick a new action: stand and gaze, graze, doze, or set off to a wander target,
+// Pick a new action: graze, stand and gaze, doze, or set off to a wander target,
 // aimed back toward the player when the bot has drifted too far. Kept as one
 // function rather than action + target helpers so the per-frame call depth stays
 // shallow -- debug builds guard the native stack hard, and bots run every frame.
+
+// Begin a meal: consume `t`, fill the belly, turn onto it and play an eat clip.
+// Used both when grass is already under the nose and when a grazing walk arrives.
+function botStartEat(b, t) {
+    const n = clipCount("eat");
+    if (n > 1) b.var.eat = (b.var.eat + 1) % n;
+    const info = clipAt("eat", b.var.eat);
+    consumeTuft(t);
+    b.yaw = Math.atan2(-(t.z - b.z), t.x - b.x);
+    b.satiety = Math.min(1, b.satiety + EAT_SATIETY);
+    b.mode = "eat";
+    b.eatTime = 0;
+    b.eatDur = info !== null && info !== undefined ? info.duration : EAT_FALLBACK_TIME;
+    b.timer = b.eatDur;
+    b.eatCool = 20 + botRnd() * 40;
+    b.graze = false;
+    b.zoom = 0;
+}
+
 function botNewAction(b) {
-    // Bots graze too: when a tuft is in reach, they sometimes stop and eat it.
-    // The cooldown keeps the herd from stripping the field bare.
+    // Bots graze too. If a tuft is already under the nose they eat it now;
+    // otherwise they walk to the nearest one and eat when they arrive (the
+    // arrival check in `updateBots` reads the `graze` flag). The cooldown keeps
+    // the herd from stripping the field bare.
     if (b.eatCool <= 0 && botRnd() < 0.6) {
-        const t = nearestTuft(b.x, b.z, EAT_RANGE);
-        if (t !== null) {
-            const n = clipCount("eat");
-            if (n > 1) b.var.eat = (b.var.eat + 1) % n;
-            const info = clipAt("eat", b.var.eat);
-            consumeTuft(t);
-            // Face the tuft so the head comes down onto it, like the player.
-            b.yaw = Math.atan2(-(t.z - b.z), t.x - b.x);
-            b.satiety = Math.min(1, b.satiety + EAT_SATIETY);
-            b.mode = "eat";
-            b.eatTime = 0;
-            b.eatDur = info !== null && info !== undefined ? info.duration : EAT_FALLBACK_TIME;
-            b.timer = b.eatDur;
-            b.eatCool = 20 + botRnd() * 40;
+        const near = nearestTuft(b.x, b.z, EAT_RANGE);
+        if (near !== null) {
+            botStartEat(b, near);
+            return;
+        }
+        const far = nearestTuft(b.x, b.z, GRAZE_SEEK_RANGE);
+        if (far !== null) {
+            b.graze = true;
+            botGrazeWalks += 1;
+            b.tx = far.x;
+            b.tz = far.z;
+            b.mode = "walk";
+            b.timer = 14;      // give up if the walk drags on
             b.zoom = 0;
             return;
         }
     }
+    b.graze = false;
     const r = botRnd();
     if (r < 0.30 + 0.35 * b.spec.lazy) {
         b.mode = botRnd() < 0.10 ? "sleep" : "idle";
@@ -235,8 +261,20 @@ function updateBots(dt) {
                 const dx = b.tx - b.x;
                 const dz = b.tz - b.z;
                 const d = Math.sqrt(dx * dx + dz * dz);
-                if (d < 1.6 || b.timer <= 0) {
-                    if (b.mode === "run" && b.zoom > 0) {
+                // A grazing walk closes right in on its tuft; other targets stop short.
+                const arrive = b.graze ? 0.7 : 1.6;
+                if (d < arrive || b.timer <= 0) {
+                    if (b.graze) {
+                        // Arrived: eat whatever is under the nose now (the tuft
+                        // may have been taken meanwhile), else give up.
+                        b.graze = false;
+                        const t = nearestTuft(b.x, b.z, EAT_RANGE);
+                        if (t !== null) botStartEat(b, t);
+                        else {
+                            b.mode = "idle";
+                            b.timer = 1.5 + botRnd() * 3;
+                        }
+                    } else if (b.mode === "run" && b.zoom > 0) {
                         // Mid-zoomies: grab a fresh target and keep going.
                         const a = botRnd() * Math.PI * 2;
                         const r = 9 + botRnd() * 12;

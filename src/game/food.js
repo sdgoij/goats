@@ -30,39 +30,15 @@ let foodRngState = 0x1f2e3d4c;
 let satiety = 0;                // 0..1
 let eatenCount = 0;
 
-function foodRnd() {
-    foodRngState ^= foodRngState << 13;
-    foodRngState >>>= 0;
-    foodRngState ^= foodRngState >>> 17;
-    foodRngState ^= foodRngState << 5;
-    foodRngState >>>= 0;
-    return foodRngState / 4294967296;
-}
-
 // A cell's identity as one number, unique for the cell range the field spans.
 function tuftKey(cx, cz) {
     return (cx + 4096) * 8192 + (cz + 4096);
 }
 
-// The tuft in cell (cx, cz): its world x/z, or null when the cell is empty or
-// already eaten. Mirrors the inlined hash in `drawTufts` (weather.js) -- keep
-// the two in step.
-function tuftCell(cx, cz) {
-    let h = (cx * 374761393 + cz * 668265263) | 0;
-    h = Math.imul(h ^ (h >>> 13), 1274126177);
-    h = (h ^ (h >>> 16)) >>> 0;
-    const a = h / 4294967296;
-    if (a < 0.45) return null;
-    if (EATEN.has(tuftKey(cx, cz))) return null;
-    let h2 = (cx * 1103515245 + cz * 12345) | 0;
-    h2 = Math.imul(h2 ^ (h2 >>> 15), 2246822519);
-    h2 = (h2 ^ (h2 >>> 13)) >>> 0;
-    return { x: cx * 2 + (h2 / 4294967296 - 0.5) * 1.8, z: cz * 2 + (a - 0.5) * 1.8 };
-}
-
 // The nearest tuft within `range` of (x, z), as { x, z, cx, cz, d2 }, or null.
-// Only the cells that could hold one are visited, so the per-frame call with
-// `EAT_RANGE` touches a 3x3 block.
+// The cell hash is inlined (rather than calling a helper, as `drawTufts` does
+// too) to keep the per-frame call depth shallow -- debug builds guard the native
+// stack hard and the bots call this every action.
 function nearestTuft(x, z, range) {
     const r = Math.ceil(range / 2);
     const cx = Math.floor(x / 2);
@@ -71,14 +47,23 @@ function nearestTuft(x, z, range) {
     let bestD2 = range * range;
     for (let i = cx - r; i <= cx + r; i++) {
         for (let j = cz - r; j <= cz + r; j++) {
-            const t = tuftCell(i, j);
-            if (t === null) continue;
-            const dx = t.x - x;
-            const dz = t.z - z;
+            let h = (i * 374761393 + j * 668265263) | 0;
+            h = Math.imul(h ^ (h >>> 13), 1274126177);
+            h = (h ^ (h >>> 16)) >>> 0;
+            const a = h / 4294967296;
+            if (a < 0.45) continue;
+            if (EATEN.has((i + 4096) * 8192 + (j + 4096))) continue;
+            let h2 = (i * 1103515245 + j * 12345) | 0;
+            h2 = Math.imul(h2 ^ (h2 >>> 15), 2246822519);
+            h2 = (h2 ^ (h2 >>> 13)) >>> 0;
+            const tx = i * 2 + (h2 / 4294967296 - 0.5) * 1.8;
+            const tz = j * 2 + (a - 0.5) * 1.8;
+            const dx = tx - x;
+            const dz = tz - z;
             const d2 = dx * dx + dz * dz;
             if (d2 <= bestD2) {
                 bestD2 = d2;
-                best = { x: t.x, z: t.z, cx: i, cz: j, d2: d2 };
+                best = { x: tx, z: tz, cx: i, cz: j, d2: d2 };
             }
         }
     }
@@ -86,10 +71,17 @@ function nearestTuft(x, z, range) {
 }
 
 // Mark a tuft eaten so it disappears and schedules its regrowth. Shared by the
-// player and the bots; returns false when there was nothing to eat.
+// player and the bots; returns false when there was nothing to eat. The regrow
+// PRNG is inlined so this stays a leaf call (see `nearestTuft`).
 function consumeTuft(target) {
     if (target === null || target === undefined) return false;
-    EATEN.set(tuftKey(target.cx, target.cz), REGROW_MIN + foodRnd() * (REGROW_MAX - REGROW_MIN));
+    foodRngState ^= foodRngState << 13;
+    foodRngState >>>= 0;
+    foodRngState ^= foodRngState >>> 17;
+    foodRngState ^= foodRngState << 5;
+    foodRngState >>>= 0;
+    EATEN.set(tuftKey(target.cx, target.cz),
+        REGROW_MIN + (foodRngState / 4294967296) * (REGROW_MAX - REGROW_MIN));
     eatenCount += 1;
     return true;
 }

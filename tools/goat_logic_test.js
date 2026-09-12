@@ -299,6 +299,8 @@ try {
 const bellyLog = logs.map((l) => /bellyMax ([\d.]+)/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
 const botBellyMax = bellyLog.length ? Math.max.apply(null, bellyLog) : 0;
 const botFed = botBellyMax > 0;
+const grazeWalks = logs.map((l) => /grazeWalks (\d+)/.exec(l)).filter(Boolean).map((m) => Number(m[1]));
+const botGrazeWalks = grazeWalks.length ? Math.max.apply(null, grazeWalks) : 0;
 
 const checks = [
     ['no throw', thrown === null, thrown],
@@ -359,6 +361,7 @@ const checks = [
     ['a full belly eases the rain slowdown', rainEase, rainEase],
     ['bots graze the field', botEats > 0, botEats],
     ['bots fill their own belly', botFed, botBellyMax],
+    ['bots walk to a tuft to eat', botGrazeWalks > 0, botGrazeWalks],
     ['bots do not feed the player', botSatiety === 0, botSatiety],
     ['bots play the eating clip', botEatClips >= 1, botEatClips],
     ['eaten grass regrows', eatTest.regrew, eatTest],
