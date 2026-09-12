@@ -18,6 +18,8 @@
 //!
 //! Run: `cargo run --release`
 
+mod net;
+
 use std::io::{BufRead, Write};
 
 use slag::{Context, HostCallbacks, JsValue};
@@ -110,6 +112,7 @@ const SCENE: &str = concat!(
     include_str!("game/ctl.js"),
     include_str!("game/menu.js"),
     include_str!("game/console.js"),
+    include_str!("game/net.js"),
 );
 
 /// One of the scene's global functions, resolved by name.
@@ -119,6 +122,18 @@ fn scene_function(context: &Context, name: &str) -> JsValue {
         .unwrap_or_else(|error| panic!("global object: {error}"))
         .get(name)
         .unwrap_or_else(|error| panic!("scene global {name}: {error}"))
+}
+
+/// One of the scene's global functions, if it defines it. The network bridge
+/// uses this: a scene that predates it leaves the host doing no networking
+/// rather than refusing to start.
+fn scene_function_if_present(context: &Context, name: &str) -> Option<JsValue> {
+    let value = context.global().ok()?.get(name).ok()?;
+    if value.is_undefined() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn main() {
@@ -163,6 +178,13 @@ fn main() {
         .unwrap();
 
     context.call(&init, &JsValue::undefined(), &[]).unwrap();
+
+    // The network bridge. Both entry points live in the scene (`net.js`); the
+    // host only moves lines between the frame loop and the runtime thread.
+    let net_event = scene_function_if_present(&context, "sceneNetEvent");
+    let net_drain = scene_function_if_present(&context, "sceneNetDrain");
+    let mut net = net::Net::start();
+
     loop {
         while let Ok(line) = pending.try_recv() {
             if line.trim().is_empty() {
@@ -183,6 +205,18 @@ fn main() {
                 }
             }
         }
+
+        // Networking events land on the frame boundary, like commands do.
+        if let Some(handler) = &net_event {
+            while let Some(line) = net.next_event() {
+                if let Err(error) =
+                    context.call(handler, &JsValue::undefined(), &[JsValue::string(line)])
+                {
+                    eprintln!("[net] sceneNetEvent: {error}");
+                }
+            }
+        }
+
         let running = context
             .call(&frame, &JsValue::undefined(), &[])
             .unwrap()
@@ -190,6 +224,22 @@ fn main() {
             .unwrap_or(false);
         if !running {
             break;
+        }
+
+        // The scene's queued intents leave on the same boundary.
+        if let Some(drain) = &net_drain {
+            match context.call(drain, &JsValue::undefined(), &[]) {
+                Ok(value) => {
+                    if let Some(text) = value.as_string() {
+                        for line in text.lines() {
+                            if !line.trim().is_empty() {
+                                net.send(line);
+                            }
+                        }
+                    }
+                }
+                Err(error) => eprintln!("[net] sceneNetDrain: {error}"),
+            }
         }
     }
     context.call(&shutdown, &JsValue::undefined(), &[]).unwrap();

@@ -1,4 +1,4 @@
-// Part 1/13 of the goat scene: tuning, stats, palette and maths helpers. This
+// Part 1/14 of the goat scene: tuning, stats, palette and maths helpers. This
 // file also carries the scene's overall header comment.
 //
 // A walking, running, jumping goat for the Slag x raylib sandbox.
@@ -22,6 +22,7 @@
 //   ctl.js       the stdin command channel
 //   menu.js      the main menu, settings and keymap (raygui)
 //   console.js   the in-game console overlay (M9)
+//   net.js       the network bridge to the Rust host (M10)
 //
 // The goat is `goat_animated.glb`, baked from the Blender rig and loaded through
 // the `rl` model surface. Every clip bakes its forward travel as *in-place*

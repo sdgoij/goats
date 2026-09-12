@@ -1,4 +1,4 @@
-// Part 13/13 of the goat scene: the in-game console.
+// Part 13/14 of the goat scene: the in-game console.
 // ---- console --------------------------------------------------------------
 //
 // An overlay, not a menu. A menu is a `uiScreen` value, which freezes the world

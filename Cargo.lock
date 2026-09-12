@@ -1087,7 +1087,11 @@ dependencies = [
 name = "goats"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "session",
  "slag",
+ "tokio",
 ]
 
 [[package]]

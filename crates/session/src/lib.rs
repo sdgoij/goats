@@ -183,6 +183,7 @@ impl Server {
 pub struct Host {
     endpoint: Endpoint,
     ticket: String,
+    name: String,
     events: mpsc::UnboundedReceiver<Event>,
 }
 
@@ -193,8 +194,9 @@ impl Host {
         let endpoint = bind_endpoint().await?;
         let ticket = EndpointTicket::new(endpoint.addr()).encode_string();
 
+        let local_name = proto::sanitize_name(host_name);
         let server = Arc::new(Mutex::new(Server {
-            roster: vec![proto::sanitize_name(host_name)],
+            roster: vec![local_name.clone()],
             connections: Vec::new(),
         }));
         let (events, receiver) = mpsc::unbounded_channel();
@@ -214,6 +216,7 @@ impl Host {
         Ok(Host {
             endpoint,
             ticket,
+            name: local_name,
             events: receiver,
         })
     }
@@ -221,6 +224,12 @@ impl Host {
     /// The copy-pasteable ticket a joiner needs.
     pub fn ticket(&self) -> &str {
         &self.ticket
+    }
+
+    /// The local player's canonical name -- the sanitized one, which is what the
+    /// roster carries, not necessarily what was asked for.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// The endpoint id plus its current direct addresses.

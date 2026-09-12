@@ -691,12 +691,15 @@ no display), which is the one check left for a machine with a GPU.
 All of it moves to Rust, because the JS engine has no sockets: the scene never
 touches the network, it only emits intents and consumes events.
 
-**Landed so far.** The workspace, the `proto` wire types and framing, and the
-iroh transport carrying the join handshake and the roster: the host assigns and
-de-dupes the name, answers `Welcome` with the canonical name and the current
-roster, and broadcasts `Roster` on every join and leave. Headless tests drive
-real loopback endpoints, so none of it needs a network. Remaining: the host
-bridge to the scene, the `goatsd` binary, and the client's host/join UI.
+**Landed so far.** The workspace, the `proto` wire types and framing, the iroh
+transport carrying the join handshake and the roster, and the host bridge: a
+tokio thread owns the session, while the frame loop feeds the scene its events
+with `sceneNetEvent` and takes the scene's queued intents back with
+`sceneNetDrain`, never awaiting. The host assigns and de-dupes the name, answers
+`Welcome` with the canonical name and the current roster, and broadcasts
+`Roster` on every join and leave. Headless tests drive real loopback endpoints
+for the session and the scene end of the bridge, so none of it needs a network
+or a display. Remaining: the `goatsd` binary and the username prompt.
 
 **Repository.** Convert to a Cargo workspace, mirroring Slag's layout:
 
@@ -823,10 +826,13 @@ frame per QUIC datagram on the connection we already have.
   iroh or tokio) and `crates/session` (the iroh transport) have landed;
   `crates/server` (the `goatsd` binary) follows. The assets stay at the repo root
   and the client reaches them with `include_bytes!("../../../…")`.
-- **Host bridge.** The JS↔Rust boundary stays line/JSON: `sceneCommand` in,
-  `sceneNetEvent` out, one more host callback back. The synchronous frame loop
-  drains an `mpsc` and never awaits (iroh is Tokio); the harness stubs the same
-  entry points.
+- **Host bridge.** ✅ **Done.** The JS↔Rust boundary is line/JSON in both
+  directions: `sceneCommand` in, `sceneNetEvent(line)` for networking events, and
+  `sceneNetDrain()` out — the host calls it each frame and it returns and clears
+  the scene's queued intents. The scene cannot call the host directly, because
+  the public `slag` API registers no native functions; that is what makes the
+  drain the shape it is. The synchronous frame loop never awaits: the tokio
+  runtime and the session live on their own thread.
 - **Persistence.** Saving stats and time of day would make death and long
   sessions meaningful. Needs a small host-side file API or an in-memory
   restart-only model. The same API has to hold the netplay endpoint's secret key

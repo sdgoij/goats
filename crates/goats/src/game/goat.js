@@ -1,4 +1,4 @@
-// Part 10/13 of the goat scene: the gait state machine, HUD and frame loop.
+// Part 10/14 of the goat scene: the gait state machine, HUD and frame loop.
 // ---- gait state ----------------------------------------------------------
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };

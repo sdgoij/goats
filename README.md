@@ -192,7 +192,8 @@ gets on the free plan.
 | --- | --- |
 | `Cargo.toml` | The workspace manifest: `crates/goats` (its `default-members`, so `cargo run` means the client) plus the networking crates |
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
-| `crates/goats/src/game/*.js` | The scene, split into 13 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console) |
+| `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
+| `crates/goats/src/game/*.js` | The scene, split into 14 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net) |
 | `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
 | `crates/proto/` | The session protocol: message types, framing and name rules (no iroh or tokio) |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
@@ -230,6 +231,13 @@ The model bytes are compiled in with `include_bytes!`, so the model needs no
 files on disk at runtime (the audio does — see `sfx/`). `model.js` finds the
 clip it wants by name via the `rl` surface (`modelAnimationCount` /
 `modelAnimationName`), so a missing clip degrades to the walk rather than failing.
+
+Networking is the one thing JavaScript cannot do here, so it lives in Rust behind
+a line-based bridge: `net.rs` runs the session on its own tokio thread, and each
+frame the host hands the scene its events with `sceneNetEvent(line)` and takes
+the scene's queued intents back with `sceneNetDrain()`, without ever awaiting in
+the frame loop. `net.js` is the scene end of that channel; the console commands
+are `host`, `connect <ticket>`, `who` and `leave`.
 
 ## Model pipeline
 

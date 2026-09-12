@@ -505,6 +505,45 @@ try {
     terrainError = String(e);
 }
 
+// Network bridge (M10): the scene end of it is pure JS, so the harness drives it
+// with no socket and no peer. `sceneNetDrain` is what the host calls each frame
+// and `sceneNetEvent` is what it feeds back.
+let netTest = {};
+try {
+    netTest.drainEmpty = sandbox.sceneNetDrain() === '';
+
+    netTest.hostReply = sandbox.sceneCommand('host bob');
+    const hostIntent = sandbox.sceneNetDrain();
+    netTest.hostQueued = netTest.hostReply === 'ok host' &&
+        hostIntent.indexOf('"type":"host"') >= 0 && hostIntent.indexOf('"name":"bob"') >= 0;
+    netTest.drained = sandbox.sceneNetDrain() === '';   // the queue clears
+
+    sandbox.sceneNetEvent('{"type":"hosting","name":"bob"}');
+    sandbox.sceneNetEvent('{"type":"ticket","ticket":"endpointXYZ"}');
+    sandbox.sceneNetEvent('{"type":"roster","names":["bob","alice"]}');
+    const status = JSON.parse(sandbox.sceneCommand('net').slice(3));
+    netTest.status = status.mode === 'host' && status.name === 'bob' &&
+        status.ticket === 'endpointXYZ' && status.roster.length === 2;
+
+    sandbox.sceneNetEvent('{"type":"joined","name":"alice"}');
+    const consoleState = JSON.parse(sandbox.sceneCommand('console').slice(3));
+    netTest.printed = consoleState.lines.some((l) => l.indexOf('alice joined') >= 0) &&
+        consoleState.lines.some((l) => l.indexOf('roster bob, alice') >= 0);
+
+    netTest.duplicate = sandbox.sceneCommand('host bob') === 'error already in a session (leave first)';
+    netTest.left = sandbox.sceneCommand('leave') === 'ok leave' &&
+        sandbox.sceneNetDrain().indexOf('"type":"close"') >= 0;
+
+    sandbox.sceneNetEvent('{"type":"disconnected"}');
+    netTest.reset = JSON.parse(sandbox.sceneCommand('net').slice(3)).mode === 'off';
+
+    netTest.noTicket = sandbox.sceneCommand('connect') === 'error connect expects a ticket';
+    netTest.joinQueued = sandbox.sceneCommand('connect endpointABC alice') === 'ok connect' &&
+        sandbox.sceneNetDrain().indexOf('"ticket":"endpointABC"') >= 0;
+} catch (e) {
+    netTest.error = String(e);
+}
+
 // Console (M9): the snapshots taken at the scripted frames, and a shorthand.
 const cp = (i) => consoleProbe[i] ||
     { x: null, z: null, state: { open: false, input: '', lines: [], history: [] }, ui: '' };
@@ -626,6 +665,17 @@ const checks = [
         cp(4007).x !== cp(4008).x || cp(4007).z !== cp(4008).z, [cp(4007), cp(4008)]],
     ['the console freezes the goat',
         cp(4009).x === cp(4011).x && cp(4009).z === cp(4011).z, [cp(4009), cp(4011)]],
+    // Network bridge (M10): the scene end of it, driven without a socket.
+    ['no network bridge errors', netTest.error === undefined, netTest.error],
+    ['nothing is queued at rest', netTest.drainEmpty, netTest],
+    ['host queues an intent and clears it', netTest.hostQueued && netTest.drained, netTest],
+    ['events update the local view', netTest.status, netTest.status],
+    ['events print to the console', netTest.printed, netTest],
+    ['a second session is refused', netTest.duplicate, netTest],
+    ['leave queues a close', netTest.left, netTest],
+    ['disconnect resets the view', netTest.reset, netTest],
+    ['connect without a ticket is an error', netTest.noTicket, netTest],
+    ['connect queues a join', netTest.joinQueued, netTest],
 ];
 
 const failed = checks.filter((c) => !c[1]);

@@ -1,4 +1,4 @@
-// Part 11/13 of the goat scene: the stdin command channel.
+// Part 11/14 of the goat scene: the stdin command channel.
 // ---- control channel ------------------------------------------------------
 //
 // The host (`crates/goats/src/main.rs`) reads a line from stdin, calls
@@ -22,6 +22,7 @@ const ctlHeld = {};
 const HELP = "help ping state stats time weather bots camera features fps " +
     "jump sleep wake restart kill health energy heal eat grass walk trot run back stop " +
     "turn yaw pos phase pause resume step lighting shadows sky mute settings setting ui console " +
+    "host connect leave who net " +
     "screenshot quit";
 
 // A movement key is down if a script holds it or the real keyboard does, and no
@@ -265,6 +266,21 @@ function sceneCommand(line) {
                 lines: consoleLines.map(function (line) { return line.kind + ": " + line.text; })
             });
         }
+
+        // ---- net (M10) ---------------------------------------------------
+        case "host":
+            return netHost(parts);
+        case "connect":
+        case "join":
+            return netJoin(parts);
+        case "leave":
+        case "disconnect":
+            return netLeave();
+        case "who":
+            if (!netInSession()) return "error not in a session";
+            return "ok " + JSON.stringify(netStatus());
+        case "net":
+            return "ok " + JSON.stringify(netStatus());
 
         // ---- goat state --------------------------------------------------
         case "jump":
