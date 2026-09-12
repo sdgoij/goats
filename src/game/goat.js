@@ -319,6 +319,62 @@ function drawHud(move) {
 // it returns false, then `sceneShutdown()`. `run()` is the standalone driver
 // kept for the headless harness (`tools/goat_logic_test.js`).
 
+// ---- loading -------------------------------------------------------------
+//
+// Startup work is split into steps so the frame loop can paint a splash (and a
+// progress bar) between them: `sceneInit` opens the window, then each
+// `sceneFrame` takes one step while `sceneReady()` is false. Cheap work runs
+// first, so the window paints before the heavy model loads.
+
+let loaded = false;
+let loadStep = 0;
+let loadTotal = 0;
+
+// The harness reads this to tell loading frames from game frames.
+function sceneReady() {
+    return loaded;
+}
+
+function sceneLoadStep() {
+    const i = loadStep;
+    loadStep += 1;
+    if (i === 0) makeEyeTextures();
+    else if (i === 1) makeSkyTextures();
+    else if (i === 2) makeWeatherTextures();
+    else if (i === 3) loadGoat();
+    else if (i === 4) makeLighting();
+    else if (i === 5) makeSkyShader();
+    else if (i === 6) makeAudio();
+    else if (i === 7) makeBotTextures();
+    else {
+        // One bot per step, so the bar keeps moving through the model loads.
+        const want = clamp(Math.round(SETTINGS.herd), 0, 10);
+        if (BOTS.length < want) botAdd(BOTS.length);
+    }
+}
+
+// The splash: title, progress bar and a step counter.
+function drawLoading() {
+    const sw = rl.getScreenWidth();
+    const sh = rl.getScreenHeight();
+    rl.beginDrawing();
+    rl.clearBackground(rl.color(10, 12, 18, 255));
+    const w = 420;
+    const x = Math.round((sw - w) / 2);
+    const y = Math.round(sh / 2);
+    rl.drawText("Slag goat", x, y - 64, 40, rl.RAYWHITE);
+    if (typeof rl.guiProgressBar === "function") {
+        rl.guiProgressBar(x, y, w, 24, "", "Loading", loadStep, 0, loadTotal > 0 ? loadTotal : 1);
+    } else {
+        rl.drawRectangle(x, y, w, 24, rl.color(40, 44, 52, 255));
+        rl.drawRectangle(x, y, Math.round(w * loadStep / (loadTotal > 0 ? loadTotal : 1)), 24,
+            rl.color(120, 190, 120, 255));
+    }
+    rl.drawText("loading " + Math.min(loadStep, loadTotal) + " / " + loadTotal,
+        x, y + 34, 16, rl.RAYWHITE);
+    rl.endDrawing();
+}
+
 function sceneInit() {
     rl.initWindow(1000, 640, "Slag goat - walk / run / jump / sleep");
     rl.setTargetFPS(60);
@@ -329,16 +385,10 @@ function sceneInit() {
         typeof rl.isWindowFullscreen === "function" && !rl.isWindowFullscreen()) {
         rl.toggleFullscreen();
     }
-    loadGoat();
-    makeEyeTextures();
-    makeSkyTextures();
-    makeWeatherTextures();
-    makeLighting();
-    makeSkyShader();
-    makeAudio();
-    makeBotTextures();
-    loadBots();
-
+    // The load runs a step at a time from `sceneFrame`, so the splash shows.
+    loaded = false;
+    loadStep = 0;
+    loadTotal = 8 + clamp(Math.round(SETTINGS.herd), 0, 10);
     screenW = rl.getScreenWidth();
     screenH = rl.getScreenHeight();
     sceneFrames = 0;
@@ -348,6 +398,20 @@ function sceneInit() {
 // closing or `quit` was received, so the host stops calling it.
 function sceneFrame() {
     if (ctlQuit || rl.windowShouldClose()) return false;
+
+    // Loading: take one startup step per frame, drawing the splash until done.
+    if (!loaded) {
+        if (loadStep < loadTotal) sceneLoadStep();
+        if (loadStep >= loadTotal) {
+            loaded = true;
+            applyStartupSettings();
+            if (BOTS.length > 0) console.log("goat: " + BOTS.length + " bot goats");
+        } else {
+            drawLoading();
+            return true;
+        }
+    }
+
     // ESC toggles the main menu: it freezes the game and opens the menu; a second
     // press resumes (or steps back from a sub-screen).
     if (rl.isKeyPressed(rl.KEY_ESCAPE)) {
@@ -421,7 +485,9 @@ function sceneFrame() {
         SETTINGS.shadow = shadowMode;
     }
     if (press(rl.KEY_M)) setMuted(!muted);
-    if (press(rl.KEY_F11)) {
+    // `KEY_F11` ships with the engine's fullscreen bindings; skip the toggle if
+    // an older engine does not export it (a non-number would throw in raylib).
+    if (typeof rl.KEY_F11 === "number" && press(rl.KEY_F11)) {
         SETTINGS.fullscreen = !SETTINGS.fullscreen;
         applySettings();
     }

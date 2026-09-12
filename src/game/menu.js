@@ -64,6 +64,18 @@ function applySettings() {
     setHerdSize(SETTINGS.herd);
 }
 
+// The subset of `applySettings` that is safe before the first frame: the shadow
+// map only counts as ready once it has been rendered, so startup sets the mode
+// directly rather than letting `applySettings` downgrade it.
+function applyStartupSettings() {
+    applyAudioSettings();
+    useLighting = SETTINGS.light;
+    if (litShader >= 0 && haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+    setBotsShader(useLighting ? litShader : -1);
+    if (skyShader >= 0) useSkyShader = SETTINGS.sky;
+    shadowMode = SETTINGS.shadow;
+}
+
 function drawMainMenu(sw, sh) {
     const w = 300;
     const h = 262;

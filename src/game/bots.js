@@ -133,11 +133,6 @@ function setHerdSize(n) {
     }
 }
 
-function loadBots() {
-    setHerdSize(SETTINGS.herd);
-    if (BOTS.length > 0) console.log("goat: " + BOTS.length + " bot goats");
-}
-
 function unloadBots() {
     if (typeof rl.unloadModel === "function") {
         for (let i = 0; i < BOTS.length; i++) rl.unloadModel(BOTS[i].model);

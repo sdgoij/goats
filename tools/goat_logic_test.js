@@ -51,6 +51,11 @@ let shadowPass = false;
 let shadowCubeDraws = 0;
 let menuDraws = 0;
 let cubeDraws = 0;
+// Splash instrumentation: loading frames are those drawn before `sceneReady()`.
+let loadingFrames = 0;
+let progressBarCalls = 0;
+let splashTitle = false;
+let splashStep = '';
 
 const keys = {};
 const pressed = {};
@@ -143,6 +148,7 @@ const rl = Object.assign({}, constants, {
     guiToggle: (_x, _y, _w, _h, _t, v) => ({ action: 0, value: v }),
     guiSlider: (_x, _y, _w, _h, _l, _r, v) => ({ action: 0, value: v }),
     guiComboBox: (_x, _y, _w, _h, _t, v) => ({ action: 0, value: v }),
+    guiProgressBar: () => { progressBarCalls += 1; return { action: 0, value: 0 }; },
     windowShouldClose: () => {
         if (frameIndex >= TOTAL) return true;
         applyInput(frameIndex);
@@ -156,6 +162,11 @@ const rl = Object.assign({}, constants, {
     isKeyPressed: (k) => !!pressed[k],
     isKeyReleased: () => false, isKeyUp: (k) => !keys[k],
     beginDrawing: () => {}, clearBackground: () => {}, endDrawing: () => {
+        // The splash's loading frames are not part of the scripted timeline.
+        if (typeof sandbox.sceneReady === 'function' && !sandbox.sceneReady()) {
+            loadingFrames += 1;
+            return;
+        }
         timeline.push({
             i: frameIndex,
             clip: lastPosed ? lastPosed.clip : null,
@@ -174,6 +185,8 @@ const rl = Object.assign({}, constants, {
         if (s.indexOf('speed ') >= 0) speedText = s;
         else if (s.indexOf('health ') >= 0) statsText = s;
         else if (s.indexOf('wind ') >= 0) weatherText = s;
+        else if (s.indexOf('Slag goat') >= 0) splashTitle = true;
+        else if (s.indexOf('loading ') >= 0) splashStep = s;
     },
 });
 
@@ -193,11 +206,16 @@ if (parts.length === 0) throw new Error('no src/game parts found in src/main.rs'
 const source = parts.map((name) => fs.readFileSync(path.join(gameDir, name), 'utf8')).join('');
 let thrown = null;
 let defaultSettings = {};
+// The scene must hand the loop back unloaded, so the host can paint a splash.
+let readyBefore = null;
+let hasLoadStep = false;
 try {
     // The scene no longer self-drives (the host owns the loop -- see
     // src/main.rs), so evaluate it, read the settings defaults before the
     // scripted input (which presses L and friends), then start the driver.
     vm.runInContext(source, sandbox, { filename: 'game.js' });
+    readyBefore = typeof sandbox.sceneReady === 'function' ? sandbox.sceneReady() : null;
+    hasLoadStep = typeof sandbox.sceneLoadStep === 'function';
     defaultSettings = JSON.parse(sandbox.sceneCommand('settings').slice(3));
     sandbox.run();
 } catch (e) {
@@ -419,6 +437,15 @@ const checks = [
     ['herd size grows the herd', herdGrew, null],
     ['herd size shrinks the herd', herdShrank, null],
     ['menu screens can be opened', screenSet, null],
+    // Splash: the scene starts unloaded, the loop takes one step per frame and
+    // paints a progress bar, then the game begins on the frame after the last
+    // step (so `loadTotal - 1` loading frames are drawn for the default herd).
+    ['the scene starts unloaded', readyBefore === false && hasLoadStep, readyBefore],
+    ['the loader takes one step per frame', loadingFrames === 8 + 7 - 1, loadingFrames],
+    ['the splash draws a progress bar', progressBarCalls === loadingFrames && progressBarCalls > 0,
+        [progressBarCalls, loadingFrames]],
+    ['the splash names the game and step count',
+        splashTitle && splashStep === 'loading 14 / 15', [splashTitle, splashStep]],
 ];
 
 const failed = checks.filter((c) => !c[1]);
