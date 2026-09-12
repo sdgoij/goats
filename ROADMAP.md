@@ -914,18 +914,24 @@ next snapshot would resurrect the tuft it just ate. Wire version 5.
 goats remain client-authoritative, and the stats and the pause/death flow that
 were built for single player (`stats.energy`, `satiety`, `P`, restart) are still
 local, so they carry across a join and are not part of a session — open questions
-9 and 13. Separately, the scene does the full render-side work every step (all
-no-ops, but real JavaScript): a release build keeps up with 60 Hz, a debug one
-does not, so `goatsd` wants `--release`.
+9 and 13. That is also where the interaction latency lives: a remote goat eases
+toward its newest snapshot and is never extrapolated, so it sits ~100 ms behind
+and bumping or racing it feels soft, and the world snapshot's 10 Hz cadence
+bounds how fast a bot's reaction or a fresh eaten patch shows. Both are the
+accepted price of trusting the client for movement, and both are exactly what
+prediction/reconciliation (question 9) would remove — deferred until it matters.
+Separately, the scene does the full render-side work every step (all no-ops, but
+real JavaScript): a release build keeps up with 60 Hz, a debug one does not, so
+`goatsd` wants `--release`.
 
 **Verified.** `cargo test --workspace` — proto 14, session 9, goats 4, server 2
 plus 1 `#[ignore]`d (three fresh sims, each re-JITing the scene, is ~35 s) — the
 harness at ALL PASS (128, including the host-publishes, client-mirrors, streams,
 meadow and bite-report checks), `cargo fmt --all -- --check` and `cargo clippy
---workspace --all-targets -- -D warnings` clean. The live check also passed:
-with two windows in a session, a tuft eaten in one disappeared in the other —
-the bite was reported, the host's scene recorded it, and the next snapshot
-carried it to the other client, which is the whole meadow path.
+--workspace --all-targets -- -D warnings` clean. The live check passed too: a
+real session syncs the world — a tuft eaten in one window disappeared in the
+other, so the bite was reported, the host's scene recorded it, and the next
+snapshot carried it across. Interaction works, with the latency above.
 
 ---
 
