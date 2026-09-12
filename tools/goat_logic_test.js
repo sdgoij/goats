@@ -575,6 +575,51 @@ try {
     netTest.error = String(e);
 }
 
+// Chat (M11): the scene end of it is queueing the line and printing what comes
+// back. The routing is the server's, covered by the session tests.
+let chatTest = {};
+try {
+    // Pretend to be in a session, so bare text is chat rather than an error.
+    sandbox.sceneNetEvent('{"type":"hosting","name":"bob"}');
+    sandbox.sceneNetDrain();
+
+    // Bare text is global chat, and queues silently: no `ok` per line.
+    const bareReply = sandbox.sceneCommand('hello everyone');
+    chatTest.bare = bareReply === '' &&
+        sandbox.sceneNetDrain().indexOf('"text":"hello everyone"') >= 0;
+
+    // `say` is the same thing, spelled out.
+    const sayReply = sandbox.sceneCommand('say hi there');
+    chatTest.say = sayReply === '' &&
+        sandbox.sceneNetDrain().indexOf('"text":"hi there"') >= 0;
+
+    // `/msg` becomes the leading-`@` form the server routes for both sides.
+    const msgReply = sandbox.sceneCommand('/msg alice psst');
+    chatTest.msg = msgReply === '' &&
+        sandbox.sceneNetDrain().indexOf('"text":"@alice psst"') >= 0;
+
+    // A leading `@` typed directly is a whisper too.
+    const atReply = sandbox.sceneCommand('@carol yo');
+    chatTest.at = atReply === '' &&
+        sandbox.sceneNetDrain().indexOf('"text":"@carol yo"') >= 0;
+
+    // The slash forms still reach the commands they name.
+    chatTest.slashCommand = sandbox.sceneCommand('/who').indexOf('ok ') === 0;
+
+    // Offline, bare text stays an error, so a typo is caught rather than sent.
+    sandbox.sceneNetEvent('{"type":"disconnected"}');
+    chatTest.offline = sandbox.sceneCommand('hello?') === 'error unknown command: hello?';
+
+    // A chat line prints into the scrollback, whispers marked.
+    sandbox.sceneNetEvent('{"type":"chat","from":"alice","text":"hello all","direct":false}');
+    sandbox.sceneNetEvent('{"type":"chat","from":"alice","text":"psst","direct":true}');
+    const lines = JSON.parse(sandbox.sceneCommand('console').slice(3)).lines;
+    chatTest.printed = lines.some((l) => l.indexOf('net: alice: hello all') >= 0) &&
+        lines.some((l) => l.indexOf('net: dm alice: psst') >= 0);
+} catch (e) {
+    chatTest.error = String(e);
+}
+
 // Console (M9): the snapshots taken at the scripted frames, and a shorthand.
 const cp = (i) => consoleProbe[i] ||
     { x: null, z: null, state: { open: false, input: '', lines: [], history: [] }, ui: '' };
@@ -730,6 +775,15 @@ const checks = [
     ['the copy verb writes the clipboard', clipTest.copiedVerb, clipTest],
     ['copy with nothing to copy is an error', clipTest.nothing, clipTest],
     ['no clipboard errors', clipTest.error === undefined, clipTest.error],
+    // Chat (M11): the scene end of it; the routing is the server's.
+    ['no chat errors', chatTest.error === undefined, chatTest.error],
+    ['bare text is chat in a session', chatTest.bare, chatTest],
+    ['say is chat, spelled out', chatTest.say, chatTest],
+    ['/msg becomes a leading @name', chatTest.msg, chatTest],
+    ['a leading @name is chat too', chatTest.at, chatTest],
+    ['slash commands still reach commands', chatTest.slashCommand, chatTest],
+    ['bare text is an error offline', chatTest.offline, chatTest],
+    ['chat lines print, whispers marked', chatTest.printed, chatTest],
 ];
 
 const failed = checks.filter((c) => !c[1]);

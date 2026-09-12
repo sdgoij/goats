@@ -26,6 +26,8 @@ enum Command {
     },
     /// Join the session behind `ticket` as `name`.
     Join { ticket: String, name: String },
+    /// Say something. A leading `@name` whispers; the server routes it.
+    Say { text: String },
     /// Leave whatever session is running.
     Close,
 }
@@ -44,6 +46,12 @@ enum Event {
     Joined { name: String },
     /// Another player left.
     Left { name: String },
+    /// A chat line. `direct` marks a whisper.
+    Chat {
+        from: String,
+        text: String,
+        direct: bool,
+    },
     /// The roster changed.
     Roster { names: Vec<String> },
     /// A line for the console.
@@ -124,6 +132,18 @@ impl Live {
             Live::Client(client) => client.close().await,
         }
     }
+
+    /// Says something as this player, returning an error to report when the
+    /// client could not send it.
+    async fn say(&self, text: &str) -> Option<String> {
+        match self {
+            Live::Host(host) => {
+                host.say(text).await;
+                None
+            }
+            Live::Client(client) => client.say(text).await.err().map(|error| error.to_string()),
+        }
+    }
 }
 
 /// The runtime thread: run one command at a time, forwarding session events
@@ -160,7 +180,24 @@ async fn run(
 
         match outcome {
             Outcome::Ended => live = None,
-            Outcome::Command(Some(command)) => live = start(command, live.take(), &events).await,
+            // `Say` needs the live session rather than a new one, so it is
+            // handled here; everything else reconfigures the session.
+            Outcome::Command(Some(command)) => match command {
+                Command::Say { text } => match live.as_ref() {
+                    Some(session) => {
+                        if let Some(error) = session.say(&text).await {
+                            emit(&events, Event::Notice { text: error });
+                        }
+                    }
+                    None => emit(
+                        &events,
+                        Event::Notice {
+                            text: "not in a session".to_string(),
+                        },
+                    ),
+                },
+                other => live = start(other, live.take(), &events).await,
+            },
             Outcome::Command(None) => break,
         }
     }
@@ -180,6 +217,8 @@ async fn start(
     }
     match command {
         Command::Close => None,
+        // Handled in `run`, which has the live session in hand.
+        Command::Say { .. } => None,
         Command::Host { name } => match session::Host::start(&name).await {
             Ok(host) => {
                 // The console shows the ticket, but it cannot be selected in a
@@ -238,6 +277,7 @@ fn bridge(event: session::Event) -> Event {
     match event {
         session::Event::Joined { name } => Event::Joined { name },
         session::Event::Left { name } => Event::Left { name },
+        session::Event::Chat { from, text, direct } => Event::Chat { from, text, direct },
         session::Event::Roster { names } => Event::Roster { names },
         session::Event::Notice(text) => Event::Notice { text },
         session::Event::Disconnected => Event::Disconnected,
@@ -285,6 +325,10 @@ mod tests {
             serde_json::from_str::<Command>(r#"{"type":"close"}"#),
             Ok(Command::Close)
         ));
+        match serde_json::from_str::<Command>(r#"{"type":"say","text":"hi"}"#).expect("say") {
+            Command::Say { text } => assert_eq!(text, "hi"),
+            other => panic!("unexpected {other:?}"),
+        }
         // An unknown intent is rejected, not silently ignored.
         assert!(serde_json::from_str::<Command>(r#"{"type":"nope"}"#).is_err());
     }
@@ -299,6 +343,17 @@ mod tests {
 
         let line = serde_json::to_string(&Event::Disconnected).expect("encode");
         assert_eq!(line, r#"{"type":"disconnected"}"#);
+
+        let line = serde_json::to_string(&Event::Chat {
+            from: "alice".to_string(),
+            text: "hi".to_string(),
+            direct: true,
+        })
+        .expect("encode");
+        assert_eq!(
+            line,
+            r#"{"type":"chat","from":"alice","text":"hi","direct":true}"#
+        );
     }
 
     #[test]
@@ -317,6 +372,17 @@ mod tests {
         }))
         .expect("encode");
         assert_eq!(line, r#"{"type":"roster","names":["host"]}"#);
+
+        let line = serde_json::to_string(&bridge(session::Event::Chat {
+            from: "alice".to_string(),
+            text: "psst".to_string(),
+            direct: true,
+        }))
+        .expect("encode");
+        assert_eq!(
+            line,
+            r#"{"type":"chat","from":"alice","text":"psst","direct":true}"#
+        );
     }
 
     /// Waits for the next event containing `wanted`. Events that do not match
@@ -366,5 +432,19 @@ mod tests {
         wait_for(&mut client, "\"type\":\"roster\"");
         let roster = wait_for(&mut host, "\"type\":\"roster\"");
         assert!(roster.contains("alice"), "{roster}");
+
+        // Chat crosses the same bridge. A global line reaches the host under the
+        // sender's name; an `@name` from the host reaches the joiner marked
+        // direct. `wait_for` drops the lines it does not match, so the earlier
+        // `alice` echo on the client's own stream is skipped here.
+        client.send(r#"{"type":"say","text":"hello"}"#);
+        let heard = wait_for(&mut host, "\"type\":\"chat\"");
+        assert!(heard.contains("\"from\":\"alice\""), "{heard}");
+        assert!(heard.contains("\"text\":\"hello\""), "{heard}");
+        assert!(heard.contains("\"direct\":false"), "{heard}");
+
+        host.send(r#"{"type":"say","text":"@alice psst"}"#);
+        let whisper = wait_for(&mut client, "\"direct\":true");
+        assert!(whisper.contains("\"text\":\"psst\""), "{whisper}");
     }
 }

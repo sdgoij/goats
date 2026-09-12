@@ -59,6 +59,13 @@ fn report(event: Event) {
         Event::Joined { name } => format!("{name} joined"),
         Event::Left { name } => format!("{name} left"),
         Event::Roster { names } => format!("roster {}", names.join(", ")),
+        Event::Chat { from, text, direct } => {
+            if direct {
+                format!("dm {from} -> {text}")
+            } else {
+                format!("{from}: {text}")
+            }
+        }
         Event::Notice(text) => format!("notice {text}"),
         Event::Disconnected => "disconnected".to_string(),
     };

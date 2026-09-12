@@ -17,6 +17,7 @@
 //! channel M12 adds will want datagrams instead.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::{Endpoint, EndpointAddr};
@@ -40,6 +41,13 @@ pub enum Event {
     Left { name: String },
     /// The roster as it now stands, including the local player.
     Roster { names: Vec<String> },
+    /// A chat line. `direct` marks a whisper, so the console can show it
+    /// differently.
+    Chat {
+        from: String,
+        text: String,
+        direct: bool,
+    },
     /// A line to print in the console.
     Notice(String),
     /// The connection to the host ended (client side only).
@@ -145,7 +153,10 @@ async fn send_to(connection: &Connection, message: &ServerMessage) -> Result<(),
 
 /// The server's state: who is in the session, and the connection to reach them.
 struct Server {
-    /// Names in join order. The host is first and has no connection.
+    /// The local player's name. They have no connection of their own; what they
+    /// say arrives through `Host::say`.
+    host: String,
+    /// Names in join order, the host first.
     roster: Vec<String>,
     connections: Vec<(String, Connection)>,
 }
@@ -177,6 +188,162 @@ impl Server {
             .map(|(_, connection)| connection.clone())
             .collect()
     }
+
+    /// Everyone connected.
+    fn every(&self) -> Vec<Connection> {
+        self.targets(None)
+    }
+
+    /// The connection for `name`, if they are a connected player. The host has
+    /// none.
+    fn connection_of(&self, name: &str) -> Option<Connection> {
+        self.connections
+            .iter()
+            .find(|(current, _)| current == name)
+            .map(|(_, connection)| connection.clone())
+    }
+
+    /// Whether `name` is anyone in the session, the host included.
+    fn knows(&self, name: &str) -> bool {
+        self.roster.iter().any(|current| current == name)
+    }
+}
+
+/// The chat rate limit: at most `CHAT_BURST` messages per `CHAT_WINDOW`.
+const CHAT_BURST: u32 = 5;
+const CHAT_WINDOW: Duration = Duration::from_secs(3);
+
+/// A rolling window counter. Unbounded chat is a free denial of service and a
+/// bandwidth sink, so a peer gets a burst and then has to wait.
+fn within_burst(window: &mut Instant, count: &mut u32) -> bool {
+    let now = Instant::now();
+    if now.duration_since(*window) >= CHAT_WINDOW {
+        *window = now;
+        *count = 0;
+    }
+    *count += 1;
+    *count <= CHAT_BURST
+}
+
+/// Who a chat line is for, worked out under one lock so the sends below can run
+/// without holding it.
+enum ChatPlan {
+    /// A whisper to someone who is not here.
+    Unknown { target: String },
+    /// A whisper: to the target, to the sender, and to the host if either of
+    /// them is the host.
+    Direct {
+        to: Vec<Connection>,
+        host_sees: bool,
+        from: String,
+        body: String,
+    },
+    /// Everyone.
+    Global {
+        to: Vec<Connection>,
+        from: String,
+        body: String,
+    },
+}
+
+/// Routes one chat line from `from`. A leading `@name` is a whisper; anything
+/// else goes to the whole session. The sender gets their own line back, so every
+/// console shows the same transcript.
+async fn route_chat(
+    state: &Arc<Mutex<Server>>,
+    events: &mpsc::UnboundedSender<Event>,
+    from: &str,
+    raw: &str,
+) {
+    let text = proto::sanitize_text(raw, proto::MAX_CHAT_BYTES);
+    if text.is_empty() {
+        return;
+    }
+
+    let plan = {
+        let server = state.lock().await;
+        match proto::direct_message(&text) {
+            Some((target, body)) => {
+                if !server.knows(target) {
+                    ChatPlan::Unknown {
+                        target: target.to_string(),
+                    }
+                } else {
+                    let mut to = Vec::new();
+                    if let Some(connection) = server.connection_of(target) {
+                        to.push(connection);
+                    }
+                    if let Some(connection) = server.connection_of(from) {
+                        to.push(connection);
+                    }
+                    ChatPlan::Direct {
+                        to,
+                        host_sees: server.host == target || server.host == from,
+                        from: from.to_string(),
+                        body: body.to_string(),
+                    }
+                }
+            }
+            None => ChatPlan::Global {
+                to: server.every(),
+                from: from.to_string(),
+                body: text.clone(),
+            },
+        }
+    };
+
+    match plan {
+        ChatPlan::Unknown { target } => {
+            let text = format!("no such player: {target}");
+            // The sender is a connection, or the host, who has an event stream
+            // instead of one.
+            match state.lock().await.connection_of(from) {
+                Some(connection) => {
+                    let _ = send_to(&connection, &ServerMessage::Notice { text }).await;
+                }
+                None => {
+                    let _ = events.send(Event::Notice(text));
+                }
+            }
+        }
+        ChatPlan::Direct {
+            to,
+            host_sees,
+            from,
+            body,
+        } => {
+            let message = ServerMessage::Chat {
+                from: from.clone(),
+                text: body.clone(),
+                direct: true,
+            };
+            for connection in to {
+                let _ = send_to(&connection, &message).await;
+            }
+            if host_sees {
+                let _ = events.send(Event::Chat {
+                    from,
+                    text: body,
+                    direct: true,
+                });
+            }
+        }
+        ChatPlan::Global { to, from, body } => {
+            let message = ServerMessage::Chat {
+                from: from.clone(),
+                text: body.clone(),
+                direct: false,
+            };
+            for connection in to {
+                let _ = send_to(&connection, &message).await;
+            }
+            let _ = events.send(Event::Chat {
+                from,
+                text: body,
+                direct: false,
+            });
+        }
+    }
 }
 
 /// A session the local player is hosting.
@@ -184,6 +351,8 @@ pub struct Host {
     endpoint: Endpoint,
     ticket: String,
     name: String,
+    server: Arc<Mutex<Server>>,
+    sender: mpsc::UnboundedSender<Event>,
     events: mpsc::UnboundedReceiver<Event>,
 }
 
@@ -196,20 +365,25 @@ impl Host {
 
         let local_name = proto::sanitize_name(host_name);
         let server = Arc::new(Mutex::new(Server {
+            host: local_name.clone(),
             roster: vec![local_name.clone()],
             connections: Vec::new(),
         }));
         let (events, receiver) = mpsc::unbounded_channel();
+        let broadcaster = events.clone();
 
         let accepting = endpoint.clone();
         let state = server.clone();
-        let sender = events.clone();
         tokio::spawn(async move {
             while let Some(incoming) = accepting.accept().await {
                 let Ok(connection) = incoming.await else {
                     continue;
                 };
-                tokio::spawn(handle_connection(connection, state.clone(), sender.clone()));
+                tokio::spawn(handle_connection(
+                    connection,
+                    state.clone(),
+                    broadcaster.clone(),
+                ));
             }
         });
 
@@ -217,6 +391,8 @@ impl Host {
             endpoint,
             ticket,
             name: local_name,
+            server,
+            sender: events,
             events: receiver,
         })
     }
@@ -235,6 +411,13 @@ impl Host {
     /// The endpoint id plus its current direct addresses.
     pub fn address(&self) -> EndpointAddr {
         self.endpoint.addr()
+    }
+
+    /// Says something as the local player. The text takes the same routing as a
+    /// remote message, so a leading `@name` whispers from the host too, and the
+    /// host's own copy comes back as a [`Event::Chat`].
+    pub async fn say(&self, text: &str) {
+        route_chat(&self.server, &self.sender, &self.name, text).await;
     }
 
     /// The next event, or `None` once the session is finished.
@@ -275,7 +458,17 @@ async fn handle_connection(
         }
     };
 
-    let ClientMessage::Hello { version, name } = hello;
+    let ClientMessage::Hello { version, name } = hello else {
+        let _ = send_to(
+            &connection,
+            &ServerMessage::Error {
+                message: "the first message must be a hello".to_string(),
+            },
+        )
+        .await;
+        connection.close(3u8.into(), b"hello");
+        return;
+    };
     if version != PROTOCOL_VERSION {
         let _ = send_to(
             &connection,
@@ -317,31 +510,87 @@ async fn handle_connection(
     });
 
     // Tell everyone else, not the joiner: their Welcome already carried it.
-    let news = ServerMessage::Roster {
-        names: roster.clone(),
-    };
     for target in state.lock().await.targets(Some(&assigned)) {
-        let _ = send_to(&target, &news).await;
+        let _ = send_to(
+            &target,
+            &ServerMessage::Joined {
+                name: assigned.clone(),
+            },
+        )
+        .await;
+        let _ = send_to(
+            &target,
+            &ServerMessage::Roster {
+                names: roster.clone(),
+            },
+        )
+        .await;
     }
 
-    // The joiner sends nothing else in this milestone; the connection is held
-    // open for the roster broadcasts the server sends down it.
-    connection.closed().await;
+    // Then serve them. Each message arrives on its own stream, like every other
+    // control message, so the connection stays open until the peer closes it.
+    let mut window = Instant::now();
+    let mut count = 0u32;
+    while let Ok(mut recv) = connection.accept_uni().await {
+        match read_message::<ClientMessage>(&mut recv).await {
+            Ok(ClientMessage::Chat { text }) => {
+                if !within_burst(&mut window, &mut count) {
+                    let _ = send_to(
+                        &connection,
+                        &ServerMessage::Notice {
+                            text: "slow down".to_string(),
+                        },
+                    )
+                    .await;
+                    continue;
+                }
+                route_chat(&state, &events, &assigned, &text).await;
+            }
+            // A second greeting means nothing once you are already in.
+            Ok(ClientMessage::Hello { .. }) => {}
+            Err(error) => {
+                let _ = send_to(
+                    &connection,
+                    &ServerMessage::Notice {
+                        text: format!("ignored a bad message: {error}"),
+                    },
+                )
+                .await;
+            }
+        }
+    }
 
     let remaining = state.lock().await.leave(&assigned);
-    let _ = events.send(Event::Left { name: assigned });
+    let _ = events.send(Event::Left {
+        name: assigned.clone(),
+    });
     let _ = events.send(Event::Roster {
         names: remaining.clone(),
     });
-    let news = ServerMessage::Roster { names: remaining };
     for target in state.lock().await.targets(None) {
-        let _ = send_to(&target, &news).await;
+        let _ = send_to(
+            &target,
+            &ServerMessage::Left {
+                name: assigned.clone(),
+            },
+        )
+        .await;
+        let _ = send_to(
+            &target,
+            &ServerMessage::Roster {
+                names: remaining.clone(),
+            },
+        )
+        .await;
     }
 }
 
 /// A session the local player joined, hosted by someone else.
 pub struct Client {
     endpoint: Endpoint,
+    /// Kept so [`Client::say`] can open a stream; the reader task has its own
+    /// clone.
+    connection: Connection,
     name: String,
     events: mpsc::UnboundedReceiver<Event>,
 }
@@ -402,15 +651,36 @@ impl Client {
 
         // The host sends every later update down a fresh uni stream, so read
         // them until the connection ends.
+        let reader = connection.clone();
         tokio::spawn(async move {
             loop {
-                let Ok(mut recv) = connection.accept_uni().await else {
+                let Ok(mut recv) = reader.accept_uni().await else {
                     let _ = events.send(Event::Disconnected);
                     break;
                 };
                 match read_message::<ServerMessage>(&mut recv).await {
                     Ok(ServerMessage::Roster { names }) => {
                         if events.send(Event::Roster { names }).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(ServerMessage::Chat { from, text, direct }) => {
+                        if events.send(Event::Chat { from, text, direct }).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(ServerMessage::Joined { name }) => {
+                        if events.send(Event::Joined { name }).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(ServerMessage::Left { name }) => {
+                        if events.send(Event::Left { name }).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(ServerMessage::Notice { text }) => {
+                        if events.send(Event::Notice(text)).is_err() {
                             break;
                         }
                     }
@@ -429,6 +699,7 @@ impl Client {
 
         Ok(Client {
             endpoint,
+            connection,
             name,
             events: receiver,
         })
@@ -437,6 +708,23 @@ impl Client {
     /// The name the server assigned, which is not necessarily the one asked for.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Says something. A leading `@name` is a whisper, which the server routes;
+    /// the message comes back with everyone else's, so the transcript matches.
+    pub async fn say(&self, text: &str) -> Result<(), Error> {
+        let mut send = self
+            .connection
+            .open_uni()
+            .await
+            .map_err(|error| Error::Stream(error.to_string()))?;
+        write_message(
+            &mut send,
+            &ClientMessage::Chat {
+                text: text.to_string(),
+            },
+        )
+        .await
     }
 
     /// The next event, or `None` once the session is finished.
@@ -540,7 +828,14 @@ mod tests {
                 .expect("join bob");
             assert_eq!(bob.name(), "alice #2");
 
-            // The first player is told, without asking.
+            // The first player is told without asking: who joined, then the
+            // roster.
+            assert_eq!(
+                alice.next_event().await.expect("joined"),
+                Event::Joined {
+                    name: "alice #2".to_string()
+                }
+            );
             assert_eq!(
                 alice.next_event().await.expect("roster update"),
                 Event::Roster {
@@ -565,5 +860,96 @@ mod tests {
             Err(other) => panic!("expected a ticket error, got {other:?}"),
             Ok(_) => panic!("an invalid ticket must be refused"),
         }
+    }
+
+    /// The next chat line, skipping the roster and system noise around it.
+    async fn host_chat(host: &mut Host) -> Event {
+        loop {
+            if let event @ Event::Chat { .. } = host.next_event().await.expect("an event") {
+                return event;
+            }
+        }
+    }
+
+    async fn client_chat(client: &mut Client) -> Event {
+        loop {
+            if let event @ Event::Chat { .. } = client.next_event().await.expect("an event") {
+                return event;
+            }
+        }
+    }
+
+    async fn client_notice(client: &mut Client) -> Event {
+        loop {
+            if let event @ Event::Notice(_) = client.next_event().await.expect("an event") {
+                return event;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_is_global_and_whispers_are_not() {
+        within(async {
+            let mut host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+            let mut bob = Client::join(host.ticket(), "bob").await.expect("bob");
+
+            // Global: everyone sees it, the sender included.
+            alice.say("hello all").await.expect("say");
+            let expected = Event::Chat {
+                from: "alice".to_string(),
+                text: "hello all".to_string(),
+                direct: false,
+            };
+            assert_eq!(client_chat(&mut bob).await, expected);
+            // The sender sees their own line too, so every console agrees.
+            assert_eq!(client_chat(&mut alice).await, expected);
+            assert_eq!(host_chat(&mut host).await, expected);
+
+            // A whisper reaches the target and comes back to the sender, and
+            // nobody else -- the host in particular never sees it.
+            alice.say("@bob psst").await.expect("whisper");
+            let whisper = Event::Chat {
+                from: "alice".to_string(),
+                text: "psst".to_string(),
+                direct: true,
+            };
+            assert_eq!(client_chat(&mut bob).await, whisper);
+            assert_eq!(client_chat(&mut alice).await, whisper);
+
+            // A whisper to someone who is not here says so.
+            alice.say("@nobody hi").await.expect("whisper nobody");
+            match client_notice(&mut alice).await {
+                Event::Notice(text) => assert_eq!(text, "no such player: nobody"),
+                other => panic!("unexpected {other:?}"),
+            }
+
+            bob.close().await;
+            alice.close().await;
+            host.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn chat_is_rate_limited() {
+        within(async {
+            let host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+
+            for _ in 0..(CHAT_BURST + 3) {
+                alice.say("spam").await.expect("say");
+            }
+
+            // The burst gets through; the rest is refused with a notice.
+            assert_eq!(
+                client_notice(&mut alice).await,
+                Event::Notice("slow down".to_string())
+            );
+
+            alice.close().await;
+            host.close().await;
+        })
+        .await;
     }
 }

@@ -46,6 +46,17 @@ function netRequestedName(parts, index) {
     return requested === undefined ? "" : requested;
 }
 
+// Says something. The server routes a leading `@name` as a whisper, so the line
+// is queued exactly as typed. An empty reply means "nothing to report": the
+// console should not print an `ok` after every chat line.
+function netSay(text) {
+    if (!netInSession()) return "error not in a session";
+    const line = String(text).trim();
+    if (line === "") return "error nothing to say";
+    netQueue({ type: "say", text: line });
+    return "";
+}
+
 // ---- intents ---------------------------------------------------------------
 
 function netHost(parts) {
@@ -112,6 +123,10 @@ function sceneNetEvent(line) {
             break;
         case "left":
             consoleNet("net: " + event.name + " left");
+            break;
+        case "chat":
+            consoleNet("net: " + (event.direct ? "dm " : "") +
+                (event.from === netName ? "you" : event.from) + ": " + event.text);
             break;
         case "roster":
             netRoster = Array.isArray(event.names) ? event.names.slice() : [];

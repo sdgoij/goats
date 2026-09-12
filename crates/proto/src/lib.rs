@@ -27,6 +27,9 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// Names are truncated to this many bytes, on a character boundary.
 pub const MAX_NAME_BYTES: usize = 24;
 
+/// Chat lines are truncated to this many bytes, on a character boundary.
+pub const MAX_CHAT_BYTES: usize = 512;
+
 /// The name a nameless player gets.
 pub const DEFAULT_NAME: &str = "goat";
 
@@ -38,6 +41,10 @@ pub enum ClientMessage {
     /// player would like. The name is only a request -- the server decides,
     /// because it is the one that can tell whether it is already taken.
     Hello { version: u16, name: String },
+    /// Something the player typed. A leading `@name` is a direct message, which
+    /// only the server routes -- a client cannot make the server whisper to
+    /// anyone, or stop it from whispering.
+    Chat { text: String },
 }
 
 /// What the server sends.
@@ -52,10 +59,32 @@ pub enum ServerMessage {
         roster: Vec<String>,
     },
     /// The roster changed: someone joined or left.
-    Roster { names: Vec<String> },
+    Roster {
+        names: Vec<String>,
+    },
+    /// A chat line. `direct` marks a whisper, so the client can show it
+    /// differently; `from` is the sender's current name.
+    Chat {
+        from: String,
+        text: String,
+        direct: bool,
+    },
+    /// System news for the console.
+    Joined {
+        name: String,
+    },
+    Left {
+        name: String,
+    },
+    /// A system line the server composed: a rate limit, an unknown recipient.
+    Notice {
+        text: String,
+    },
     /// The handshake or a later message was refused. The text goes to the
     /// console.
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 /// What can go wrong encoding, framing or decoding a message.
@@ -125,20 +154,42 @@ pub fn frame_length(header: [u8; LENGTH_PREFIX_BYTES]) -> Result<usize, Error> {
 /// [`MAX_NAME_BYTES`] on a character boundary. An empty result becomes
 /// [`DEFAULT_NAME`], so a player always has something to be called.
 pub fn sanitize_name(desired: &str) -> String {
-    let trimmed = strip_ansi(desired);
-    let trimmed = trimmed.trim();
+    let cleaned = sanitize_text(desired, MAX_NAME_BYTES);
+    if cleaned.is_empty() {
+        DEFAULT_NAME.to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Cleans text a peer sent: ANSI escapes and control characters out, trimmed,
+/// truncated to `max` bytes on a character boundary. Used for both names and
+/// chat, since both end up rendered.
+pub fn sanitize_text(text: &str, max: usize) -> String {
+    let stripped = strip_ansi(text);
+    let trimmed = stripped.trim();
     let mut out = String::new();
     for character in trimmed.chars() {
-        if out.len() + character.len_utf8() > MAX_NAME_BYTES {
+        if out.len() + character.len_utf8() > max {
             break;
         }
         out.push(character);
     }
-    if out.is_empty() {
-        DEFAULT_NAME.to_string()
-    } else {
-        out
+    out
+}
+
+/// Splits a leading `@name body` into the name and the body. Only a *leading*
+/// `@` counts, so a sentence that merely mentions a name is not a whisper.
+/// Returns `None` when there is no name or no body.
+pub fn direct_message(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix('@')?;
+    let end = rest.find(char::is_whitespace)?;
+    let name = &rest[..end];
+    let body = rest[end..].trim_start();
+    if name.is_empty() || body.is_empty() {
+        return None;
     }
+    Some((name, body))
 }
 
 /// Returns a name that is not already in `taken`, appending ` #2`, ` #3`, ...
@@ -211,10 +262,15 @@ mod tests {
 
     #[test]
     fn messages_round_trip() {
-        let messages = [ClientMessage::Hello {
-            version: PROTOCOL_VERSION,
-            name: "bob".to_string(),
-        }];
+        let messages = [
+            ClientMessage::Hello {
+                version: PROTOCOL_VERSION,
+                name: "bob".to_string(),
+            },
+            ClientMessage::Chat {
+                text: "hello".to_string(),
+            },
+        ];
         for message in &messages {
             let payload = encode(message).expect("encode");
             assert_eq!(&decode::<ClientMessage>(&payload).expect("decode"), message);
@@ -231,6 +287,20 @@ mod tests {
             },
             ServerMessage::Error {
                 message: "version 2 is not supported".to_string(),
+            },
+            ServerMessage::Chat {
+                from: "alice".to_string(),
+                text: "hello".to_string(),
+                direct: false,
+            },
+            ServerMessage::Joined {
+                name: "alice".to_string(),
+            },
+            ServerMessage::Left {
+                name: "alice".to_string(),
+            },
+            ServerMessage::Notice {
+                text: "slow down".to_string(),
             },
         ];
         for reply in &replies {
@@ -321,6 +391,34 @@ mod tests {
         assert_eq!(unique_name("   ", &empty), DEFAULT_NAME);
         let blank: Vec<String> = vec![DEFAULT_NAME.to_string()];
         assert_eq!(unique_name("   ", &blank), "goat #2");
+    }
+
+    #[test]
+    fn chat_is_cleaned_and_truncated() {
+        assert_eq!(sanitize_text("  hello  ", MAX_CHAT_BYTES), "hello");
+        assert_eq!(sanitize_text("hel\u{7}lo", MAX_CHAT_BYTES), "hello");
+        assert_eq!(
+            sanitize_text("\u{1b}[31mred\u{1b}[0m", MAX_CHAT_BYTES),
+            "red"
+        );
+        let long = "g".repeat(MAX_CHAT_BYTES * 2);
+        assert_eq!(sanitize_text(&long, MAX_CHAT_BYTES).len(), MAX_CHAT_BYTES);
+    }
+
+    #[test]
+    fn only_a_leading_at_is_a_direct_message() {
+        assert_eq!(
+            direct_message("@bob hello there"),
+            Some(("bob", "hello there"))
+        );
+        assert_eq!(direct_message("@bob  spaced"), Some(("bob", "spaced")));
+        // No name, or no body, is not a whisper.
+        assert_eq!(direct_message("@bob"), None);
+        assert_eq!(direct_message("@ bob hi"), None);
+        assert_eq!(direct_message("@bob   "), None);
+        // A mention part-way through is ordinary text.
+        assert_eq!(direct_message("hello @bob"), None);
+        assert_eq!(direct_message("hello"), None);
     }
 
     #[test]

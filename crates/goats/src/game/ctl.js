@@ -22,7 +22,7 @@ const ctlHeld = {};
 const HELP = "help ping state stats time weather bots camera features fps " +
     "jump sleep wake restart kill health energy heal eat grass walk trot run back stop " +
     "turn yaw pos phase pause resume step lighting shadows sky mute settings setting ui console " +
-    "host connect leave who net copy " +
+    "host connect leave who net copy say msg " +
     "screenshot quit";
 
 // A movement key is down if a script holds it or the real keyboard does, and no
@@ -84,6 +84,9 @@ const CTL_CLOUDS = { low: 0, medium: 1, high: 2 };
 
 function sceneCommand(line) {
     const parts = String(line).trim().split(/\s+/);
+    // `/who` and `who` are the same command: the slash is just what people type
+    // in something that looks like a chat box.
+    if (parts[0].length > 1 && parts[0].charAt(0) === "/") parts[0] = parts[0].slice(1);
     const command = parts[0];
     if (command === "") return "error empty command";
     switch (command) {
@@ -298,6 +301,18 @@ function sceneCommand(line) {
             if (text === "") return "error nothing to copy";
             return consoleCopy(text) ? "ok copy" : "error clipboard unavailable";
         }
+        case "say":
+            return netSay(parts.slice(1).join(" "));
+        case "msg":
+        case "tell":
+        case "whisper": {
+            if (parts[1] === undefined) return "error msg expects a name";
+            const body = parts.slice(2).join(" ");
+            if (body === "") return "error msg expects a message";
+            // A whisper is just a chat line with a leading `@name`, which is the
+            // one form the server routes for both sides.
+            return netSay("@" + parts[1] + " " + body);
+        }
 
         // ---- goat state --------------------------------------------------
         case "jump":
@@ -445,6 +460,10 @@ function sceneCommand(line) {
             ctlQuit = true;
             return "ok quit";
         default:
+            // In a session, anything that is not a command is something to say --
+            // that is what makes the console a chat box. Offline it stays an
+            // error, so a typo is still caught rather than broadcast.
+            if (netInSession()) return netSay(line);
             return "error unknown command: " + command;
     }
 }

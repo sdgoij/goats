@@ -120,7 +120,10 @@ function consoleSubmit(line) {
     } catch (error) {
         reply = "error " + String(error);
     }
-    consolePush(reply === undefined ? "ok" : String(reply), "local");
+    const message = reply === undefined ? "ok" : String(reply);
+    // An empty reply means "nothing to report" -- chat queues silently rather
+    // than printing an `ok` after every line.
+    if (message !== "") consolePush(message, "local");
     consoleInput = "";
     consoleCaret = 0;
 }
