@@ -73,6 +73,15 @@ function sceneMods(json) {
     if (Array.isArray(table)) {
         for (let i = 0; i < table.length; i++) MODS.push(modEntry(table[i]));
     }
+    // A mod's declared assets re-point the slots it filled, in load order, so
+    // the last mod wins. This is what lets a data-only pack replace a built-in.
+    for (let i = 0; i < MODS.length; i++) {
+        const declared = MODS[i].assets;
+        const slots = Object.keys(declared);
+        for (let j = 0; j < slots.length; j++) {
+            ASSET_SLOTS[slots[j]] = declared[slots[j]];
+        }
+    }
     return "ok";
 }
 
@@ -445,23 +454,85 @@ const goatsNet = {
     say: function (text) { return netSay(text); },
 };
 
-// The asset slots a mod declared. The opaque names come from the host's table;
-// a mod never sees a path. (Pointing a built-in slot at one of these -- the
-// slot override -- lands with the asset-slot work, not here.)
-function modAssetsFor(meta) {
+// The asset slots a mod may read and override. The opaque names come from the
+// host's table; a mod never sees a path. `override` re-points a built-in slot
+// at one of them, before the freeze.
+function modAssetsFor(id, meta) {
     return {
-        slots: function () { return Object.keys(meta.assets); },
+        slots: function () { return Object.keys(ASSET_SLOTS); },
         get: function (slot) {
             const value = meta.assets[slot];
-            if (value === undefined) return undefined;
-            return Array.isArray(value) ? value[0] : value;
+            if (value !== undefined) return Array.isArray(value) ? value[0] : value;
+            return ASSET_SLOTS[slot];
         },
         all: function (slot) {
             const value = meta.assets[slot];
-            if (value === undefined) return [];
-            return Array.isArray(value) ? value.slice() : [value];
+            if (value !== undefined) return Array.isArray(value) ? value.slice() : [value];
+            return assetList(slot);
         },
+        override: function (slot, name) { return modAssetOverride(id, slot, name); },
     };
+}
+
+// ---- registries -----------------------------------------------------------
+//
+// Content a mod adds before the freeze: new bot archetypes, a gait override,
+// and an asset slot. All three are pre-freeze, because the loaders run after
+// the entries do.
+
+function modBotsFor(id) {
+    return {
+        count: goatsBots.count,
+        setCount: goatsBots.setCount,
+        list: goatsBots.list,
+        get: goatsBots.get,
+        register: function (name, spec) { return modBotRegister(id, name, spec); },
+    };
+}
+
+function modClipsFor(id) {
+    return {
+        register: function (role, options) { return modClipRegister(id, role, options); },
+    };
+}
+
+function modBotRegister(id, key, spec) {
+    if (!modRegistrationAllowed(id)) throw new Error("goats.bots.register: registration is closed");
+    if (spec === null || typeof spec !== "object") throw new Error("goats.bots.register: a spec is required");
+    const coat = Array.isArray(spec.coat) && spec.coat.length === 3 ? spec.coat.slice() : [200, 190, 180];
+    const name = typeof spec.name === "string" && spec.name !== "" ? spec.name
+        : typeof key === "string" && key !== "" ? key : id;
+    TUNING.herd.spec.push({
+        coat: coat,
+        scale: typeof spec.scale === "number" ? spec.scale : 1,
+        bold: typeof spec.bold === "number" ? spec.bold : 1,
+        lazy: typeof spec.lazy === "number" ? spec.lazy : 0.5,
+        name: name,
+    });
+    return TUNING.herd.spec.length;
+}
+
+function modClipRegister(id, role, options) {
+    if (!modRegistrationAllowed(id)) throw new Error("goats.clips.register: registration is closed");
+    if (role !== "walk" && role !== "trot" && role !== "run") {
+        throw new Error("goats.clips.register: only walk, trot and run have a gait");
+    }
+    if (options !== null && typeof options === "object" && options.asset !== undefined) {
+        throw new Error("goats.clips.register: an asset clip is not supported; point the model.goat slot at it");
+    }
+    if (options !== null && typeof options === "object" && options.gait !== undefined) {
+        if (options.gait.stride !== undefined) tuningSet("gait." + role + ".stride", options.gait.stride);
+        if (options.gait.duty !== undefined) tuningSet("gait." + role + ".duty", options.gait.duty);
+    }
+    return true;
+}
+
+function modAssetOverride(id, slot, name) {
+    if (!modRegistrationAllowed(id)) throw new Error("goats.assets.override: registration is closed");
+    if (typeof slot !== "string" || slot === "") throw new Error("goats.assets.override: a slot is required");
+    if (name === undefined) throw new Error("goats.assets.override: an asset name is required");
+    ASSET_SLOTS[slot] = name;
+    return true;
 }
 
 // ---- lifecycle ------------------------------------------------------------
@@ -489,11 +560,12 @@ function goatsBegin(id) {
         player: goatsPlayer,
         camera: goatsCamera,
         world: goatsWorld,
-        bots: goatsBots,
+        bots: modBotsFor(id),
+        clips: modClipsFor(id),
         settings: goatsSettings,
         tuning: goatsTuning,
         net: goatsNet,
-        assets: modAssetsFor(meta),
+        assets: modAssetsFor(id, meta),
     };
     modInstances.set(id, handle);
     meta.enabled = true;
@@ -563,10 +635,12 @@ const goats = {
     player: goatsPlayer,
     camera: goatsCamera,
     world: goatsWorld,
-    bots: goatsBots,
+    bots: modBotsFor("-"),
+    clips: modClipsFor("-"),
     settings: goatsSettings,
     tuning: goatsTuning,
     net: goatsNet,
+    assets: modAssetsFor("-", { assets: {} }),
 };
 
 // ---- the `mod` console verb ----------------------------------------------

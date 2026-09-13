@@ -78,7 +78,37 @@
 // `tuningWatch` is how a system reacts to a change. The defaults here are
 // exactly the constants they replaced, so a mod-free run is unchanged.
 
-const MODEL_PATH = "goat_animated.glb";
+// The logical asset slots the scene loads through `rl.*`. The defaults are the
+// embedded names the host registers with `register_raylib_asset`; a mod that
+// declares an asset for a slot re-points it at the host's opaque name, so the
+// loaders read the slot and never a path. Data-only packs use this to replace a
+// built-in model or sound without any code.
+const ASSET_SLOTS = {
+    "model.goat": "goat_animated.glb",
+    "sfx.music": "sfx/jkstudios-rage-2-187959.mp3",
+    "sfx.rain": "sfx/WE Heavy Outside Rain 1.ogg",
+    "sfx.wind": "sfx/WE Light Wind Whistle 1.ogg",
+    "sfx.bleat": [
+        "sfx/dragon-studio-goat-baa-390303.mp3",
+        "sfx/dragon-studio-goat-kid-bleating-390290.mp3",
+        "sfx/dragon-studio-goat-sound-390298.mp3",
+        "sfx/dragon-studio-goat-sound-effect-390305.mp3",
+        "sfx/mightuser-1-goat-sound-effect-259473.mp3",
+        "sfx/freesound_community-happy-goat-6463.mp3",
+    ],
+    "sfx.thunder": [
+        "sfx/WE Thunder 1.ogg",
+        "sfx/WE Thunder 26.ogg",
+        "sfx/WE Thunder 29.ogg",
+    ],
+};
+
+// A slot value as a list: a mod may point a list slot at a single file.
+function assetList(slot) {
+    const value = ASSET_SLOTS[slot];
+    if (value === undefined) return [];
+    return Array.isArray(value) ? value : [value];
+}
 
 const TUNING = {
     stats: {

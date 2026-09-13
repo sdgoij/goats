@@ -890,6 +890,54 @@ try {
     modApiTest.error = String(e);
 }
 
+// Content registries and asset slots (M14c2): a declared asset re-points its
+// slot at sceneMods time (load order, last wins), and a mod adds a bot
+// archetype, a gait and an explicit override while its entry window is open.
+let modRegTest = {};
+try {
+    sandbox.sceneMods(JSON.stringify([
+        { id: 'com.pack', name: 'Pack', version: '1', api: 1, side: 'client', enabled: true, hash: '0',
+            assets: { 'model.goat': 'mod:com.pack:model.goat', 'sfx.music': 'mod:com.pack:sfx.music' } },
+    ]));
+    modRegTest.slotApplied = vm.runInContext('goats.assets.get("model.goat")', sandbox) ===
+        'mod:com.pack:model.goat' &&
+        vm.runInContext('goats.assets.get("sfx.music")', sandbox) === 'mod:com.pack:sfx.music';
+    modRegTest.slotsListed = vm.runInContext('goats.assets.slots().indexOf("sfx.rain") >= 0', sandbox) === true;
+    vm.runInContext(
+        '(function (goats) {' +
+        '  globalThis.__specBefore = goats.tuning.get("herd.spec").length;' +
+        '  goats.bots.register("giant", { coat: [10, 20, 30], scale: 2.0, bold: 0.8, lazy: 0.4 });' +
+        '  globalThis.__specAfter = goats.tuning.get("herd.spec").length;' +
+        '  goats.clips.register("run", { gait: { stride: 0.6, duty: 0.4 } });' +
+        '  goats.assets.override("sfx.rain", "mod:com.pack:sfx.rain");' +
+        '})(goats.begin("com.pack"));',
+        sandbox);
+    sandbox.sceneModResult('com.pack', true, '');
+    modRegTest.botsRegistered = vm.runInContext(
+        'globalThis.__specAfter === globalThis.__specBefore + 1 && ' +
+        'goats.tuning.get("herd.spec")[globalThis.__specBefore].name === "giant"',
+        sandbox) === true;
+    modRegTest.gait = vm.runInContext(
+        'goats.tuning.get("gait.run.stride") === 0.6 && goats.tuning.get("gait.run.duty") === 0.4',
+        sandbox) === true;
+    modRegTest.override = vm.runInContext('goats.assets.get("sfx.rain")', sandbox) === 'mod:com.pack:sfx.rain';
+    vm.runInContext('goats.tuning.set("gait.run.stride", 0.50); goats.tuning.set("gait.run.duty", 0.34);', sandbox);
+    // A clip's asset is refused with an actionable message until the model work.
+    modRegTest.assetRefused = false;
+    try {
+        vm.runInContext(
+            '(function (goats) { goats.clips.register("run", { asset: "x" }); })(goats.begin("com.pack"));',
+            sandbox);
+    } catch (e) {
+        modRegTest.assetRefused = true;
+    }
+    sandbox.sceneModResult('com.pack', false, 'asset');
+    modRegTest.all = modRegTest.slotApplied && modRegTest.slotsListed && modRegTest.botsRegistered &&
+        modRegTest.gait && modRegTest.override && modRegTest.assetRefused;
+} catch (e) {
+    modRegTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -977,6 +1025,11 @@ const checks = [
     ['mod accessors read live state', modApiTest.accessors, modApiTest],
     ['mod freeze gates late registration', modApiTest.lateRejected, modApiTest],
     ['mod rejects a reserved command name', modApiTest.reserved, modApiTest],
+    ['mod declared assets re-point their slots',
+        modRegTest.slotApplied && modRegTest.override && modRegTest.slotsListed, modRegTest],
+    ['mod registers a bot archetype and a gait',
+        modRegTest.botsRegistered && modRegTest.gait, modRegTest],
+    ['mod clip assets are refused with a message', modRegTest.assetRefused, modRegTest],
     // The volumetric march, not the flat M5 layer: these markers only exist in
     // the slab marcher.
     ['the sky shader marches a volume',

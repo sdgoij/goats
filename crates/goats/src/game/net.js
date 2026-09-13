@@ -224,7 +224,7 @@ function netPeerState(name, state) {
         // No model to drive (headless, or the goat model itself failed to
         // load): drop the snapshot rather than track a ghost.
         if (typeof rl.loadModel !== "function" || !haveModel) return;
-        const handle = rl.loadModel(MODEL_PATH);
+        const handle = rl.loadModel(ASSET_SLOTS["model.goat"]);
         if (handle < 0) return;
         if (litShader >= 0) rl.setModelShader(handle, litShader);
         if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);

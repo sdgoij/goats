@@ -85,7 +85,7 @@ uses.
 | **M14a** | Tuning registry: lift the gameplay `const`s into `goats.tuning` | — | M | ✅ **Done** — the tree + `tuningGet/Set/Merge/Watch` live in `core.js`; herd size is now `TUNING.herd.count` |
 | **M14b** | Mod loader: `mods/` discovery, manifest, host asset registry, console verbs | M9 | M | ✅ **Done** — the pure loader is `crates/mods/`; the host wiring and the scene part are in place |
 | **M14c** | `goats` API v1: events, commands, accessors | M14a, M14b | L | ✅ **Done** — the hook surface; registries and asset slots split into M14c2 |
-| **M14c2** | Content registries + mutable asset slots: `bots.register`, `clips.register`, `assets.override` | M14c | M | Lets a mod add bot types, retune gaits, and replace a built-in asset |
+| **M14c2** | Content registries + mutable asset slots: `bots.register`, `clips.register`, `assets.override` | M14c | M | ✅ **Done** — declared assets apply automatically; clips are gait-only |
 | **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | World mods must match host + peers exactly |
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | UX and the mod-free vanilla suite |
 
@@ -1100,14 +1100,15 @@ decisions behind it and the constraints that shape it.
   `bots` / `settings` / `tuning` / `net` accessors. Registration closes at
   `goats.freeze()`, and a reload re-opens it for the mod being reloaded. The
   contract is `APIv1.md` §4.
-- **M14c2 — Content registries and asset slots.** `goats.bots.register`
-  (extend `TUNING.herd.spec`), `goats.clips.register` (gait overrides now; a
-  clip's *asset* needs the model work below), and `goats.assets.override` with
-  the mutable slot registry: lift the built-in asset names out of `const` into
-  `ASSET_SLOTS`, have the loaders read the slot, and apply a mod's declared
-  `assets` map (last mod in load order wins) so a data-only pack can replace
-  `model.goat` or `sfx.music` with no code. This is the one remaining piece of
-  "mods may replace built-in assets".
+- **M14c2 — Content registries and asset slots. ✅ Done.** The built-in asset
+  names moved out of `const` into `ASSET_SLOTS` (core.js); `loadGoat`, `botAdd`,
+  `addPeer` and `makeAudio` read the slot, and a mod's declared `assets` map is
+  applied when the host pushes the table, in load order, so a **data-only pack
+  replaces `model.goat` or `sfx.music` with no code at all**. `goats.bots.register`
+  appends to `TUNING.herd.spec`; `goats.clips.register` retunes a walk / trot /
+  run gait (`asset` is refused with a message until the model work, since
+  swapping one clip's source is a different job); `goats.assets.override`
+  re-points a slot at an opaque asset name. All three are pre-freeze.
 - **M14d — World mods and compatibility.** `registerStream`/`rng` extension of
   `sceneUseSeed`/`sceneStreams`; `world.extend` merged into the snapshot built
   by `sceneWorldBots`/`sceneWeatherState`/`sceneStreams`/`sceneEaten` and

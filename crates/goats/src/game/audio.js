@@ -9,22 +9,9 @@
 // with `register_raylib_asset`; the loader looks the bytes up by name, so the
 // game needs no files on disk and a missing name just falls back to `sfx/`.
 
-const MUSIC_PATH = "sfx/jkstudios-rage-2-187959.mp3";
-const RAIN_PATH = "sfx/WE Heavy Outside Rain 1.ogg";
-const WIND_PATH = "sfx/WE Light Wind Whistle 1.ogg";
-const BLEAT_PATHS = [
-    "sfx/dragon-studio-goat-baa-390303.mp3",
-    "sfx/dragon-studio-goat-kid-bleating-390290.mp3",
-    "sfx/dragon-studio-goat-sound-390298.mp3",
-    "sfx/dragon-studio-goat-sound-effect-390305.mp3",
-    "sfx/mightuser-1-goat-sound-effect-259473.mp3",
-    "sfx/freesound_community-happy-goat-6463.mp3",
-];
-const THUNDER_PATHS = [
-    "sfx/WE Thunder 1.ogg",
-    "sfx/WE Thunder 26.ogg",
-    "sfx/WE Thunder 29.ogg",
-];
+// Every clip is named by an asset slot (core.js). The defaults are the embedded
+// files; a mod that declares an asset for a slot replaces it, so the loaders
+// below read the slot rather than a path.
 
 const MUSIC_VOLUME = 0.20;   // the background track sits well under the sfx
 const SFX_VOLUME = 0.65;
@@ -82,27 +69,29 @@ function makeAudio() {
         return;
     }
     rl.initAudioDevice();
-    musicMain = rl.loadMusic(MUSIC_PATH);
+    musicMain = rl.loadMusic(ASSET_SLOTS["sfx.music"]);
     if (musicMain >= 0) {
         rl.setMusicVolume(musicMain, musicGain());
         rl.playMusic(musicMain);
     }
-    for (let i = 0; i < BLEAT_PATHS.length; i++) {
-        const sound = rl.loadSound(BLEAT_PATHS[i]);
+    const bleatPaths = assetList("sfx.bleat");
+    for (let i = 0; i < bleatPaths.length; i++) {
+        const sound = rl.loadSound(bleatPaths[i]);
         if (sound >= 0) BLEATS.push(sound);
     }
-    for (let i = 0; i < THUNDER_PATHS.length; i++) {
-        const sound = rl.loadSound(THUNDER_PATHS[i]);
+    const thunderPaths = assetList("sfx.thunder");
+    for (let i = 0; i < thunderPaths.length; i++) {
+        const sound = rl.loadSound(thunderPaths[i]);
         if (sound >= 0) THUNDERS.push(sound);
     }
     // The ambience beds start at silence and swell with the weather; keeping
     // them playing avoids a start/stop click at every transition.
-    rainLoop = rl.loadMusic(RAIN_PATH);
+    rainLoop = rl.loadMusic(ASSET_SLOTS["sfx.rain"]);
     if (rainLoop >= 0) {
         rl.setMusicVolume(rainLoop, 0);
         rl.playMusic(rainLoop);
     }
-    windLoop = rl.loadMusic(WIND_PATH);
+    windLoop = rl.loadMusic(ASSET_SLOTS["sfx.wind"]);
     if (windLoop >= 0) {
         rl.setMusicVolume(windLoop, 0);
         rl.playMusic(windLoop);

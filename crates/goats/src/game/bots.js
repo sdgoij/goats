@@ -75,7 +75,7 @@ function botSpec(i) {
 
 // Load one bot's model and give it its lit shader, shadow map and fleece.
 function botAdd(i) {
-    const handle = rl.loadModel(MODEL_PATH);
+    const handle = rl.loadModel(ASSET_SLOTS["model.goat"]);
     if (handle < 0) return false;
     const tex = BOT_TEX[i % BOT_TEX.length];
     if (litShader >= 0) rl.setModelShader(handle, litShader);

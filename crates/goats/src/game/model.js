@@ -66,12 +66,12 @@ function runSpeed() { return gaitSpeed("run") || walkSpeed() * 3.5; }
 // Load the goat and index its clips. Must run after `rl.initWindow`, since
 // raylib uploads the model's textures through the GL context.
 function loadGoat() {
-    model = rl.loadModel(MODEL_PATH);
+    model = rl.loadModel(ASSET_SLOTS["model.goat"]);
     // `rl.loadModel` returns -1 when nothing loaded. (It deliberately does not
     // gate on raylib's own `IsModelValid`, which rejects skinned models in this
     // CPU-skinning build because their bone VBOs are never uploaded.)
     if (model < 0) {
-        console.log("goat: no model at " + MODEL_PATH + " - using the cube fallback");
+        console.log("goat: no model at " + ASSET_SLOTS["model.goat"] + " - using the cube fallback");
         haveModel = false;
         return;
     }

@@ -238,15 +238,16 @@ reported, not silently ignored).
 
 ## 4. The `goats` API
 
-> **Implemented so far (M14b/M14c):** identity (`api`, `game`, `mod`), `log` /
-> `warn` / `error` / `fail`, `mods()`, `frozen()`, the `begin`/`end`/`freeze`
-> lifecycle, asset *lookup* on the per-mod handle (`assets.get`/`slots`/`all`),
-> the `mod` console verbs, and the whole hook surface: `on` for every event in
-> §4.2, `command` registration plus `command` observers, `run`, and the
-> `player` / `camera` / `world` / `bots` / `settings` / `tuning` / `net`
-> accessors. Registration closes at `freeze()` (a reload re-opens the window for
-> the mod being reloaded). The content registries of §4.4 (`bots.register`,
-> `clips.register`, `assets.override`) and the mutable asset slots land in M14c2.
+> **Implemented (M14b/M14c/M14c2):** identity, logging, the `begin`/`end`/`freeze`
+> lifecycle, the `mod` console verbs, the whole hook surface (`on`, `command`,
+> `run`), the `player` / `camera` / `world` / `bots` / `settings` / `tuning` /
+> `net` accessors, the content registries (`bots.register`, `clips.register`,
+> `assets.override`), and the mutable asset slots: a mod's declared `assets` are
+> applied automatically in load order, last wins. Registration closes at
+> `freeze()`; a reload re-opens it for the mod being reloaded. `clips.register`
+> applies `gait` only for now -- a clip's `asset` is refused with a message,
+> since swapping one clip's source needs the model work; point the `model.goat`
+> slot at the file instead.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
@@ -341,22 +342,24 @@ goats.bots.register("com.example.giant", {
     scale: 2.0,
     bold: 0.8,
     lazy: 0.6,
-    model: "model.goat",          // an asset slot, or omit for the built-in model
 });
 
-goats.clips.register("run", {
-    asset: "model.goat",          // a different file whose clips include "run"
-    gait: { stride: 0.55, duty: 0.34 },
-});
+// Walk / trot / run gaits can be retuned. A clip's `asset` is refused for now;
+// point the model.goat slot at the file instead.
+goats.clips.register("run", { gait: { stride: 0.55, duty: 0.34 } });
 
-goats.assets.override("sfx.music", "audio/theme.ogg");
+// Point a built-in slot at an opaque asset name from a declared asset.
+goats.assets.override("sfx.music", "mod:com.example:sfx.music");
 ```
 
 | Registry | Purpose |
 | --- | --- |
-| `goats.bots.register(id, spec)` | Adds an archetype to the herd's spec pool (extends `BOT_SPEC`). |
-| `goats.clips.register(role, { asset, gait })` | Replaces a clip role (`idle`, `walk`, `trot`, `run`, `jump`, `sleep`, `death`, `eat`) or its gait stride/duty. |
-| `goats.assets.override(slot, file)` | Programmatic form of the manifest's `assets` map; `file` is relative to the mod directory. |
+| `goats.bots.register(id, spec)` | Adds an archetype to the herd's pool (`spec.name`, `coat`, `scale`, `bold`, `lazy`). |
+| `goats.clips.register(role, { gait })` | Retunes `walk` / `trot` / `run` stride and duty. An `asset` is refused until the model work. |
+| `goats.assets.override(slot, name)` | Points a built-in slot at an opaque asset name. |
+| manifest `assets` | Applied automatically at load, in mod order, last wins. |
+
+All three registries are pre-freeze: the loaders run after the entries do.
 
 ### 4.5 Player
 
@@ -471,14 +474,16 @@ non-leaf or unknown path throws, so a typo is loud.
 ### 4.11 Assets
 
 ```js
-goats.assets.slots();                 // ["model.goat", "sfx.music", ...]
-goats.assets.get("model.goat");       // opaque name for rl.loadModel
-goats.assets.override("sfx.music", "audio/theme.ogg");   // pre-freeze only
+goats.assets.slots();                 // every known slot: ["model.goat", ...]
+goats.assets.get("model.goat");       // the name to pass to rl.loadModel
+goats.assets.override("sfx.music", "mod:com.example:sfx.music");   // pre-freeze only
 ```
 
-`get` returns the name to pass to an `rl.load*` call. If no mod overrode the
-slot, it returns the built-in logical name (`"goat_animated.glb"`), which the
-engine already resolves from its embedded registry before the disk.
+`get` prefers the mod's own declared asset for the slot, then falls back to the
+built-in logical name (`"goat_animated.glb"`), which the engine already resolves
+from its embedded registry before the disk. A manifest's `assets` map is applied
+automatically when the host pushes the table, so a data-only pack (no `entry`)
+replaces a built-in just by declaring the slot.
 
 ### 4.12 Network
 
