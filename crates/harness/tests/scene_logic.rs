@@ -202,5 +202,122 @@ fn the_scene_runs_the_scripted_timeline() {
         obs.min_gap,
     );
 
+    // ---- weather, lighting and the sky -----------------------------------
+    let reported = obs.weather_at(300);
+    checks.check(
+        "weather text is reported",
+        reported.is_some_and(|line| !line.is_empty()),
+        reported,
+    );
+    // `C` forces the next weather, at frames 3000 and 3100.
+    let before = obs.weather_at(2999);
+    let after = obs.weather_at(3200);
+    checks.check(
+        "C changes the weather",
+        matches!((before, after), (Some(a), Some(b)) if a != b),
+        (before, after),
+    );
+    // It rained at the scripted frame, and rain is slower than dry grass.
+    let wet = obs.weather_at(3400);
+    checks.check(
+        "rain is reported at the test frame",
+        wet.is_some_and(|line| line.contains("rain ")),
+        wet,
+    );
+    let slowed = obs.speed_at(3400);
+    checks.check(
+        "rain slows the goat",
+        matches!((slowed, walk), (Some(slow), Some(dry)) if slow < dry - 0.01),
+        (slowed, walk),
+    );
+
+    checks.check(
+        "lighting is active",
+        obs.light_at(15) == Some("lit + shadow map"),
+        obs.light_at(15),
+    );
+    checks.check(
+        "L toggles lighting off",
+        obs.light_at(3210) == Some("off"),
+        obs.light_at(3210),
+    );
+
+    // ---- the shader passes and the shadow map ----------------------------
+    checks.check(
+        "model uses the lit shader",
+        obs.model_shader_calls.contains(&0),
+        obs.model_shader_calls.iter().take(4).collect::<Vec<_>>(),
+    );
+    checks.check(
+        "depth pass uses the depth shader",
+        obs.model_shader_calls.contains(&2),
+        obs.model_shader_calls.iter().take(6).collect::<Vec<_>>(),
+    );
+    checks.check(
+        "grass casts in the shadow pass",
+        obs.counters.shadow_cube_draws > 0,
+        obs.counters.shadow_cube_draws,
+    );
+    let bound = obs
+        .model_texture_calls
+        .iter()
+        .any(|call| call.first() == Some(&1) && call.get(1) == Some(&6));
+    checks.check(
+        "shadow map bound to the model",
+        bound,
+        obs.model_texture_calls.iter().take(4).collect::<Vec<_>>(),
+    );
+
+    // ---- audio -----------------------------------------------------------
+    checks.check(
+        "background music plays",
+        obs.music_played.contains(&0),
+        obs.music_played.iter().take(4).collect::<Vec<_>>(),
+    );
+    checks.check(
+        "music streams are updated",
+        obs.counters.music_updates > 0,
+        obs.counters.music_updates,
+    );
+    checks.check(
+        "ambience beds load",
+        obs.music_loads.len() >= 3,
+        obs.music_loads.len(),
+    );
+    checks.check(
+        "the goat bleats on jump",
+        obs.counters.sounds_played > 0,
+        obs.counters.sounds_played,
+    );
+    checks.check(
+        "audio is reported",
+        obs.audio_at(15) == Some("on"),
+        obs.audio_at(15),
+    );
+    checks.check(
+        "the sky shader is used",
+        obs.sky_at(15) == Some("shader"),
+        obs.sky_at(15),
+    );
+
+    // ---- the sky fragment shader's own markers ---------------------------
+    // These markers only exist in the volumetric march, not in the flat M5 layer
+    // it replaced.
+    let sky = &obs.sky_fs;
+    checks.check(
+        "the sky shader marches a volume",
+        ["sunTau", "cloudSteps", "slabY", "hg("]
+            .iter()
+            .all(|marker| sky.contains(marker)),
+        sky.len(),
+    );
+    // The sun and moon discs are sprites drawn over this pass, so a smoothstep on
+    // the sun dot here would draw a second disc.
+    checks.check(
+        "the sky shader leaves the discs to drawCelestial",
+        !sky.contains("smoothstep(0.999"),
+        sky.find("smoothstep(0.999"),
+    );
+
     checks.finish();
 }

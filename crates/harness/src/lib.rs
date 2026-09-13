@@ -228,6 +228,11 @@ impl Observations {
     pub fn sky_at(&self, i: u32) -> Option<&str> {
         one_of(&self.row(i)?.speed, "sky ", SKY)
     }
+
+    /// The HUD's weather line at frame `i`.
+    pub fn weather_at(&self, i: u32) -> Option<&str> {
+        Some(self.row(i)?.weather.as_str())
+    }
 }
 
 /// The health and energy the HUD reports.
