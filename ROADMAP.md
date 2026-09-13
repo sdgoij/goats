@@ -90,6 +90,7 @@ uses.
 | **M14d2** | World-mod simulation: `goats.rng`, `world.extend`, snapshot merging, `goatsd` evaluates mods | M14d | M | ✅ **Done** — streams + extension state travel in the snapshot's `mods` field |
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, `tools/mod_smoke_test.js`, CI syntax-check, a world-mod determinism test |
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; `tools/birds_mod_test.js` |
+| **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 
 ---
 
@@ -1171,6 +1172,20 @@ decisions behind it and the constraints that shape it.
   client mirrors instead of simulating, and two fresh worlds agree; a `server`
   test loads the real fixture through the real loader and checks the whole world
   still fits one datagram.
+- **M14g — Mod developer workflow. ✅ Done.** Three things that make iterating on
+  a mod bearable. `goats --watch` starts a `notify` watcher on the mods
+  directory -- the platform's native API (inotify / kqueue /
+  `ReadDirectoryChangesW`), not polling -- coalesces an editor's burst of writes
+  and reloads the affected mod. `mod enable` / `mod reload` now re-read the mod
+  **from disk** before evaluating it (`Loader::reload`), so code and
+  `tuning.json` edits land without a restart; assets are re-read for the digest
+  but not re-registered, so a model or sound change still needs one. And a mod
+  may ship as a single `.zip` with `mod.json` at its root: `ModSource { Dir |
+  Zip }` is what discovery records, and entry, tuning and assets are read
+  through it, so a zip hashes identically to the equivalent directory. Only the
+  zip crate's `deflate` feature is enabled, which keeps the new dependency tree
+  to `flate2`/`miniz_oxide`. `--watch` is client-only: a `side: "world"` mod is
+  fixed at join, so a server must not change it under its peers.
 
 **Constraints to respect.** The scene is one flat global scope joined by
 `concat!`, so `goats.freeze()`, not the loader, is what keeps registrations

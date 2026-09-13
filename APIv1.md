@@ -65,8 +65,11 @@ The host looks for mods in this order and uses the first that exists:
 4. `mods/` in the current working directory (so `cargo run` finds the repo's).
 
 `--no-mods` skips discovery entirely. Every immediate subdirectory containing a
-`mod.json` is a mod. Files and directories without a manifest are ignored
-(a `mods/.disabled/` dir is a convenient way to park a mod).
+`mod.json` is a mod, and so is every top-level `*.zip` with `mod.json` at its
+root (a zip wrapped in a single folder is accepted too, since that is what most
+`zip -r` calls produce). A directory without a manifest is ignored, so a
+`mods/.disabled/` dir parks a mod; a zip without one is reported, because a zip
+in `mods/` is meant to be a mod.
 
 ### 2.2 Load order
 
@@ -131,12 +134,34 @@ Consequences:
 
 ### 2.5 Reload
 
-`mod reload <id>` re-reads the manifest, entry and assets, calls `goats.end(id)`
-for the live instance (which fires that mod's `"shutdown"` handlers and removes
-its hooks, commands and registrations), then evaluates the wrapper again.
+`mod reload <id>` (and `mod disable <id>` followed by `mod enable <id>`) re-reads
+that mod from its source -- manifest, entry, tuning and assets -- before
+evaluating its wrapper again. `goats.end(id)` runs first for the live instance,
+firing its `"shutdown"` handlers and dropping its hooks, commands and
+registrations, so a reload leaves nothing behind.
 
-Tuning and assets are re-registered on reload. Nothing is re-read for mods the
-player did not name, so reloading one mod never disturbs another.
+- **Code** is re-read from disk, so an edit takes effect immediately. This is
+  what the watcher (2.6) uses.
+- **`tuning.json`** is merged again, so a tuning edit lands too (a typo warns
+  rather than failing).
+- **Assets** are re-read for the digest but not re-registered with the engine, so
+  a changed model or sound still needs a restart. Re-registering a live asset is
+  a possible follow-up.
+- Only the named mod is touched; reloading one never disturbs another.
+- A manifest that renamed its `id` is refused with a message: a rename needs a
+  restart, since the compatibility set and the console refer to the old id.
+
+### 2.6 Watching for changes (development)
+
+`goats --watch` watches the mods directory with the platform's native
+notification API (`notify`: inotify on Linux, kqueue on macOS,
+`ReadDirectoryChangesW` on Windows). When a file under a mod changes, the host
+waits for the burst of writes to settle (~250 ms) and reloads that mod, so
+editing a mod's source re-runs it without restarting the game.
+
+`--watch` is on the client only. A `side: "world"` mod is part of the
+compatibility set fixed at join, so a server must not change it under its peers;
+`goatsd` takes no `--watch`.
 
 ---
 

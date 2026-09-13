@@ -1035,6 +1035,10 @@ try {
     rl.guiPanel = realPanel; rl.guiLabel = realLabel; rl.guiButton = realButton;
     modMenuTest.draws = panelDraws === 1 && labelDraws >= 3 && buttonDraws === 3;
     sandbox.sceneCommand('ui hud');
+    // A reload re-reads the manifest and merges its tuning tree again.
+    sandbox.sceneModTuning('com.e.client', '{"camera":{"dist":8.25}}');
+    modMenuTest.retune = vm.runInContext('goats.tuning.get("camera.dist")', sandbox) === 8.25;
+    sandbox.sceneModTuning('com.e.client', '{"camera":{"dist":5.2}}');
     modMenuTest.all = modMenuTest.screen && modMenuTest.disabled && modMenuTest.enabled &&
         modMenuTest.unknown && modMenuTest.noId && modMenuTest.offlineWorld &&
         modMenuTest.worldGuard && modMenuTest.clientInSession && modMenuTest.draws;
@@ -1147,6 +1151,7 @@ const checks = [
         modMenuTest.unknown && modMenuTest.noId, modMenuTest],
     ['a world mod is fixed once in a session, a client one is not',
         modMenuTest.offlineWorld && modMenuTest.worldGuard && modMenuTest.clientInSession, modMenuTest],
+    ['a reload re-merges the mod tuning', modMenuTest.retune, modMenuTest],
     // The volumetric march, not the flat M5 layer: these markers only exist in
     // the slab marcher.
     ['the sky shader marches a volume',

@@ -28,10 +28,13 @@
 mod audio;
 mod net;
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use mods::Loader;
+use mods::watch::ModWatcher;
+use mods::{AssetMode, Loader};
 use slag::{Context, HostCallbacks, JsValue};
 
 /// Every asset the scene loads, embedded so the binary is self-contained. The
@@ -148,18 +151,23 @@ fn scene_function_if_present(context: &Context, name: &str) -> Option<JsValue> {
 }
 
 const USAGE: &str = "\
-goats [--mods DIRECTORY] [--no-mods]
+goats [--mods DIRECTORY] [--no-mods] [--watch]
 
   --mods DIRECTORY   load mods from DIRECTORY instead of the default search
                      ($GOATS_MODS, then mods/ next to the executable, then
                      mods/ in the current directory)
   --no-mods          ignore every mod
+  --watch            reload a mod when its files change on disk (development)
   -h, --help         this text";
+
+/// How long to wait for an editor's burst of writes to settle before reloading.
+const WATCH_SETTLE: Duration = Duration::from_millis(250);
 
 /// What the command line asked for.
 struct Options {
     mods_dir: Option<PathBuf>,
     no_mods: bool,
+    watch: bool,
     help: bool,
 }
 
@@ -167,6 +175,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         mods_dir: None,
         no_mods: false,
+        watch: false,
         help: false,
     };
     let mut args = args;
@@ -174,6 +183,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
         match arg.as_str() {
             "-h" | "--help" => options.help = true,
             "--no-mods" => options.no_mods = true,
+            "--watch" => options.watch = true,
             "--mods" => {
                 options.mods_dir = Some(PathBuf::from(
                     args.next().ok_or("--mods needs a directory")?,
@@ -183,6 +193,21 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
         }
     }
     Ok(options)
+}
+
+/// An absolute form of `dir`, so watcher events (which are absolute) match the
+/// paths discovery recorded. Windows canonical paths carry a `\\?\` verbatim
+/// prefix that event paths do not, so it is stripped.
+fn canonical_dir(dir: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    #[cfg(windows)]
+    {
+        let text = canonical.to_string_lossy();
+        if let Some(stripped) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    canonical
 }
 
 /// The mods directory: an explicit flag, else `$GOATS_MODS`, else `mods/` next
@@ -280,7 +305,7 @@ fn eval_entry(context: &mut Context, loader: &Loader, id: &str) {
 }
 
 /// One enable/disable/reload the console asked for.
-fn handle_mod_intent(context: &mut Context, loader: &Loader, line: &str) {
+fn handle_mod_intent(context: &mut Context, loader: &mut Loader, line: &str) {
     let intent: serde_json::Value = match serde_json::from_str(line) {
         Ok(intent) => intent,
         Err(error) => {
@@ -302,9 +327,32 @@ fn handle_mod_intent(context: &mut Context, loader: &Loader, line: &str) {
     }
     match kind {
         "disable" => call_scene(context, "sceneModEnd", &[JsValue::string(id)]),
-        "enable" | "reload" => eval_entry(context, loader, id),
+        "enable" | "reload" => reload_and_eval(context, loader, id),
         other => eprintln!("[mods] unknown intent '{other}'"),
     }
+}
+
+/// Re-read a mod from its source (a directory or a zip) and evaluate it, so an
+/// edit takes effect without a restart. A read failure falls back to the cached
+/// copy rather than leaving the mod unloadable.
+fn reload_and_eval(context: &mut Context, loader: &mut Loader, id: &str) {
+    if let Err(error) = loader.reload(id, AssetMode::Keep) {
+        eprintln!("[mods] {error}");
+    }
+    // The entry is evaluated fresh; its tuning tree is merged again, so a
+    // `tuning.json` edit lands too. Assets are re-read for the digest but not
+    // re-registered, so an asset change still needs a restart.
+    if let Some(json) = loader
+        .get(id)
+        .and_then(|manifest| manifest.tuning_json.clone())
+    {
+        call_scene(
+            context,
+            "sceneModTuning",
+            &[JsValue::string(id), JsValue::string(json)],
+        );
+    }
+    eval_entry(context, loader, id);
 }
 
 fn main() {
@@ -322,16 +370,43 @@ fn main() {
 
     // Discover mods before the window opens: a bad manifest is reported now,
     // and the assets have to be in the engine's registry before the scene loads.
-    let mut loader = match resolve_mods_dir(&options) {
+    // The directory is made absolute so the watcher's event paths, which are
+    // absolute, can be matched against a mod's source.
+    let mods_dir = resolve_mods_dir(&options).map(|dir| canonical_dir(&dir));
+    let mut loader = match &mods_dir {
         Some(dir) => {
             eprintln!("[mods] scanning {}", dir.display());
-            Loader::discover(&dir)
+            Loader::discover(dir)
         }
         None => Loader::empty(),
     };
     for error in loader.errors() {
         eprintln!("[mods] {error}");
     }
+
+    // `--watch` reloads a mod when its files change on disk. It is a development
+    // aid for the local client: a world mod is part of the compatibility set
+    // fixed at join, so a server should not watch.
+    let watcher = if options.watch {
+        match &mods_dir {
+            Some(dir) => match ModWatcher::new(dir) {
+                Ok(watcher) => {
+                    eprintln!("[mods] watching {} for changes", dir.display());
+                    Some(watcher)
+                }
+                Err(error) => {
+                    eprintln!("[mods] {error}");
+                    None
+                }
+            },
+            None => {
+                eprintln!("[mods] --watch has nothing to watch (no mods directory)");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let world_mods = world_mod_refs(&loader);
 
@@ -407,6 +482,9 @@ fn main() {
     let mut net = net::Net::start(world_mods);
     let mut voice = audio::Voice::start(&mut net);
 
+    // Watched mods whose files changed recently, waiting for the writes to stop.
+    let mut settling: HashMap<String, Instant> = HashMap::new();
+
     loop {
         while let Ok(line) = pending.try_recv() {
             if line.trim().is_empty() {
@@ -457,12 +535,35 @@ fn main() {
                         for line in text.lines() {
                             let line = line.trim();
                             if !line.is_empty() {
-                                handle_mod_intent(&mut context, &loader, line);
+                                handle_mod_intent(&mut context, &mut loader, line);
                             }
                         }
                     }
                 }
                 Err(error) => eprintln!("[mods] sceneModDrain: {error}"),
+            }
+        }
+
+        // A watched mod file changed. Coalesce the burst an editor produces and
+        // reload once the writes have settled, so a half-written file is never
+        // evaluated.
+        if let Some(watcher) = &watcher {
+            let now = Instant::now();
+            for path in watcher.take_changed() {
+                for id in loader.mods_touching(&path) {
+                    settling.insert(id, now);
+                }
+            }
+            let mut ready: Vec<String> = settling
+                .iter()
+                .filter(|(_, at)| now.duration_since(**at) >= WATCH_SETTLE)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ready.sort();
+            for id in ready {
+                settling.remove(&id);
+                eprintln!("[mods] {id} changed on disk; reloading");
+                reload_and_eval(&mut context, &mut loader, &id);
             }
         }
 

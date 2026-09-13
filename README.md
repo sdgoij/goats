@@ -331,10 +331,16 @@ frames to `audio.rs` on a side channel, because Opus bytes are not a line.
 Drop a directory with a `mod.json` into `mods/` next to the executable (or in
 the working directory) and it is discovered at startup: the manifest is
 validated, its assets are read and registered under opaque names, and its entry
-is evaluated inside a per-mod `goats` handle. `--mods DIR` / `$GOATS_MODS`
-re-point the search and `--no-mods` ignores it. In the console, `mod list`,
+is evaluated inside a per-mod `goats` handle. A mod can also ship as a single
+`.zip` with `mod.json` at its root. `--mods DIR` / `$GOATS_MODS` re-point the
+search and `--no-mods` ignores it. In the console, `mod list`,
 `mod info <id>`, `mod enable|disable|reload <id>` and `mod key` cover the set,
 and the main menu's **Mods** screen toggles them for the session.
+
+While developing a mod, `goats --watch` reloads it when its files change on
+disk (the platform's native notification API, not polling), and `mod enable` /
+`mod reload` re-read the code from disk too. Editing the entry or `tuning.json`
+takes effect without a restart; an asset change still needs one.
 
 Mods are trusted code with one wall: no filesystem. All I/O is the Rust host's,
 and the scene sees only opaque asset names. A mod gets the hook API `goats`

@@ -122,6 +122,27 @@ function sceneModEnd(id) {
     return "ok";
 }
 
+// Re-apply a mod's `tuning.json` after the host re-read it from disk (a reload,
+// or the file watcher). `sceneMods` applies it at load; this is the same merge,
+// for a tree that changed. A typo warns rather than failing.
+function sceneModTuning(id, json) {
+    const meta = modFind(id);
+    if (meta === null) return "error unknown mod: " + id;
+    let tree;
+    try {
+        tree = JSON.parse(String(json));
+    } catch (error) {
+        return "error tuning: " + String(error);
+    }
+    meta.tuning = tree;
+    try {
+        tuningMerge(tree);
+    } catch (error) {
+        console.log("mods: " + id + " tuning: " + String(error));
+    }
+    return "ok";
+}
+
 // The host closed registration once every entry had its chance to register.
 function sceneModFreeze() {
     modsFrozen = true;

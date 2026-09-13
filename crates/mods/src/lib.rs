@@ -1164,4 +1164,62 @@ mod tests {
         assert!(loader.mods_touching(&root.join("unrelated.txt")).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn the_watcher_reports_a_changed_file() {
+        let root = workspace("watch");
+        std::fs::create_dir_all(&root).unwrap();
+        write(&root.join("mod.json"), "{}");
+        let watcher = crate::watch::ModWatcher::new(&root).expect("a watcher");
+
+        write(&root.join("mod.json"), r#"{ "id": "x" }"#);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while std::time::Instant::now() < deadline {
+            seen = watcher.take_changed();
+            if seen.iter().any(|path| path.ends_with("mod.json")) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            seen.iter().any(|path| path.ends_with("mod.json")),
+            "no change reported: {seen:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_watched_change_reloads_the_mod_it_belongs_to() {
+        let root = workspace("watchreload");
+        write_mod(
+            &root,
+            "hot",
+            r#"{ "id": "hot", "name": "Hot", "version": "1", "api": 1, "entry": "mod.js" }"#,
+        );
+        write(&root.join("hot").join("mod.js"), "1\n");
+        let mut loader = Loader::discover(&root);
+        let watcher = crate::watch::ModWatcher::new(&root).expect("a watcher");
+
+        write(&root.join("hot").join("mod.js"), "2\n");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut ids = Vec::new();
+        while std::time::Instant::now() < deadline && ids.is_empty() {
+            for path in watcher.take_changed() {
+                for id in loader.mods_touching(&path) {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(ids, vec!["hot".to_string()], "a change must map to its mod");
+        loader.reload(&ids[0], AssetMode::Keep).unwrap();
+        assert_eq!(
+            loader.get("hot").unwrap().entry_source.as_deref(),
+            Some("2\n")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
