@@ -191,6 +191,89 @@ impl Observations {
     pub fn probe(&self, i: u32) -> Option<&Probe> {
         self.probes.get(&i.to_string())
     }
+
+    /// The HUD's speed at frame `i`, in m/s. The line reads `... speed 0.87 m/s`.
+    pub fn speed_at(&self, i: u32) -> Option<f64> {
+        let rest = after(&self.row(i)?.speed, "speed ")?;
+        rest.get(..rest.find(" m/s")?)?.parse().ok()
+    }
+
+    /// The HUD's health and energy at frame `i`.
+    pub fn stat_at(&self, i: u32) -> Option<Stats> {
+        let line = &self.row(i)?.stats;
+        Some(Stats {
+            health: int_after(line, "health ")?,
+            energy: int_after(line, "energy ")?,
+        })
+    }
+
+    /// The clock at frame `i`, as minutes since midnight, from the `HH:MM` that
+    /// opens the speed line.
+    pub fn clock_at(&self, i: u32) -> Option<u32> {
+        let (hours, minutes) = self.row(i)?.speed.get(0..5)?.split_once(':')?;
+        Some(hours.parse::<u32>().ok()? * 60 + minutes.parse::<u32>().ok()?)
+    }
+
+    /// The lighting state at frame `i`.
+    pub fn light_at(&self, i: u32) -> Option<&str> {
+        one_of(&self.row(i)?.speed, "light ", LIGHT)
+    }
+
+    /// The audio state at frame `i`.
+    pub fn audio_at(&self, i: u32) -> Option<&str> {
+        one_of(&self.row(i)?.speed, "audio ", AUDIO)
+    }
+
+    /// The sky state at frame `i`.
+    pub fn sky_at(&self, i: u32) -> Option<&str> {
+        one_of(&self.row(i)?.speed, "sky ", SKY)
+    }
+}
+
+/// The health and energy the HUD reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stats {
+    pub health: i64,
+    pub energy: i64,
+}
+
+/// The lighting states the HUD names, longest first so a prefix cannot win.
+const LIGHT: &[&str] = &[
+    "lit + shadow map",
+    "lit + planar shadow",
+    "cube shader",
+    "lit",
+    "off",
+];
+
+/// The audio states the HUD names.
+const AUDIO: &[&str] = &["muted", "on", "off"];
+
+/// The sky states the HUD names.
+const SKY: &[&str] = &["shader", "billboards"];
+
+/// The text after the first `marker` in `line`.
+fn after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    line.find(marker).map(|at| &line[at + marker.len()..])
+}
+
+/// The integer after `marker`, up to the next non-digit.
+fn int_after(line: &str, marker: &str) -> Option<i64> {
+    let rest = after(line, marker)?;
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest.get(..end)?.parse().ok()
+}
+
+/// Which of `values` follows `marker`. They are listed longest first, so a value
+/// that is a prefix of another cannot win.
+fn one_of<'a>(line: &'a str, marker: &str, values: &[&'a str]) -> Option<&'a str> {
+    let rest = after(line, marker)?;
+    values
+        .iter()
+        .find(|value| rest.starts_with(**value))
+        .copied()
 }
 
 impl Harness {
