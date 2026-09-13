@@ -4,6 +4,10 @@
 // function is one Rust/JS crossing: `harnessRun` drives the whole scripted run
 // inside the engine and comes back with the observations as one JSON string,
 // which is why the frame loop is not re-implemented on the Rust side.
+//
+// Everything that can fail returns an `{ok, value}` / `{ok, error}` envelope
+// rather than throwing, so a failing test reports what the scene actually said
+// instead of a bare conversion error.
 
 // Run the scene to the frame budget and return the observations.
 //
@@ -24,4 +28,36 @@ function harnessCommand(line) {
 // Whether the scene has finished loading, so a test can watch the splash.
 function harnessReady() {
     return sceneReady();
+}
+
+// Call any scene function by name, with JSON-encoded arguments. This is how a
+// test drives the seams no command covers: `terrainHeight`, `nearestTuft`,
+// `updateFood`, `rainSlowFactor`, and the mod wiring (`sceneMods`,
+// `sceneModResult`, `sceneModTuning`, `sceneModDrain`).
+function harnessCall(name, argsJson) {
+    try {
+        const fn = globalThis[name];
+        if (typeof fn !== "function") {
+            return JSON.stringify({ ok: false, error: "no such scene function: " + name });
+        }
+        const value = fn.apply(null, JSON.parse(argsJson));
+        return JSON.stringify({ ok: true, value: value === undefined ? null : value });
+    } catch (error) {
+        return JSON.stringify({ ok: false, error: String(error) });
+    }
+}
+
+// Evaluate a snippet in the scene's scope and return its value.
+//
+// This exists because some state is reachable only as a top-level `const` -- the
+// mod tests drive the `goats` handle directly -- and a direct `eval` in a
+// function defined at the scene's own top level sees that lexical scope, the way
+// `vm.runInContext` did in the Node harness.
+function harnessEval(code) {
+    try {
+        const value = eval(String(code));
+        return JSON.stringify({ ok: true, value: value === undefined ? null : value });
+    } catch (error) {
+        return JSON.stringify({ ok: false, error: String(error) });
+    }
 }

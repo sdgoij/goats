@@ -15,6 +15,3 @@ serde = { version = "1", features = ["derive"] }
 # `sceneWorldJson` already uses.
 serde_json = "1"
 slag = { git = "https://github.com/sdgoij/slag", features = ["jit"] }
-
-[dev-dependencies]
-mods = { path = "../mods" }

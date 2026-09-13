@@ -1,46 +1,86 @@
 // The harness's `rl`: the null module plus what a test drives and reads back.
 //
-// This is evaluated after `null_rl.js`, so `rl` is already the whole surface;
-// it overlays only the members the harness needs and leaves the rest alone. The
-// scene cannot tell the difference, which is the point: the same script runs
-// here as in the game, so a binding or a builtin the engine lacks fails a test
-// instead of passing one.
+// This is evaluated after `null_rl.js`, so `rl` is already the whole surface; it
+// overlays only the members the harness needs and leaves the rest alone. The
+// scene cannot tell the difference, which is the point: the same script runs here
+// as in the game, so a binding or a builtin the engine lacks fails a test instead
+// of passing one.
 //
-// The loop control lives here. `windowShouldClose` stops the run once the frame
-// budget is spent, applying that frame's scripted input first; `endDrawing`
-// records the frame. Loading frames are not counted -- the scene takes one
-// startup step per frame and draws the splash -- so a recorded `i` counts frames
-// *after* the scene is ready, exactly as `tools/goat_logic_test.js` counted them.
+// Two jobs, in one place:
 //
-// The budget is settable (`harnessSetTotal`) so a test can drive a short run; the
-// frame indices are absolute either way, so a short run sees the same inputs at
-// the same frames and simply stops earlier.
+//   * **Drive.** The scripted input timeline and the loop control. The scene's own
+//     `run()` calls `windowShouldClose` and `endDrawing`, so the harness drives
+//     the real frame loop rather than a re-implementation of it. Loading frames
+//     are not counted -- the scene takes one startup step per frame and draws the
+//     splash -- so a recorded `i` counts frames *after* the scene is ready, the
+//     same way `tools/goat_logic_test.js` counted them.
+//   * **Observe.** Everything the assertions need, recorded as it happens: the
+//     per-frame timeline, the console probes, model/shader/audio call tables, the
+//     terrain mesh, the drawn positions and the scene's own `console.log` lines.
+//
+// Booleans the checks used to compute are *not* computed here: this records
+// measurements, and the assertions stay in Rust. The one thing it does derive is
+// facts that would otherwise mean shipping a whole terrain mesh across the
+// boundary (triangle counts, the height spread, the material count).
+//
+// The budget is settable (`harnessSetTotal`), so a test can drive a short run;
+// the frame indices are absolute either way, so a short run sees the same inputs
+// at the same frames and simply stops earlier.
 
 (function () {
     const DEFAULT_TOTAL = 4050;
     let total = DEFAULT_TOTAL;
 
-    // The recorded run: one row per ready frame.
-    const timeline = [];
-    // Input, exactly as raylib queues it: key state for the frame, one-shot
-    // presses, and the typed-character queue.
+    // ---- input -------------------------------------------------------------
+    // Exactly as raylib queues it: key state for the frame, one-shot presses and
+    // the typed-character queue.
     const keys = {};
     const pressed = {};
     const chars = [];
     let clipboard = '';
     const clipboardWrites = [];
 
+    // ---- the recorded run ---------------------------------------------------
+    const timeline = [];
+    // The frames whose console/screen state is snapshotted. The console is an
+    // overlay and the scripted input drives it only after the restart, so these
+    // are the frames the console cases look at.
+    const PROBE_FRAMES = [4007, 4008, 4009, 4011, 4013, 4016, 4018, 4021, 4032, 4034];
+    const probes = {};
+
     let frameIndex = 0;
-    let loadingFrames = 0;
-    let modelLoads = 0;
-    const modelPaths = [];
     let lastPosed = null;
     let speedText = '';
     let statsText = '';
     let weatherText = '';
     let splashTitle = false;
     let splashStep = '';
-    let cubeDraws = 0;
+    let shadowPass = false;
+    let skyFs = '';
+    let goatDraw = null;
+    const drawnRows = {};
+    let lastTerrainMesh = null;
+
+    // The counters a test can read and reset. `cubeDraws` is reset by the tuft
+    // check, which draws the field twice and compares.
+    const counters = {
+        loadingFrames: 0, modelLoads: 0, botPoses: 0, botJumps: 0,
+        cubeDraws: 0, shadowCubeDraws: 0, menuDraws: 0, progressBarCalls: 0,
+        musicUpdates: 0, terrainMeshesBuilt: 0,
+    };
+    const modelPaths = [];
+    const botClipNames = {};
+    const modelShaderCalls = [];
+    const modelTextureCalls = [];
+    const musicLoads = [];
+    const musicPlayed = [];
+    const soundLoads = [];
+    const soundsPlayed = [];
+
+    // The scene's own `console.log` lines. The checks read some of their numbers
+    // out of them (the herd size, the closest gap the bots kept, the fullest
+    // belly), so they are captured here as well as forwarded to the host.
+    const logs = [];
 
     // The scripted input timeline, ported from the Node harness. Frames 10-200
     // exercise the gaits, the jump and sleep; 3000-3950 force the weather, the
@@ -83,9 +123,10 @@
 
     const base = globalThis.rl;
     globalThis.rl = Object.assign({}, base, {
-        // Input: the script, not the keyboard.
+        // ---- input: the script, not the keyboard ---------------------------
         isKeyDown: (k) => !!keys[k],
         isKeyPressed: (k) => !!pressed[k],
+        isKeyUp: (k) => !keys[k],
         getCharPressed: () => (chars.length > 0 ? chars.shift() : 0),
         getClipboardText: () => clipboard,
         setClipboardText: (text) => {
@@ -93,8 +134,7 @@
             clipboardWrites.push(clipboard);
         },
 
-        // The loop. The scene's own `run()` calls these, so the harness drives
-        // the real frame loop rather than a re-implementation of it.
+        // ---- the loop ------------------------------------------------------
         windowShouldClose: () => {
             if (frameIndex >= total) return true;
             applyInput(frameIndex);
@@ -102,7 +142,7 @@
         },
         endDrawing: () => {
             if (!sceneReady()) {
-                loadingFrames += 1;
+                counters.loadingFrames += 1;
                 return;
             }
             timeline.push({
@@ -112,22 +152,102 @@
                 stats: statsText,
                 weather: weatherText,
             });
+            // The console probe: the goat's drawn position, the console's state
+            // and the active screen, taken through the same dispatcher a user
+            // would.
+            if (PROBE_FRAMES.indexOf(frameIndex) >= 0) {
+                probes[frameIndex] = {
+                    x: goatDraw === null ? null : goatDraw.x,
+                    z: goatDraw === null ? null : goatDraw.z,
+                    state: JSON.parse(sceneCommand('console').slice(3)),
+                    ui: sceneCommand('ui').slice(3),
+                };
+            }
             frameIndex += 1;
         },
 
-        // Models and clips. Handle 0 is the player's goat; the bots animate their
-        // own handles, so only the goat drives the state-machine checks.
+        // ---- models, meshes and clips --------------------------------------
         loadModel: (p) => {
             modelPaths.push(p);
-            const handle = modelLoads;
-            modelLoads += 1;
+            const handle = counters.modelLoads;
+            counters.modelLoads += 1;
             return handle;
         },
-        updateModelAnimation: (model, clip, frame) => {
-            if (model === 0) lastPosed = { clip: base.modelAnimationName(model, clip), frame: frame };
+        // The terrain grid. The engine side is covered by the runtime surface
+        // test; here the scene's *use* of it matters, so the arrays are kept for
+        // the facts derived in `harnessObserve`.
+        makeModel: (vertices, indices, normals, colors, texcoords) => {
+            counters.terrainMeshesBuilt += 1;
+            lastTerrainMesh = {
+                vertices: vertices, indices: indices, normals: normals,
+                colors: colors, texcoords: texcoords,
+            };
+            return 1000 + counters.terrainMeshesBuilt;
         },
+        modelBounds: () => ({ minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 1.47, maxZ: 0 }),
+        modelBoneCount: () => 15,   // 13 body bones + LidL/LidR
+        updateModelAnimation: (model, clip, frame) => {
+            // Only the player's model (handle 0) drives the state-machine
+            // checks; the bots animate their own handles and would clobber them.
+            if (model === 0) lastPosed = { clip: base.modelAnimationName(model, clip), frame: frame };
+            else {
+                counters.botPoses += 1;
+                const name = base.modelAnimationName(model, clip);
+                botClipNames[name] = true;
+                if (name.indexOf('GoatJump') === 0) counters.botJumps += 1;
+            }
+        },
+        drawModelEx: (model, x, y, z) => {
+            // The goat is handle 0 and the terrain meshes are 1000+; everything
+            // else is a bot. The bots are drawn at the ground under them, so the
+            // recorded y must equal `terrainHeight` there -- which is what the
+            // herd check compares. The goat's whole position is kept so the
+            // console probe can show that movement stops while it is open.
+            if (model === 0) goatDraw = { x: x, y: y, z: z };
+            else if (model < 1000) drawnRows[model] = { x: x, y: y, z: z };
+        },
+        setModelShader: (_model, shader) => { modelShaderCalls.push(shader); },
+        setModelTexture: (_model, index, texture) => { modelTextureCalls.push([index, texture]); },
 
-        // The HUD read-outs, which are otherwise write-only.
+        // ---- shaders and render targets ------------------------------------
+        // The handle identifies which shader the scene compiled, so the checks
+        // can tell the lit pass from the depth pass. The sky's fragment source is
+        // kept, because a shader is only really tested by what it contains.
+        loadShaderFromMemory: (vertex, fragment) => {
+            if (fragment.indexOf('cloudiness') >= 0) skyFs = fragment;
+            return vertex.indexOf('shadowOn') >= 0 ? 1
+                : (vertex.indexOf('vClip') >= 0 ? 2 : (fragment.indexOf('cloudiness') >= 0 ? 3 : 0));
+        },
+        isShaderValid: () => true,
+        getShaderLocation: () => 0,
+        loadRenderTexture: () => 5, isRenderTextureValid: () => true,
+        renderTextureColor: () => 6, renderTextureDepth: () => 7,
+        renderTextureSize: () => ({ x: 1024, y: 1024 }),
+        beginTextureMode: () => { shadowPass = true; },
+        endTextureMode: () => { shadowPass = false; },
+
+        // ---- audio ---------------------------------------------------------
+        loadSound: (p) => { soundLoads.push(p); return soundLoads.length - 1; },
+        playSound: (s) => { soundsPlayed.push(s); },
+        isSoundPlaying: () => false,
+        loadMusic: (p) => { musicLoads.push(p); return musicLoads.length - 1; },
+        playMusic: (m) => { musicPlayed.push(m); },
+        updateMusic: () => { counters.musicUpdates += 1; },
+        isMusicPlaying: () => true, musicTimeLength: () => 100, musicTimePlayed: () => 0,
+
+        // ---- raygui --------------------------------------------------------
+        // The menu is drawn through these; the harness never clicks one, but the
+        // progress bar's count is how the splash check knows it was drawn.
+        guiProgressBar: () => { counters.progressBarCalls += 1; return { action: 0, value: 0 }; },
+
+        // ---- drawing -------------------------------------------------------
+        drawCube: () => {
+            if (shadowPass) counters.shadowCubeDraws += 1;
+            counters.cubeDraws += 1;
+        },
+        drawRectangleLines: () => { counters.menuDraws += 1; },
+        // The HUD read-outs, which are otherwise write-only. They carry the clock,
+        // the speed, the lighting, the audio and the sky state in one line.
         drawText: (text) => {
             const line = String(text);
             if (line.indexOf('speed ') >= 0) speedText = line;
@@ -136,25 +256,153 @@
             else if (line.indexOf('Slag goat') >= 0) splashTitle = true;
             else if (line.indexOf('loading ') >= 0) splashStep = line;
         },
-        drawCube: () => { cubeDraws += 1; },
     });
+
+    // ---- console.log capture ------------------------------------------------
+    //
+    // The host's `console.log` is a native function and does not carry
+    // `Function.prototype`, so it cannot be forwarded with `.apply`; the joined
+    // line is passed as one argument instead.
+    const hostConsole = globalThis.console;
+    const hostLog = hostConsole.log;
+    hostConsole.log = function () {
+        const text = Array.prototype.slice.call(arguments).join(' ');
+        logs.push(text);
+        hostLog(text);
+    };
+
+    // ---- the harness surface the glue and the Rust side use -----------------
 
     globalThis.harnessSetTotal = function (frames) {
         total = frames;
     };
 
-    // Everything the Rust side reads, as one JSON string -- the shape
-    // `sceneWorldJson` already uses for the same reason.
+    globalThis.harnessResetCounters = function (namesJson) {
+        const names = JSON.parse(String(namesJson));
+        for (let i = 0; i < names.length; i++) {
+            if (counters[names[i]] === undefined) return 'error unknown counter: ' + names[i];
+            counters[names[i]] = 0;
+        }
+        return 'ok';
+    };
+
+    // The terrain mesh as facts: the arrays are large, and the checks only ask
+    // how many there are, how much the surface varies and how many materials it
+    // carries.
+    function meshFacts() {
+        const mesh = lastTerrainMesh;
+        if (mesh === null) return null;
+        let low = 1e9;
+        let high = -1e9;
+        for (let i = 1; i < mesh.vertices.length; i += 3) {
+            const y = mesh.vertices[i];
+            if (y < low) low = y;
+            if (y > high) high = y;
+        }
+        const seen = {};
+        let materials = 0;
+        for (let i = 0; i < mesh.colors.length; i += 4) {
+            const key = mesh.colors[i] + ',' + mesh.colors[i + 1] + ',' + mesh.colors[i + 2];
+            if (seen[key] !== true) { seen[key] = true; materials += 1; }
+        }
+        return {
+            verts: mesh.vertices.length / 3,
+            indices: mesh.indices.length,
+            normals: mesh.normals.length,
+            colors: mesh.colors.length,
+            texcoords: mesh.texcoords.length,
+            ySpread: high - low,
+            materials: materials,
+        };
+    }
+
+    // The numbers the scene logs, which no command reports. The patterns are not
+    // global: a `g` regex carries `lastIndex` between lines and would skip
+    // matches.
+    function logMax(pattern) {
+        const found = [];
+        for (let i = 0; i < logs.length; i++) {
+            const match = pattern.exec(logs[i]);
+            if (match) found.push(Number(match[1]));
+        }
+        return found;
+    }
+
+    // `Math.min`/`Math.max` are natives too, so they are looped rather than
+    // spread through an `apply`.
+    function minOf(values) {
+        if (values.length === 0) return null;
+        let best = values[0];
+        for (let i = 1; i < values.length; i++) if (values[i] < best) best = values[i];
+        return best;
+    }
+
+    function maxOf(values) {
+        let best = 0;
+        for (let i = 0; i < values.length; i++) if (values[i] > best) best = values[i];
+        return best;
+    }
+
+    function botCountFromLogs() {
+        for (let i = 0; i < logs.length; i++) {
+            const match = /goat: (\d+) bot goats/.exec(logs[i]);
+            if (match) return Number(match[1]);
+        }
+        return 0;
+    }
+
     globalThis.harnessObserve = function () {
+        const drawn = [];
+        for (const handle in drawnRows) drawn.push(drawnRows[handle]);
+        let deathFrame = -1;
+        const playerClips = [];
+        const seenClip = {};
+        for (let i = 0; i < timeline.length; i++) {
+            const clip = timeline[i].clip;
+            if (clip === 'GoatDeath' && deathFrame < 0) deathFrame = timeline[i].i;
+            if (clip !== null && seenClip[clip] !== true) { seenClip[clip] = true; playerClips.push(clip); }
+        }
+        const idleOf = (names) => names.filter((n) => n.indexOf('GoatIdle') === 0);
         return JSON.stringify({
-            loadingFrames: loadingFrames,
-            modelLoads: modelLoads,
-            modelPaths: modelPaths,
-            timeline: timeline,
+            loadingFrames: counters.loadingFrames,
             splashTitle: splashTitle,
             splashStep: splashStep,
-            cubeDraws: cubeDraws,
+            modelPaths: modelPaths,
+            musicLoads: musicLoads,
+            soundLoads: soundLoads,
+            timeline: timeline,
+            probes: probes,
+            counters: {
+                modelLoads: counters.modelLoads,
+                botPoses: counters.botPoses,
+                botJumps: counters.botJumps,
+                musicUpdates: counters.musicUpdates,
+                soundsPlayed: soundsPlayed.length,
+                cubeDraws: counters.cubeDraws,
+                shadowCubeDraws: counters.shadowCubeDraws,
+                menuDraws: counters.menuDraws,
+                progressBarCalls: counters.progressBarCalls,
+                terrainMeshesBuilt: counters.terrainMeshesBuilt,
+            },
+            modelShaderCalls: modelShaderCalls,
+            modelTextureCalls: modelTextureCalls,
+            musicPlayed: musicPlayed,
+            botClipNames: Object.keys(botClipNames),
+            botCount: botCountFromLogs(),
+            minGap: minOf(logMax(/gap (-?[\d.]+)/)),
+            botBellyMax: maxOf(logMax(/bellyMax ([\d.]+)/)),
+            botGrazeWalks: maxOf(logMax(/grazeWalks (\d+)/)),
+            botIdles: idleOf(Object.keys(botClipNames)),
+            playerIdles: idleOf(playerClips),
+            playerClips: playerClips,
+            deathFrame: deathFrame,
+            mesh: meshFacts(),
+            goatDraw: goatDraw,
+            botDraw: drawn,
+            skyFs: skyFs,
             clipboardWrites: clipboardWrites,
+            logs: logs,
         });
     };
 })();
+
