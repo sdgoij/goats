@@ -49,8 +49,32 @@ enum Command {
     },
     /// A grass cell this client just ate, for the host's scene to record.
     Consume { key: i64 },
+    /// A captured voice frame, queued by the audio module rather than by the
+    /// scene. The scene never sends this: it carries the sender's own sequence
+    /// number and an Opus payload the JSON bridge has no business seeing.
+    Voice { seq: u32, payload: Vec<u8> },
     /// Leave whatever session is running.
     Close,
+}
+
+/// A delivered frame on its way to the audio module: the speaker's canonical
+/// name (stamped by the relay), the sequence number and the encoded payload.
+pub type VoiceIn = (String, u32, Vec<u8>);
+
+/// The frames queued for the audio module before the oldest is dropped. Voice is
+/// real-time, so a backlog is worse than a gap: 64 frames is more than a second
+/// of speech, far past the point where late audio is useful.
+const VOICE_BACKLOG: usize = 64;
+
+/// A cloneable handle to the runtime thread's intent queue, for the audio module
+/// to queue its captured frames without going through JSON.
+#[derive(Clone)]
+pub struct VoiceSender(mpsc::UnboundedSender<Command>);
+
+impl VoiceSender {
+    pub fn send(&self, seq: u32, payload: Vec<u8>) {
+        let _ = self.0.send(Command::Voice { seq, payload });
+    }
 }
 
 /// An event for the scene.
@@ -111,6 +135,10 @@ enum Event {
 pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
     events: mpsc::UnboundedReceiver<String>,
+    voice_out: VoiceSender,
+    /// The audio module takes this once; frames are dropped while it is here, so
+    /// a client without a working microphone never grows a backlog.
+    voice_in: Option<mpsc::Receiver<VoiceIn>>,
 }
 
 impl Net {
@@ -119,6 +147,7 @@ impl Net {
     pub fn start() -> Net {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (voice_tx, voice_rx) = mpsc::channel(VOICE_BACKLOG);
         thread::Builder::new()
             .name("net".to_string())
             .spawn(move || {
@@ -129,15 +158,17 @@ impl Net {
                         return;
                     }
                 };
-                runtime.block_on(run(command_rx, event_tx));
+                runtime.block_on(run(command_rx, event_tx, voice_tx));
             })
             .expect("spawn the networking thread");
         if session::internet_enabled() {
             eprintln!("[net] internet mode (n0 relays + DNS discovery)");
         }
         Net {
+            voice_out: VoiceSender(command_tx.clone()),
             commands: command_tx,
             events: event_rx,
+            voice_in: Some(voice_rx),
         }
     }
 
@@ -158,6 +189,31 @@ impl Net {
             Err(error) => eprintln!("[net] ignoring bad intent {line:?}: {error}"),
         }
     }
+
+    /// A handle the audio module queues captured frames through.
+    pub fn voice_sender(&self) -> VoiceSender {
+        self.voice_out.clone()
+    }
+
+    /// Hands the audio module its end of the voice channel. Called once, by
+    /// `Voice::start`; a second call gets nothing.
+    pub fn take_voice_receiver(&mut self) -> Option<mpsc::Receiver<VoiceIn>> {
+        self.voice_in.take()
+    }
+}
+
+/// The scene's voice-gain intent, if this line is one: `{"type":"voice_gain",
+/// "gain":0.0}`. The gain belongs to the audio module on the frame loop, not to
+/// the runtime thread, so `main` intercepts it rather than `Net::send`.
+pub fn voice_gain(line: &str) -> Option<f32> {
+    #[derive(Deserialize)]
+    struct Intent {
+        #[serde(rename = "type")]
+        kind: String,
+        gain: f32,
+    }
+    let intent: Intent = serde_json::from_str(line).ok()?;
+    (intent.kind == "voice_gain").then_some(intent.gain)
 }
 
 /// The session the runtime thread is currently running, if any.
@@ -233,6 +289,15 @@ impl Live {
                 .map(|error| error.to_string()),
         }
     }
+
+    /// Sends one captured voice frame. A client sends it up to the host to be
+    /// re-tagged and relayed; the host sends its own straight out.
+    async fn publish_voice(&self, seq: u32, payload: &[u8]) {
+        match self {
+            Live::Host(host) => host.publish_voice(seq, payload).await,
+            Live::Client(client) => client.publish_voice(seq, payload),
+        }
+    }
 }
 
 /// The runtime thread: run one command at a time, forwarding session events
@@ -240,6 +305,7 @@ impl Live {
 async fn run(
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<String>,
+    voice: mpsc::Sender<VoiceIn>,
 ) {
     let mut live: Option<Live> = None;
     loop {
@@ -257,6 +323,13 @@ async fn run(
             Some(session) => tokio::select! {
                 command = commands.recv() => Outcome::Command(command),
                 event = session.next_event() => match event {
+                    // Voice is the audio module's, not the scene's: Opus bytes
+                    // are not a line, so they take the side channel instead of
+                    // `emit`. `try_send` drops the frame if nothing is reading.
+                    Some(session::Event::Voice { from, seq, payload }) => {
+                        let _ = voice.try_send((from, seq, payload));
+                        continue;
+                    }
                     Some(event) => {
                         emit(&events, bridge(event));
                         continue;
@@ -330,6 +403,14 @@ async fn run(
                         emit(&events, Event::Notice { text: error });
                     }
                 }
+                // A captured voice frame. Silent while offline, like a pose:
+                // the audio module speaks whenever it hears speech, whether or
+                // not a session is up.
+                Command::Voice { seq, payload } => {
+                    if let Some(session) = live.as_ref() {
+                        session.publish_voice(seq, &payload).await;
+                    }
+                }
                 other => live = start(other, live.take(), &events).await,
             },
             Outcome::Command(None) => break,
@@ -355,7 +436,8 @@ async fn start(
         Command::Say { .. }
         | Command::Pose { .. }
         | Command::World { .. }
-        | Command::Consume { .. } => None,
+        | Command::Consume { .. }
+        | Command::Voice { .. } => None,
         Command::Host { name } => match session::Host::start(&name).await {
             Ok(host) => {
                 // The console shows the ticket, but it cannot be selected in a
@@ -471,6 +553,16 @@ fn emit(events: &mpsc::UnboundedSender<String>, event: Event) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_voice_gain_intent_is_recognized_and_nothing_else_is() {
+        assert_eq!(voice_gain(r#"{"type":"voice_gain","gain":0.0}"#), Some(0.0));
+        assert_eq!(voice_gain(r#"{"type":"voice_gain","gain":1}"#), Some(1.0));
+        // A pose is the runtime thread's, not the audio module's.
+        assert_eq!(voice_gain(r#"{"type":"pose","x":1}"#), None);
+        assert_eq!(voice_gain("not json"), None);
+        assert_eq!(voice_gain(""), None);
+    }
 
     #[test]
     fn intents_parse() {

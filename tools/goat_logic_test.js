@@ -571,6 +571,16 @@ try {
         promptState.lines.some((l) => l.indexOf('Username?') >= 0);
     sandbox.sceneCommand('console say carol');
     netTest.promptAnswered = sandbox.sceneNetDrain().indexOf('"name":"carol"') >= 0;
+
+    // Master mute has to reach the host: the voice mixer is Rust's, so the
+    // scene's only lever is the gain intent. Muted queues 0, unmuted queues
+    // nothing at rest (its default already matches the host's).
+    sandbox.setMuted(true);
+    const muteIntent = sandbox.sceneNetDrain();
+    netTest.voiceMuted = muteIntent.indexOf('"type":"voice_gain"') >= 0 &&
+        muteIntent.indexOf('"gain":0') >= 0;
+    sandbox.setMuted(false);
+    sandbox.sceneNetDrain();
 } catch (e) {
     netTest.error = String(e);
 }
@@ -849,6 +859,7 @@ const checks = [
     ['connect queues a join', netTest.joinQueued, netTest],
     ['host without a name asks for one', netTest.promptAsked, netTest],
     ['the prompt answer is used', netTest.promptAnswered, netTest],
+    ['muting tells the host to silence voice', netTest.voiceMuted, netTest],
     // Clipboard (M9b): a ticket is too long to type, so paste has to work.
     ['the console pastes and strips the newline', clipTest.pasted, clipTest],
     ['Ctrl+C copies the line', clipTest.copiedKey, clipTest],

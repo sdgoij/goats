@@ -18,6 +18,7 @@
 //!
 //! Run: `cargo run --release`
 
+mod audio;
 mod net;
 
 use std::io::{BufRead, Write};
@@ -184,6 +185,7 @@ fn main() {
     let net_event = scene_function_if_present(&context, "sceneNetEvent");
     let net_drain = scene_function_if_present(&context, "sceneNetDrain");
     let mut net = net::Net::start();
+    let mut voice = audio::Voice::start(&mut net);
 
     loop {
         while let Ok(line) = pending.try_recv() {
@@ -226,13 +228,21 @@ fn main() {
             break;
         }
 
-        // The scene's queued intents leave on the same boundary.
+        // The scene's queued intents leave on the same boundary. The voice gain
+        // is the audio module's rather than the runtime thread's, so it is
+        // intercepted here and never reaches `net`.
         if let Some(drain) = &net_drain {
             match context.call(drain, &JsValue::undefined(), &[]) {
                 Ok(value) => {
                     if let Some(text) = value.as_string() {
                         for line in text.lines() {
-                            if !line.trim().is_empty() {
+                            let line = line.trim();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if let Some(gain) = net::voice_gain(line) {
+                                voice.set_gain(gain);
+                            } else {
                                 net.send(line);
                             }
                         }
@@ -241,7 +251,11 @@ fn main() {
                 Err(error) => eprintln!("[net] sceneNetDrain: {error}"),
             }
         }
+
+        // Decoded voice reaches raylib here, on the frame thread.
+        voice.pump();
     }
+    drop(voice);
     context.call(&shutdown, &JsValue::undefined(), &[]).unwrap();
     eprintln!("done");
 }

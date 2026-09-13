@@ -39,6 +39,19 @@ function sfxGain() { return SFX_VOLUME * SETTINGS.sfx / 100; }
 // Re-apply the music volume after a settings change (SFX volume is set per play).
 function applyAudioSettings() {
     if (audioReady && musicMain >= 0) rl.setMusicVolume(musicMain, muted ? 0 : musicGain());
+    voiceGainChanged();
+}
+
+// Voice chat is mixed in Rust (the `rl` surface has no audio streams), so the
+// only thing the scene owes it is the master mute. Sent on change, and the
+// starting value matches the host's own default gain of 1, so a session that
+// starts unmuted queues nothing at rest.
+let voiceGainSent = 1;
+function voiceGainChanged() {
+    const gain = muted ? 0 : 1;
+    if (gain === voiceGainSent) return;
+    voiceGainSent = gain;
+    netQueue({ type: "voice_gain", gain: gain });
 }
 
 let audioReady = false;

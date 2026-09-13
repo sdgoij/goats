@@ -12,3 +12,16 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 slag = { git = "https://github.com/sdgoij/slag", features = ["jit", "raylib", "raygui"] }
 # slag = { path = "../../slag/crates/slag", features = ["jit", "raylib", "raygui"] }
+
+# Voice chat, client only (M13b). `cpal` opens the microphone, `libopus_sys`
+# with `bundled` compiles libopus from source, so there is no system codec to
+# install. Neither belongs on the headless server.
+cpal = "0.18"
+libopus_sys = { version = "0.4", features = ["bundled"] }
+
+# The `rl` surface has no audio streams, but raylib itself does, and this crate
+# already links raylib through the `raylib` feature above. Naming `raylib-sys`
+# directly lets the audio module feed a per-peer stream. `default-features =
+# false` matches what Slag's runtime asks for, so the two declarations merge
+# into the one raylib build rather than a second, differently configured copy.
+raylib-sys = { version = "6.0.0", default-features = false }

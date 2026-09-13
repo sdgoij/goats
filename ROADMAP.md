@@ -79,7 +79,7 @@ uses.
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | ✅ **Done** (players sync; server-owned bots/weather are M12b) |
 | **M12b** | Server-owned world: headless `goatsd` scene, bots/weather/meadow authority | M12 | L | ✅ **Done** (the world is the server's; the players are the open axis) |
 | **M13a** | Voice playback sink: a per-peer raylib stream from Rust | M12b | S | ✅ Available through `raylib_sys`; no engine binding needed |
-| **M13b** | Voice: capture, Opus, media channel, push-to-talk, playback | M13a | L | The feature |
+| **M13b** | Voice: capture, VAD, Opus, media channel, playback | M13a | L | ✅ **Done** (needs a live two-client listen) |
 | **M13c** | Voice polish: jitter buffer, PLC, mute/volume, attenuation | M13b | M | Per-peer controls and the talking indicator |
 
 ---
@@ -963,18 +963,35 @@ volume) and the module uses it as the master gain; distance attenuation needs
 positions, which also live in the scene, so per-peer gain joins that intent in
 M13c. Until then voice plays at the master level.
 
-### M13b — Voice: capture, codec, media channel, playback
+### M13b — Voice: capture, detection, codec, media channel, playback ✅ Done
 
-- Capture: `cpal` in the client (the headless `goatsd` only relays).
-- Codec: `libopus_sys` (static build, no system libopus) with a thin safe wrapper
-  in one module; ~24 kbps, 20 ms frames (960 samples at 48 kHz mono).
+- Capture: `cpal` in the client (the headless `goatsd` only relays), downmixed to
+  mono and resampled to 48 kHz by a small linear resampler.
+- Detection: there is **no push-to-talk key**. An energy gate with an adaptive
+  noise floor, a 300 ms hold and a 40 ms pre-roll decides when a frame is speech,
+  so idle room noise never leaves the machine and word onsets are not clipped.
+  This is the hand-rolled version of what games usually do with WebRTC or Silero
+  VAD; the gate is separated from the thread so it is unit-tested.
+- Codec: `libopus_sys` with `bundled` (compiles libopus from source, no system
+  dependency) behind a thin wrapper in `crates/goats/src/audio.rs`; ~24 kbps,
+  20 ms frames (960 samples at 48 kHz mono).
 - Transport: a `Voice` datagram beside the peer and world ones, tagged with the
-  sender's name by the relay like a pose. It is the roadmap's generic "media"
-  channel, so the transform channel does not change. JSON carries the frame at
-  first, with the payload base64 (a ~60-byte packet, so the overhead is tolerable
-  at ≤4 players); a binary envelope is a later optimisation, not a redesign.
-- Push-to-talk: one key (a free one, e.g. `B`) while the console is closed.
-- Playback: decoded PCM into a per-peer raylib stream (M13a).
+  sender's name by the relay like a pose, with its own burst limit. It is the
+  roadmap's generic "media" channel, so the transform channel does not change.
+  JSON carries the frame, with the payload base64 (a ~60-byte packet, so the
+  overhead is tolerable at ≤4 players); a binary envelope is a later optimisation,
+  not a redesign.
+- Playback: decoded PCM into a per-peer raylib `AudioStream` (M13a), fed from the
+  frame loop so every raylib call stays on one thread. The client names
+  `raylib-sys` directly, because Slag does not re-export it.
+- Mute: the scene's master mute reaches the module as a `voice_gain` intent and
+  becomes the stream gain, so `M` silences voice along with everything else.
+
+Verified: unit tests for the gate, the resampler and the gain intent; the harness
+asserts that muting queues the intent; `cargo test --workspace`, `cargo fmt --all
+-- --check` and `cargo clippy --workspace --all-targets -- -D warnings` clean. A
+microphone is required, and the two-client listen still needs a run on two
+machines that have one.
 
 ### M13c — Voice polish
 

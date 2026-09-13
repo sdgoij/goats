@@ -155,6 +155,12 @@ ticket.
 - **See each other**: every player's goat is relayed to the others about 20 times
   a second, so you can watch them move. Snapshots are unreliable datagrams and
   the scene interpolates between them.
+- **Voice chat**: hands-free -- there is no push-to-talk key. A detector decides
+  when you are actually speaking and gates the microphone, so idle room noise is
+  never sent; your voice goes out as Opus on the same unreliable datagram channel
+  as the poses, and each speaker plays through their own stream. `M` mutes voice
+  along with the rest of the audio. A microphone is optional: without one the
+  game still plays everyone else.
 - **A shared world**: the bots, the weather and the meadow are simulated only by
   whoever hosts -- the game window that ran `host`, or `goatsd` -- and broadcast
   together about 10 times a second. Everyone else mirrors them, so the herd stays
@@ -163,9 +169,10 @@ ticket.
 - `leave` ends the session.
 
 Chat is rate limited to a short burst and each line is capped and stripped of
-control characters, so a session cannot be flooded by one player. Player
-movement is client-authoritative: the host relays each player's own goat rather
-than simulating it, while the bots it owns outright.
+control characters, so a session cannot be flooded by one player. Voice frames
+are capped and burst-limited on the relay the same way. Player movement is
+client-authoritative: the host relays each player's own goat rather than
+simulating it, while the bots it owns outright.
 
 By default the endpoint binds local sockets with no relay, so it reaches other
 machines on the same network and not the wider internet — and, since that preset
@@ -250,6 +257,7 @@ gets on the free plan.
 | `Cargo.toml` | The workspace manifest: `crates/goats` (its `default-members`, so `cargo run` means the client) plus the networking crates |
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
 | `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
+| `crates/goats/src/audio.rs` | Voice chat: `cpal` capture, the speech gate, Opus coding and per-peer raylib playback |
 | `crates/goats/src/game/*.js` | The scene, split into 14 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
 | `crates/server/src/headless_rl.js` | The null `rl` module the server evaluates the scene against (no window) |
@@ -307,7 +315,9 @@ are `host`, `connect <ticket>`, `who`, `leave`, `say` and `msg` (with bare text
 and a leading `@name` both routed to chat). Chat and roster travel on reliable
 streams, one message per stream; goat snapshots and the server's bots travel as
 unreliable datagrams, which `net.js` turns into a remote goat per peer and a
-mirrored herd, and eases toward the latest of each.
+mirrored herd, and eases toward the latest of each. Voice rides the same datagram
+channel, but it never reaches the scene: `net.rs` forwards captured and received
+frames to `audio.rs` on a side channel, because Opus bytes are not a line.
 
 ## Model pipeline
 
