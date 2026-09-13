@@ -17,7 +17,7 @@ mod support;
 
 use harness::Harness;
 use serde_json::json;
-use support::{Checks, bool_of, command_json, f64_of};
+use support::{Checks, bool_of, command_json, f64_of, try_command_json};
 
 /// The frames the scripted timeline runs for: the walk, the jump, the death and
 /// the restart all happen inside it.
@@ -696,6 +696,99 @@ fn the_scene_runs_the_scripted_timeline() {
         obs.bot_draw.len(),
     );
 
+    // ---- the network bridge, chat and world sync --------------------------
+    // All three are the scene end of the protocol: pure JS, driven with no socket
+    // and no peer, because `sceneNetDrain` is what the host calls each frame and
+    // `sceneNetEvent` is what it feeds back. Each block is one try/catch in the
+    // Node harness, so a failure inside one fails that block's cases rather than
+    // the whole test.
+    let (net, net_error) = match net_block(&mut harness) {
+        Ok(net) => (net, None),
+        Err(error) => (Net::default(), Some(error)),
+    };
+    checks.check("no network bridge errors", net_error.is_none(), net_error);
+    checks.check("nothing is queued at rest", net.rest_empty, &net);
+    checks.check("host queues an intent and clears it", net.host_queued, &net);
+    checks.check("events update the local view", net.view, &net);
+    checks.check("events print to the console", net.printed, &net);
+    checks.check("a second session is refused", net.refused, &net);
+    checks.check("leave queues a close", net.left, &net);
+    checks.check("disconnect resets the view", net.reset, &net);
+    checks.check("connect without a ticket is an error", net.no_ticket, &net);
+    checks.check("connect queues a join", net.joined, &net);
+    checks.check("host without a name asks for one", net.prompt_asked, &net);
+    checks.check("the prompt answer is used", net.prompt_answered, &net);
+    checks.check("muting tells the host to silence voice", net.muted, &net);
+
+    let (chat, chat_error) = match chat_block(&mut harness) {
+        Ok(chat) => (chat, None),
+        Err(error) => (Chat::default(), Some(error)),
+    };
+    checks.check("no chat errors", chat_error.is_none(), chat_error);
+    checks.check("bare text is chat in a session", chat.bare, &chat);
+    checks.check("say is chat, spelled out", chat.say, &chat);
+    checks.check("/msg becomes a leading @name", chat.msg, &chat);
+    checks.check("a leading @name is chat too", chat.at, &chat);
+    checks.check(
+        "slash commands still reach commands",
+        chat.slash_command,
+        &chat,
+    );
+    checks.check("bare text is an error offline", chat.offline, &chat);
+    checks.check("chat lines print, whispers marked", chat.printed, &chat);
+
+    let (sync, sync_error) = match sync_block(&mut harness) {
+        Ok(sync) => (sync, None),
+        Err(error) => (Sync::default(), Some(error)),
+    };
+    checks.check("no world sync errors", sync_error.is_none(), sync_error);
+    checks.check("a session seed re-keys every stream", sync.seeded, &sync);
+    checks.check(
+        "a different seed builds a different world",
+        sync.seed_differs,
+        &sync,
+    );
+    checks.check("a session publishes the goat pose", sync.pose, &sync);
+    checks.check(
+        "the pose channel is throttled per frame",
+        sync.pose_throttled,
+        &sync,
+    );
+    checks.check(
+        "a peer snapshot becomes a remote goat",
+        sync.peer_added,
+        &sync,
+    );
+    checks.check("leaving removes the remote goat", sync.peer_left, &sync);
+    checks.check("a host publishes its bots", sync.world, &sync);
+    checks.check("a client mirrors the server bots", sync.mirror, &sync);
+    checks.check(
+        "a client mirrors the server weather",
+        sync.weather_mirror,
+        &sync,
+    );
+    checks.check(
+        "a client adopts the server streams",
+        sync.streams_mirror,
+        &sync,
+    );
+    checks.check(
+        "a client mirrors the server meadow",
+        sync.eaten_mirror,
+        &sync,
+    );
+    checks.check("a client reports its own bite", sync.reports_eat, &sync);
+    checks.check(
+        "a client does not simulate or publish the bots",
+        sync.client_not_local && sync.client_is_not_authority,
+        &sync,
+    );
+    checks.check(
+        "offline simulates the bots and the weather locally",
+        sync.world_local_offline,
+        &sync,
+    );
+
     // ---- the console -----------------------------------------------------
     // The scripted input drives it after the restart: backquote opens it at 4010,
     // "ping" is typed at 4012 and submitted at 4014, UP recalls it at 4016, ESC
@@ -915,3 +1008,289 @@ const WATCH_PROBE: &str = "(function () { \
      off(); \
      tuningSet(\"stats.max\", 100); \
      return saw; })()";
+
+/// The queued network intents, drained. The host calls this once a frame.
+fn net_drain(harness: &mut Harness) -> Result<String, String> {
+    let value = harness.call("sceneNetDrain", &[])?;
+    Ok(value.as_str().unwrap_or("").to_string())
+}
+
+/// One event from the host, the way the session feeds the scene.
+fn net_feed(harness: &mut Harness, event: &str) -> Result<(), String> {
+    harness.call("sceneNetEvent", &[json!(event)]).map(|_| ())
+}
+
+/// What the network bridge cases found. One field per case.
+#[derive(Debug, Default)]
+struct Net {
+    rest_empty: bool,
+    host_queued: bool,
+    view: bool,
+    printed: bool,
+    refused: bool,
+    left: bool,
+    reset: bool,
+    no_ticket: bool,
+    joined: bool,
+    prompt_asked: bool,
+    prompt_answered: bool,
+    muted: bool,
+}
+
+/// Drives the scene end of the session with no socket and no peer.
+fn net_block(harness: &mut Harness) -> Result<Net, String> {
+    let mut net = Net {
+        rest_empty: net_drain(harness)?.is_empty(),
+        ..Net::default()
+    };
+
+    let host_reply = harness.command("host bob")?;
+    let host_intent = net_drain(harness)?;
+    net.host_queued = host_reply == "ok host"
+        && host_intent.contains("\"type\":\"host\"")
+        && host_intent.contains("\"name\":\"bob\"");
+    // Draining clears the queue.
+    net.host_queued &= net_drain(harness)?.is_empty();
+
+    net_feed(harness, r#"{"type":"hosting","name":"bob"}"#)?;
+    net_feed(harness, r#"{"type":"ticket","ticket":"endpointXYZ"}"#)?;
+    net_feed(harness, r#"{"type":"roster","names":["bob","alice"]}"#)?;
+    let status = try_command_json(harness, "net")?;
+    net.view = status["mode"] == json!("host")
+        && status["name"] == json!("bob")
+        && status["ticket"] == json!("endpointXYZ")
+        && status["roster"].as_array().map_or(0, Vec::len) == 2;
+
+    net_feed(harness, r#"{"type":"joined","name":"alice"}"#)?;
+    let echoed = try_command_json(harness, "console")?["lines"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let said = |needle: &str| {
+        echoed
+            .iter()
+            .any(|line| line.as_str().is_some_and(|text| text.contains(needle)))
+    };
+    net.printed = said("alice joined") && said("roster bob, alice");
+
+    net.refused = harness.command("host bob")? == "error already in a session (leave first)";
+    net.left = harness.command("leave")? == "ok leave"
+        && net_drain(harness)?.contains("\"type\":\"close\"");
+
+    net_feed(harness, r#"{"type":"disconnected"}"#)?;
+    net.reset = try_command_json(harness, "net")?["mode"] == json!("off");
+
+    net.no_ticket = harness.command("connect")? == "error connect expects a ticket";
+    net.joined = harness.command("connect endpointABC alice")? == "ok connect"
+        && net_drain(harness)?.contains("\"ticket\":\"endpointABC\"");
+
+    // A username prompt: the command asks, the next console line answers. The
+    // outbox is cleared first because the join above queued an intent.
+    net_drain(harness)?;
+    let prompt_reply = harness.command("host")?;
+    let prompt = try_command_json(harness, "console")?;
+    net.prompt_asked = prompt_reply == "ok name?"
+        && prompt["open"] == json!(true)
+        && prompt["lines"].as_array().is_some_and(|lines| {
+            lines
+                .iter()
+                .any(|line| line.as_str().is_some_and(|text| text.contains("Username?")))
+        });
+    harness.command("console say carol")?;
+    net.prompt_answered = net_drain(harness)?.contains("\"name\":\"carol\"");
+
+    // Master mute has to reach the host: the voice mixer is Rust's, so the
+    // scene's only lever is the gain intent.
+    harness.call("setMuted", &[json!(true)])?;
+    let muted = net_drain(harness)?;
+    net.muted = muted.contains("\"type\":\"voice_gain\"") && muted.contains("\"gain\":0");
+    harness.call("setMuted", &[json!(false)])?;
+    net_drain(harness)?;
+    Ok(net)
+}
+
+/// What the chat cases found. One field per case.
+#[derive(Debug, Default)]
+struct Chat {
+    bare: bool,
+    say: bool,
+    msg: bool,
+    at: bool,
+    slash_command: bool,
+    offline: bool,
+    printed: bool,
+}
+
+/// Drives the scene end of chat: queueing a line and printing what comes back.
+fn chat_block(harness: &mut Harness) -> Result<Chat, String> {
+    let mut chat = Chat::default();
+    // Pretend to be in a session, so bare text is chat rather than an error.
+    net_feed(harness, r#"{"type":"hosting","name":"bob"}"#)?;
+    net_drain(harness)?;
+
+    // Bare text is global chat, and queues silently: no `ok` per line.
+    let bare = harness.command("hello everyone")?;
+    chat.bare = bare.is_empty() && net_drain(harness)?.contains("\"text\":\"hello everyone\"");
+
+    // `say` is the same thing, spelled out.
+    let say = harness.command("say hi there")?;
+    chat.say = say.is_empty() && net_drain(harness)?.contains("\"text\":\"hi there\"");
+
+    // `/msg` becomes the leading-`@` form the server routes for both sides.
+    let msg = harness.command("/msg alice psst")?;
+    chat.msg = msg.is_empty() && net_drain(harness)?.contains("\"text\":\"@alice psst\"");
+
+    // A leading `@` typed directly is a whisper too.
+    let at = harness.command("@carol yo")?;
+    chat.at = at.is_empty() && net_drain(harness)?.contains("\"text\":\"@carol yo\"");
+
+    // The slash forms still reach the commands they name.
+    chat.slash_command = harness.command("/who")?.starts_with("ok ");
+
+    // Offline, bare text stays an error, so a typo is caught rather than sent.
+    net_feed(harness, r#"{"type":"disconnected"}"#)?;
+    chat.offline = harness.command("hello?")? == "error unknown command: hello?";
+
+    // A chat line prints into the scrollback, whispers marked.
+    net_feed(
+        harness,
+        r#"{"type":"chat","from":"alice","text":"hello all","direct":false}"#,
+    )?;
+    net_feed(
+        harness,
+        r#"{"type":"chat","from":"alice","text":"psst","direct":true}"#,
+    )?;
+    let printed = try_command_json(harness, "console")?["lines"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let shown = |needle: &str| {
+        printed
+            .iter()
+            .any(|line| line.as_str().is_some_and(|text| text.contains(needle)))
+    };
+    chat.printed = shown("net: alice: hello all") && shown("net: dm alice: psst");
+    Ok(chat)
+}
+
+/// What the world-sync cases found. One field per case.
+#[derive(Debug, Default)]
+struct Sync {
+    seeded: bool,
+    seed_differs: bool,
+    pose: bool,
+    pose_throttled: bool,
+    peer_added: bool,
+    peer_left: bool,
+    world: bool,
+    mirror: bool,
+    weather_mirror: bool,
+    streams_mirror: bool,
+    eaten_mirror: bool,
+    reports_eat: bool,
+    client_not_local: bool,
+    client_is_not_authority: bool,
+    world_local_offline: bool,
+}
+
+/// The snapshot a hosting server sends a client, verbatim.
+const WORLD_EVENT: &str = r#"{"type":"world","weather":{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5},"streams":{"weather":111,"bots":222,"food":333,"audio":444},"eaten":[{"key":4242,"left":12.5}],"bots":[{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0},{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2}]}"#;
+
+/// Drives the seed handshake, the snapshot channel and the mirroring rules.
+fn sync_block(harness: &mut Harness) -> Result<Sync, String> {
+    let mut sync = Sync::default();
+
+    // A session seed re-keys every stream, reproducibly, and a different seed
+    // builds a different world.
+    let before = harness.call("sceneStreams", &[])?;
+    net_feed(harness, r#"{"type":"session","seed":4242}"#)?;
+    let a = harness.call("sceneStreams", &[])?;
+    net_feed(harness, r#"{"type":"session","seed":4242}"#)?;
+    let b = harness.call("sceneStreams", &[])?;
+    net_feed(harness, r#"{"type":"session","seed":99}"#)?;
+    let c = harness.call("sceneStreams", &[])?;
+    sync.seeded = a["weather"] != before["weather"]
+        && a["weather"] == b["weather"]
+        && a["bots"] == b["bots"]
+        && a["food"] == b["food"]
+        && a["audio"] == b["audio"];
+    sync.seed_differs = c["weather"] != a["weather"];
+
+    // In a session the local goat is published, once per throttle window and not
+    // again in the same frame.
+    net_feed(harness, r#"{"type":"hosting","name":"bob"}"#)?;
+    let first = net_drain(harness)?;
+    sync.pose = first.contains("\"type\":\"pose\"") && first.contains("\"gait\"");
+    sync.pose_throttled = !net_drain(harness)?.contains("\"type\":\"pose\"");
+    // A host also owns the world and publishes its bots.
+    sync.world = first.contains("\"type\":\"world\"")
+        && first.contains("\"bots\"")
+        && first.contains("\"weather\"");
+
+    // A snapshot becomes a goat; a later one moves it; leaving removes it.
+    net_feed(
+        harness,
+        r#"{"type":"peer","name":"alice","state":{"x":3,"z":4,"yaw":0,"phase":0,"speed":0,"gait":"idle"}}"#,
+    )?;
+    net_feed(
+        harness,
+        r#"{"type":"peer","name":"alice","state":{"x":5,"z":6,"yaw":1,"phase":0.5,"speed":2,"gait":"trot"}}"#,
+    )?;
+    let peers = harness.call("scenePeers", &[])?;
+    sync.peer_added = peers.as_array().is_some_and(|list| {
+        list.len() == 1
+            && list[0]["name"] == json!("alice")
+            && f64_of(list[0]["tx"].clone()) == 5.0
+            && f64_of(list[0]["tz"].clone()) == 6.0
+            && list[0]["gait"] == json!("trot")
+    });
+    net_feed(harness, r#"{"type":"left","name":"alice"}"#)?;
+    sync.peer_left = harness
+        .call("scenePeers", &[])?
+        .as_array()
+        .is_some_and(|list| list.is_empty());
+    net_feed(harness, r#"{"type":"disconnected"}"#)?;
+
+    // A client mirrors the server's bots, sky, streams and meadow, and publishes
+    // no world of its own.
+    net_feed(harness, r#"{"type":"welcome","name":"eve"}"#)?;
+    sync.client_not_local = !bool_of(harness.call("netWorldLocal", &[])?)
+        && !bool_of(harness.call("netWeatherLocal", &[])?);
+    net_feed(harness, WORLD_EVENT)?;
+    let mirrored = harness.call("sceneWorldBots", &[])?;
+    sync.mirror = mirrored.as_array().is_some_and(|list| {
+        list.len() == 2
+            && f64_of(list[0]["x"].clone()) == 9.0
+            && f64_of(list[1]["z"].clone()) == -9.0
+            && list[1]["gait"] == json!("idle")
+    });
+    let weather = harness.call("sceneWeatherState", &[])?;
+    sync.weather_mirror = weather["kind"] == json!("rain")
+        && f64_of(weather["rain_amount"].clone()) == 0.8
+        && f64_of(weather["world_time"].clone()) == 21.5;
+    let streams = harness.call("sceneStreams", &[])?;
+    sync.streams_mirror =
+        f64_of(streams["food"].clone()) == 333.0 && f64_of(streams["audio"].clone()) == 444.0;
+    let eaten = harness.call("sceneEaten", &[])?;
+    sync.eaten_mirror = eaten
+        .as_array()
+        .is_some_and(|list| list.len() == 1 && f64_of(list[0]["key"].clone()) == 4242.0);
+    sync.client_is_not_authority = !net_drain(harness)?.contains("\"type\":\"world\"");
+
+    // A client reports its bite rather than recording it; the meadow is the
+    // host's. The world above cleared the meadow, so a tuft is there to eat.
+    harness.command("energy 40")?;
+    let tuft = try_command_json(harness, "grass")?;
+    if !tuft.is_null() {
+        let (x, z) = (f64_of(tuft["x"].clone()), f64_of(tuft["z"].clone()));
+        harness.command(&format!("pos {} {}", x - 0.5, z))?;
+        net_drain(harness)?;
+        let reply = harness.command("eat")?;
+        sync.reports_eat =
+            reply.starts_with("ok") && net_drain(harness)?.contains("\"type\":\"consume\"");
+    }
+    net_feed(harness, r#"{"type":"disconnected"}"#)?;
+    sync.world_local_offline = bool_of(harness.call("netWorldLocal", &[])?)
+        && bool_of(harness.call("netWeatherLocal", &[])?);
+    Ok(sync)
+}

@@ -16,14 +16,17 @@ use harness::Harness;
 /// A staging error is fatal: the cases it feeds cannot be judged, and a quiet
 /// `false` would read as a scene bug rather than a broken drive.
 pub fn command_json(harness: &mut Harness, line: &str) -> serde_json::Value {
-    let reply = harness
-        .command(line)
-        .unwrap_or_else(|error| panic!("{line}: {error}"));
+    try_command_json(harness, line).unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// The same, but the failure comes back instead of panicking, for the blocks that
+/// record an error and fail their own cases rather than aborting the test.
+pub fn try_command_json(harness: &mut Harness, line: &str) -> Result<serde_json::Value, String> {
+    let reply = harness.command(line)?;
     let json = reply
         .strip_prefix("ok ")
-        .unwrap_or_else(|| panic!("{line} said {reply:?}"));
-    serde_json::from_str(json)
-        .unwrap_or_else(|error| panic!("{line}: unreadable {json:?}: {error}"))
+        .ok_or_else(|| format!("{line} said {reply:?}"))?;
+    serde_json::from_str(json).map_err(|error| format!("{line}: unreadable {json:?}: {error}"))
 }
 
 /// A JSON boolean as a Rust one, defaulting to false.
