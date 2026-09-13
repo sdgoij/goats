@@ -361,14 +361,20 @@ impl EatenCell {
 }
 
 /// The server's world, as far as a client has to mirror it: the bots, the sky,
-/// the PRNG streams and the eaten meadow. A client that joins takes this whole
-/// thing -- it does not keep the world it had generated before joining.
+/// the PRNG streams, the eaten meadow, and whatever world mods publish. A client
+/// that joins takes this whole thing -- it does not keep the world it had
+/// generated before joining.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldState {
     pub bots: Vec<BotState>,
     pub weather: WeatherState,
     pub streams: Streams,
     pub eaten: Vec<EatenCell>,
+    /// World-mod state: `{ streams: {...}, data: { <id>: <published> } }`. A
+    /// generic value because the protocol does not know what a mod publishes;
+    /// the transport's datagram cap bounds it.
+    #[serde(default)]
+    pub mods: serde_json::Value,
 }
 
 impl WorldState {
@@ -790,6 +796,10 @@ mod tests {
                 },
                 EatenCell { key: -7, left: 3.0 },
             ],
+            mods: serde_json::json!({
+                "streams": { "com.example.dash:sprint": 1234 },
+                "data": { "com.example.dash": { "cooldown": 1.5 } },
+            }),
         };
         let datagram = Datagram::World(world.clone());
         let bytes = encode(&datagram).expect("encode");

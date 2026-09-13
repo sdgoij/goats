@@ -938,6 +938,52 @@ try {
     modRegTest.error = String(e);
 }
 
+// World extension (M14d2): a `side: "world"` mod owns a seeded stream and
+// publishes state into the snapshot; the host builds it and a client applies it.
+let modWorldTest = {};
+try {
+    sandbox.sceneMods(JSON.stringify([
+        { id: 'com.w', name: 'W', version: '1', api: 1, side: 'world', enabled: true, hash: '0' },
+    ]));
+    vm.runInContext(
+        '(function (goats) {' +
+        '  globalThis.__g = goats;' +
+        '  globalThis.__rngA = goats.world.registerStream("sprint", 7);' +
+        '  globalThis.__rngB = goats.rng("sprint");' +
+        '  goats.world.extend("com.w", {' +
+        '    publish: function () { return { n: 42 }; },' +
+        '    apply: function (state) { globalThis.__applied = state; }' +
+        '  });' +
+        '})(goats.begin("com.w"));',
+        sandbox);
+    sandbox.sceneModResult('com.w', true, '');
+    // `registerStream`'s handle and `goats.rng` draw from the same seeded stream.
+    sandbox.sceneUseSeed(1234);
+    const viaRegister = vm.runInContext('globalThis.__rngA()', sandbox);
+    sandbox.sceneUseSeed(1234);
+    const viaRng = vm.runInContext('globalThis.__rngB()', sandbox);
+    modWorldTest.sameStream = viaRegister === viaRng && viaRegister !== 0;
+    // A fresh draw re-derives deterministically from the session seed.
+    sandbox.sceneUseSeed(1234);
+    const first = vm.runInContext('globalThis.__g.rng("sprint")()', sandbox);
+    sandbox.sceneUseSeed(1234);
+    const second = vm.runInContext('globalThis.__g.rng("sprint")()', sandbox);
+    modWorldTest.seeded = first === second && first !== 0;
+    // The host's contribution carries the published data and the stream state.
+    const mods = JSON.parse(vm.runInContext('JSON.stringify(sceneWorldMods())', sandbox));
+    modWorldTest.publish = mods.data['com.w'].n === 42 && mods.streams['com.w:sprint'] !== undefined;
+    // A client applies the host's contribution and adopts its stream state.
+    vm.runInContext(
+        'sceneApplyWorldMods({ streams: { "com.w:sprint": 999 }, data: { "com.w": { n: 7 } } });',
+        sandbox);
+    modWorldTest.apply = vm.runInContext('globalThis.__applied.n', sandbox) === 7;
+    modWorldTest.adopt = vm.runInContext('sceneWorldMods().streams["com.w:sprint"]', sandbox) === 999;
+    modWorldTest.all = modWorldTest.sameStream && modWorldTest.seeded &&
+        modWorldTest.publish && modWorldTest.apply && modWorldTest.adopt;
+} catch (e) {
+    modWorldTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -1030,6 +1076,11 @@ const checks = [
     ['mod registers a bot archetype and a gait',
         modRegTest.botsRegistered && modRegTest.gait, modRegTest],
     ['mod clip assets are refused with a message', modRegTest.assetRefused, modRegTest],
+    ['mod world stream re-derives from the seed',
+        modWorldTest.sameStream && modWorldTest.seeded, modWorldTest],
+    ['mod world publish reaches the snapshot', modWorldTest.publish, modWorldTest],
+    ['mod world apply and stream adoption',
+        modWorldTest.apply && modWorldTest.adopt, modWorldTest],
     // The volumetric march, not the flat M5 layer: these markers only exist in
     // the slab marcher.
     ['the sky shader marches a volume',

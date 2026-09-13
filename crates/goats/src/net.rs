@@ -46,6 +46,8 @@ enum Command {
         weather: session::WeatherState,
         streams: session::Streams,
         eaten: Vec<session::EatenCell>,
+        #[serde(default)]
+        mods: serde_json::Value,
     },
     /// A grass cell this client just ate, for the host's scene to record.
     Consume { key: i64 },
@@ -104,13 +106,14 @@ enum Event {
         name: String,
         state: session::PeerState,
     },
-    /// The server's world -- bots, sky, streams and meadow -- for a client to
-    /// mirror instead of simulating.
+    /// The server's world -- bots, sky, streams, meadow and world-mod state --
+    /// for a client to mirror instead of simulating.
     World {
         bots: Vec<session::BotState>,
         weather: session::WeatherState,
         streams: session::Streams,
         eaten: Vec<session::EatenCell>,
+        mods: serde_json::Value,
     },
     /// A client's bite, for the host's scene (host side only).
     Consume { key: i64 },
@@ -265,6 +268,7 @@ impl Live {
         weather: &session::WeatherState,
         streams: session::Streams,
         eaten: &[session::EatenCell],
+        mods: serde_json::Value,
     ) {
         if let Live::Host(host) = self {
             host.publish_world(&session::WorldState {
@@ -272,6 +276,7 @@ impl Live {
                 weather: weather.clone(),
                 streams,
                 eaten: eaten.to_vec(),
+                mods,
             })
             .await;
         }
@@ -388,10 +393,11 @@ async fn run(
                     weather,
                     streams,
                     eaten,
+                    mods,
                 } => {
                     if let Some(session) = live.as_ref() {
                         session
-                            .publish_world(&bots, &weather, streams, &eaten)
+                            .publish_world(&bots, &weather, streams, &eaten, mods)
                             .await;
                     }
                 }
@@ -512,11 +518,13 @@ fn bridge(event: session::Event) -> Event {
             weather,
             streams,
             eaten,
+            mods,
         } => Event::World {
             bots,
             weather,
             streams,
             eaten,
+            mods,
         },
         session::Event::Consume { key } => Event::Consume { key },
         session::Event::Voice { from, seq, payload } => Event::Voice { from, seq, payload },
@@ -636,6 +644,7 @@ mod tests {
                 weather,
                 streams,
                 eaten,
+                mods,
             } => {
                 assert_eq!(bots.len(), 1);
                 assert_eq!(bots[0].index, 0);
@@ -646,6 +655,7 @@ mod tests {
                 assert_eq!(streams.food, 3);
                 assert_eq!(eaten.len(), 1);
                 assert_eq!(eaten[0].key, 99);
+                assert!(mods.is_null(), "a world without mods defaults to null");
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -757,6 +767,7 @@ mod tests {
                 audio: 4,
             },
             eaten: vec![session::EatenCell { key: 5, left: 6.0 }],
+            mods: serde_json::json!({ "data": { "com.example.a": { "n": 1 } } }),
         }))
         .expect("encode");
         assert!(line.contains(r#""type":"world""#), "{line}");
@@ -764,6 +775,7 @@ mod tests {
         assert!(line.contains(r#""kind":"cloudy""#), "{line}");
         assert!(line.contains(r#""food":3"#), "{line}");
         assert!(line.contains(r#""key":5"#), "{line}");
+        assert!(line.contains(r#""com.example.a""#), "{line}");
 
         let line =
             serde_json::to_string(&bridge(session::Event::Consume { key: 7 })).expect("encode");

@@ -3282,6 +3282,7 @@ dependencies = [
  "iroh-tickets",
  "proto",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

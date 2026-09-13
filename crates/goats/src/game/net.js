@@ -148,7 +148,7 @@ function sceneNetEvent(line) {
             break;
         case "world":
             // The server's world. Not printed either.
-            netApplyWorld(event.bots, event.weather, event.streams, event.eaten);
+            netApplyWorld(event.bots, event.weather, event.streams, event.eaten, event.mods);
             break;
         case "consume":
             // A client's bite, on the host: record it in this meadow. The next
@@ -383,17 +383,21 @@ function netMaybePublishWorld() {
         weather: sceneWeatherState(),
         streams: sceneStreams(),
         eaten: sceneEaten(),
+        mods: sceneWorldMods(),
     });
 }
 
-// Mirror the server's world: its sky, its streams, its meadow and its bots. A
-// client runs neither the weather state machine nor the bot AI, and does not
-// count its meadow down, so this is the whole of all of it.
-function netApplyWorld(bots, weather, streams, eaten) {
+// Mirror the server's world: its sky, its streams, its meadow, its bots and its
+// world mods. A client runs neither the weather state machine nor the bot AI,
+// and does not count its meadow down, so this is the whole of all of it.
+function netApplyWorld(bots, weather, streams, eaten, mods) {
     applyWeatherState(weather);
     sceneUseStreams(streams);
     applyEaten(eaten);
-    modEmit("world", { bots: bots, weather: weather, streams: streams, eaten: eaten });
+    // Mod streams continue where the host is; a mod's published state arrives
+    // through its `apply`.
+    sceneApplyWorldMods(mods);
+    modEmit("world", { bots: bots, weather: weather, streams: streams, eaten: eaten, mods: mods });
     if (!Array.isArray(bots)) return;
     if (BOTS.length !== bots.length) setHerdSize(bots.length);
     for (let i = 0; i < bots.length && i < BOTS.length; i++) {

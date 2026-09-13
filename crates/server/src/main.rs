@@ -161,7 +161,10 @@ async fn main() {
     let loader = match resolve_mods_dir(&options) {
         Some(dir) => {
             eprintln!("goatsd: scanning {}", dir.display());
-            mods::Loader::discover(&dir)
+            // Hash the assets for the digest but do not keep them: a server has
+            // no engine to register them with, and a mod's model should not sit
+            // in its memory for nothing.
+            mods::Loader::discover_with(&dir, mods::AssetMode::HashOnly)
         }
         None => mods::Loader::empty(),
     };
@@ -183,7 +186,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let mut sim = match headless::Sim::start(host.seed()) {
+    let mut sim = match headless::Sim::start(host.seed(), &loader) {
         Ok(sim) => sim,
         Err(error) => {
             eprintln!("goatsd: could not start the world: {error}");

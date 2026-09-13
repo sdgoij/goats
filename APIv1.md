@@ -503,15 +503,16 @@ World-facing mods also get §4.13.
 
 ### 4.13 World extension (multiplayer simulation)
 
-> **Planned (M14d2).** The digest and the join handshake land first (M14d,
-> §6); the stream/extension seam below is not implemented yet.
+> **Implemented (M14d2).** A `side: "world"` mod may register a seeded stream
+> and publish state; it travels in the snapshot's `mods` section and the host
+> must run it (the digest in §6 guarantees every peer has the same set).
 
 This is the seam that lets a `side: "world"` mod add simulated state and have
 it travel in the existing world snapshot. A world mod registers extensions;
 the scene merges their `publish` output into the snapshot and calls their
 `apply` on receipt. The snapshot is already JSON built by `sceneWorldBots` /
 `sceneWeatherState` / `sceneStreams` / `sceneEaten`, so this is an additive
-field, not a new protocol.
+field (`sceneWorldMods()`), not a new protocol.
 
 ```js
 goats.world.registerStream("sprint", 0x1234abcd);   // a seeded PRNG stream
@@ -525,16 +526,18 @@ goats.world.extend("com.example.fastgoat", {
 
 Rules:
 
-- `registerStream`/`rng` names are namespaced to the mod. Streams are
-  re-derived from the session seed inside `sceneUseSeed` and travel in
-  `sceneStreams`, exactly like the weather/bot/food/audio streams, so a client
-  mirrors the host's state rather than replaying from zero.
+- `registerStream`/`rng` names are namespaced to the mod (`<id>:<name>`).
+  Streams are re-derived from the session seed inside `sceneUseSeed`, and their
+  state travels in the snapshot's `mods.streams`, so a client that joins
+  mid-session continues where the host is rather than replaying from zero.
 - `publish`/`apply` must be pure JSON round-trips. No functions, no class
-  instances.
+  instances. Only `side: "world"` mods may register a stream or an extension.
 - On a client, `publish` is not called (the server is authoritative); only
-  `apply` is.
+  `apply` is, and only for extensions the client also registered.
 - The scene calls `extend` contributions in registration order, so ordering is
   part of the compatibility digest's guarantee.
+- The `mods` section rides the unreliable world datagram, so it is bounded by
+  `MAX_DATAGRAM_BYTES`; an oversized snapshot is dropped like any other.
 
 ### 4.14 Utility
 
@@ -710,10 +713,10 @@ client surfaces that in the console's network stream. This shipped in M14d:
 `PROTOCOL_VERSION` is `7`, `ModRef { id, version, hash }` rides `Hello` and
 `Welcome`, `proto::compare_world_mods` is the shared comparison, and
 `session` has `Host::start_with_mods` / `Client::join_with_mods`. `goatsd`
-takes `--mods`/`--no-mods` and requires its world-mod set of every joiner. The
-server does not *simulate* the mods yet -- that is M14d2 (§4.13) -- but it does
-require the set, so a client with different world mods is refused rather than
-silently diverging.
+takes `--mods`/`--no-mods`, hashes the assets without keeping them
+(`mods::AssetMode::HashOnly`), requires its world-mod set of every joiner, and
+now **runs its mods** in the headless world (M14d2), so their published state
+and streams reach clients in the snapshot.
 
 `Goatsd` takes `--mods <dir>` and loads the same loader; a server with no
 `mods/` only accepts clients with no world mods.

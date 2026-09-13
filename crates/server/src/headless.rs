@@ -60,12 +60,13 @@ const SCENE: &str = concat!(
 
 /// Appended to the scene: the one seam the server needs, a JSON view of the
 /// world the session broadcasts. It can be a one-liner because the scene already
-/// has `sceneWorldBots`, `sceneWeatherState`, `sceneStreams`, `sceneEaten` and
-/// `JSON`.
+/// has `sceneWorldBots`, `sceneWeatherState`, `sceneStreams`, `sceneEaten`,
+/// `sceneWorldMods` and `JSON`.
 const GLUE: &str = concat!(
     "\nfunction sceneWorldJson() { return JSON.stringify({",
     " bots: sceneWorldBots(), weather: sceneWeatherState(),",
-    " streams: sceneStreams(), eaten: sceneEaten() }); }\n",
+    " streams: sceneStreams(), eaten: sceneEaten(),",
+    " mods: sceneWorldMods() }); }\n",
 );
 
 /// A running headless scene.
@@ -77,10 +78,10 @@ pub struct Sim {
 }
 
 impl Sim {
-    /// Evaluates the scene, seeds it, and initialises it. The caller then drives
-    /// [`Sim::step`] at whatever rate it wants; the scene's `dt` is a fixed
-    /// 1/60 from the stub.
-    pub fn start(seed: u32) -> Result<Sim, String> {
+    /// Evaluates the scene, loads the world mods, seeds it, and initialises it.
+    /// The caller then drives [`Sim::step`] at whatever rate it wants; the
+    /// scene's `dt` is a fixed 1/60 from the stub.
+    pub fn start(seed: u32, loader: &mods::Loader) -> Result<Sim, String> {
         let mut context = Context::new().map_err(|error| error.to_string())?;
         let callbacks = HostCallbacks {
             // The scene's own `console.log` lines are useful on a server, but
@@ -93,6 +94,12 @@ impl Sim {
 
         let source = format!("{HEADLESS_RL}\n{SCENE}\n{GLUE}");
         context.eval(&source).map_err(|error| error.to_string())?;
+
+        // The same mod wiring the client host uses: push the table, evaluate
+        // each entry, close registration. It runs before `sceneUseSeed`, so a
+        // mod's registered streams are seeded rather than left at their initial
+        // value.
+        load_mods(&mut context, loader)?;
 
         let seed_fn = scene_function(&context, "sceneUseSeed")?;
         let init = scene_function(&context, "sceneInit")?;
@@ -152,6 +159,57 @@ impl Sim {
     }
 }
 
+/// Wires the loader's mods into a scene context, exactly as the client host
+/// does: the metadata table, then each entry inside its wrapper, then the freeze.
+/// A mod that throws is reported, never fatal.
+fn load_mods(context: &mut Context, loader: &mods::Loader) -> Result<(), String> {
+    let table = loader.table_json();
+    call_scene(context, "sceneMods", &[JsValue::string(table)])?;
+    for id in loader.ids() {
+        let result = match loader.get(&id).and_then(|manifest| manifest.entry_js()) {
+            Some(js) => match context.eval(&js) {
+                Ok(_) => Ok(()),
+                Err(error) => {
+                    let message = error.to_string();
+                    eprintln!("[mods] {id} failed: {message}");
+                    Err(message)
+                }
+            },
+            None => Ok(()),
+        };
+        match result {
+            Ok(()) => call_scene(
+                context,
+                "sceneModResult",
+                &[
+                    JsValue::string(id.clone()),
+                    JsValue::boolean(true),
+                    JsValue::string(""),
+                ],
+            )?,
+            Err(message) => call_scene(
+                context,
+                "sceneModResult",
+                &[
+                    JsValue::string(id.clone()),
+                    JsValue::boolean(false),
+                    JsValue::string(message),
+                ],
+            )?,
+        }
+    }
+    call_scene(context, "sceneModFreeze", &[])
+}
+
+/// Calls one of the scene's host-facing functions, requiring it to exist.
+fn call_scene(context: &mut Context, name: &str, args: &[JsValue]) -> Result<(), String> {
+    let function = scene_function(context, name)?;
+    context
+        .call(&function, &JsValue::undefined(), args)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 /// Looks up a global function by name.
 fn scene_function(context: &Context, name: &str) -> Result<JsValue, String> {
     let value = context
@@ -171,7 +229,7 @@ mod tests {
 
     /// Runs a world for `steps` frames and returns the bots as JSON.
     fn run_world(seed: u32, steps: usize) -> String {
-        let mut sim = Sim::start(seed).expect("start the headless scene");
+        let mut sim = Sim::start(seed, &mods::Loader::empty()).expect("start the headless scene");
         for _ in 0..steps {
             sim.step().expect("step");
         }
@@ -196,6 +254,41 @@ mod tests {
             SCENE_PARTS.len(),
             "the server and the client disagree on how many scene parts there are"
         );
+    }
+
+    #[test]
+    fn a_world_mod_extension_reaches_the_world_json() {
+        let dir = std::env::temp_dir().join(format!("goats-server-mod-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dash")).unwrap();
+        std::fs::write(
+            dir.join("dash").join("mod.json"),
+            r#"{ "id": "com.example.dash", "name": "Dash", "version": "1", "api": 1, "side": "world", "entry": "mod.js" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("dash").join("mod.js"),
+            "goats.world.registerStream(\"dash\", 1234);\n\
+             goats.world.extend(\"com.example.dash\", {\n\
+               publish: function () { return { active: true }; },\n\
+               apply: function () {}\n\
+             });\n",
+        )
+        .unwrap();
+        let loader = mods::Loader::discover_with(&dir, mods::AssetMode::HashOnly);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+
+        let mut sim = Sim::start(0x1234_5678, &loader).expect("start");
+        for _ in 0..40 {
+            sim.step().expect("step");
+        }
+        let json = sim.world_json().expect("world json");
+        assert!(json.contains("\"active\":true"), "{json}");
+        assert!(
+            json.contains("\"com.example.dash:dash\":"),
+            "the stream state must travel: {json}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

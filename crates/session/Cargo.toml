@@ -9,6 +9,9 @@ license = "MIT"
 [dependencies]
 proto = { path = "../proto" }
 serde = "1"
+# The world snapshot's mod section is a generic JSON value, so the session can
+# carry it without knowing what a mod publishes.
+serde_json = "1"
 iroh = "1.2.0"
 iroh-tickets = "1.0"
 bytes = "1"

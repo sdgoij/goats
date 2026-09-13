@@ -535,6 +535,161 @@ function modAssetOverride(id, slot, name) {
     return true;
 }
 
+// ---- world extension (M14d2) ----------------------------------------------
+//
+// A `side: "world"` mod may own a seeded PRNG stream and publish state into the
+// world snapshot. Streams are re-derived from the session seed on every peer so
+// they agree, and the state travels in the snapshot too, so a client that joins
+// mid-session continues rather than replaying from zero.
+
+const modStreams = new Map();   // "<id>:<name>" -> { seed, state }
+const modWorldExts = new Map(); // extension id -> { id, publish, apply }
+
+function modWorldOnly(id, what) {
+    const meta = modFind(id);
+    if (meta === null || meta.side !== "world") {
+        throw new Error("goats." + what + ": only a side:\"world\" mod may do this");
+    }
+}
+
+function modHashKey(key) {
+    let hash = 2166136261;
+    for (let i = 0; i < key.length; i++) {
+        hash ^= key.charCodeAt(i);
+        hash = (hash * 16777619) >>> 0;
+    }
+    return hash >>> 0;
+}
+
+function modStreamNext(key) {
+    const stream = modStreams.get(key);
+    if (stream === undefined) return 0;
+    let s = stream.state;
+    s ^= s << 13;
+    s >>>= 0;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    s >>>= 0;
+    stream.state = s;
+    return s / 4294967296;
+}
+
+function modRegisterStream(id, name, seed) {
+    if (!modRegistrationAllowed(id)) throw new Error("goats.world.registerStream: registration is closed");
+    modWorldOnly(id, "world.registerStream");
+    const key = id + ":" + String(name);
+    const initial = (((Number(seed) | 0) || (0x9e3779b9 ^ modHashKey(key))) || 1) >>> 0;
+    modStreams.set(key, { seed: initial, state: initial });
+    return function () { return modStreamNext(key); };
+}
+
+function modRng(id, name) {
+    const key = id + ":" + String(name);
+    return function () { return modStreamNext(key); };
+}
+
+// Derive every stream from the session seed, the way the scene's own streams
+// are derived -- hard to predict how much it matters, but the same seed gives
+// the same streams on every peer. The value is not used directly; the draw
+// keeps them from moving in lockstep.
+function modSeedStreams(seed) {
+    let s = (seed | 0) || 1;
+    const next = function () {
+        s ^= s << 13;
+        s >>>= 0;
+        s ^= s >>> 17;
+        s ^= s << 5;
+        s >>>= 0;
+        return s || 1;
+    };
+    for (const stream of modStreams.values()) {
+        stream.state = (stream.seed ^ next()) || 1;
+    }
+}
+
+function modStreamStates() {
+    const out = {};
+    for (const [key, stream] of modStreams) out[key] = stream.state >>> 0;
+    return out;
+}
+
+function modAdoptStreams(states) {
+    if (states === null || typeof states !== "object") return;
+    const keys = Object.keys(states);
+    for (let i = 0; i < keys.length; i++) {
+        const stream = modStreams.get(keys[i]);
+        if (stream !== undefined) stream.state = Number(states[keys[i]]) >>> 0;
+    }
+}
+
+function modExtend(id, extensionId, handlers) {
+    if (!modRegistrationAllowed(id)) throw new Error("goats.world.extend: registration is closed");
+    modWorldOnly(id, "world.extend");
+    if (handlers === null || typeof handlers !== "object") {
+        throw new Error("goats.world.extend: handlers are required");
+    }
+    modWorldExts.set(String(extensionId), {
+        id: id,
+        publish: typeof handlers.publish === "function" ? handlers.publish : null,
+        apply: typeof handlers.apply === "function" ? handlers.apply : null,
+    });
+}
+
+function modDropWorld(id) {
+    for (const key of Array.from(modStreams.keys())) {
+        if (key.indexOf(id + ":") === 0) modStreams.delete(key);
+    }
+    for (const [key, ext] of Array.from(modWorldExts)) {
+        if (ext.id === id) modWorldExts.delete(key);
+    }
+}
+
+// The host's contribution to the world snapshot: every world mod's stream
+// states and whatever it publishes. Only the host builds this.
+function sceneWorldMods() {
+    const data = {};
+    for (const [id, ext] of modWorldExts) {
+        if (ext.publish === null) continue;
+        try {
+            data[id] = ext.publish();
+        } catch (error) {
+            console.log("mods: '" + id + "' publish threw: " + String(error));
+        }
+    }
+    return { streams: modStreamStates(), data: data };
+}
+
+// A client applies the host's contribution.
+function sceneApplyWorldMods(mods) {
+    if (mods === null || typeof mods !== "object") return;
+    modAdoptStreams(mods.streams);
+    const data = mods.data;
+    if (data === null || typeof data !== "object") return;
+    const ids = Object.keys(data);
+    for (let i = 0; i < ids.length; i++) {
+        const ext = modWorldExts.get(ids[i]);
+        if (ext === undefined || ext.apply === null) continue;
+        try {
+            ext.apply(data[ids[i]]);
+        } catch (error) {
+            console.log("mods: '" + ids[i] + "' apply threw: " + String(error));
+        }
+    }
+}
+
+function modWorldFor(id) {
+    return {
+        time: goatsWorld.time,
+        setTime: goatsWorld.setTime,
+        weather: goatsWorld.weather,
+        setWeather: goatsWorld.setWeather,
+        wind: goatsWorld.wind,
+        terrainHeight: goatsWorld.terrainHeight,
+        registerStream: function (name, seed) { return modRegisterStream(id, name, seed); },
+        extend: function (extensionId, handlers) { return modExtend(id, extensionId, handlers); },
+    };
+}
+
 // ---- lifecycle ------------------------------------------------------------
 
 function goatsBegin(id) {
@@ -559,7 +714,8 @@ function goatsBegin(id) {
         frozen: function () { return modsFrozen; },
         player: goatsPlayer,
         camera: goatsCamera,
-        world: goatsWorld,
+        world: modWorldFor(id),
+        rng: function (name) { return modRng(id, name); },
         bots: modBotsFor(id),
         clips: modClipsFor(id),
         settings: goatsSettings,
@@ -580,6 +736,7 @@ function goatsEnd(id) {
     modEmitFor(id, "shutdown");
     modDropHooks(id);
     modDropCommands(id);
+    modDropWorld(id);
     modInstances.delete(id);
     const meta = modFind(id);
     if (meta !== null) meta.loaded = false;

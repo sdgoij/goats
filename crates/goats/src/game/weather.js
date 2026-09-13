@@ -60,6 +60,8 @@ function sceneUseSeed(seed) {
     botRngState = next() || 1;
     foodRngState = next() || 1;
     audioSeed = next() || 1;
+    // Mod streams draw from the same seed, so every peer derives the same ones.
+    modSeedStreams(seed);
 }
 
 // The four stream states. A seam for the headless harness, which cannot read

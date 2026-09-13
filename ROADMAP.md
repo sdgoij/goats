@@ -87,7 +87,7 @@ uses.
 | **M14c** | `goats` API v1: events, commands, accessors | M14a, M14b | L | ✅ **Done** — the hook surface; registries and asset slots split into M14c2 |
 | **M14c2** | Content registries + mutable asset slots: `bots.register`, `clips.register`, `assets.override` | M14c | M | ✅ **Done** — declared assets apply automatically; clips are gait-only |
 | **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | ✅ **Done (handshake)** — the digest and refusal; the snapshot extension is M14d2 |
-| **M14d2** | World-mod simulation: `goats.rng`, `world.extend`, snapshot merging, `goatsd` evaluates mods | M14d | M | Lets a world mod actually change the world peers see |
+| **M14d2** | World-mod simulation: `goats.rng`, `world.extend`, snapshot merging, `goatsd` evaluates mods | M14d | M | ✅ **Done** — streams + extension state travel in the snapshot's `mods` field |
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | UX and the mod-free vanilla suite |
 
 ---
@@ -1121,12 +1121,18 @@ decisions behind it and the constraints that shape it.
   discovers mods (the shared `crates/mods` loader) and requires the set of every
   joiner. The server does not simulate the mods yet -- M14d2 does that -- but the
   gate is real, so a client with different world mods cannot silently diverge.
-- **M14d2 — World-mod simulation.** `goats.rng`/`registerStream` extending
-  `sceneUseSeed`/`sceneStreams`; `goats.world.extend` contributions merged into
-  the snapshot built by `sceneWorldBots` / `sceneWeatherState` /
-  `sceneStreams` / `sceneEaten` and applied in `netApplyWorld` (which adds a
-  `mods` field to the proto `WorldState`); and `goatsd` evaluating its mods into
-  the headless world so a hosting server actually runs them.
+- **M14d2 — World-mod simulation. ✅ Done.** `goats.world.registerStream` and
+  `goats.rng` own a seeded PRNG stream per `side: "world"` mod; `sceneUseSeed`
+  re-derives them from the session seed, and their state travels in the
+  snapshot's `mods.streams` so a joiner continues rather than replays.
+  `goats.world.extend(id, { publish, apply })` contributes JSON to
+  `sceneWorldMods()`, which the host merges into the snapshot (a `mods` field on
+  the proto `WorldState`, a generic JSON value bounded by the datagram cap) and
+  `netApplyWorld` applies on a client through `sceneApplyWorldMods`. The server
+  now **evaluates its mods** into the headless world, before `sceneUseSeed`, so
+  a `goatsd --mods` world actually runs them; the loader gained
+  `AssetMode::HashOnly` so the server hashes assets for the digest without
+  keeping a mod's model in memory. APIv1 §4.13 is the reference.
 - **M14e — UI and tests.** A session-only Mods screen in `menu.js`; a
   checked-in `mods/example/` fixture; `tools/mod_smoke_test.js` (hook fires,
   command dispatches, asset slot overrides, a throwing handler is isolated,

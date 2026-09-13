@@ -62,13 +62,15 @@ pub enum Event {
     /// A remote goat moved. `name` is the server's canonical name, not whatever
     /// the datagram claimed.
     Peer { name: String, state: PeerState },
-    /// The server's world -- its bots, its sky, its streams and its meadow -- for
-    /// a client to mirror instead of simulating.
+    /// The server's world -- its bots, its sky, its streams, its meadow and
+    /// whatever world mods publish -- for a client to mirror instead of
+    /// simulating.
     World {
         bots: Vec<BotState>,
         weather: WeatherState,
         streams: Streams,
         eaten: Vec<EatenCell>,
+        mods: serde_json::Value,
     },
     /// A client ate a grass cell, for the host's scene to record. Only the host
     /// sees this; the next world snapshot carries the result to everyone.
@@ -962,6 +964,7 @@ impl Client {
                             weather: world.weather,
                             streams: world.streams,
                             eaten: world.eaten,
+                            mods: world.mods,
                         }
                     }
                     Datagram::Voice(frame) => {
@@ -1496,6 +1499,7 @@ mod tests {
                     key: 4242,
                     left: 12.5,
                 }],
+                mods: serde_json::json!({ "data": { "com.example.a": { "n": 1 } } }),
             };
             for _ in 0..10 {
                 host.publish_world(&world).await;
@@ -1507,11 +1511,13 @@ mod tests {
                     weather,
                     streams,
                     eaten,
+                    mods,
                 } => {
                     assert_eq!(bots, world.bots);
                     assert_eq!(weather, world.weather);
                     assert_eq!(streams, world.streams);
                     assert_eq!(eaten, world.eaten);
+                    assert_eq!(mods, world.mods);
                 }
                 other => panic!("expected a world, got {other:?}"),
             }

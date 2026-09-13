@@ -61,7 +61,8 @@ impl std::fmt::Display for LoadError {
     }
 }
 
-/// One asset file, read into memory and addressed by an opaque engine name.
+/// One asset file. `bytes` is empty in [`AssetMode::HashOnly`], where the file
+/// was read only to hash it.
 #[derive(Debug)]
 pub struct Asset {
     /// The logical slot the mod is filling (`model.goat`, `sfx.music`, ...).
@@ -71,6 +72,19 @@ pub struct Asset {
     /// The name to register with the engine.
     pub name: String,
     pub bytes: Vec<u8>,
+    /// FNV-1a over the file's bytes, so the manifest hash is the same whether
+    /// the bytes were kept or streamed.
+    pub content_hash: u64,
+}
+
+/// Whether discovery keeps asset bytes in memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetMode {
+    /// Keep the bytes so the host can register them with the engine (a client).
+    Keep,
+    /// Hash the bytes and drop them; the headless server only needs the digest,
+    /// and a mod's model should not sit in a server's memory for nothing.
+    HashOnly,
 }
 
 /// A validated manifest with everything the host needs to load it.
@@ -165,7 +179,13 @@ impl Loader {
     }
 
     /// Walk `dir`; every immediate subdirectory with a `mod.json` is a mod.
+    /// Asset bytes are kept, for a host that will register them.
     pub fn discover(dir: &Path) -> Loader {
+        Loader::discover_with(dir, AssetMode::Keep)
+    }
+
+    /// Walk `dir`, with control over whether asset bytes are kept.
+    pub fn discover_with(dir: &Path, mode: AssetMode) -> Loader {
         let mut errors = Vec::new();
         let mut dirs = Vec::new();
         match std::fs::read_dir(dir) {
@@ -205,7 +225,7 @@ impl Loader {
             if !manifest_path.is_file() {
                 continue; // not a mod (a parked or unrelated directory)
             }
-            match load_one(&path, &manifest_path) {
+            match load_one(&path, &manifest_path, mode) {
                 Ok(manifest) => mods.push(manifest),
                 Err(error) => errors.push(error),
             }
@@ -288,7 +308,7 @@ impl OneOrMany {
     }
 }
 
-fn load_one(dir: &Path, manifest_path: &Path) -> Result<Manifest, LoadError> {
+fn load_one(dir: &Path, manifest_path: &Path, mode: AssetMode) -> Result<Manifest, LoadError> {
     let fail = |message: String| LoadError {
         path: manifest_path.to_path_buf(),
         message,
@@ -347,7 +367,7 @@ fn load_one(dir: &Path, manifest_path: &Path) -> Result<Manifest, LoadError> {
         for (index, file) in files.iter().enumerate() {
             let path = safe_join(dir, file)
                 .map_err(|message| fail(format!("asset '{slot}': {message}")))?;
-            let bytes = read_capped(&path, MAX_ASSET_BYTES, "asset")
+            let (bytes, content_hash) = read_asset(&path, mode)
                 .map_err(|message| fail(format!("asset '{slot}': {message}")))?;
             // One file fills the slot on its own; several are addressed by
             // index, so a mod can replace a whole sound list.
@@ -361,6 +381,7 @@ fn load_one(dir: &Path, manifest_path: &Path) -> Result<Manifest, LoadError> {
                 index,
                 name,
                 bytes,
+                content_hash,
             });
         }
     }
@@ -424,6 +445,46 @@ fn read_capped(path: &Path, max: u64, what: &str) -> Result<Vec<u8>, String> {
         ));
     }
     std::fs::read(path).map_err(|error| format!("{what} '{}': {error}", path.display()))
+}
+
+/// Read an asset, returning its bytes (empty in hash-only mode) and the FNV-1a
+/// hash the manifest folds in. Both modes hash the same bytes, so a client and
+/// a server agree on the digest.
+fn read_asset(path: &Path, mode: AssetMode) -> Result<(Vec<u8>, u64), String> {
+    if mode == AssetMode::Keep {
+        let bytes = read_capped(path, MAX_ASSET_BYTES, "asset")?;
+        let mut hash = FNV_OFFSET;
+        fnv1a(&mut hash, &bytes);
+        return Ok((bytes, hash));
+    }
+
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("'asset' '{}': {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("asset '{}' is not a file", path.display()));
+    }
+    if metadata.len() > MAX_ASSET_BYTES {
+        return Err(format!(
+            "asset '{}' is {} bytes (limit {MAX_ASSET_BYTES})",
+            path.display(),
+            metadata.len()
+        ));
+    }
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("asset '{}': {error}", path.display()))?;
+    let mut hash = FNV_OFFSET;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("asset '{}': {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        fnv1a(&mut hash, &buffer[..read]);
+    }
+    Ok((Vec::new(), hash))
 }
 
 fn read_text(path: &Path, max: u64, what: &str) -> Result<String, String> {
@@ -540,7 +601,7 @@ fn hash_manifest(id: &str, version: &str, entry: Option<&str>, assets: &[Asset])
     for asset in assets {
         fnv1a(&mut hash, &[0]);
         fnv1a(&mut hash, asset.name.as_bytes());
-        fnv1a(&mut hash, &asset.bytes);
+        fnv1a(&mut hash, &asset.content_hash.to_le_bytes());
     }
     hash
 }
@@ -708,6 +769,26 @@ mod tests {
         assert_eq!(table[0]["side"], "world");
         assert_eq!(table[0]["api"], 1);
         assert!(table[0]["hash"].as_str().unwrap().len() == 16);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hashing_assets_without_keeping_them_matches() {
+        let root = workspace("hashonly");
+        write_mod(
+            &root,
+            "m",
+            r#"{ "id": "m", "name": "M", "version": "1", "api": 1, "assets": { "sfx.music": "a.bin" } }"#,
+        );
+        write(&root.join("m").join("a.bin"), "some bytes to hash");
+        let keep = Loader::discover_with(&root, AssetMode::Keep);
+        let hash_only = Loader::discover_with(&root, AssetMode::HashOnly);
+        assert_eq!(
+            keep.get("m").unwrap().hash,
+            hash_only.get("m").unwrap().hash,
+            "both modes must agree on the digest"
+        );
+        assert!(hash_only.get("m").unwrap().assets[0].bytes.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
