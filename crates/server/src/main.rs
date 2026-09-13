@@ -6,11 +6,15 @@
 //! and a client joining a `goatsd` session never runs the bot AI at all.
 //!
 //! The ticket is the whole interface: the host prints it, and a player pastes it
-//! into the client's console with `connect <ticket> <name>`.
+//! into the client's console with `connect <ticket> <name>`. `--listen` also
+//! serves that ticket, the connected-client count and a client download link as
+//! a small status page (`src/web.rs`); without `--listen` no HTTP server runs.
 
 mod headless;
+mod web;
 
 use std::io::Write;
+use std::sync::Arc;
 use std::time::Duration;
 
 use session::{Event, Host, WorldState};
@@ -18,12 +22,79 @@ use session::{Event, Host, WorldState};
 /// The world snapshot cadence, in sim frames (the sim runs at a fixed 60 Hz).
 const WORLD_EVERY: u64 = 6;
 
+/// Where the status page points a visitor for the client, unless `--download`
+/// says otherwise.
+const DEFAULT_DOWNLOAD: &str = "https://github.com/sdgoij/goats/releases";
+
+const USAGE: &str = "\
+goatsd [name] [--listen address:port] [--download URL]
+
+  name                the name to host under (default: server)
+  -l, --listen ADDR   serve a status page on ADDR; a bare port means 0.0.0.0:port.
+                      Without it, no HTTP server is started.
+      --download URL  client download link shown on the page
+                      (default: the GitHub releases page)
+  -h, --help          this text";
+
+/// What the command line asked for.
+struct Options {
+    name: String,
+    listen: Option<String>,
+    download: String,
+}
+
+/// Asking for help is not an error, but it ends the process the same way.
+enum Parsed {
+    Run(Options),
+    Help,
+}
+
+fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
+    let mut options = Options {
+        name: "server".to_string(),
+        listen: None,
+        download: DEFAULT_DOWNLOAD.to_string(),
+    };
+    let mut named = false;
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => return Ok(Parsed::Help),
+            "-l" | "--listen" => {
+                options.listen = Some(args.next().ok_or("--listen needs address:port")?);
+            }
+            "--download" => {
+                options.download = args.next().ok_or("--download needs a URL")?;
+            }
+            other if other.starts_with('-') => return Err(format!("unknown option {other}")),
+            other => {
+                if named {
+                    return Err(format!("unexpected argument {other}"));
+                }
+                options.name = other.to_string();
+                named = true;
+            }
+        }
+    }
+    Ok(Parsed::Run(options))
+}
+
 #[tokio::main]
 async fn main() {
-    let name = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "server".to_string());
-    let mut host = match Host::start(&name).await {
+    let options = match parse_args(std::env::args().skip(1)) {
+        Ok(Parsed::Run(options)) => options,
+        Ok(Parsed::Help) => {
+            println!("{USAGE}");
+            return;
+        }
+        Err(message) => {
+            eprintln!("goatsd: {message}");
+            eprintln!("{USAGE}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut host = match Host::start(&options.name).await {
         Ok(host) => host,
         Err(error) => {
             eprintln!("goatsd: could not host: {error}");
@@ -51,6 +122,42 @@ async fn main() {
         }
     );
     let _ = std::io::stdout().flush();
+
+    // The status page, only when asked for. It reports the ticket, the client
+    // count and where to get the client; the count is kept up to date from the
+    // session's roster events below. The listener is bound here, before the loop
+    // starts, so a busy port is an error now rather than a surprise later.
+    let info = Arc::new(web::Info::new(
+        host.ticket().to_string(),
+        options.download.clone(),
+    ));
+    if let Some(address) = &options.listen {
+        let address = if let Ok(port) = address.parse::<u16>() {
+            format!("0.0.0.0:{port}")
+        } else {
+            address.clone()
+        };
+        match std::net::TcpListener::bind(&address) {
+            Ok(listener) => {
+                let shown = listener
+                    .local_addr()
+                    .map_or_else(|_| address.clone(), |bound| bound.to_string());
+                println!("goatsd: status page on http://{shown}/");
+                let _ = std::io::stdout().flush();
+                let info = info.clone();
+                if let Err(error) = std::thread::Builder::new()
+                    .name("http".to_string())
+                    .spawn(move || web::serve(listener, info))
+                {
+                    eprintln!("goatsd: could not start the status page: {error}");
+                }
+            }
+            Err(error) => {
+                eprintln!("goatsd: could not listen on {address}: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
 
     let mut tick = tokio::time::interval(Duration::from_millis(16));
     // A step does not have to be exactly 16 ms; catch up once and carry on
@@ -107,7 +214,7 @@ async fn main() {
                         eprintln!("goatsd: could not record a bite: {error}");
                     }
                 }
-                Some(event) => report(event),
+                Some(event) => report(event, &info),
                 None => {
                     println!("goatsd: session finished");
                     break;
@@ -140,8 +247,13 @@ async fn publish_world(host: &Host, json: &str) {
     }
 }
 
-/// One line per event, so a session's comings and goings read as a log.
-fn report(event: Event) {
+/// One line per event, so a session's comings and goings read as a log. The
+/// roster is also what keeps the status page's client count current.
+fn report(event: Event, info: &web::Info) {
+    if let Event::Roster { names } = &event {
+        // The roster carries the host first, so the clients are the rest.
+        info.set_clients(names.len().saturating_sub(1));
+    }
     let line = match event {
         Event::Session { seed } => format!("session seed {seed}"),
         Event::Joined { name } => format!("{name} joined"),
@@ -166,4 +278,63 @@ fn report(event: Event) {
     };
     println!("{line}");
     let _ = std::io::stdout().flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Parsed, String> {
+        parse_args(args.iter().map(|arg| arg.to_string()))
+    }
+
+    fn options(args: &[&str]) -> Options {
+        match parse(args) {
+            Ok(Parsed::Run(options)) => options,
+            Ok(Parsed::Help) => panic!("unexpected help"),
+            Err(message) => panic!("unexpected error: {message}"),
+        }
+    }
+
+    #[test]
+    fn the_defaults_are_server_with_no_status_page() {
+        let options = options(&[]);
+        assert_eq!(options.name, "server");
+        assert!(options.listen.is_none(), "no page unless asked for");
+        assert_eq!(options.download, DEFAULT_DOWNLOAD);
+    }
+
+    #[test]
+    fn a_name_and_the_long_flags_are_read() {
+        let options = options(&[
+            "ubergoat",
+            "--listen",
+            "0.0.0.0:8080",
+            "--download",
+            "https://example.test/dl",
+        ]);
+        assert_eq!(options.name, "ubergoat");
+        assert_eq!(options.listen.as_deref(), Some("0.0.0.0:8080"));
+        assert_eq!(options.download, "https://example.test/dl");
+    }
+
+    #[test]
+    fn the_short_listen_flag_works() {
+        let options = options(&["-l", "127.0.0.1:9000"]);
+        assert_eq!(options.listen.as_deref(), Some("127.0.0.1:9000"));
+    }
+
+    #[test]
+    fn help_is_asked_for_not_failed_on() {
+        assert!(matches!(parse(&["--help"]), Ok(Parsed::Help)));
+        assert!(matches!(parse(&["-h"]), Ok(Parsed::Help)));
+    }
+
+    #[test]
+    fn bad_arguments_are_refused() {
+        assert!(parse(&["--listen"]).is_err(), "a missing value");
+        assert!(parse(&["--download"]).is_err(), "a missing value");
+        assert!(parse(&["--nope"]).is_err(), "an unknown option");
+        assert!(parse(&["one", "two"]).is_err(), "two names");
+    }
 }

@@ -1024,6 +1024,13 @@ so it suits ≤4 players; beyond that the host should mix and relay.
 
 ## Cross-cutting work
 
+- **Host status page.** ✅ **Done.** `goatsd --listen host:port` serves a small
+  hand-rolled HTTP page (`crates/server/src/web.rs`) with the ticket, the number
+  of connected clients -- taken from the session's roster events, so it excludes
+  the host -- and a client download link (`--download URL`, defaulting to the
+  GitHub releases page). Without `--listen` no HTTP server starts, which keeps a
+  headless host's footprint to the session alone. `GET /info` returns the same
+  facts as JSON.
 - **Splitting the scene.** ✅ **Done.** The scene is
   `crates/goats/src/game/*.js` in thirteen parts (core, model, world, lighting,
   sky, audio, weather, food, bots, goat, ctl, menu, console), joined in the order

@@ -147,7 +147,10 @@ ticket.
   Ctrl+C copies the current line.
 - **Standalone server**: `cargo run --release -p server` runs `goatsd`, a
   headless host. It runs the world itself and prints its ticket, the seed, and
-  joins, leaves, the roster and chat. Stop it with Ctrl-C.
+  joins, leaves, the roster and chat. Stop it with Ctrl-C. `--listen host:port`
+  (`-l`) also serves a small status page with the ticket, the connected-client
+  count and a client download link (`--download URL` to point it elsewhere);
+  without `--listen`, no HTTP server is started.
 - **Chat**: in a session, type a line with no leading slash to say it to
   everyone. `@name <text>` (or `say` / `msg <name> <text>`) is a 1:1 whisper, and
   the console marks it as one. Offline, bare text is an error, and `who` lists
@@ -262,6 +265,7 @@ gets on the free plan.
 | `crates/goats/src/game/*.js` | The scene, split into 14 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
 | `crates/server/src/headless_rl.js` | The null `rl` module the server evaluates the scene against (no window) |
+| `crates/server/src/web.rs` | The optional status page: ticket, client count and a download link, behind `--listen` |
 | `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
 | `crates/proto/` | The session protocol: message types, framing and name rules (no iroh or tokio) |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
