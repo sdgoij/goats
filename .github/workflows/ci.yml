@@ -106,22 +106,32 @@ jobs:
         run: cargo test --workspace
 
       # Ship the licence, the readme and the mod API reference alongside the
-      # self-contained binary.
+      # self-contained binary, plus the checked-in birds mod as a zip in `mods/`
+      # so a release exercises `.zip` mod loading on its first run.
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
+          New-Item -ItemType Directory -Force dist/mods | Out-Null
           Copy-Item target/release/goats.exe, target/release/goatsd.exe dist/
           Copy-Item README.md, LICENSE.md, APIv1.md dist/
+          Compress-Archive -Path mods/birds/* -DestinationPath dist/mods/birds.zip -Force
+          Set-Content dist/mods/README.txt "birds.zip is a bundled world mod, loaded from this directory. Delete it (or run with --no-mods) for an unmodded game."
           Compress-Archive -Path dist/* -DestinationPath ${{ matrix.package }} -Force
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          mkdir -p dist
+          mkdir -p dist/mods
           cp target/release/goats target/release/goatsd dist/
           cp README.md LICENSE.md APIv1.md dist/
+          if command -v zip >/dev/null; then
+            ( cd mods/birds && zip -qr ../../dist/mods/birds.zip . )
+          else
+            python3 -c "import shutil; shutil.make_archive('dist/mods/birds', 'zip', 'mods/birds')"
+          fi
+          echo "birds.zip is a bundled world mod, loaded from this directory. Delete it (or run with --no-mods) for an unmodded game." > dist/mods/README.txt
           tar -czf ${{ matrix.package }} -C dist .
 
       - uses: actions/upload-artifact@v7

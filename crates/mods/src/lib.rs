@@ -1038,6 +1038,78 @@ mod tests {
         path
     }
 
+    /// Zip the *contents* of `src` into `dest`, so `mod.json` lands at the root
+    /// exactly as a packaged mod does.
+    fn zip_directory(dest: &Path, src: &Path) {
+        use std::io::Write as _;
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        fn add(archive: &mut zip::ZipWriter<std::fs::File>, src: &Path, dir: &Path) {
+            let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            paths.sort();
+            for path in paths {
+                if path.is_dir() {
+                    add(archive, src, &path);
+                    continue;
+                }
+                let name = path
+                    .strip_prefix(src)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                archive.start_file(name, options).unwrap();
+                archive.write_all(&std::fs::read(&path).unwrap()).unwrap();
+            }
+        }
+        let file = std::fs::File::create(dest).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        add(&mut archive, src, src);
+        archive.finish().unwrap();
+    }
+
+    #[test]
+    fn the_birds_fixture_is_identical_from_a_zip() {
+        // The release ships `mods/birds/` zipped. This proves the zip is a real
+        // mod source with the same id, entry and digest as the directory, so a
+        // release that cannot load it is caught here rather than in the wild.
+        let mods_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("mods");
+        let birds_dir = mods_dir.join("birds");
+        let from_dir = Loader::discover(&mods_dir);
+        assert!(from_dir.errors().is_empty(), "{:?}", from_dir.errors());
+        let dir_manifest = from_dir
+            .mods()
+            .iter()
+            .find(|manifest| manifest.path().ends_with("birds"))
+            .expect("the birds directory mod");
+
+        let root = workspace("birdszip");
+        zip_directory(&root.join("birds.zip"), &birds_dir);
+        let from_zip = Loader::discover(&root);
+        assert!(from_zip.errors().is_empty(), "{:?}", from_zip.errors());
+        let zip_manifest = from_zip
+            .get(&dir_manifest.id)
+            .expect("the same mod from a zip");
+
+        assert_eq!(dir_manifest.hash, zip_manifest.hash, "digests must match");
+        assert_eq!(dir_manifest.entry_source, zip_manifest.entry_source);
+        assert!(
+            zip_manifest
+                .entry_source
+                .as_deref()
+                .unwrap_or("")
+                .contains("procedural birds"),
+            "the entry must be the real birds source"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_zip_mod_is_discovered_and_read() {
         let root = workspace("zip");
