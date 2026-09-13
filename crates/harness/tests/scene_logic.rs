@@ -35,6 +35,8 @@ fn the_scene_runs_the_scripted_timeline() {
             .eval("typeof sceneLoadStep === \"function\"")
             .expect("eval"),
     );
+    // Read before the scripted input, which presses L and the rest.
+    let settings_before = command_json(&mut harness, "settings");
     let obs = harness.run(TOTAL).expect("run the scene");
     let elapsed = started.elapsed();
     let mut checks = Checks::new();
@@ -477,6 +479,138 @@ fn the_scene_runs_the_scripted_timeline() {
         bot_eat_clips,
     );
 
+    // ---- settings and the tuning tree -----------------------------------
+    let settings_defaults = f64_of(settings_before["bgm"].clone()) == 90.0
+        && f64_of(settings_before["sfx"].clone()) == 90.0
+        && settings_before["light"] == json!(true)
+        && settings_before["shadow"] == json!("map")
+        && settings_before["sky"] == json!(true)
+        && settings_before["cloud"] == json!("medium")
+        && settings_before["fullscreen"] == json!(true)
+        && f64_of(settings_before["herd"].clone()) == 7.0;
+    checks.check(
+        "settings default to the spec",
+        settings_defaults,
+        settings_defaults,
+    );
+
+    // The settings reach the world, and the herd is really rebuilt.
+    for line in [
+        "setting light off",
+        "setting shadow planar",
+        "setting sky off",
+        "setting herd 9",
+    ] {
+        harness.command(line).expect("setting");
+    }
+    let features = command_json(&mut harness, "features");
+    let nine = command_json(&mut harness, "bots")["count"]
+        .as_u64()
+        .unwrap_or(0);
+    harness.command("setting herd 3").expect("setting");
+    let three = command_json(&mut harness, "bots")["count"]
+        .as_u64()
+        .unwrap_or(0);
+    let mut applied = features["lighting"] == json!(false)
+        && features["shadows"] == json!("planar")
+        && features["sky"] == json!(false);
+    harness.command("setting fullscreen off").expect("setting");
+    let fullscreen_off = command_json(&mut harness, "settings")["fullscreen"] == json!(false);
+    harness.command("setting fullscreen on").expect("setting");
+    applied = applied && fullscreen_off;
+
+    for line in [
+        "setting light on",
+        "setting shadow map",
+        "setting sky on",
+        "setting herd 7",
+        "setting cloud low",
+    ] {
+        harness.command(line).expect("setting");
+    }
+    let cloud_low = command_json(&mut harness, "settings")["cloud"] == json!("low");
+    harness.command("setting cloud high").expect("setting");
+    let cloud_high = command_json(&mut harness, "features")["cloud"] == json!("high");
+    harness.command("setting cloud medium").expect("setting");
+    let cloud_levels = cloud_low
+        && cloud_high
+        && command_json(&mut harness, "settings")["cloud"] == json!("medium");
+
+    let screen_set = harness.command("ui settings").expect("ui") == "ok ui settings"
+        && harness.command("ui").expect("ui") == "ok settings";
+    harness.command("ui hud").expect("ui");
+
+    checks.check("settings apply to the world", applied, applied);
+    checks.check("herd size grows the herd", nine == 9, nine);
+    checks.check("herd size shrinks the herd", three == 3, three);
+    checks.check("cloud quality can be set", cloud_levels, cloud_levels);
+    checks.check("menu screens can be opened", screen_set, screen_set);
+
+    // The tuning tree: reads and writes are side-effect free apart from the
+    // watcher, which is unsubscribed again.
+    let tuning_defaults = f64_of(tuning_get(&mut harness, "stats.max")) == 100.0
+        && f64_of(tuning_get(&mut harness, "movement.turnRate")) == 1.8
+        && f64_of(tuning_get(&mut harness, "weather.rainSlow")) == 0.28
+        && f64_of(tuning_get(&mut harness, "lighting.shadow.half")) == 7.0;
+    checks.check(
+        "tuning tree carries the defaults",
+        tuning_defaults,
+        tuning_defaults,
+    );
+
+    // A set stores the coerced value and is visible through a get.
+    let stored = f64_of(
+        harness
+            .call("tuningSet", &[json!("stats.jumpEnergyCost"), json!(3.5)])
+            .expect("tuningSet"),
+    );
+    let round_trip =
+        stored == 3.5 && f64_of(tuning_get(&mut harness, "stats.jumpEnergyCost")) == 3.5;
+    harness
+        .call("tuningSet", &[json!("stats.jumpEnergyCost"), json!(2.0)])
+        .expect("tuningSet");
+    checks.check("tuning set/get round-trips", round_trip, stored);
+
+    // A bounded leaf clamps (a camera leaf, so no watcher fires).
+    let clamped = f64_of(
+        harness
+            .call("tuningSet", &[json!("camera.minDist"), json!(0.0)])
+            .expect("tuningSet"),
+    );
+    harness
+        .call("tuningSet", &[json!("camera.minDist"), json!(2.2)])
+        .expect("tuningSet");
+    checks.check("tuning clamps a bounded leaf", clamped == 0.1, clamped);
+
+    // The watcher needs a callback, which no JSON argument can carry, so it runs
+    // as one snippet and comes back with what it saw.
+    let seen = harness.eval(WATCH_PROBE).expect("eval");
+    checks.check(
+        "tuning watchers fire and unsubscribe",
+        seen == json!("stats.max=120"),
+        seen,
+    );
+
+    // A nested merge validates every leaf.
+    harness
+        .call("tuningMerge", &[json!({ "weather": { "windSlow": 0.09 } })])
+        .expect("tuningMerge");
+    let merged = f64_of(tuning_get(&mut harness, "weather.windSlow"));
+    harness
+        .call("tuningSet", &[json!("weather.windSlow"), json!(0.07)])
+        .expect("tuningSet");
+    checks.check("tuning merge validates every leaf", merged == 0.09, merged);
+
+    // A typo, a branch write and a non-finite number are all loud.
+    let unknown = throws(&mut harness, "tuningGet(\"stats.nope\")");
+    let branch = throws(&mut harness, "tuningSet(\"stats\", 1)");
+    let not_finite = throws(&mut harness, "tuningSet(\"stats.max\", NaN)");
+    checks.check(
+        "tuning rejects unknown, branch and non-finite writes",
+        unknown && branch && not_finite,
+        (unknown, branch, not_finite),
+    );
+
     // The visual side of eating: the drawn tufts drop when one is eaten.
     let tuft = harness
         .call("nearestTuft", &[json!(0.0), json!(0.0), json!(20.0)])
@@ -662,3 +796,29 @@ fn quoted(line: &str) -> Option<String> {
     }
     Some(inner.to_string())
 }
+
+/// One tuning read, as a number.
+fn tuning_get(harness: &mut Harness, path: &str) -> serde_json::Value {
+    harness
+        .call("tuningGet", &[json!(path)])
+        .unwrap_or_else(|error| panic!("tuningGet({path}): {error}"))
+}
+
+/// Whether a snippet throws, which mirrors the `try/catch` the Node harness used
+/// for the writes the tree is supposed to refuse.
+fn throws(harness: &mut Harness, code: &str) -> bool {
+    let probe = format!(
+        "(function () {{ try {{ {code}; }} catch (error) {{ return true; }} return false; }})()"
+    );
+    bool_of(harness.eval(&probe).expect("eval"))
+}
+
+/// The watcher case: it subscribes, sets, unsubscribes and sets again, and comes
+/// back with what the watcher saw before it was removed.
+const WATCH_PROBE: &str = "(function () { \
+     let saw = null; \
+     const off = tuningWatch(\"stats.max\", function (path, value) { saw = path + \"=\" + value; }); \
+     tuningSet(\"stats.max\", 120); \
+     off(); \
+     tuningSet(\"stats.max\", 100); \
+     return saw; })()";
