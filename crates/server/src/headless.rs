@@ -2,61 +2,17 @@
 //! null `rl` so a dedicated server can own the world with no window.
 //!
 //! The engine has no dependency on raylib unless the `raylib` feature is on, so
-//! this crate builds without it and `headless_rl.js` supplies the `rl` global the
+//! this crate builds without it and `scene::NULL_RL` supplies the `rl` global the
 //! scene expects. Everything the simulation reads is real (the clock, the model
 //! clip table, the terrain height function); everything that only draws or reads
 //! input does nothing. That is enough to run `sceneFrame` at a fixed step and
 //! read the bots back out.
 //!
-//! The scene parts are the client's, in the client's order. `the_scene_list_
-//! matches_the_clients` fails if that list and `crates/goats/src/main.rs` drift
-//! apart, so the server can never be simulating a different game.
+//! The scene is the client's: `scene::SCENE` is one list of parts, joined the
+//! same way for the client, this server and the test harness, so no two of them
+//! can simulate a different game.
 
 use slag::{Context, HostCallbacks, JsValue};
-
-/// The null `rl` module, evaluated before the scene.
-const HEADLESS_RL: &str = include_str!("headless_rl.js");
-
-/// The scene parts, in the running order `crates/goats/src/main.rs` uses. Only
-/// the drift test reads it; `SCENE` below is what actually gets evaluated.
-#[cfg(test)]
-const SCENE_PARTS: &[&str] = &[
-    "core.js",
-    "model.js",
-    "world.js",
-    "lighting.js",
-    "sky.js",
-    "audio.js",
-    "weather.js",
-    "food.js",
-    "bots.js",
-    "goat.js",
-    "ctl.js",
-    "menu.js",
-    "console.js",
-    "net.js",
-    "mods.js",
-];
-
-/// The scene, joined exactly as the client joins it: one script, one scope, so
-/// every part sees the others' functions and globals.
-const SCENE: &str = concat!(
-    include_str!("../../goats/src/game/core.js"),
-    include_str!("../../goats/src/game/model.js"),
-    include_str!("../../goats/src/game/world.js"),
-    include_str!("../../goats/src/game/lighting.js"),
-    include_str!("../../goats/src/game/sky.js"),
-    include_str!("../../goats/src/game/audio.js"),
-    include_str!("../../goats/src/game/weather.js"),
-    include_str!("../../goats/src/game/food.js"),
-    include_str!("../../goats/src/game/bots.js"),
-    include_str!("../../goats/src/game/goat.js"),
-    include_str!("../../goats/src/game/ctl.js"),
-    include_str!("../../goats/src/game/menu.js"),
-    include_str!("../../goats/src/game/console.js"),
-    include_str!("../../goats/src/game/net.js"),
-    include_str!("../../goats/src/game/mods.js"),
-);
 
 /// Appended to the scene: the one seam the server needs, a JSON view of the
 /// world the session broadcasts. It can be a one-liner because the scene already
@@ -92,7 +48,7 @@ impl Sim {
         context.set_host_callbacks(callbacks);
         slag::install_jit(&mut context)?;
 
-        let source = format!("{HEADLESS_RL}\n{SCENE}\n{GLUE}");
+        let source = format!("{}\n{}\n{GLUE}", scene::NULL_RL, scene::SCENE);
         context.eval(&source).map_err(|error| error.to_string())?;
 
         // The same mod wiring the client host uses: push the table, evaluate
@@ -234,26 +190,6 @@ mod tests {
             sim.step().expect("step");
         }
         sim.world_json().expect("world json")
-    }
-
-    #[test]
-    fn the_scene_list_matches_the_clients() {
-        // The client's `main.rs` is the single source of truth for the running
-        // order; this catches a part added there and forgotten here, which would
-        // otherwise silently simulate a different game.
-        const CLIENT_MAIN: &str = include_str!("../../goats/src/main.rs");
-        for part in SCENE_PARTS {
-            let wanted = format!("include_str!(\"game/{part}\")");
-            assert!(
-                CLIENT_MAIN.contains(&wanted),
-                "crates/goats/src/main.rs does not include {part}"
-            );
-        }
-        assert_eq!(
-            CLIENT_MAIN.matches("include_str!(\"game/").count(),
-            SCENE_PARTS.len(),
-            "the server and the client disagree on how many scene parts there are"
-        );
     }
 
     #[test]

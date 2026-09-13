@@ -1,0 +1,20 @@
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# The scene tests: the client's scene, evaluated on Slag against the recording
+# `rl` in `crates/scene`, so they need no Node, no raylib and no display. Only
+# the `jit` feature is on, exactly as `crates/server` does, so building the tests
+# does not build raylib.
+[dependencies]
+scene = { path = "../scene" }
+serde = { version = "1", features = ["derive"] }
+# The observations cross the Rust/JS boundary as one JSON string, the shape
+# `sceneWorldJson` already uses.
+serde_json = "1"
+slag = { git = "https://github.com/sdgoij/slag", features = ["jit"] }
+
+[dev-dependencies]
+mods = { path = "../mods" }

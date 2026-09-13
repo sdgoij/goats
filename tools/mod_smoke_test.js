@@ -72,13 +72,13 @@ vm.createContext(sandbox);
 
 // ---- load the scene -------------------------------------------------------
 //
-// crates/goats/src/main.rs is the running order's single source of truth; parse
-// that same list so the two cannot drift.
-const gameDir = path.join(root, 'crates', 'goats', 'src', 'game');
-const mainRs = fs.readFileSync(path.join(root, 'crates', 'goats', 'src', 'main.rs'), 'utf8');
-const parts = [...mainRs.matchAll(/include_str!\("game\/([^"]+)"\)/g)].map((m) => m[1]);
-if (parts.length === 0) throw new Error('no scene parts found in crates/goats/src/main.rs');
-const source = parts.map((name) => fs.readFileSync(path.join(gameDir, name), 'utf8')).join('');
+// crates/scene/src/lib.rs is the running order's single source of truth; parse
+// that same list so this harness tests the same scene.
+const sceneDir = path.join(root, 'crates', 'scene', 'src');
+const sceneLib = fs.readFileSync(path.join(sceneDir, 'lib.rs'), 'utf8');
+const parts = [...sceneLib.matchAll(/"(\.\.\/\.\.\/goats\/src\/game\/[^"]+)"/g)].map((m) => m[1]);
+if (parts.length === 0) throw new Error('no scene parts found in crates/scene/src/lib.rs');
+const source = parts.map((rel) => fs.readFileSync(path.join(sceneDir, rel), 'utf8')).join('');
 vm.runInContext(source, sandbox, { filename: 'game.js' });
 
 // ---- read the fixture -----------------------------------------------------

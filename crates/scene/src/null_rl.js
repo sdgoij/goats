@@ -1,10 +1,11 @@
-// A stub `rl` for the headless server scene.
+// A stub `rl` for a scene that has no window.
 //
-// `goatsd` evaluates the same scene the client does (`crates/goats/src/game/`)
-// so the bots and the weather move by exactly the same rules, but it has no
-// window and no GPU. This file is the null `rl` module it needs: every member
-// the scene touches, with the drawing and input calls doing nothing and the few
-// that the simulation actually reads returning something plausible.
+// The headless server evaluates the same scene the client does
+// (`crates/goats/src/game/`) so the bots and the weather move by exactly the
+// same rules, but it has no window and no GPU. This file is the null `rl`
+// module it needs: every member the scene touches, with the drawing and input
+// calls doing nothing and the few that the simulation actually reads returning
+// something plausible.
 //
 // It must stay in step with the scene's use of `rl`. The surface here is
 // enumerated from the scene itself; a member the scene adds and this file

@@ -3,7 +3,7 @@
 # the repository root; the client reaches them with a relative `include_bytes!`.
 [workspace]
 resolver = "3"
-members = ["crates/goats", "crates/mods", "crates/proto", "crates/server", "crates/session"]
+members = ["crates/goats", "crates/harness", "crates/mods", "crates/proto", "crates/scene", "crates/server", "crates/session"]
 # `cargo run` and a bare `cargo build` mean the client, so the README's
 # `cargo run --release` keeps working. Use `--workspace` to build or test all.
 default-members = ["crates/goats"]

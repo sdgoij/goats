@@ -22,11 +22,13 @@ const path = require('path');
 const vm = require('vm');
 
 const root = path.join(__dirname, '..');
-const gameDir = path.join(root, 'crates', 'goats', 'src', 'game');
-const mainRs = fs.readFileSync(path.join(root, 'crates', 'goats', 'src', 'main.rs'), 'utf8');
-const parts = [...mainRs.matchAll(/include_str!\("game\/([^"]+)"\)/g)].map((m) => m[1]);
-if (parts.length === 0) throw new Error('no scene parts found');
-const SCENE = parts.map((name) => fs.readFileSync(path.join(gameDir, name), 'utf8')).join('');
+// The running order lives in `crates/scene`, one list for the client, the server
+// and the Rust harness; parse that same list so this harness tests the same scene.
+const sceneDir = path.join(root, 'crates', 'scene', 'src');
+const sceneLib = fs.readFileSync(path.join(sceneDir, 'lib.rs'), 'utf8');
+const parts = [...sceneLib.matchAll(/"(\.\.\/\.\.\/goats\/src\/game\/[^"]+)"/g)].map((m) => m[1]);
+if (parts.length === 0) throw new Error('no scene parts found in crates/scene/src/lib.rs');
+const SCENE = parts.map((rel) => fs.readFileSync(path.join(sceneDir, rel), 'utf8')).join('');
 const BIRDS_SRC = fs.readFileSync(path.join(root, 'mods', 'birds', 'mod.js'), 'utf8');
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(root, 'mods', 'birds', 'mod.json'), 'utf8'));
 const MOD_ID = MANIFEST.id;

@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 session = { path = "../session" }
+# The scene bundle: the ordered parts, the joined script and the null `rl` the
+# headless world is evaluated against. Shared with the client and the harness.
+scene = { path = "../scene" }
 # The server discovers and hashes mods so it can require the world-mod set the
 # client must match; it reuses the same pure loader the client does.
 mods = { path = "../mods" }

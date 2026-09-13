@@ -1,0 +1,11 @@
+[package]
+name = "scene"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# The scene bundle is text and nothing else: the ordered parts, the joined
+# script and the `rl` stubs. It deliberately has no dependencies, so the client,
+# the headless server and the test harness can all share one copy without
+# pulling anything in.
+[dependencies]

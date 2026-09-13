@@ -1319,12 +1319,11 @@ change as the port.
 - **Splitting the scene.** ✅ **Done.** The scene is
   `crates/goats/src/game/*.js` in fifteen parts (core, model, world, lighting,
   sky, audio, weather, food, bots, goat, ctl, menu, console, net, mods), joined in
-  the order listed in `crates/goats/src/main.rs`. The host concatenates them and
-  evaluates the result as one script, so every part shares a single top-level
-  scope and the engine still needs no module system; the headless harness parses
-  the same list out of the same file. (M15 moves this list into `crates/scene`,
-  so the client, the server and the harness share one copy instead of parsing
-  one.)
+  the order listed by `crates/scene`. The host concatenates them and evaluates the
+  result as one script, so every part shares a single top-level scope and the
+  engine still needs no module system; M15a moved the list out of
+  `crates/goats/src/main.rs` into `crates/scene`, so the client, the server and
+  the harness share one copy instead of each parsing their own.
 - **Workspace.** ✅ **Done.** The repo is a Cargo workspace: `crates/goats` (the
   client and the JS scene, and its `default-members`, so `cargo run` means the
   client), `crates/proto` (the wire types, framing and name rules, with no iroh

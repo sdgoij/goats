@@ -1203,6 +1203,7 @@ dependencies = [
  "libopus_sys",
  "mods",
  "raylib-sys",
+ "scene",
  "serde",
  "serde_json",
  "session",
@@ -1238,6 +1239,17 @@ dependencies = [
  "cfg-if",
  "crunchy",
  "zerocopy",
+]
+
+[[package]]
+name = "harness"
+version = "0.1.0"
+dependencies = [
+ "mods",
+ "scene",
+ "serde",
+ "serde_json",
+ "slag",
 ]
 
 [[package]]
@@ -3259,6 +3271,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "scene"
+version = "0.1.0"
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3389,6 +3405,7 @@ version = "0.1.0"
 dependencies = [
  "mods",
  "proto",
+ "scene",
  "serde_json",
  "session",
  "slag",

@@ -106,28 +106,11 @@ static ASSETS: &[(&str, &[u8])] = &[
     ),
 ];
 
-/// The scene, joined from `crates/goats/src/game/` in the order listed here.
-/// `concat!` needs the parts spelled out, so this list *is* the running order --
-/// and it is the
-/// single source of truth for it: the headless harness (`tools/goat_logic_test.js`)
-/// parses this same list, so the two cannot drift apart.
-const SCENE: &str = concat!(
-    include_str!("game/core.js"),
-    include_str!("game/model.js"),
-    include_str!("game/world.js"),
-    include_str!("game/lighting.js"),
-    include_str!("game/sky.js"),
-    include_str!("game/audio.js"),
-    include_str!("game/weather.js"),
-    include_str!("game/food.js"),
-    include_str!("game/bots.js"),
-    include_str!("game/goat.js"),
-    include_str!("game/ctl.js"),
-    include_str!("game/menu.js"),
-    include_str!("game/console.js"),
-    include_str!("game/net.js"),
-    include_str!("game/mods.js"),
-);
+/// The scene, joined from `crates/goats/src/game/` in the running order
+/// `crates/scene` owns. The list lives there and nowhere else, so the client,
+/// the headless server and the test harness all evaluate the same script in the
+/// same order.
+use scene::SCENE;
 
 /// One of the scene's global functions, resolved by name.
 fn scene_function(context: &Context, name: &str) -> JsValue {

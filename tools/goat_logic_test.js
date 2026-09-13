@@ -284,14 +284,17 @@ const sandbox = {
 };
 vm.createContext(sandbox);
 
-// crates/goats/src/main.rs is the single source of truth for the running order:
-// the host joins the parts with `concat!`, and we parse that same list here so
-// the two can never drift apart.
-const gameDir = path.join(__dirname, '..', 'crates', 'goats', 'src', 'game');
+// crates/scene/src/lib.rs is the single source of truth for the running order:
+// one list, joined once, for the client, the server and the Rust harness. We
+// parse that same list here so this harness keeps testing the same scene.
+const sceneDir = path.join(__dirname, '..', 'crates', 'scene', 'src');
+const sceneLib = fs.readFileSync(path.join(sceneDir, 'lib.rs'), 'utf8');
+const parts = [...sceneLib.matchAll(/"(\.\.\/\.\.\/goats\/src\/game\/[^"]+)"/g)].map((m) => m[1]);
+if (parts.length === 0) throw new Error('no scene parts found in crates/scene/src/lib.rs');
+const source = parts.map((rel) => fs.readFileSync(path.join(sceneDir, rel), 'utf8')).join('');
+
+// main.rs still owns the embedded-asset table the checks below compare against.
 const mainRs = fs.readFileSync(path.join(__dirname, '..', 'crates', 'goats', 'src', 'main.rs'), 'utf8');
-const parts = [...mainRs.matchAll(/include_str!\("game\/([^"]+)"\)/g)].map((m) => m[1]);
-if (parts.length === 0) throw new Error('no scene parts found in crates/goats/src/main.rs');
-const source = parts.map((name) => fs.readFileSync(path.join(gameDir, name), 'utf8')).join('');
 let thrown = null;
 let defaultSettings = {};
 // The scene must hand the loop back unloaded, so the host can paint a splash.

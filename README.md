@@ -261,15 +261,16 @@ gets on the free plan.
 
 | Path | What it is |
 | --- | --- |
-| `Cargo.toml` | The workspace manifest: `crates/goats` (its `default-members`, so `cargo run` means the client) plus the networking crates |
+| `Cargo.toml` | The workspace manifest: `crates/goats` (its `default-members`, so `cargo run` means the client) plus the networking, scene and harness crates |
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
 | `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
 | `crates/goats/src/audio.rs` | Voice chat: `cpal` capture, the speech gate, Opus coding, and one raylib stream its callback fills |
 | `crates/goats/src/game/*.js` | The scene, split into 15 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net, mods) |
+| `crates/scene/` | The scene bundle: the ordered parts, the joined script and the two `rl` stubs (the null one for `goatsd`, the recording one for the harness) |
+| `crates/harness/` | The scene tests: the Rust harness that runs the scene on Slag, with no Node (M15) |
 | `crates/mods/` | The mod loader: discovery, manifest validation, ordering and asset reads (pure Rust, no engine) |
 | `mods/` | Checked-in example mods: `example/` (a command, a HUD hook, an asset override) and `birds/` (a procedural world mod) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
-| `crates/server/src/headless_rl.js` | The null `rl` module the server evaluates the scene against (no window) |
 | `crates/server/src/web.rs` | The optional status page: ticket, client count and a download link, behind `--listen` |
 | `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
 | `crates/proto/` | The session protocol: message types, framing and name rules (no iroh or tokio) |
@@ -296,20 +297,19 @@ context.register_raylib_asset("goat_animated.glb", GOAT_GLB);
 context.eval(SCENE).unwrap();                    // the whole scene
 ```
 
-The scene is split for readability but compiled as one script: `SCENE` is a
-`concat!` of the parts in the order they are listed, so every part shares a
-single top-level scope (functions hoist across the whole thing, and the
-top-level `const`s run in file order). That `concat!` list is the only place the
-order lives — the headless harness parses it out of
-`crates/goats/src/main.rs`, so adding a part is just adding the file to
-`crates/goats/src/game/` and one line to that list.
+The scene is split for readability but compiled as one script: `crates/scene`
+owns the ordered list, and `SCENE` is a `concat!` of exactly those parts, so
+every part shares a single top-level scope (functions hoist across the whole
+thing, and the top-level `const`s run in file order). That list is the only place
+the order lives — the client, the headless server and the Rust harness all read
+it — so adding a part is just adding the file to `crates/goats/src/game/` and one
+line to the list in `crates/scene/src/lib.rs`.
 
-`goatsd` evaluates the same parts, in the same order, against a stub `rl`
-(`crates/server/src/headless_rl.js`) instead of installing raylib: drawing and
-input do nothing, but the clock, the clip table and the terrain function are
-real, so the bots and the weather move exactly as they do in the game. A test
-asserts the server's part list matches the client's, so the two cannot silently
-simulate different games.
+`goatsd` evaluates the same scene, from the same list, against a stub `rl`
+(`crates/scene/src/null_rl.js`) instead of installing raylib: drawing and input
+do nothing, but the clock, the clip table and the terrain function are real, so
+the bots and the weather move exactly as they do in the game. Because there is
+one list, the two cannot silently simulate different games.
 
 The model bytes are compiled in with `include_bytes!`, so the model needs no
 files on disk at runtime (the audio does — see `sfx/`). `model.js` finds the
