@@ -90,6 +90,13 @@ enum Event {
     },
     /// A client's bite, for the host's scene (host side only).
     Consume { key: i64 },
+    /// A voice packet. The audio module consumes it; the scene never sees one,
+    /// so `emit` drops it rather than encoding Opus bytes as a JSON line.
+    Voice {
+        from: String,
+        seq: u32,
+        payload: Vec<u8>,
+    },
     /// The roster changed.
     Roster { names: Vec<String> },
     /// A line for the console.
@@ -402,7 +409,9 @@ async fn start(
     }
 }
 
-/// Maps a session event onto the line the scene understands.
+/// Maps a session event onto the line the scene understands. Voice maps to an
+/// event the emitter drops: it is Opus bytes for the audio module, not a line
+/// for the scene.
 fn bridge(event: session::Event) -> Event {
     match event {
         session::Event::Session { seed } => Event::Session { seed },
@@ -422,6 +431,7 @@ fn bridge(event: session::Event) -> Event {
             eaten,
         },
         session::Event::Consume { key } => Event::Consume { key },
+        session::Event::Voice { from, seq, payload } => Event::Voice { from, seq, payload },
         session::Event::Roster { names } => Event::Roster { names },
         session::Event::Notice(text) => Event::Notice { text },
         session::Event::Disconnected => Event::Disconnected,
@@ -444,8 +454,12 @@ fn parse_gait(name: &str) -> session::Gait {
     }
 }
 
-/// Serialises an event and queues it for the scene.
+/// Serialises an event and queues it for the scene. Voice is dropped: it is
+/// Opus bytes for the audio module, and there is no reader for it here.
 fn emit(events: &mpsc::UnboundedSender<String>, event: Event) {
+    if matches!(event, Event::Voice { .. }) {
+        return;
+    }
     match serde_json::to_string(&event) {
         Ok(line) => {
             let _ = events.send(line);

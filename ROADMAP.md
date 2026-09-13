@@ -46,7 +46,7 @@ covers more than it first appears:
 | Read a bone's world transform | ✅ | `modelBonePosition` / `modelBoneTransform` (M0) |
 | Photoreal / volumetric clouds | ✅ approx | raymarched slab, self-shadowed, with a phase function (M5b); not full radiative transfer |
 | Text input (character entry) | ❌ | the surface has `isKeyPressed` but no `getCharPressed` (M9) |
-| Read raw audio streams | ❌ | no `loadAudioStream`/`updateAudioStream`, so decoded voice cannot reach raylib's mixer (M13) |
+| Voice playback | ✅ Rust-side | the `rl` surface has no audio streams, but `raylib_sys` exposes them and the client already links raylib, so Rust plays into a stream directly (M13a) |
 | Networking | Host only | the JS engine has no sockets; `iroh` lives in the Rust host and reaches the scene over the command bridge (M10) |
 
 The practical consequence: **stats, sleep and death needed no engine work at all**,
@@ -78,8 +78,8 @@ uses.
 | **M11** | Chat: global, DMs, system lines | M10 | S–M | ✅ **Done** |
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | ✅ **Done** (players sync; server-owned bots/weather are M12b) |
 | **M12b** | Server-owned world: headless `goatsd` scene, bots/weather/meadow authority | M12 | L | ✅ **Done** (the world is the server's; the players are the open axis) |
-| **M13a** | Engine: audio-stream bindings (`loadAudioStream`/`updateAudioStream`) | M10 | S–M | ⛔ Upstream Slag work, the gate on voice playback |
-| **M13b** | Voice: capture, Opus, media channel, playback | M13a | L | The feature, once the binding exists |
+| **M13a** | Voice playback sink: a per-peer raylib stream from Rust | M12b | S | ✅ Available through `raylib_sys`; no engine binding needed |
+| **M13b** | Voice: capture, Opus, media channel, push-to-talk, playback | M13a | L | The feature |
 | **M13c** | Voice polish: jitter buffer, PLC, mute/volume, attenuation | M13b | M | Per-peer controls and the talking indicator |
 
 ---
@@ -943,27 +943,25 @@ snapshot carried it across. Interaction works, with the latency above.
 
 ## M13 — Voice chat
 
-Split into three, because the playback half is gated on an engine binding that
-does not exist yet — the same shape M9b had (binding first, feature after).
+Split into three: the sink, the feature, and the polish. No upstream engine work
+is needed after all.
 
-### M13a — Engine: audio-stream bindings (upstream, not this repo)
+### M13a — Playback sink: `raylib_sys` from Rust (no engine binding)
 
-`rl` has `loadSound`/`playSound` but no streams, so decoded voice cannot reach
-raylib's mixer. The binding is the prerequisite:
+The plan assumed `rl` would need new audio-stream bindings, but the client
+already links raylib through the `raylib` feature, and `raylib_sys` exposes the
+whole AudioStream API through bindgen — `LoadAudioStream`, `IsAudioStreamProcessed`,
+`UpdateAudioStream`, `PlayAudioStream`, `IsAudioStreamPlaying`,
+`SetAudioStreamVolume`, `UnloadAudioStream`. So the decoded PCM can go straight
+into a per-peer raylib stream from Rust: it still passes through raylib's mixer
+and the device the scene opens with `rl.initAudioDevice()`, with no new `rl`
+surface and no upstream change.
 
-| Binding | Arity | Use |
-| --- | --- | --- |
-| `loadAudioStream` | 3 | `(sampleRate, sampleSize, channels)`; 32-bit float, mono, 48 kHz for Opus |
-| `isAudioStreamProcessed` | 1 | gate how much PCM to push, so the ring buffer never overruns |
-| `updateAudioStream` | 2 | `(handle, Float32Array)` — needs the array marshalling `makeModel` already proves |
-| `playAudioStream` / `stopAudioStream` | 1 | start and end playback |
-| `isAudioStreamPlaying` | 1 | report whether a peer's stream is live |
-| `setAudioStreamVolume` | 2 | per-peer volume and distance attenuation |
-| `unloadAudioStream` | 1 | free a peer's stream when it leaves |
-
-Alternative, if we want something audible before that lands: play through `cpal`
-directly. It works today but bypasses `SETTINGS.sfx` and the `M` mute, which is
-why the roadmap calls it wrong — acceptable only as a throwaway experiment.
+One seam to respect: the scene owns the audio *settings*, so `M` and
+`SETTINGS.sfx` have to reach Rust. The scene queues a small intent (`voice`
+volume) and the module uses it as the master gain; distance attenuation needs
+positions, which also live in the scene, so per-peer gain joins that intent in
+M13c. Until then voice plays at the master level.
 
 ### M13b — Voice: capture, codec, media channel, playback
 
@@ -973,18 +971,17 @@ why the roadmap calls it wrong — acceptable only as a throwaway experiment.
 - Transport: a `Voice` datagram beside the peer and world ones, tagged with the
   sender's name by the relay like a pose. It is the roadmap's generic "media"
   channel, so the transform channel does not change. JSON carries the frame at
-  first (the payload is ~60 bytes, so the overhead is tolerable at ≤4 players);
-  a binary envelope is a later optimisation, not a redesign.
+  first, with the payload base64 (a ~60-byte packet, so the overhead is tolerable
+  at ≤4 players); a binary envelope is a later optimisation, not a redesign.
 - Push-to-talk: one key (a free one, e.g. `B`) while the console is closed.
-- Playback: decoded PCM into a per-peer `rl` audio stream, so it goes through the
-  mixer and obeys the existing audio settings.
+- Playback: decoded PCM into a per-peer raylib stream (M13a).
 
 ### M13c — Voice polish
 
 Jitter buffer and Opus PLC for loss, per-peer mute/volume, distance attenuation
-(positions are already exchanged, so this is nearly free), and a talking
-indicator on the roster. Uplink is the limit: full mesh is ~24–32 kbps upstream
-*per peer*, so it suits ≤4 players; beyond that the host should mix and relay.
+(positions are already exchanged, so it is nearly free), and a talking indicator
+on the roster. Uplink is the limit: full mesh is ~24–32 kbps upstream *per peer*,
+so it suits ≤4 players; beyond that the host should mix and relay.
 
 ---
 

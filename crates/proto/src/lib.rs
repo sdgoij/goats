@@ -39,6 +39,11 @@ pub const DEFAULT_NAME: &str = "goat";
 /// under the smallest MTU a QUIC datagram is guaranteed.
 pub const MAX_DATAGRAM_BYTES: usize = 1200;
 
+/// The largest Opus packet accepted on the media channel. Opus at ~24 kbps is
+/// ~60 bytes per 20 ms frame; this leaves room for a larger bitrate while keeping
+/// a hostile sender from making every peer decode a megabyte.
+pub const MAX_VOICE_BYTES: usize = 512;
+
 /// What a client sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -260,15 +265,51 @@ impl WorldState {
     }
 }
 
-/// One datagram. The transform channel carries two kinds of traffic -- a
-/// player's own goat, relayed between peers, and the server's bots -- so the
-/// payload is tagged. Only the server may send [`Datagram::World`]; a client
+/// One Opus packet on the media channel. `from` is stamped by the relay, like a
+/// pose's name; a client leaves it blank. `seq` is the sender's own frame
+/// counter, which a receiver uses to notice loss and order a jitter buffer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceFrame {
+    #[serde(default)]
+    pub from: String,
+    pub seq: u32,
+    #[serde(with = "base64_bytes")]
+    pub payload: Vec<u8>,
+}
+
+impl VoiceFrame {
+    pub fn is_within_limit(&self) -> bool {
+        self.payload.len() <= MAX_VOICE_BYTES
+    }
+}
+
+/// The voice payload travels base64 rather than as a JSON array of numbers,
+/// which would roughly quadruple every frame on the wire.
+mod base64_bytes {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        STANDARD.encode(bytes).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        STANDARD.decode(text).map_err(serde::de::Error::custom)
+    }
+}
+
+/// One datagram. The transform channel carries three kinds of traffic -- a
+/// player's own goat, relayed between peers; the server's world; and voice -- so
+/// the payload is tagged. Only the server may send [`Datagram::World`]; a client
 /// that sends one has it dropped rather than forwarded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Datagram {
     Peer(PeerFrame),
     World(WorldState),
+    Voice(VoiceFrame),
 }
 
 /// What can go wrong encoding, framing or decoding a message.
@@ -618,6 +659,31 @@ mod tests {
         let mut broken = world.clone();
         broken.eaten[0].left = f32::NAN;
         assert!(!broken.is_finite());
+    }
+
+    #[test]
+    fn voice_frames_round_trip_and_are_base64() {
+        let frame = VoiceFrame {
+            from: "alice".to_string(),
+            seq: 7,
+            payload: vec![0u8, 1, 2, 253, 254, 255],
+        };
+        let datagram = Datagram::Voice(frame.clone());
+        let bytes = encode(&datagram).expect("encode");
+        assert_eq!(decode::<Datagram>(&bytes).expect("decode"), datagram);
+
+        // The payload is a base64 string on the wire, not an array of numbers.
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(text.contains(r#""payload":"AAEC/f7/""#), "{text}");
+        assert!(!text.contains(r#""payload":["#), "{text}");
+
+        assert!(frame.is_within_limit());
+        let too_big = VoiceFrame {
+            from: String::new(),
+            seq: 0,
+            payload: vec![0; MAX_VOICE_BYTES + 1],
+        };
+        assert!(!too_big.is_within_limit());
     }
 
     #[test]

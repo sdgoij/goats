@@ -31,8 +31,8 @@ use tokio::sync::{Mutex, mpsc};
 // client's network bridge) can name a pose or a world without depending on
 // `proto` directly.
 pub use proto::{
-    BotState, Datagram, EatenCell, Gait, PeerFrame, PeerState, Streams, WeatherKind, WeatherState,
-    WorldState,
+    BotState, Datagram, EatenCell, Gait, PeerFrame, PeerState, Streams, VoiceFrame, WeatherKind,
+    WeatherState, WorldState,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a
@@ -73,6 +73,13 @@ pub enum Event {
     /// A client ate a grass cell, for the host's scene to record. Only the host
     /// sees this; the next world snapshot carries the result to everyone.
     Consume { key: i64 },
+    /// One voice packet from a speaker. `from` is the server's canonical name;
+    /// `payload` is the encoded frame, opaque to this layer.
+    Voice {
+        from: String,
+        seq: u32,
+        payload: Vec<u8>,
+    },
     /// A line to print in the console.
     Notice(String),
     /// The connection to the host ended (client side only).
@@ -264,6 +271,12 @@ const CHAT_WINDOW: Duration = Duration::from_secs(3);
 /// keys, so reports get their own budget.
 const CONSUME_BURST: u32 = 8;
 const CONSUME_WINDOW: Duration = Duration::from_secs(1);
+
+/// Voice runs at ~50 packets a second, so the cap is double that: a real talker
+/// is never throttled, but a flood is, since every packet is relayed to every
+/// other peer.
+const VOICE_BURST: u32 = 100;
+const VOICE_WINDOW: Duration = Duration::from_secs(1);
 
 /// A rolling window counter. Unbounded chat is a free denial of service and a
 /// bandwidth sink, so a peer gets a burst and then has to wait.
@@ -526,6 +539,20 @@ impl Host {
         self.broadcast(Datagram::World(world.clone())).await;
     }
 
+    /// Broadcasts one voice packet as the local player. The host sends its own
+    /// directly; a client's goes through the relay, like its pose.
+    pub async fn publish_voice(&self, seq: u32, payload: &[u8]) {
+        let frame = VoiceFrame {
+            from: self.name.clone(),
+            seq,
+            payload: payload.to_vec(),
+        };
+        if !frame.is_within_limit() {
+            return;
+        }
+        self.broadcast(Datagram::Voice(frame)).await;
+    }
+
     /// Sends one datagram to every connected player. Fire-and-forget, and
     /// silently dropped when it exceeds the datagram budget.
     async fn broadcast(&self, datagram: Datagram) {
@@ -660,37 +687,67 @@ async fn handle_connection(
     let relay_events = events.clone();
     let relay_name = assigned.clone();
     tokio::spawn(async move {
+        let mut voice_window = Instant::now();
+        let mut voice_count = 0u32;
         while let Ok(bytes) = relay_connection.read_datagram().await {
             if bytes.len() > proto::MAX_DATAGRAM_BYTES {
                 continue;
             }
-            // Only a player's own goat may come up from a client. A client that
-            // sends world state has it dropped rather than relayed, so it cannot
-            // move the bots.
-            let Ok(Datagram::Peer(frame)) = proto::decode::<Datagram>(&bytes) else {
+            let Ok(datagram) = proto::decode::<Datagram>(&bytes) else {
                 continue;
             };
-            if !frame.state.is_finite() {
-                continue;
-            }
-            // The host is a player too, so its scene sees the peer even though
-            // there is no connection for it to receive a datagram on.
-            if relay_events
-                .send(Event::Peer {
-                    name: relay_name.clone(),
-                    state: frame.state.clone(),
-                })
-                .is_err()
-            {
+            // Only a player's own goat and their own voice may come up from a
+            // client. A client that sends world state has it dropped rather than
+            // relayed, so it cannot move the bots.
+            let (payload, event) = match datagram {
+                Datagram::Peer(frame) => {
+                    if !frame.state.is_finite() {
+                        continue;
+                    }
+                    let event = Event::Peer {
+                        name: relay_name.clone(),
+                        state: frame.state.clone(),
+                    };
+                    let tagged = Datagram::Peer(PeerFrame {
+                        name: relay_name.clone(),
+                        state: frame.state,
+                    });
+                    (tagged, event)
+                }
+                Datagram::Voice(frame) => {
+                    if !frame.is_within_limit()
+                        || !within_burst(
+                            &mut voice_window,
+                            &mut voice_count,
+                            VOICE_BURST,
+                            VOICE_WINDOW,
+                        )
+                    {
+                        continue;
+                    }
+                    let event = Event::Voice {
+                        from: relay_name.clone(),
+                        seq: frame.seq,
+                        payload: frame.payload.clone(),
+                    };
+                    let tagged = Datagram::Voice(VoiceFrame {
+                        from: relay_name.clone(),
+                        seq: frame.seq,
+                        payload: frame.payload,
+                    });
+                    (tagged, event)
+                }
+                Datagram::World(_) => continue,
+            };
+            // The host is a player too, so its own scene hears the peer and its
+            // own audio module plays the voice, even though there is no
+            // connection for them to arrive on.
+            if relay_events.send(event).is_err() {
                 break;
             }
             // Re-tag with the name this connection was assigned; the name in the
             // client's frame is ignored.
-            let tagged = Datagram::Peer(PeerFrame {
-                name: relay_name.clone(),
-                state: frame.state,
-            });
-            let Ok(payload) = proto::encode(&tagged) else {
+            let Ok(payload) = proto::encode(&payload) else {
                 continue;
             };
             let datagram = Bytes::from(payload);
@@ -871,6 +928,16 @@ impl Client {
                             eaten: world.eaten,
                         }
                     }
+                    Datagram::Voice(frame) => {
+                        if !frame.is_within_limit() {
+                            continue;
+                        }
+                        Event::Voice {
+                            from: frame.from,
+                            seq: frame.seq,
+                            payload: frame.payload,
+                        }
+                    }
                 };
                 if snapshot_events.send(event).is_err() {
                     break;
@@ -986,6 +1053,26 @@ impl Client {
             .await
             .map_err(|error| Error::Stream(error.to_string()))?;
         write_message(&mut send, &ClientMessage::Consume { key }).await
+    }
+
+    /// Sends one voice packet. The host re-tags it with the canonical name and
+    /// relays it to the others, so a client cannot speak as someone else.
+    pub fn publish_voice(&self, seq: u32, payload: &[u8]) {
+        let frame = VoiceFrame {
+            from: String::new(),
+            seq,
+            payload: payload.to_vec(),
+        };
+        if !frame.is_within_limit() {
+            return;
+        }
+        let Ok(payload) = proto::encode(&Datagram::Voice(frame)) else {
+            return;
+        };
+        if payload.len() > proto::MAX_DATAGRAM_BYTES {
+            return;
+        }
+        let _ = self.connection.send_datagram(Bytes::from(payload));
     }
 
     /// The next event, or `None` once the session is finished.
@@ -1203,6 +1290,73 @@ mod tests {
                 return event;
             }
         }
+    }
+
+    /// The next voice packet, skipping seed, roster, peer and world noise.
+    async fn client_voice(client: &mut Client) -> Event {
+        loop {
+            if let event @ Event::Voice { .. } = client.next_event().await.expect("an event") {
+                return event;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn voice_is_relayed_and_tagged_with_the_servers_name() {
+        within(async {
+            let mut host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+            let mut bob = Client::join(host.ticket(), "bob").await.expect("bob");
+
+            // Alice talks. Datagrams are unreliable, so a small burst stands in
+            // for the fifty a second a real client sends.
+            for _ in 0..10 {
+                alice.publish_voice(3, &[1, 2, 3]);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            // The host's audio module hears it, tagged with the server's name.
+            loop {
+                if let Event::Voice { from, seq, payload } =
+                    host.next_event().await.expect("an event")
+                {
+                    assert_eq!(from, "alice");
+                    assert_eq!(seq, 3);
+                    assert_eq!(payload, vec![1, 2, 3]);
+                    break;
+                }
+            }
+            // Bob hears it too, re-tagged; Alice does not hear herself.
+            match client_voice(&mut bob).await {
+                Event::Voice { from, seq, payload } => {
+                    assert_eq!(from, "alice");
+                    assert_eq!(seq, 3);
+                    assert_eq!(payload, vec![1, 2, 3]);
+                }
+                other => panic!("expected voice, got {other:?}"),
+            }
+
+            // The host's own voice goes out to the clients.
+            for _ in 0..10 {
+                host.publish_voice(9, &[9, 9]).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            for client in [&mut alice, &mut bob] {
+                loop {
+                    if let Event::Voice { from, seq, payload } = client_voice(client).await
+                        && from == "host"
+                    {
+                        assert_eq!(seq, 9);
+                        assert_eq!(payload, vec![9, 9]);
+                        break;
+                    }
+                }
+            }
+
+            alice.close().await;
+            bob.close().await;
+            host.close().await;
+        })
+        .await;
     }
 
     #[tokio::test]

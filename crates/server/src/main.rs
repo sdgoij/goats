@@ -157,8 +157,11 @@ fn report(event: Event) {
         Event::Notice(text) => format!("notice {text}"),
         // Positions arrive many times a second; logging each would bury the
         // session log, so they are not reported. The world is the server's own,
-        // and a bite is handled by the sim above.
-        Event::Peer { .. } | Event::World { .. } | Event::Consume { .. } => return,
+        // a bite is handled by the sim above, and a headless host has no audio,
+        // so a voice packet is relayed and forgotten.
+        Event::Peer { .. } | Event::World { .. } | Event::Consume { .. } | Event::Voice { .. } => {
+            return;
+        }
         Event::Disconnected => "disconnected".to_string(),
     };
     println!("{line}");
