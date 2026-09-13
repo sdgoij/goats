@@ -89,6 +89,7 @@ uses.
 | **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | ✅ **Done (handshake)** — the digest and refusal; the snapshot extension is M14d2 |
 | **M14d2** | World-mod simulation: `goats.rng`, `world.extend`, snapshot merging, `goatsd` evaluates mods | M14d | M | ✅ **Done** — streams + extension state travel in the snapshot's `mods` field |
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, `tools/mod_smoke_test.js`, CI syntax-check, a world-mod determinism test |
+| **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; `tools/birds_mod_test.js` |
 
 ---
 
@@ -1152,6 +1153,24 @@ decisions behind it and the constraints that shape it.
   mirrors `the_same_seed_runs_the_same_world`. The harness gained the Mods
   screen and `modSetEnabled` cases (158 total) but still uses synthetic tables
   only, so the vanilla assertions are unchanged.
+- **M14f — A full example world mod: `birds`. ✅ Done.** `mods/birds/` is the
+  worked example of a mod that adds an entity of its own rather than patching
+  an existing one. It builds a low-poly body and two wings with `rl.makeModel`,
+  bakes a feather texture with `rl.makeTexture`, and poses the parts with
+  quaternions reduced to the single axis-angle `drawModelEx` accepts. Five
+  states -- idle (standing on the ground, or perched on a player's or a bot's
+  goat), walk, take-off, fly and land -- with boids flocking while flying, a
+  seeded stream and `world.extend` so the host simulates and clients ease to the
+  published positions. It is `side: "world"`, so the flock is shared. Two
+  engine facts it documented: models must be built lazily on the first
+  `update`/`draw3d` (an entry runs before the window exists, and `makeTexture`
+  needs the GL context), and `drawModelEx`'s one axis-angle means yaw, pitch,
+  roll and wing flap are composed into a quaternion per part.
+  `tools/birds_mod_test.js` drives the mod with a stub `rl` and asserts the
+  meshes build, every state is reached, separation holds, a bird perches, a
+  client mirrors instead of simulating, and two fresh worlds agree; a `server`
+  test loads the real fixture through the real loader and checks the whole world
+  still fits one datagram.
 
 **Constraints to respect.** The scene is one flat global scope joined by
 `concat!`, so `goats.freeze()`, not the loader, is what keeps registrations
@@ -1280,3 +1299,11 @@ slots are the portable route, since the host owns resolution.
     and a restart restores the `mods/` directory's default.
 19. ~~**May a mod replace built-in assets?**~~ **Settled:** yes, through
     logical asset slots the host resolves (`APIv1.md` §3.3).
+20. **Room for world-mod state in the world datagram?** The world snapshot is
+    one 1200-byte datagram and the default herd already fills ~870 of it; the
+    `birds` flock's compact five-numbers-per-bird payload leaves ~144 bytes.
+    A world mod that publishes more, or a player who raises the herd size, can
+    push the snapshot over the cap, where it is dropped and clients freeze at
+    the last world. The clean fix is a per-mod datagram (or a smaller herd
+    encoding); until then, world mods must keep `publish` to a handful of
+    rounded numbers per entity.

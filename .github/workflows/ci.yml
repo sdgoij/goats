@@ -48,6 +48,8 @@ jobs:
         run: node tools/goat_logic_test.js
       - name: Run the mod smoke test
         run: node tools/mod_smoke_test.js
+      - name: Run the birds mod test
+        run: node tools/birds_mod_test.js
 
   # The game embeds every asset it needs, so each release is a single binary.
   build:

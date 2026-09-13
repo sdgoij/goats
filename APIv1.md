@@ -540,7 +540,11 @@ Rules:
 - The scene calls `extend` contributions in registration order, so ordering is
   part of the compatibility digest's guarantee.
 - The `mods` section rides the unreliable world datagram, so it is bounded by
-  `MAX_DATAGRAM_BYTES`; an oversized snapshot is dropped like any other.
+  `MAX_DATAGRAM_BYTES`; an oversized snapshot is dropped like any other. That
+  budget is shared with the herd and the weather, and with the default herd the
+  room left for mods is only a few hundred bytes -- a world mod should publish a
+  handful of rounded numbers per entity, not a full object each. See the `birds`
+  example (§5.4) for the shape of a compact `publish`.
 
 ### 4.14 Utility
 
@@ -668,6 +672,55 @@ That is the entire mod: no `entry`. The host registers the file, the scene's
 model slot points at it, and `loadGoat` / `botAdd` load it for the player and
 the herd. The clip names are matched by substring as today, so a GLB exported
 with the same `Goat*` action names just works.
+
+### 5.4 A world mod with its own entity: `birds`
+
+The checked-in `mods/birds/` is the worked example of a mod that is more than a
+patch: it adds a flock of birds nobody else knows about. It ships no binary
+assets -- the meshes come from `rl.makeModel` and the feather texture from
+`rl.makeTexture` -- and it is `side: "world"`, so every peer sees the same
+birds.
+
+Tools a mod already has, without new API:
+
+- **Its own geometry.** `rl.makeModel(vertices, indices, normals, colours,
+  texcoords)` takes flat arrays; the terrain uses it, and a mod may too. A
+  generated texture is `rl.makeTexture(n, n, "rrggbbaa...")`.
+- **Its own draw.** The `draw3d` event fires inside the scene's `beginMode3D`,
+  after the world is drawn, and hands the camera position. `drawModelEx` draws a
+  handle with an axis, an angle, a scale and a tint.
+- **Its own simulation.** `update` fires once a frame with `dt` (and `dt` is 0
+  while the menu or console is open, so birds freeze with the world).
+- **Its own shared state.** `world.registerStream` seeds a PRNG,
+  `world.extend(id, { publish, apply })` rides the world snapshot.
+
+Two things are worth knowing before writing one.
+
+**Build models lazily.** `rl.makeTexture` uploads to the GPU, so it needs the
+window, and a mod entry runs before `sceneInit` opens it. The birds build their
+meshes on the first `update`/`draw3d`, not in the entry. (The `"ready"` event
+fires after the window exists, but a reload of an already-ready scene does not
+re-fire it, so a lazy build is the robust form.)
+
+**Pose with one axis-angle.** `drawModelEx` takes a single rotation axis and
+angle, so yaw, pitch, roll and each wing's flap are composed as quaternions and
+reduced to one axis-angle per part in `draw3d`. The birds are three models --
+body and two wings -- each drawn with its own composed rotation; the wings are
+pivoted at the shoulder so the flap is a rotation about the body's forward axis.
+
+Its animation states are `idle` (standing on the ground, or perched on a
+player's or a bot's goat), `walk`, `takeoff`, `fly` (boids: separation,
+alignment, cohesion, a pull home and a soft altitude hold, with glide
+stretches) and `land`. The state and its clock travel in the snapshot; a client
+eases toward the host's positions and re-derives the flap from `(state, clock)`,
+so the flap function is shared and nothing cosmetic is sent over the wire.
+
+> **Watch the datagram.** A world mod's `publish` output shares the single
+> `MAX_DATAGRAM_BYTES` (1200) world datagram with the herd, the weather, the
+> streams and the meadow. The flock publishes five rounded numbers per bird and
+> leaves ~144 bytes of headroom with the default herd; a mod that publishes more
+> should expect to be dropped. A dedicated per-mod datagram is a candidate for a
+> later protocol revision (see `ROADMAP.md`).
 
 ---
 
@@ -826,6 +879,11 @@ Landed with the implementation:
   while an unknown distinct path warns, a throwing handler is isolated, and
   reload leaves no duplicate handlers or commands.
 - `node --check` over `mods/**/*.js` in CI, alongside the scene parts.
+- `tools/birds_mod_test.js` — drives the `birds` fixture (§5.4) with a stub
+  `rl` and asserts its meshes build lazily, every animation state is reached,
+  boid separation holds, a client mirrors rather than simulates, and two fresh
+  worlds with the same seed agree. A `server` test loads the same fixture
+  through the real loader and checks the world still fits one datagram.
 - `tools/goat_logic_test.js` gained the Mods screen and `modSetEnabled` cases
   but still uses synthetic tables only, so the vanilla assertions are unchanged.
 - `crates/proto` tests for the `ModRef` round-trip; a `session` test for a

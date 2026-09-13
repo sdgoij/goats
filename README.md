@@ -264,6 +264,7 @@ gets on the free plan.
 | `crates/goats/src/audio.rs` | Voice chat: `cpal` capture, the speech gate, Opus coding, and one raylib stream its callback fills |
 | `crates/goats/src/game/*.js` | The scene, split into 15 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net, mods) |
 | `crates/mods/` | The mod loader: discovery, manifest validation, ordering and asset reads (pure Rust, no engine) |
+| `mods/` | Checked-in example mods: `example/` (a command, a HUD hook, an asset override) and `birds/` (a procedural world mod) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
 | `crates/server/src/headless_rl.js` | The null `rl` module the server evaluates the scene against (no window) |
 | `crates/server/src/web.rs` | The optional status page: ticket, client count and a download link, behind `--listen` |
@@ -324,6 +325,32 @@ unreliable datagrams, which `net.js` turns into a remote goat per peer and a
 mirrored herd, and eases toward the latest of each. Voice rides the same datagram
 channel, but it never reaches the scene: `net.rs` forwards captured and received
 frames to `audio.rs` on a side channel, because Opus bytes are not a line.
+
+## Mods
+
+Drop a directory with a `mod.json` into `mods/` next to the executable (or in
+the working directory) and it is discovered at startup: the manifest is
+validated, its assets are read and registered under opaque names, and its entry
+is evaluated inside a per-mod `goats` handle. `--mods DIR` / `$GOATS_MODS`
+re-point the search and `--no-mods` ignores it. In the console, `mod list`,
+`mod info <id>`, `mod enable|disable|reload <id>` and `mod key` cover the set,
+and the main menu's **Mods** screen toggles them for the session.
+
+Mods are trusted code with one wall: no filesystem. All I/O is the Rust host's,
+and the scene sees only opaque asset names. A mod gets the hook API `goats`
+(events, commands, accessors, registries, world extension) plus the engine's
+`rl` surface, so it can build geometry and textures in JavaScript.
+
+Two examples ship in `mods/`. `example/` is the small one: a console command, a
+HUD clock, a generated `sfx.bleat` override and a `tuning.json`. `birds/` is the
+large one: a `side: "world"` flock with a procedural body and wings, a generated
+feather texture, five animation states (idle, walk, take-off, fly, land), boids
+flocking while flying, and multiplayer sync through `world.extend`. Both are
+exercised without a window -- `tools/mod_smoke_test.js` and
+`tools/birds_mod_test.js`.
+
+`APIv1.md` is the reference for the manifest, the `goats` surface, the
+compatibility handshake and the non-goals.
 
 ## Model pipeline
 

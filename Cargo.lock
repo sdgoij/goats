@@ -3267,6 +3267,7 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "mods",
+ "proto",
  "serde_json",
  "session",
  "slag",

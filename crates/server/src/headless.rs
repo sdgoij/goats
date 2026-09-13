@@ -292,6 +292,40 @@ mod tests {
     }
 
     #[test]
+    fn the_birds_fixture_loads_and_its_flock_fits_the_datagram() {
+        // The checked-in `mods/birds` mod is the "complex mod" example: it builds
+        // its own meshes and textures in JS and publishes its flock through the
+        // world extension. This loads the real fixture through the real loader on
+        // the headless scene and checks the whole world still fits one datagram.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("mods");
+        let loader = mods::Loader::discover_with(&dir, mods::AssetMode::HashOnly);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        assert!(
+            loader.get("com.github.sdgoij.goats.birds").is_some(),
+            "the birds mod must load"
+        );
+
+        let mut sim = Sim::start(0x1234_5678, &loader).expect("start");
+        for _ in 0..120 {
+            sim.step().expect("step");
+        }
+        let json = sim.world_json().expect("world json");
+        assert!(
+            json.contains("com.github.sdgoij.goats.birds"),
+            "the flock must publish into the world: {json}"
+        );
+        assert!(
+            json.len() < proto::MAX_DATAGRAM_BYTES,
+            "the world snapshot is {} bytes, over the {} cap",
+            json.len(),
+            proto::MAX_DATAGRAM_BYTES
+        );
+    }
+
+    #[test]
     fn the_headless_scene_runs_a_herd() {
         // The scene needs ~16 frames to load (9 + the herd) and a few more to
         // settle. Each frame is real work, so this stays small.
