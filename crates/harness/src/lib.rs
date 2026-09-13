@@ -325,6 +325,13 @@ impl Harness {
             .ok_or_else(|| "sceneReady did not return a boolean".to_string())
     }
 
+    /// Resets the stub's frame counter, so a test can drive one more frame after
+    /// the scripted run has ended -- which is how the mod cases reach the frame
+    /// loop, and what `frameIndex = 0` did in the Node harness.
+    pub fn reset_frame(&mut self) -> Result<(), String> {
+        self.call("harnessResetFrame", &[]).map(|_| ())
+    }
+
     /// Runs the scripted timeline for up to `frames` ready frames and returns
     /// what the stub recorded. A harness runs once: the scene's loop ends with
     /// `sceneShutdown`.

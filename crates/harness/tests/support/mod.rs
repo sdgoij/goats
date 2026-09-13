@@ -40,6 +40,22 @@ pub fn f64_of(value: serde_json::Value) -> f64 {
     value.as_f64().unwrap_or(f64::NAN)
 }
 
+/// One event from the host, the way the session feeds the scene.
+pub fn net_feed(harness: &mut Harness, event: &str) -> Result<(), String> {
+    harness
+        .call("sceneNetEvent", &[serde_json::json!(event)])
+        .map(|_| ())
+}
+
+/// Whether a snippet throws, which mirrors the `try/catch` the Node harness used
+/// for the writes and registrations the scene is supposed to refuse.
+pub fn throws(harness: &mut Harness, code: &str) -> bool {
+    let probe = format!(
+        "(function () {{ try {{ {code}; }} catch (error) {{ return true; }} return false; }})()"
+    );
+    bool_of(harness.eval(&probe).expect("eval"))
+}
+
 /// One reported case.
 struct Check {
     name: String,

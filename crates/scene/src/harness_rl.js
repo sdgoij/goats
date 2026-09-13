@@ -277,6 +277,12 @@
         total = frames;
     };
 
+    // Lets a test drive one more frame after the scripted run has ended, which is
+    // how the mod cases reach the frame loop once `run()` has returned.
+    globalThis.harnessResetFrame = function () {
+        frameIndex = 0;
+    };
+
     globalThis.harnessResetCounters = function (namesJson) {
         const names = JSON.parse(String(namesJson));
         for (let i = 0; i < names.length; i++) {

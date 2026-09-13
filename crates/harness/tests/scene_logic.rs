@@ -17,7 +17,7 @@ mod support;
 
 use harness::Harness;
 use serde_json::json;
-use support::{Checks, bool_of, command_json, f64_of, try_command_json};
+use support::{Checks, bool_of, command_json, f64_of, net_feed, throws, try_command_json};
 
 /// The frames the scripted timeline runs for: the walk, the jump, the death and
 /// the restart all happen inside it.
@@ -1042,15 +1042,6 @@ fn tuning_get(harness: &mut Harness, path: &str) -> serde_json::Value {
         .unwrap_or_else(|error| panic!("tuningGet({path}): {error}"))
 }
 
-/// Whether a snippet throws, which mirrors the `try/catch` the Node harness used
-/// for the writes the tree is supposed to refuse.
-fn throws(harness: &mut Harness, code: &str) -> bool {
-    let probe = format!(
-        "(function () {{ try {{ {code}; }} catch (error) {{ return true; }} return false; }})()"
-    );
-    bool_of(harness.eval(&probe).expect("eval"))
-}
-
 /// The watcher case: it subscribes, sets, unsubscribes and sets again, and comes
 /// back with what the watcher saw before it was removed.
 const WATCH_PROBE: &str = "(function () { \
@@ -1135,11 +1126,6 @@ fn help_block(harness: &mut Harness) -> Result<Help, String> {
 fn net_drain(harness: &mut Harness) -> Result<String, String> {
     let value = harness.call("sceneNetDrain", &[])?;
     Ok(value.as_str().unwrap_or("").to_string())
-}
-
-/// One event from the host, the way the session feeds the scene.
-fn net_feed(harness: &mut Harness, event: &str) -> Result<(), String> {
-    harness.call("sceneNetEvent", &[json!(event)]).map(|_| ())
 }
 
 /// What the network bridge cases found. One field per case.
