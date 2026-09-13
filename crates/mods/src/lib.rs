@@ -8,9 +8,15 @@
 //! JavaScript never sees a path. An asset is read into memory and addressed by
 //! an opaque name (`mod:<id>:<slot>`), which is what the scene hands back to
 //! `rl.load*`.
+//!
+//! A mod's files come from a [`ModSource`]: a directory, or a `.zip` whose root
+//! holds `mod.json`. The optional [`watch`] module reports filesystem changes so
+//! a host can reload a mod while it is being developed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+
+pub mod watch;
 
 /// The `goats` API major this build understands. A manifest targeting a
 /// different major is refused rather than loaded halfway.
@@ -87,6 +93,42 @@ pub enum AssetMode {
     HashOnly,
 }
 
+/// Where a mod's files live. A directory is the editable form; a `.zip` is the
+/// distributable one, with `mod.json` at the archive root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModSource {
+    Dir(PathBuf),
+    Zip(PathBuf),
+}
+
+impl ModSource {
+    /// The path to watch or report: the directory, or the archive file.
+    pub fn path(&self) -> &Path {
+        match self {
+            ModSource::Dir(path) | ModSource::Zip(path) => path,
+        }
+    }
+
+    /// Whether a filesystem change under the mods directory belongs to this mod.
+    pub fn touches(&self, changed: &Path) -> bool {
+        match self {
+            ModSource::Dir(dir) => changed.starts_with(dir),
+            ModSource::Zip(zip) => changed == zip,
+        }
+    }
+
+    /// Read a manifest-relative file out of the source, capped at `max`.
+    fn read(&self, relative: &str, max: u64, what: &str) -> Result<Vec<u8>, String> {
+        match self {
+            ModSource::Dir(dir) => {
+                let path = safe_join(dir, relative)?;
+                read_capped(&path, max, what)
+            }
+            ModSource::Zip(zip) => read_zip_entry(zip, relative, max, what),
+        }
+    }
+}
+
 /// A validated manifest with everything the host needs to load it.
 #[derive(Debug)]
 pub struct Manifest {
@@ -106,13 +148,18 @@ pub struct Manifest {
     pub tuning: Option<String>,
     pub tuning_json: Option<String>,
     pub load_after: Vec<String>,
-    /// The directory the mod lives in (for diagnostics).
-    pub dir: PathBuf,
+    /// Where the files were read from (for diagnostics and reloading).
+    pub source: ModSource,
     /// The compatibility hash (FNV-1a over id, version, entry and assets).
     pub hash: u64,
 }
 
 impl Manifest {
+    /// The directory or archive the mod was read from.
+    pub fn path(&self) -> &Path {
+        self.source.path()
+    }
+
     /// `slot -> opaque engine names`, for the scene's asset table.
     pub fn asset_map(&self) -> BTreeMap<String, Vec<String>> {
         let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -193,16 +240,24 @@ impl Loader {
         Loader::discover_with(dir, AssetMode::Keep)
     }
 
-    /// Walk `dir`, with control over whether asset bytes are kept.
+    /// Walk `dir`, with control over whether asset bytes are kept. Every
+    /// immediate subdirectory with a `mod.json` is a mod, and so is every
+    /// `*.zip` with `mod.json` at its root.
     pub fn discover_with(dir: &Path, mode: AssetMode) -> Loader {
         let mut errors = Vec::new();
-        let mut dirs = Vec::new();
+        let mut sources = Vec::new();
         match std::fs::read_dir(dir) {
             Ok(entries) => {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {
-                        dirs.push(path);
+                        // A directory without a manifest is parked or unrelated,
+                        // not a broken mod, so it is skipped silently.
+                        if path.join("mod.json").is_file() {
+                            sources.push(ModSource::Dir(path));
+                        }
+                    } else if is_zip(&path) {
+                        sources.push(ModSource::Zip(path));
                     }
                 }
             }
@@ -217,24 +272,20 @@ impl Loader {
                 };
             }
         }
-        dirs.sort();
-        if dirs.len() > MAX_MODS {
+        sources.sort_by(|a, b| a.path().cmp(b.path()));
+        if sources.len() > MAX_MODS {
             errors.push(LoadError {
                 path: dir.to_path_buf(),
                 message: format!(
-                    "{} subdirectories; only the first {MAX_MODS} are considered",
-                    dirs.len()
+                    "{} mod sources; only the first {MAX_MODS} are considered",
+                    sources.len()
                 ),
             });
-            dirs.truncate(MAX_MODS);
+            sources.truncate(MAX_MODS);
         }
         let mut mods = Vec::new();
-        for path in dirs {
-            let manifest_path = path.join("mod.json");
-            if !manifest_path.is_file() {
-                continue; // not a mod (a parked or unrelated directory)
-            }
-            match load_one(&path, &manifest_path, mode) {
+        for source in sources {
+            match load_source(&source, mode) {
                 Ok(manifest) => mods.push(manifest),
                 Err(error) => errors.push(error),
             }
@@ -243,6 +294,42 @@ impl Loader {
             mods: order(mods, &mut errors),
             errors,
         }
+    }
+
+    /// Re-read one mod from its source, replacing the cached manifest, so a
+    /// change on disk takes effect without a restart. Its id must not have
+    /// changed: a rename needs a fresh discovery and a restart.
+    pub fn reload(&mut self, id: &str, mode: AssetMode) -> Result<(), LoadError> {
+        let index = self
+            .mods
+            .iter()
+            .position(|manifest| manifest.id == id)
+            .ok_or_else(|| LoadError {
+                path: PathBuf::new(),
+                message: format!("unknown mod '{id}'"),
+            })?;
+        let source = self.mods[index].source.clone();
+        let manifest = load_source(&source, mode)?;
+        if manifest.id != id {
+            return Err(LoadError {
+                path: source.path().to_path_buf(),
+                message: format!(
+                    "reloaded '{id}' now declares id '{}'; restart to rename it",
+                    manifest.id
+                ),
+            });
+        }
+        self.mods[index] = manifest;
+        Ok(())
+    }
+
+    /// The ids whose source contains `changed` -- a file the watcher reported.
+    pub fn mods_touching(&self, changed: &Path) -> Vec<String> {
+        self.mods
+            .iter()
+            .filter(|manifest| manifest.source.touches(changed))
+            .map(|manifest| manifest.id.clone())
+            .collect()
     }
 
     pub fn mods(&self) -> &[Manifest] {
@@ -317,13 +404,14 @@ impl OneOrMany {
     }
 }
 
-fn load_one(dir: &Path, manifest_path: &Path, mode: AssetMode) -> Result<Manifest, LoadError> {
+fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadError> {
     let fail = |message: String| LoadError {
-        path: manifest_path.to_path_buf(),
+        path: source.path().to_path_buf(),
         message,
     };
 
-    let text = read_text(manifest_path, MAX_MANIFEST_BYTES, "mod.json").map_err(fail)?;
+    let text =
+        read_source_text(source, "mod.json", MAX_MANIFEST_BYTES, "mod.json").map_err(fail)?;
     let raw: RawManifest =
         serde_json::from_str(&text).map_err(|error| fail(format!("invalid manifest: {error}")))?;
 
@@ -356,16 +444,12 @@ fn load_one(dir: &Path, manifest_path: &Path, mode: AssetMode) -> Result<Manifes
     };
 
     let entry_source = match &raw.entry {
-        Some(name) => {
-            let path = safe_join(dir, name).map_err(fail)?;
-            Some(read_text(&path, MAX_ENTRY_BYTES, "entry").map_err(fail)?)
-        }
+        Some(name) => Some(read_source_text(source, name, MAX_ENTRY_BYTES, "entry").map_err(fail)?),
         None => None,
     };
     let tuning_json = match &raw.tuning {
         Some(name) => {
-            let path = safe_join(dir, name).map_err(fail)?;
-            Some(read_text(&path, MAX_MANIFEST_BYTES, "tuning").map_err(fail)?)
+            Some(read_source_text(source, name, MAX_MANIFEST_BYTES, "tuning").map_err(fail)?)
         }
         None => None,
     };
@@ -374,9 +458,7 @@ fn load_one(dir: &Path, manifest_path: &Path, mode: AssetMode) -> Result<Manifes
     for (slot, files) in &raw.assets {
         let files = files.to_vec();
         for (index, file) in files.iter().enumerate() {
-            let path = safe_join(dir, file)
-                .map_err(|message| fail(format!("asset '{slot}': {message}")))?;
-            let (bytes, content_hash) = read_asset(&path, mode)
+            let (bytes, content_hash) = read_asset_source(source, file, mode)
                 .map_err(|message| fail(format!("asset '{slot}': {message}")))?;
             // One file fills the slot on its own; several are addressed by
             // index, so a mod can replace a whole sound list.
@@ -409,7 +491,7 @@ fn load_one(dir: &Path, manifest_path: &Path, mode: AssetMode) -> Result<Manifes
         tuning: raw.tuning,
         tuning_json,
         load_after: raw.load_after,
-        dir: dir.to_path_buf(),
+        source: source.clone(),
         hash,
     })
 }
@@ -425,19 +507,8 @@ fn valid_id(id: &str) -> bool {
 /// Resolve a manifest-relative path, refusing anything that could escape the
 /// mod's directory.
 fn safe_join(dir: &Path, relative: &str) -> Result<PathBuf, String> {
-    let rel = Path::new(relative);
-    if rel.is_absolute() {
-        return Err(format!(
-            "'{relative}' must be relative to the mod directory"
-        ));
-    }
-    for component in rel.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            _ => return Err(format!("'{relative}' must not contain '..' or a root")),
-        }
-    }
-    Ok(dir.join(rel))
+    valid_relative(relative)?;
+    Ok(dir.join(Path::new(relative)))
 }
 
 fn read_capped(path: &Path, max: u64, what: &str) -> Result<Vec<u8>, String> {
@@ -496,9 +567,121 @@ fn read_asset(path: &Path, mode: AssetMode) -> Result<(Vec<u8>, u64), String> {
     Ok((Vec::new(), hash))
 }
 
-fn read_text(path: &Path, max: u64, what: &str) -> Result<String, String> {
-    let bytes = read_capped(path, max, what)?;
-    String::from_utf8(bytes).map_err(|_| format!("{what} '{}' is not UTF-8", path.display()))
+/// A `.zip` file (case-insensitive extension) is a candidate mod source.
+fn is_zip(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+}
+
+/// Refuse a manifest-relative path that could escape the mod.
+fn valid_relative(relative: &str) -> Result<(), String> {
+    let rel = Path::new(relative);
+    if rel.is_absolute() {
+        return Err(format!(
+            "'{relative}' must be relative to the mod directory"
+        ));
+    }
+    for component in rel.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            _ => return Err(format!("'{relative}' must not contain '..' or a root")),
+        }
+    }
+    Ok(())
+}
+
+fn read_source_text(
+    source: &ModSource,
+    relative: &str,
+    max: u64,
+    what: &str,
+) -> Result<String, String> {
+    let bytes = source.read(relative, max, what)?;
+    String::from_utf8(bytes).map_err(|_| format!("{what} '{relative}' is not UTF-8"))
+}
+
+/// Read an asset from either source, returning its bytes (empty in hash-only
+/// mode) and the FNV-1a hash the manifest folds in. Both sources hash the same
+/// bytes, so a directory mod and its zipped twin have the same digest.
+fn read_asset_source(
+    source: &ModSource,
+    file: &str,
+    mode: AssetMode,
+) -> Result<(Vec<u8>, u64), String> {
+    match source {
+        ModSource::Dir(dir) => {
+            let path = safe_join(dir, file)?;
+            read_asset(&path, mode)
+        }
+        ModSource::Zip(_) => {
+            // A zip entry cannot be streamed without decompressing it first.
+            let bytes = source.read(file, MAX_ASSET_BYTES, "asset")?;
+            let mut hash = FNV_OFFSET;
+            fnv1a(&mut hash, &bytes);
+            Ok(if mode == AssetMode::Keep {
+                (bytes, hash)
+            } else {
+                (Vec::new(), hash)
+            })
+        }
+    }
+}
+
+/// Read one entry from a `.zip`. `mod.json` at the archive root is the
+/// convention; a zip that wrapped everything in a single top-level directory
+/// still works, because a unique `*/<name>` match is accepted.
+fn read_zip_entry(zip: &Path, relative: &str, max: u64, what: &str) -> Result<Vec<u8>, String> {
+    valid_relative(relative)?;
+    let label = || format!("{what} '{relative}' in '{}'", zip.display());
+    let file = std::fs::File::open(zip).map_err(|error| format!("{}: {error}", label()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("'{}' is not a readable zip: {error}", zip.display()))?;
+
+    let entry_name = if archive.by_name(relative).is_ok() {
+        relative.to_string()
+    } else {
+        let suffix = format!("/{relative}");
+        let mut matches: Vec<&str> = archive
+            .file_names()
+            .filter(|name| name.ends_with(&suffix))
+            .collect();
+        matches.sort();
+        matches.dedup();
+        match matches.as_slice() {
+            [only] => (*only).to_string(),
+            [] => return Err(format!("{}: not found", label())),
+            _ => {
+                return Err(format!(
+                    "{}: ambiguous, {} candidates",
+                    label(),
+                    matches.len()
+                ));
+            }
+        }
+    };
+
+    let mut entry = archive
+        .by_name(&entry_name)
+        .map_err(|error| format!("{}: {error}", label()))?;
+    if entry.size() > max {
+        return Err(format!(
+            "{} is {} bytes (limit {max})",
+            label(),
+            entry.size()
+        ));
+    }
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    std::io::Read::read_to_end(&mut entry, &mut bytes)
+        .map_err(|error| format!("{}: {error}", label()))?;
+    if bytes.len() as u64 > max {
+        return Err(format!(
+            "{} is {} bytes (limit {max})",
+            label(),
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
 }
 
 // ---- ordering -------------------------------------------------------------
@@ -514,7 +697,7 @@ fn order(mut mods: Vec<Manifest>, errors: &mut Vec<LoadError>) -> Vec<Manifest> 
     for manifest in mods {
         if !seen.insert(manifest.id.clone()) {
             errors.push(LoadError {
-                path: manifest.dir.clone(),
+                path: manifest.path().to_path_buf(),
                 message: format!("duplicate mod id '{}'; this one is ignored", manifest.id),
             });
             continue;
@@ -542,7 +725,7 @@ fn order(mut mods: Vec<Manifest>, errors: &mut Vec<LoadError>) -> Vec<Manifest> 
                     indegree[at] += 1;
                 }
                 None => errors.push(LoadError {
-                    path: manifest.dir.clone(),
+                    path: manifest.path().to_path_buf(),
                     message: format!(
                         "mod '{}' wants to load after '{dependency}', which is not installed",
                         manifest.id
@@ -835,6 +1018,150 @@ mod tests {
         let js = loader.get("hi").unwrap().entry_js().unwrap();
         assert!(js.contains("goats.begin(\"hi\")"), "{js}");
         assert!(js.contains("\"use strict\""), "{js}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Write a `.zip` mod into `root`. Returns the archive path.
+    fn write_zip(root: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
+        use std::io::Write as _;
+        std::fs::create_dir_all(root).unwrap();
+        let path = root.join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (entry, text) in files {
+            archive.start_file(*entry, options).unwrap();
+            archive.write_all(text.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn a_zip_mod_is_discovered_and_read() {
+        let root = workspace("zip");
+        write_zip(
+            &root,
+            "pack.zip",
+            &[
+                (
+                    "mod.json",
+                    r#"{ "id": "com.zip.mod", "name": "Zip", "version": "1", "api": 1, "entry": "mod.js", "assets": { "sfx.rain": "audio/rain.ogg" } }"#,
+                ),
+                ("mod.js", "goats.log('zip');\n"),
+                ("audio/rain.ogg", "not really ogg"),
+            ],
+        );
+        let loader = Loader::discover(&root);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        let manifest = loader.get("com.zip.mod").expect("the zip mod");
+        assert_eq!(
+            manifest.entry_source.as_deref(),
+            Some("goats.log('zip');\n")
+        );
+        assert_eq!(manifest.assets.len(), 1);
+        assert_eq!(manifest.assets[0].name, "mod:com.zip.mod:sfx.rain");
+        assert_eq!(manifest.assets[0].bytes, b"not really ogg");
+        assert!(matches!(manifest.source, ModSource::Zip(_)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_zip_wrapped_in_a_directory_is_read() {
+        let root = workspace("zipwrap");
+        write_zip(
+            &root,
+            "wrapped.zip",
+            &[
+                (
+                    "pack/mod.json",
+                    r#"{ "id": "com.zip.wrapped", "name": "Wrapped", "version": "1", "api": 1, "entry": "mod.js" }"#,
+                ),
+                ("pack/mod.js", "entry\n"),
+            ],
+        );
+        let loader = Loader::discover(&root);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        let manifest = loader.get("com.zip.wrapped").expect("the wrapped zip mod");
+        assert_eq!(manifest.entry_source.as_deref(), Some("entry\n"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_zip_without_a_manifest_is_reported() {
+        let root = workspace("zipbad");
+        write_zip(&root, "empty.zip", &[("readme.txt", "no mod here")]);
+        let loader = Loader::discover(&root);
+        assert_eq!(loader.mods().len(), 0);
+        assert_eq!(loader.errors().len(), 1);
+        assert!(loader.errors()[0].message.contains("mod.json"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reload_re_reads_a_mod_from_disk() {
+        let root = workspace("reload");
+        write_mod(
+            &root,
+            "hot",
+            r#"{ "id": "hot", "name": "Hot", "version": "1", "api": 1, "entry": "mod.js" }"#,
+        );
+        write(&root.join("hot").join("mod.js"), "1\n");
+        let mut loader = Loader::discover(&root);
+        assert_eq!(
+            loader.get("hot").unwrap().entry_source.as_deref(),
+            Some("1\n")
+        );
+
+        write(&root.join("hot").join("mod.js"), "2\n");
+        loader.reload("hot", AssetMode::Keep).unwrap();
+        assert_eq!(
+            loader.get("hot").unwrap().entry_source.as_deref(),
+            Some("2\n")
+        );
+
+        // An unknown id is refused rather than created.
+        assert!(loader.reload("nope", AssetMode::Keep).is_err());
+
+        // A rename is refused with a clear message: it needs a restart.
+        write_mod(
+            &root,
+            "hot",
+            r#"{ "id": "renamed", "name": "Hot", "version": "1", "api": 1, "entry": "mod.js" }"#,
+        );
+        let error = loader.reload("hot", AssetMode::Keep).unwrap_err();
+        assert!(error.message.contains("restart"), "{}", error.message);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn changed_paths_map_to_their_mod() {
+        let root = workspace("touch");
+        write_mod(
+            &root,
+            "dir",
+            r#"{ "id": "dir.mod", "name": "Dir", "version": "1", "api": 1 }"#,
+        );
+        write_zip(
+            &root,
+            "pack.zip",
+            &[(
+                "mod.json",
+                r#"{ "id": "zip.mod", "name": "Zip", "version": "1", "api": 1 }"#,
+            )],
+        );
+        let loader = Loader::discover(&root);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        assert_eq!(
+            loader.mods_touching(&root.join("dir").join("mod.js")),
+            vec!["dir.mod".to_string()]
+        );
+        assert_eq!(
+            loader.mods_touching(&root.join("pack.zip")),
+            vec!["zip.mod".to_string()]
+        );
+        assert!(loader.mods_touching(&root.join("unrelated.txt")).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
