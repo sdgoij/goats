@@ -54,16 +54,31 @@ const VAD_FLOOR_RISE: f32 = 0.002; // how fast it creeps up through noise
 const VAD_HOLD_FRAMES: u32 = 15; // 300 ms of tail after the last speech frame
 const PREROLL_FRAMES: usize = 2; // 40 ms kept for the onset
 
+/// Packets buffered before a speaker is heard, so playback does not start
+/// against an empty mixer. Two packets is ~40 ms, the usual order for voice.
+const PLAYOUT_CUSHION_PACKETS: usize = 2;
+
 /// The frame loop's handle on voice: decoded audio waiting for raylib, the
 /// per-speaker streams, and the master gain the scene owns.
 pub struct Voice {
     decoded: Receiver<(String, Vec<f32>)>,
-    streams: HashMap<String, raylib_sys::AudioStream>,
+    speakers: HashMap<String, Speaker>,
     gain: Arc<AtomicU32>,
     /// The gain already written to every stream, so a change can be pushed to
     /// streams that have no new audio this frame (a mute takes effect at once).
     applied_gain: f32,
     running: Arc<AtomicBool>,
+}
+
+/// One remote speaker: their raylib stream, plus the audio held back while the
+/// playout cushion fills.
+struct Speaker {
+    stream: raylib_sys::AudioStream,
+    /// Samples buffered before playback starts. A 20 ms packet lands while the
+    /// mixer is mid-block as often as not, so starting with a cushion keeps the
+    /// first words whole. Empty once playing.
+    cushion: Vec<f32>,
+    playing: bool,
 }
 
 impl Voice {
@@ -127,7 +142,7 @@ impl Voice {
 
         Voice {
             decoded: pcm_rx,
-            streams: HashMap::new(),
+            speakers: HashMap::new(),
             gain,
             applied_gain: 1.0,
             running,
@@ -146,59 +161,78 @@ impl Voice {
         let gain = f32::from_bits(self.gain.load(Ordering::Relaxed));
         if gain != self.applied_gain {
             self.applied_gain = gain;
-            for &stream in self.streams.values() {
+            for speaker in self.speakers.values() {
                 // SAFETY: every stream came from `LoadAudioStream` and is owned
                 // by this map; raylib is only ever touched from this thread.
-                unsafe { raylib_sys::SetAudioStreamVolume(stream, gain) };
+                unsafe { raylib_sys::SetAudioStreamVolume(speaker.stream, gain) };
             }
         }
+
         while let Ok((from, samples)) = self.decoded.try_recv() {
-            let stream = match self.streams.get(&from) {
-                Some(&stream) => stream,
-                None => {
-                    // SAFETY: a fresh stream from raylib, checked before use.
-                    let stream = unsafe { raylib_sys::LoadAudioStream(SAMPLE_RATE, 32, 1) };
-                    if !unsafe { raylib_sys::IsAudioStreamValid(stream) } {
-                        eprintln!("[voice] could not open a playback stream for {from}");
-                        continue;
-                    }
-                    // SAFETY: a live stream, owned by this map from here on.
-                    unsafe { raylib_sys::SetAudioStreamVolume(stream, gain) };
-                    unsafe { raylib_sys::PlayAudioStream(stream) };
-                    if debug_on() {
-                        eprintln!("[voice] playback stream for {from} (gain {gain})");
-                    }
-                    self.streams.insert(from.clone(), stream);
-                    stream
+            let speaker = speaker_for(&mut self.speakers, from, gain);
+            if !speaker.playing {
+                speaker.cushion.extend_from_slice(&samples);
+                if speaker.cushion.len() < PLAYOUT_CUSHION_PACKETS * FRAME_SAMPLES {
+                    continue;
                 }
-            };
-            if gain <= 0.0 {
-                continue; // muted: drain, but do not feed the mixer
+                speaker.playing = true;
+                let buffered = std::mem::take(&mut speaker.cushion);
+                if gain > 0.0 {
+                    feed(speaker.stream, &buffered);
+                }
+                continue;
             }
-            // Only write when the mixer has consumed the last block; if it is
-            // behind we drop the frame instead of stalling the loop. A jitter
-            // buffer is M13c's job.
-            if unsafe { raylib_sys::IsAudioStreamProcessed(stream) } {
-                // SAFETY: the data is a live f32 slice of one Opus frame and the
-                // frame count matches its length.
-                unsafe {
-                    raylib_sys::UpdateAudioStream(
-                        stream,
-                        samples.as_ptr().cast(),
-                        samples.len() as i32,
-                    );
-                }
+            if gain > 0.0 {
+                feed(speaker.stream, &samples);
             }
         }
+    }
+}
+
+/// The stream for one speaker, created on first use.
+fn speaker_for(speakers: &mut HashMap<String, Speaker>, from: String, gain: f32) -> &mut Speaker {
+    speakers.entry(from.clone()).or_insert_with(|| {
+        // SAFETY: a fresh stream from raylib, checked before use.
+        let stream = unsafe { raylib_sys::LoadAudioStream(SAMPLE_RATE, 32, 1) };
+        if unsafe { raylib_sys::IsAudioStreamValid(stream) } {
+            // SAFETY: a live stream, owned by this map from here on.
+            unsafe { raylib_sys::SetAudioStreamVolume(stream, gain) };
+            unsafe { raylib_sys::PlayAudioStream(stream) };
+            if debug_on() {
+                eprintln!("[voice] playback stream for {from} (gain {gain})");
+            }
+        } else {
+            eprintln!("[voice] could not open a playback stream for {from}");
+        }
+        Speaker {
+            stream,
+            cushion: Vec::new(),
+            playing: false,
+        }
+    })
+}
+
+/// Hands one block of PCM to raylib's mixer. raylib keeps a ring buffer, so
+/// writing whenever audio arrives is correct: it absorbs the jitter between
+/// packets, where gating on `IsAudioStreamProcessed` drops whole packets that
+/// land while the mixer is mid-block (which is most of them).
+fn feed(stream: raylib_sys::AudioStream, samples: &[f32]) {
+    if samples.is_empty() {
+        return;
+    }
+    // SAFETY: `stream` came from `LoadAudioStream`, the slice is live and the
+    // frame count matches it, and raylib is only touched from the frame loop.
+    unsafe {
+        raylib_sys::UpdateAudioStream(stream, samples.as_ptr().cast(), samples.len() as i32);
     }
 }
 
 impl Drop for Voice {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
-        for (_, stream) in self.streams.drain() {
+        for (_, speaker) in self.speakers.drain() {
             // SAFETY: every stream came from `LoadAudioStream` and is freed once.
-            unsafe { raylib_sys::UnloadAudioStream(stream) };
+            unsafe { raylib_sys::UnloadAudioStream(speaker.stream) };
         }
     }
 }
