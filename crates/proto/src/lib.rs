@@ -10,6 +10,8 @@
 //! transform channel also rides JSON, but as unreliable datagrams and without
 //! the length prefix of a stream frame.
 
+use std::collections::BTreeMap;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -17,11 +19,15 @@ use serde::{Deserialize, Serialize};
 /// ALPN suffix, so a peer with a different major version fails the QUIC
 /// handshake before it reaches any of this.
 ///
-/// 5 added the server-owned world; 6 adds the voice datagram. Bumping for voice
-/// matters because a relay built at 5 does not know the variant: it decodes the
-/// datagram as an error and drops it, so without the bump a stale server accepts
-/// the join and then silently swallows every packet.
-pub const PROTOCOL_VERSION: u16 = 6;
+/// 5 added the server-owned world; 6 added the voice datagram; 7 adds the
+/// world-mod set to the handshake. Bumping for voice mattered because a relay
+/// built at 5 does not know the variant: it decodes the datagram as an error and
+/// drops it, so without the bump a stale server accepts the join and then
+/// silently swallows every packet. The mod set rides the control stream, but it
+/// still needs the bump: a version-6 server would ignore the field and accept a
+/// client whose world mods differ, which is exactly the silent divergence the
+/// set exists to prevent.
+pub const PROTOCOL_VERSION: u16 = 7;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -49,14 +55,114 @@ pub const MAX_DATAGRAM_BYTES: usize = 1200;
 /// a hostile sender from making every peer decode a megabyte.
 pub const MAX_VOICE_BYTES: usize = 512;
 
+/// The largest world-mod set either end will compare, so a hostile hello cannot
+/// make the server build an unbounded diff.
+pub const MAX_MODS: usize = 256;
+
+/// One `side: "world"` mod, by identity and content hash. The host and every
+/// client must present the same set, or the world they simulate diverges;
+/// `side: "client"` mods are local and never travel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModRef {
+    pub id: String,
+    pub version: String,
+    pub hash: u64,
+}
+
+/// How a client's world-mod set differs from the host's. `missing` is what the
+/// host runs and the client lacks; `extra` is the reverse; `differing` is a
+/// shared id at a different version or hash.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ModMismatch {
+    pub missing: Vec<String>,
+    pub extra: Vec<String>,
+    pub differing: Vec<String>,
+}
+
+impl ModMismatch {
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty() && self.extra.is_empty() && self.differing.is_empty()
+    }
+
+    /// A console-ready line naming what is wrong.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.missing.is_empty() {
+            parts.push(format!("missing {}", self.missing.join(", ")));
+        }
+        if !self.extra.is_empty() {
+            parts.push(format!("extra {}", self.extra.join(", ")));
+        }
+        if !self.differing.is_empty() {
+            parts.push(format!("differing {}", self.differing.join(", ")));
+        }
+        format!("world mods do not match ({})", parts.join("; "))
+    }
+}
+
+/// Compare the host's world-mod set with a client's. The comparison is exact;
+/// ids are cleaned only for the message, and a set over the cap is a mismatch.
+pub fn compare_world_mods(host: &[ModRef], client: &[ModRef]) -> ModMismatch {
+    let mut mismatch = ModMismatch::default();
+    if host.len() > MAX_MODS || client.len() > MAX_MODS {
+        mismatch
+            .extra
+            .push(format!("more than {MAX_MODS} world mods"));
+        return mismatch;
+    }
+    let host_map: BTreeMap<&str, &ModRef> = host.iter().map(|m| (m.id.as_str(), m)).collect();
+    let client_map: BTreeMap<&str, &ModRef> = client.iter().map(|m| (m.id.as_str(), m)).collect();
+    for (id, host_ref) in &host_map {
+        match client_map.get(id) {
+            None => mismatch.missing.push(clean_mod_id(id)),
+            Some(client_ref) => {
+                if host_ref.version != client_ref.version || host_ref.hash != client_ref.hash {
+                    mismatch.differing.push(clean_mod_id(id));
+                }
+            }
+        }
+    }
+    for id in client_map.keys() {
+        if !host_map.contains_key(id) {
+            mismatch.extra.push(clean_mod_id(id));
+        }
+    }
+    mismatch.missing.sort();
+    mismatch.extra.sort();
+    mismatch.differing.sort();
+    mismatch
+}
+
+/// A manifest id is already restricted, but a hostile peer picks its own: keep
+/// only what can safely go into a console line.
+fn clean_mod_id(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .take(64)
+        .collect();
+    if cleaned.is_empty() {
+        "?".to_string()
+    } else {
+        cleaned
+    }
+}
+
 /// What a client sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientMessage {
-    /// The first message on a connection: the wire version and the name the
-    /// player would like. The name is only a request -- the server decides,
-    /// because it is the one that can tell whether it is already taken.
-    Hello { version: u16, name: String },
+    /// The first message on a connection: the wire version, the name the
+    /// player would like, and the world-mod set this client runs. The name is
+    /// only a request -- the server decides, because it is the one that can tell
+    /// whether it is already taken. The mod set is compared with the host's, and
+    /// a mismatch is refused rather than silently diverging.
+    Hello {
+        version: u16,
+        name: String,
+        #[serde(default)]
+        mods: Vec<ModRef>,
+    },
     /// Something the player typed. A leading `@name` is a direct message, which
     /// only the server routes -- a client cannot make the server whisper to
     /// anyone, or stop it from whispering.
@@ -79,6 +185,9 @@ pub enum ServerMessage {
         name: String,
         roster: Vec<String>,
         seed: u32,
+        /// The host's world-mod set, echoed so a client can show it.
+        #[serde(default)]
+        mods: Vec<ModRef>,
     },
     /// The roster changed: someone joined or left.
     Roster {
@@ -496,6 +605,11 @@ mod tests {
             ClientMessage::Hello {
                 version: PROTOCOL_VERSION,
                 name: "bob".to_string(),
+                mods: vec![ModRef {
+                    id: "com.example.a".to_string(),
+                    version: "1.0.0".to_string(),
+                    hash: 0xabc,
+                }],
             },
             ClientMessage::Chat {
                 text: "hello".to_string(),
@@ -512,6 +626,7 @@ mod tests {
                 name: "bob #2".to_string(),
                 roster: vec!["alice".to_string()],
                 seed: 0x9e37_79b9,
+                mods: vec![],
             },
             ServerMessage::Roster {
                 names: vec!["alice".to_string(), "bob #2".to_string()],
@@ -538,6 +653,56 @@ mod tests {
             let payload = encode(reply).expect("encode");
             assert_eq!(&decode::<ServerMessage>(&payload).expect("decode"), reply);
         }
+    }
+
+    #[test]
+    fn world_mod_sets_are_compared() {
+        let a = ModRef {
+            id: "com.a".to_string(),
+            version: "1".to_string(),
+            hash: 1,
+        };
+        let b = ModRef {
+            id: "com.b".to_string(),
+            version: "1".to_string(),
+            hash: 2,
+        };
+        assert!(compare_world_mods(&[a.clone()], &[a.clone()]).is_empty());
+
+        let missing = compare_world_mods(&[a.clone(), b.clone()], &[a.clone()]);
+        assert_eq!(missing.missing, vec!["com.b".to_string()]);
+        assert!(missing.extra.is_empty());
+        assert!(missing.describe().contains("missing com.b"));
+
+        let extra = compare_world_mods(&[a.clone()], &[a.clone(), b.clone()]);
+        assert_eq!(extra.extra, vec!["com.b".to_string()]);
+
+        let changed = ModRef {
+            id: "com.a".to_string(),
+            version: "2".to_string(),
+            hash: 1,
+        };
+        let differing = compare_world_mods(&[a.clone()], &[changed]);
+        assert_eq!(differing.differing, vec!["com.a".to_string()]);
+
+        // A hostile id is cleaned for the message, not for the comparison.
+        let hostile = ModRef {
+            id: "\u{1b}[31mEVIL".to_string(),
+            version: "1".to_string(),
+            hash: 9,
+        };
+        let cleaned = compare_world_mods(&[], &[hostile]);
+        assert_eq!(cleaned.extra, vec!["31mEVIL".to_string()]);
+
+        // Over the cap is a mismatch, whatever the contents.
+        let many: Vec<ModRef> = (0..=MAX_MODS)
+            .map(|i| ModRef {
+                id: format!("m{i}"),
+                version: "1".to_string(),
+                hash: i as u64,
+            })
+            .collect();
+        assert!(!compare_world_mods(&many, &[]).is_empty());
     }
 
     #[test]
@@ -706,6 +871,7 @@ mod tests {
         let payload = encode(&ClientMessage::Hello {
             version: 1,
             name: "bob".to_string(),
+            mods: vec![],
         })
         .expect("encode");
         let framed = frame(&payload).expect("frame");

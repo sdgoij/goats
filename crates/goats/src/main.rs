@@ -228,6 +228,24 @@ fn call_scene(context: &mut Context, name: &str, args: &[JsValue]) {
     }
 }
 
+/// The world-mod set this client presents: every `side: "world"` mod, by
+/// identity and content hash, in id order. Client-side mods are local and never
+/// travel; a host compares this set with every joiner's and refuses a mismatch.
+fn world_mod_refs(loader: &Loader) -> Vec<session::ModRef> {
+    let mut mods: Vec<session::ModRef> = loader
+        .mods()
+        .iter()
+        .filter(|manifest| manifest.side == mods::Side::World)
+        .map(|manifest| session::ModRef {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            hash: manifest.hash,
+        })
+        .collect();
+    mods.sort_by(|a, b| a.id.cmp(&b.id));
+    mods
+}
+
 fn report_mod(context: &mut Context, id: &str, ok: bool, error: &str) {
     call_scene(
         context,
@@ -315,6 +333,8 @@ fn main() {
         eprintln!("[mods] {error}");
     }
 
+    let world_mods = world_mod_refs(&loader);
+
     let mut context = Context::new().unwrap();
     let callbacks = HostCallbacks {
         console_log: Some(Box::new(|text| eprintln!("[js] {text}"))),
@@ -384,7 +404,7 @@ fn main() {
     let net_event = scene_function_if_present(&context, "sceneNetEvent");
     let net_drain = scene_function_if_present(&context, "sceneNetDrain");
     let mod_drain = scene_function_if_present(&context, "sceneModDrain");
-    let mut net = net::Net::start();
+    let mut net = net::Net::start(world_mods);
     let mut voice = audio::Voice::start(&mut net);
 
     loop {

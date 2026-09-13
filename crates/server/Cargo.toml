@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 session = { path = "../session" }
+# The server discovers and hashes mods so it can require the world-mod set the
+# client must match; it reuses the same pure loader the client does.
+mods = { path = "../mods" }
 # The scene is shared with the client, so the headless world moves by the same
 # rules. No `raylib` feature: the server has no window, and `src/headless_rl.js`
 # supplies the null `rl` the scene is evaluated against instead.

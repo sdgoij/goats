@@ -144,7 +144,7 @@ pub struct Net {
 impl Net {
     /// Starts the runtime thread. It runs until the handle is dropped, which
     /// closes the command channel and lets the thread finish.
-    pub fn start() -> Net {
+    pub fn start(world_mods: Vec<session::ModRef>) -> Net {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (voice_tx, voice_rx) = mpsc::channel(VOICE_BACKLOG);
@@ -158,7 +158,7 @@ impl Net {
                         return;
                     }
                 };
-                runtime.block_on(run(command_rx, event_tx, voice_tx));
+                runtime.block_on(run(command_rx, event_tx, voice_tx, world_mods));
             })
             .expect("spawn the networking thread");
         if session::internet_enabled() {
@@ -306,6 +306,7 @@ async fn run(
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<String>,
     voice: mpsc::Sender<VoiceIn>,
+    world_mods: Vec<session::ModRef>,
 ) {
     let mut live: Option<Live> = None;
     loop {
@@ -411,7 +412,7 @@ async fn run(
                         session.publish_voice(seq, &payload).await;
                     }
                 }
-                other => live = start(other, live.take(), &events).await,
+                other => live = start(other, live.take(), &events, &world_mods).await,
             },
             Outcome::Command(None) => break,
         }
@@ -426,6 +427,7 @@ async fn start(
     command: Command,
     current: Option<Live>,
     events: &mpsc::UnboundedSender<String>,
+    world_mods: &[session::ModRef],
 ) -> Option<Live> {
     if let Some(session) = current {
         session.close().await;
@@ -438,56 +440,60 @@ async fn start(
         | Command::World { .. }
         | Command::Consume { .. }
         | Command::Voice { .. } => None,
-        Command::Host { name } => match session::Host::start(&name).await {
-            Ok(host) => {
-                // The console shows the ticket, but it cannot be selected in a
-                // game window; stderr puts it where the player launched the
-                // game, which is the only place it can actually be copied from.
-                eprintln!("[net] hosting {} - ticket: {}", host.name(), host.ticket());
-                emit(
-                    events,
-                    Event::Hosting {
-                        name: host.name().to_string(),
-                    },
-                );
-                emit(
-                    events,
-                    Event::Ticket {
-                        ticket: host.ticket().to_string(),
-                    },
-                );
-                Some(Live::Host(host))
+        Command::Host { name } => {
+            match session::Host::start_with_mods(&name, world_mods.to_vec()).await {
+                Ok(host) => {
+                    // The console shows the ticket, but it cannot be selected in a
+                    // game window; stderr puts it where the player launched the
+                    // game, which is the only place it can actually be copied from.
+                    eprintln!("[net] hosting {} - ticket: {}", host.name(), host.ticket());
+                    emit(
+                        events,
+                        Event::Hosting {
+                            name: host.name().to_string(),
+                        },
+                    );
+                    emit(
+                        events,
+                        Event::Ticket {
+                            ticket: host.ticket().to_string(),
+                        },
+                    );
+                    Some(Live::Host(host))
+                }
+                Err(error) => {
+                    emit(
+                        events,
+                        Event::Error {
+                            text: format!("could not host: {error}"),
+                        },
+                    );
+                    None
+                }
             }
-            Err(error) => {
-                emit(
-                    events,
-                    Event::Error {
-                        text: format!("could not host: {error}"),
-                    },
-                );
-                None
+        }
+        Command::Join { ticket, name } => {
+            match session::Client::join_with_mods(&ticket, &name, world_mods.to_vec()).await {
+                Ok(client) => {
+                    emit(
+                        events,
+                        Event::Welcome {
+                            name: client.name().to_string(),
+                        },
+                    );
+                    Some(Live::Client(client))
+                }
+                Err(error) => {
+                    emit(
+                        events,
+                        Event::Error {
+                            text: format!("could not join: {error}"),
+                        },
+                    );
+                    None
+                }
             }
-        },
-        Command::Join { ticket, name } => match session::Client::join(&ticket, &name).await {
-            Ok(client) => {
-                emit(
-                    events,
-                    Event::Welcome {
-                        name: client.name().to_string(),
-                    },
-                );
-                Some(Live::Client(client))
-            }
-            Err(error) => {
-                emit(
-                    events,
-                    Event::Error {
-                        text: format!("could not join: {error}"),
-                    },
-                );
-                None
-            }
-        },
+        }
     }
 }
 
@@ -784,7 +790,7 @@ mod tests {
     /// the two-window check -- everything except the game window itself.
     #[test]
     fn two_bridges_meet_over_loopback() {
-        let mut host = Net::start();
+        let mut host = Net::start(Vec::new());
         host.send(r#"{"type":"host","name":"bob"}"#);
 
         // The ticket is what a joiner needs, and it has to be a real one.
@@ -796,7 +802,7 @@ mod tests {
             .to_string();
         assert!(ticket.starts_with("endpoint"), "{ticket}");
 
-        let mut client = Net::start();
+        let mut client = Net::start(Vec::new());
         client.send(&format!(
             r#"{{"type":"join","ticket":"{ticket}","name":"alice"}}"#
         ));

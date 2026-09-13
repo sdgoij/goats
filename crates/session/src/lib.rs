@@ -24,15 +24,15 @@ use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::{Endpoint, EndpointAddr};
 use iroh_tickets::Ticket;
 use iroh_tickets::endpoint::EndpointTicket;
-use proto::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
+use proto::{ClientMessage, PROTOCOL_VERSION, ServerMessage, compare_world_mods};
 use tokio::sync::{Mutex, mpsc};
 
 // The wire types the session exchanges, re-exported so an embedding host (the
 // client's network bridge) can name a pose or a world without depending on
 // `proto` directly.
 pub use proto::{
-    BotState, Datagram, EatenCell, Gait, PeerFrame, PeerState, Streams, VoiceFrame, WeatherKind,
-    WeatherState, WorldState,
+    BotState, Datagram, EatenCell, Gait, ModRef, PeerFrame, PeerState, Streams, VoiceFrame,
+    WeatherKind, WeatherState, WorldState,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a
@@ -203,6 +203,20 @@ async fn send_to(connection: &Connection, message: &ServerMessage) -> Result<(),
     write_message(&mut send, message).await
 }
 
+/// Sends a refusal and lets the peer read it before the connection goes away.
+/// `Connection::close` discards outstanding data, so closing immediately would
+/// race the very message that explains the refusal.
+async fn refuse(connection: &Connection, message: &str) {
+    let _ = send_to(
+        connection,
+        &ServerMessage::Error {
+            message: message.to_string(),
+        },
+    )
+    .await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), connection.closed()).await;
+}
+
 /// The server's state: who is in the session, and the connection to reach them.
 struct Server {
     /// The local player's name. They have no connection of their own; what they
@@ -213,6 +227,8 @@ struct Server {
     /// Names in join order, the host first.
     roster: Vec<String>,
     connections: Vec<(String, Connection)>,
+    /// The world-mod set every joiner must present; `client` mods never travel.
+    world_mods: Vec<ModRef>,
 }
 
 impl Server {
@@ -445,6 +461,13 @@ impl Host {
     /// Binds, starts accepting, and returns the host. The local player's name
     /// is sanitized and becomes the first entry in the roster.
     pub async fn start(host_name: &str) -> Result<Host, Error> {
+        Host::start_with_mods(host_name, Vec::new()).await
+    }
+
+    /// Like [`Host::start`], with the world-mod set every joiner must present.
+    /// A client whose set differs is refused with a line naming what is wrong,
+    /// rather than silently simulating a different world.
+    pub async fn start_with_mods(host_name: &str, world_mods: Vec<ModRef>) -> Result<Host, Error> {
         let endpoint = bind_endpoint().await?;
         let ticket = EndpointTicket::new(endpoint.addr()).encode_string();
 
@@ -455,6 +478,7 @@ impl Host {
             seed,
             roster: vec![local_name.clone()],
             connections: Vec::new(),
+            world_mods,
         }));
         let (events, receiver) = mpsc::unbounded_channel();
         let broadcaster = events.clone();
@@ -594,45 +618,44 @@ async fn handle_connection(
     let hello: ClientMessage = match read_message(&mut recv).await {
         Ok(hello) => hello,
         Err(error) => {
-            let _ = send_to(
-                &connection,
-                &ServerMessage::Error {
-                    message: error.to_string(),
-                },
-            )
-            .await;
-            connection.close(1u8.into(), b"bad hello");
+            refuse(&connection, &error.to_string()).await;
             return;
         }
     };
 
-    let ClientMessage::Hello { version, name } = hello else {
-        let _ = send_to(
-            &connection,
-            &ServerMessage::Error {
-                message: "the first message must be a hello".to_string(),
-            },
-        )
-        .await;
-        connection.close(3u8.into(), b"hello");
+    let ClientMessage::Hello {
+        version,
+        name,
+        mods,
+    } = hello
+    else {
+        refuse(&connection, "the first message must be a hello").await;
         return;
     };
     if version != PROTOCOL_VERSION {
-        let _ = send_to(
+        refuse(
             &connection,
-            &ServerMessage::Error {
-                message: format!("protocol version {version} is not supported"),
-            },
+            &format!("protocol version {version} is not supported"),
         )
         .await;
-        connection.close(2u8.into(), b"version");
         return;
     }
 
-    let (assigned, roster, seed) = {
+    // The world-mod set must match the host's, or the two would simulate
+    // different worlds while believing they agree.
+    let mismatch = {
+        let server = state.lock().await;
+        compare_world_mods(&server.world_mods, &mods)
+    };
+    if !mismatch.is_empty() {
+        refuse(&connection, &mismatch.describe()).await;
+        return;
+    }
+
+    let (assigned, roster, seed, world_mods) = {
         let mut server = state.lock().await;
         let (assigned, roster) = server.join(&name, connection.clone());
-        (assigned, roster, server.seed)
+        (assigned, roster, server.seed, server.world_mods.clone())
     };
 
     if send_to(
@@ -642,6 +665,7 @@ async fn handle_connection(
             name: assigned.clone(),
             roster: roster.clone(),
             seed,
+            mods: world_mods,
         },
     )
     .await
@@ -844,6 +868,16 @@ impl Client {
     /// once the server has accepted us -- so [`Client::name`] is the canonical
     /// name, which may differ from the one requested.
     pub async fn join(ticket: &str, desired_name: &str) -> Result<Client, Error> {
+        Client::join_with_mods(ticket, desired_name, Vec::new()).await
+    }
+
+    /// Like [`Client::join`], presenting this client's world-mod set. The host
+    /// refuses a set that does not match its own.
+    pub async fn join_with_mods(
+        ticket: &str,
+        desired_name: &str,
+        mods: Vec<ModRef>,
+    ) -> Result<Client, Error> {
         let ticket: EndpointTicket = ticket
             .parse()
             .map_err(|error: iroh_tickets::ParseError| Error::Ticket(error.to_string()))?;
@@ -864,6 +898,7 @@ impl Client {
             &ClientMessage::Hello {
                 version: PROTOCOL_VERSION,
                 name: desired_name.to_string(),
+                mods,
             },
         )
         .await?;
@@ -879,6 +914,7 @@ impl Client {
                 name,
                 roster,
                 seed,
+                mods: _,
             } => {
                 if version != PROTOCOL_VERSION {
                     return Err(Error::Refused(format!(
@@ -1170,6 +1206,39 @@ mod tests {
                     name: "alice".to_string()
                 }
             );
+            host.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_world_mod_mismatch_is_refused() {
+        within(async {
+            let world = vec![ModRef {
+                id: "com.example.dash".to_string(),
+                version: "1.0.0".to_string(),
+                hash: 0xd15e_a5e,
+            }];
+            let host = Host::start_with_mods("host", world.clone())
+                .await
+                .expect("host");
+
+            // A client with no world mods is refused, and told what it lacks.
+            let refused = Client::join(host.ticket(), "alice").await;
+            let message = refused
+                .err()
+                .expect("a mismatch must be refused")
+                .to_string();
+            assert!(message.contains("com.example.dash"), "{message}");
+            assert!(message.contains("missing"), "{message}");
+
+            // A client presenting the same set joins.
+            let matching = Client::join_with_mods(host.ticket(), "bob", world)
+                .await
+                .expect("matching join");
+            assert_eq!(matching.name(), "bob");
+
+            matching.close().await;
             host.close().await;
         })
         .await;

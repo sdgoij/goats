@@ -86,7 +86,8 @@ uses.
 | **M14b** | Mod loader: `mods/` discovery, manifest, host asset registry, console verbs | M9 | M | ✅ **Done** — the pure loader is `crates/mods/`; the host wiring and the scene part are in place |
 | **M14c** | `goats` API v1: events, commands, accessors | M14a, M14b | L | ✅ **Done** — the hook surface; registries and asset slots split into M14c2 |
 | **M14c2** | Content registries + mutable asset slots: `bots.register`, `clips.register`, `assets.override` | M14c | M | ✅ **Done** — declared assets apply automatically; clips are gait-only |
-| **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | World mods must match host + peers exactly |
+| **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | ✅ **Done (handshake)** — the digest and refusal; the snapshot extension is M14d2 |
+| **M14d2** | World-mod simulation: `goats.rng`, `world.extend`, snapshot merging, `goatsd` evaluates mods | M14d | M | Lets a world mod actually change the world peers see |
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | UX and the mod-free vanilla suite |
 
 ---
@@ -1109,13 +1110,23 @@ decisions behind it and the constraints that shape it.
   run gait (`asset` is refused with a message until the model work, since
   swapping one clip's source is a different job); `goats.assets.override`
   re-points a slot at an opaque asset name. All three are pre-freeze.
-- **M14d — World mods and compatibility.** `registerStream`/`rng` extension of
-  `sceneUseSeed`/`sceneStreams`; `world.extend` merged into the snapshot built
-  by `sceneWorldBots`/`sceneWeatherState`/`sceneStreams`/`sceneEaten` and
-  applied in `netApplyWorld`; `ModRef { id, version, hash }` in
-  `ClientMessage::Hello` with a `PROTOCOL_VERSION` bump and an `Error` naming a
-  mismatch; `goatsd --mods`. World-mod rules are documented in `APIv1.md` §6.4
-  (seeded randomness only, no wall clock, JSON-only publish/apply).
+- **M14d — World-mod digest and join handshake. ✅ Done.** A `side: "world"` mod
+  is identified by `ModRef { id, version, hash }` (the loader's FNV-1a hash), and
+  the set travels in `ClientMessage::Hello`; the host compares it with
+  `proto::compare_world_mods` and refuses a mismatch with an `Error` naming the
+  missing, extra and differing ids, waiting for the peer to read it before the
+  connection drops. `PROTOCOL_VERSION` is `7`; `session` gains
+  `Host::start_with_mods` / `Client::join_with_mods`; the client bridge sends
+  the client's set when hosting or joining; and `goatsd --mods`/`--no-mods`
+  discovers mods (the shared `crates/mods` loader) and requires the set of every
+  joiner. The server does not simulate the mods yet -- M14d2 does that -- but the
+  gate is real, so a client with different world mods cannot silently diverge.
+- **M14d2 — World-mod simulation.** `goats.rng`/`registerStream` extending
+  `sceneUseSeed`/`sceneStreams`; `goats.world.extend` contributions merged into
+  the snapshot built by `sceneWorldBots` / `sceneWeatherState` /
+  `sceneStreams` / `sceneEaten` and applied in `netApplyWorld` (which adds a
+  `mods` field to the proto `WorldState`); and `goatsd` evaluating its mods into
+  the headless world so a hosting server actually runs them.
 - **M14e — UI and tests.** A session-only Mods screen in `menu.js`; a
   checked-in `mods/example/` fixture; `tools/mod_smoke_test.js` (hook fires,
   command dispatches, asset slot overrides, a throwing handler is isolated,

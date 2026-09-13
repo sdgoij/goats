@@ -503,6 +503,9 @@ World-facing mods also get §4.13.
 
 ### 4.13 World extension (multiplayer simulation)
 
+> **Planned (M14d2).** The digest and the join handshake land first (M14d,
+> §6); the stream/extension seam below is not implemented yet.
+
 This is the seam that lets a `side: "world"` mod add simulated state and have
 it travel in the existing world snapshot. A world mod registers extensions;
 the scene merges their `publish` output into the snapshot and calls their
@@ -701,10 +704,16 @@ ClientMessage::Hello { version: u16, name: String, mods: Vec<ModRef> }
 ```
 
 The server compares the client's sorted world-mod set with its own. On a
-mismatch it replies with the existing `ServerMessage::Error` naming the
-missing, extra and mismatched ids and refuses the connection. The client prints
-that in the console's network stream. This needs a `PROTOCOL_VERSION` bump
-(currently `6`) and a case in the session's handshake tests.
+mismatch it replies with `ServerMessage::Error` naming the missing, extra and
+differing ids, waits for the peer to read it, and drops the connection; the
+client surfaces that in the console's network stream. This shipped in M14d:
+`PROTOCOL_VERSION` is `7`, `ModRef { id, version, hash }` rides `Hello` and
+`Welcome`, `proto::compare_world_mods` is the shared comparison, and
+`session` has `Host::start_with_mods` / `Client::join_with_mods`. `goatsd`
+takes `--mods`/`--no-mods` and requires its world-mod set of every joiner. The
+server does not *simulate* the mods yet -- that is M14d2 (§4.13) -- but it does
+require the set, so a client with different world mods is refused rather than
+silently diverging.
 
 `Goatsd` takes `--mods <dir>` and loads the same loader; a server with no
 `mods/` only accepts clients with no world mods.

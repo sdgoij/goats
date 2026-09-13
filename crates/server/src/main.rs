@@ -14,6 +14,7 @@ mod headless;
 mod web;
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,13 +28,17 @@ const WORLD_EVERY: u64 = 6;
 const DEFAULT_DOWNLOAD: &str = "https://github.com/sdgoij/goats/releases";
 
 const USAGE: &str = "\
-goatsd [name] [--listen address:port] [--download URL]
+goatsd [name] [--listen address:port] [--download URL] [--mods DIRECTORY] [--no-mods]
 
   name                the name to host under (default: server)
   -l, --listen ADDR   serve a status page on ADDR; a bare port means 0.0.0.0:port.
                       Without it, no HTTP server is started.
       --download URL  client download link shown on the page
                       (default: the GitHub releases page)
+      --mods DIR      require this server's world mods; joiner must match
+                      (default search: $GOATS_MODS, then mods/ next to the binary,
+                      then mods/ in the current directory)
+      --no-mods       require no mods
   -h, --help          this text";
 
 /// What the command line asked for.
@@ -41,6 +46,8 @@ struct Options {
     name: String,
     listen: Option<String>,
     download: String,
+    mods_dir: Option<PathBuf>,
+    no_mods: bool,
 }
 
 /// Asking for help is not an error, but it ends the process the same way.
@@ -54,6 +61,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
         name: "server".to_string(),
         listen: None,
         download: DEFAULT_DOWNLOAD.to_string(),
+        mods_dir: None,
+        no_mods: false,
     };
     let mut named = false;
     let mut args = args;
@@ -66,6 +75,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
             "--download" => {
                 options.download = args.next().ok_or("--download needs a URL")?;
             }
+            "--mods" => {
+                options.mods_dir = Some(PathBuf::from(
+                    args.next().ok_or("--mods needs a directory")?,
+                ));
+            }
+            "--no-mods" => options.no_mods = true,
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             other => {
                 if named {
@@ -77,6 +92,55 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
         }
     }
     Ok(Parsed::Run(options))
+}
+
+/// The mods directory, the same search the client uses: an explicit flag, else
+/// `$GOATS_MODS`, else `mods/` next to the executable, else `mods/` in the
+/// working directory.
+fn resolve_mods_dir(options: &Options) -> Option<PathBuf> {
+    if options.no_mods {
+        return None;
+    }
+    if let Some(dir) = &options.mods_dir {
+        return Some(dir.clone());
+    }
+    if let Some(dir) = std::env::var_os("GOATS_MODS") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join("mods");
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+    let candidate = PathBuf::from("mods");
+    if candidate.is_dir() {
+        return Some(candidate);
+    }
+    None
+}
+
+/// The world-mod set this server requires every joiner to present, in id order.
+/// The server does not simulate the mods yet (that is M14d2), but requiring the
+/// set now means a client with different world mods is refused rather than
+/// silently diverging.
+fn world_mod_refs(loader: &mods::Loader) -> Vec<session::ModRef> {
+    let mut refs: Vec<session::ModRef> = loader
+        .mods()
+        .iter()
+        .filter(|manifest| manifest.side == mods::Side::World)
+        .map(|manifest| session::ModRef {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            hash: manifest.hash,
+        })
+        .collect();
+    refs.sort_by(|a, b| a.id.cmp(&b.id));
+    refs
 }
 
 #[tokio::main]
@@ -94,7 +158,25 @@ async fn main() {
         }
     };
 
-    let mut host = match Host::start(&options.name).await {
+    let loader = match resolve_mods_dir(&options) {
+        Some(dir) => {
+            eprintln!("goatsd: scanning {}", dir.display());
+            mods::Loader::discover(&dir)
+        }
+        None => mods::Loader::empty(),
+    };
+    for error in loader.errors() {
+        eprintln!("goatsd: {error}");
+    }
+    let world_mods = world_mod_refs(&loader);
+    if !world_mods.is_empty() {
+        eprintln!(
+            "goatsd: {} world mods required of every joiner",
+            world_mods.len()
+        );
+    }
+
+    let mut host = match Host::start_with_mods(&options.name, world_mods).await {
         Ok(host) => host,
         Err(error) => {
             eprintln!("goatsd: could not host: {error}");
