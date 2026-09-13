@@ -91,6 +91,7 @@ uses.
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, `tools/mod_smoke_test.js`, CI syntax-check, a world-mod determinism test |
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; `tools/birds_mod_test.js` |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
+| **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | One toolchain, and the tests finally exercise the real engine |
 
 ---
 
@@ -1199,6 +1200,113 @@ slots are the portable route, since the host owns resolution.
 
 ---
 
+## M15 — Rust harness: the scene tests run on Slag
+
+The three Node harnesses (`tools/goat_logic_test.js`, `tools/mod_smoke_test.js`,
+`tools/birds_mod_test.js`) are the project's test suite, and they are the last
+thing that needs Node. They also test the scene against a **model of the
+engine**, so they cannot catch a binding or a builtin the real engine lacks.
+`crates/server` already proves the alternative works: `headless.rs` evaluates the
+client's exact scene on Slag against a null `rl`, with no window and no raylib.
+M15 moves the harness onto that footing, so `cargo test` is the whole gate and
+the tests run on the engine that actually ships.
+
+**Decisions (settled).**
+
+- **One scene list.** A new dependency-free `crates/scene` owns the ordered
+  list, the joined script and the `rl` stubs; the client, the server and the
+  harness all read it. `crates/goats/src/main.rs` stops carrying its own
+  `concat!` list, and the server's client/server drift test goes with it: a
+  single source cannot drift.
+- **Assertions in Rust.** Only the fake engine stays JavaScript, and only
+  because it has to -- the scene calls `rl` from JavaScript. The driver and every
+  assertion are Rust.
+- **No Node, in any way.** The end state has no `setup-node`, no `node` step and
+  no `tools/*_test.js`. Slag's builtin surface already covers what the stubs use,
+  `Proxy` included (verified in the linked engine: `Proxy`, its traps,
+  `Proxy.revocable`, `Reflect` and `String.prototype.padEnd` all work), so the two
+  mod tests' catch-all stubs port as they are rather than being rewritten as
+  explicit enumerations.
+- **No Node oracle.** The expected values -- magic frames, gait speeds, clip
+  names -- are already written into the current checks, so the port transcribes
+  them verbatim. A mismatch is a finding to investigate, not a number to
+  re-baseline.
+- **A strict stub.** The harness's `rl` returns packed numbers from `color` and
+  checks that every argument of a draw or model call is a number -- the guard
+  `birds_mod_test.js` already carries, which is what caught an object colour
+  reaching `drawCube` and aborting the birds on the client.
+- **The cost is accepted.** See below; the harness doubles as Slag's performance
+  workload.
+
+**What it costs (measured).**
+
+| | JIT/eval | 4050 frames |
+| --- | --- | --- |
+| Node/V8 (today, the whole 164-check run) | — | 1.9 s |
+| Slag, release | 0.10 s | **26.6 s** |
+| Slag, debug | 0.70 s | **113.4 s** |
+
+The engine's own Rust is what is slow unoptimized, so the harness runs in
+`--release`; in debug it is a two-minute test. That is the price of dropping
+Node, and it is also the first time the engine's speed is visible as a number:
+the same workload is what Slag's own `--jit-bench` measures, so engine work now
+shows up here.
+
+**Where it lives.**
+
+| Piece | Path |
+| --- | --- |
+| The scene list, the joined script and both `rl` stubs | `crates/scene/` |
+| The harness: driver, glue, observations | `crates/harness/` |
+| The ported assertions | `crates/harness/tests/` |
+| The fixtures the tests load | `mods/example/`, `mods/birds/` |
+
+`crates/harness` depends on `slag` with only the `jit` feature, exactly as
+`crates/server` does, so the tests build without raylib and without a display.
+
+**Phases.**
+
+- **M15a — Single-source the scene; spike the harness.** `crates/scene` (the
+  list, `SCENE`, `null_rl.js` moved from the server, `harness_rl.js`) plus a
+  `crates/harness` skeleton that boots the scene on Slag, drives a short timeline
+  and returns one observations JSON. The client and the server switch to
+  `scene::SCENE`. Confirms the boundary, the observation shape, and that several
+  contexts can run in parallel across test threads.
+- **M15b — The stub, the timeline and the probes.** Port `harness_rl.js` (the
+  recording `Proxy` stub with the strict numeric guard), the 4050-frame input
+  timeline and the per-frame probes, driven from Rust. Observations come back as
+  one JSON string, parsed into typed Rust structs -- the shape `sceneWorldJson`
+  already established.
+- **M15c — The assertions.** Port the 164 checks to `#[test]`s, expected values
+  transcribed from the current table. This is the bulk of the work, and the point
+  at which Node stops being needed at all.
+- **M15d — The mod tests.** Port `birds_mod_test.js` and `mod_smoke_test.js`.
+  Much of the ground is covered in Rust already -- `crates/mods` has 21 tests over
+  discovery, manifests, ordering, zips, reload and the watcher, and a `server`
+  test loads the real birds fixture through the real loader -- so this is
+  consolidation as much as porting, and the redundant cases are dropped rather
+  than duplicated.
+- **M15e — Cut Node.** Drop `setup-node`, the `node --check` glob and the three
+  `node` steps from `.github/workflows/ci.yml`; delete the three `tools/*_test.js`
+  files; update `README.md` (§Releases, §Layout, §Tests), `APIv1.md` (§10) and the
+  cross-cutting notes here.
+
+The Python tools stay: `tools/inspect_glb.py`, `goat_states.py` and
+`goat_variants.py` are Blender and model-authoring scripts, not tests, and have
+nothing to do with the harness.
+
+**Constraints to respect.** The port has to keep the assertions' *meaning*, not
+just make them pass: the magic frame indices (the rain speed at frame 3400, the
+console probes at frame 4007+) encode real behaviour, and re-deriving them would
+turn the suite into a description of whatever the code happens to do. The strict
+stub is deliberately stricter than the server's null `rl`, so a test that needs
+the looser behaviour should say why. And the harness is one long deterministic
+run and therefore one test; splitting it into parallel scenarios is an optional
+later step, and it changes the frame indices, so it must not land in the same
+change as the port.
+
+---
+
 ## Cross-cutting work
 
 - **Host status page.** ✅ **Done.** `goatsd --listen host:port` serves a small
@@ -1214,7 +1322,9 @@ slots are the portable route, since the host owns resolution.
   the order listed in `crates/goats/src/main.rs`. The host concatenates them and
   evaluates the result as one script, so every part shares a single top-level
   scope and the engine still needs no module system; the headless harness parses
-  the same list out of the same file.
+  the same list out of the same file. (M15 moves this list into `crates/scene`,
+  so the client, the server and the harness share one copy instead of parsing
+  one.)
 - **Workspace.** ✅ **Done.** The repo is a Cargo workspace: `crates/goats` (the
   client and the JS scene, and its `default-members`, so `cargo run` means the
   client), `crates/proto` (the wire types, framing and name rules, with no iroh
@@ -1322,3 +1432,9 @@ slots are the portable route, since the host owns resolution.
     the last world. The clean fix is a per-mod datagram (or a smaller herd
     encoding); until then, world mods must keep `publish` to a handful of
     rounded numbers per entity.
+21. **Slag performance.** Once the harness runs on Slag (M15), the scene costs
+    ~6.6 ms/frame there against ~0.47 ms on Node, so the suite goes from ~2 s to
+    ~27 s. That is affordable, but it makes the engine's speed measurable for the
+    first time: profiling the frame loop, and comparing the JIT against the
+    interpreter on a realistic workload, becomes a self-contained task instead of
+    a guess.
