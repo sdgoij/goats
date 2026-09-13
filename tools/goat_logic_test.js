@@ -273,6 +273,9 @@ const rl = Object.assign({}, constants, {
         else if (s.indexOf('Slag goat') >= 0) splashTitle = true;
         else if (s.indexOf('loading ') >= 0) splashStep = s;
     },
+    // Text measurement, the same width `drawText` renders with. The console wraps
+    // against it, so the real path is what gets exercised here.
+    measureTextEx: (text, size) => ({ x: String(text).length * size * 0.55, y: size }),
 });
 
 const sandbox = {
@@ -1046,6 +1049,56 @@ try {
     modMenuTest.error = String(e);
 }
 
+// Help formatting: `help` is a page grouped by topic, the console splits a
+// multi-line reply into one entry per row, and anything still too wide wraps.
+const helpTest = {};
+try {
+    const reply = sandbox.sceneCommand('help');
+    const rows = reply.split('\n');
+    helpTest.paged = reply.indexOf('ok help - commands by topic') === 0 && rows.length >= 5;
+    helpTest.grouped = rows.some((r) => /^\s{2}basics\s+help ping$/.test(r)) &&
+        rows.some((r) => /^\s{2}mods\s+mod$/.test(r)) &&
+        rows.some((r) => /^\s{2}flow\s+pause resume step quit$/.test(r));
+
+    // A multi-line reply becomes one scrollback entry per row, so `drawConsole`
+    // (one entry per row) shows the whole page rather than only the first line.
+    sandbox.sceneCommand('console close');
+    sandbox.sceneCommand('console say help');
+    const lines = JSON.parse(sandbox.sceneCommand('console').slice(3)).lines;
+    helpTest.splitLines = lines.some((l) => l.indexOf('local: ok help - commands by topic') >= 0) &&
+        lines.some((l) => /^local: \s{2}basics\s+help ping$/.test(l)) &&
+        lines.some((l) => /^local: \s{2}flow\s+pause resume step quit$/.test(l));
+    sandbox.sceneCommand('console close');
+
+    // A long, indented line wraps to the panel width, keeps its indentation, and
+    // every row measures inside the width.
+    const wrapProbe = JSON.parse(vm.runInContext(
+        '(function () {' +
+        '  var rows = consoleWrap("      " + Array(80).join("word "), 200, 18);' +
+        '  return JSON.stringify({' +
+        '    count: rows.length,' +
+        '    fits: rows.every(function (r) { return consoleTextWidth(r, 18) <= 200; }),' +
+        '    indented: rows.every(function (r) { return r.slice(0, 6) === "      "; })' +
+        '  });' +
+        '})()', sandbox));
+    helpTest.wrapped = wrapProbe.count > 1 && wrapProbe.fits && wrapProbe.indented;
+
+    // A single long token is hard-split instead of running off, and nothing is
+    // lost in the split.
+    const splitProbe = JSON.parse(vm.runInContext(
+        '(function () {' +
+        '  var rows = consoleWrap("x".repeat(500), 200, 18);' +
+        '  return JSON.stringify({' +
+        '    count: rows.length,' +
+        '    fits: rows.every(function (r) { return consoleTextWidth(r, 18) <= 200; }),' +
+        '    whole: rows.join("").length === 500' +
+        '  });' +
+        '})()', sandbox));
+    helpTest.hardSplit = splitProbe.count > 1 && splitProbe.fits && splitProbe.whole;
+} catch (e) {
+    helpTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -1202,6 +1255,12 @@ const checks = [
         cp(4007).x !== cp(4008).x || cp(4007).z !== cp(4008).z, [cp(4007), cp(4008)]],
     ['the console freezes the goat',
         cp(4009).x === cp(4011).x && cp(4009).z === cp(4011).z, [cp(4009), cp(4011)]],
+    // Help formatting: paged by topic, split across rows, and wrapped to fit.
+    ['help is a short page grouped by topic', helpTest.paged && helpTest.grouped, helpTest],
+    ['a multi-line reply becomes one entry per row', helpTest.splitLines, helpTest],
+    ['a long console line wraps inside the width', helpTest.wrapped, helpTest],
+    ['a long token is hard-split without loss', helpTest.hardSplit, helpTest],
+    ['no help formatting errors', helpTest.error === undefined, helpTest.error],
     // Network bridge (M10): the scene end of it, driven without a socket.
     ['no network bridge errors', netTest.error === undefined, netTest.error],
     ['nothing is queued at rest', netTest.drainEmpty, netTest],

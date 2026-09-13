@@ -43,9 +43,13 @@ let consoleSeen = false;
 // answer, passed to `action`, rather than being dispatched as a command.
 let consolePrompt = null;
 
-// Append a line, dropping the oldest once the ring is full.
+// Append a line, dropping the oldest once the ring is full. A reply may carry
+// newlines (the `help` page does), so it is split into one entry per row.
 function consolePush(text, kind) {
-    consoleLines.push({ text: String(text), kind: kind || "local" });
+    const parts = String(text).split("\n");
+    for (let i = 0; i < parts.length; i++) {
+        consoleLines.push({ text: parts[i], kind: kind || "local" });
+    }
     if (consoleLines.length > CONSOLE_MAX_LINES) {
         consoleLines.splice(0, consoleLines.length - CONSOLE_MAX_LINES);
     }
@@ -230,6 +234,50 @@ function consoleUpdate() {
     return false;
 }
 
+// The width of a console row in pixels. `drawText` uses the default font at
+// spacing 0, and `measureTextEx` measures the same font, so the two agree. A
+// stub without it falls back to an estimate so the harness still wraps.
+function consoleTextWidth(text, size) {
+    if (typeof rl.measureTextEx === "function") {
+        const measured = rl.measureTextEx(text, size, 0);
+        if (measured !== undefined && measured !== null && typeof measured.x === "number") {
+            return measured.x;
+        }
+    }
+    return String(text).length * size * 0.55;
+}
+
+// Break one line into rows that fit `maxWidth`. Words stay whole; a single long
+// token (a URL, a JSON blob) is split rather than run off the panel. The leading
+// indentation is kept on every row, so columns stay lined up after a wrap.
+function consoleWrap(text, maxWidth, size) {
+    if (consoleTextWidth(text, size) <= maxWidth) return [text];
+    const indent = (/^\s*/.exec(text) || [""])[0];
+    const words = text.slice(indent.length).split(" ");
+    const rows = [];
+    let row = "";
+    for (let i = 0; i < words.length; i++) {
+        const word = words[i];
+        const candidate = row === "" ? word : row + " " + word;
+        if (consoleTextWidth(indent + candidate, size) <= maxWidth) {
+            row = candidate;
+            continue;
+        }
+        if (row !== "") rows.push(row);
+        let rest = word;
+        while (consoleTextWidth(indent + rest, size) > maxWidth && rest.length > 1) {
+            let cut = rest.length - 1;
+            while (cut > 1 && consoleTextWidth(indent + rest.slice(0, cut), size) > maxWidth) cut -= 1;
+            rows.push(rest.slice(0, cut));
+            rest = rest.slice(cut);
+        }
+        row = rest;
+    }
+    if (row !== "") rows.push(row);
+    for (let i = 0; i < rows.length; i++) rows[i] = indent + rows[i];
+    return rows;
+}
+
 // The overlay: a translucent panel over the top of the screen, the scrollback's
 // last visible lines, then the input line with its caret.
 function drawConsole() {
@@ -238,13 +286,24 @@ function drawConsole() {
     const lineH = 18;
     const pad = 10;
     const maxRows = Math.max(3, Math.floor((sh * 0.5 - pad * 2 - lineH) / lineH));
-    const count = Math.min(consoleLines.length, maxRows);
-    const first = consoleLines.length - count;
+    const maxWidth = Math.max(80, sw - pad * 2);
+    // Wrap to display rows first, so a long reply or chat line never runs off,
+    // then keep the last `maxRows` of them.
+    const rows = [];
+    for (let i = 0; i < consoleLines.length; i++) {
+        const entry = consoleLines[i];
+        const wrapped = consoleWrap(entry.text, maxWidth, lineH);
+        for (let j = 0; j < wrapped.length; j++) {
+            rows.push({ text: wrapped[j], kind: entry.kind });
+        }
+    }
+    const count = Math.min(rows.length, maxRows);
+    const first = rows.length - count;
     const panelH = Math.min(sh, pad * 2 + (count + 1) * lineH);
     rl.drawRectangle(0, 0, sw, panelH, rl.color(8, 10, 14, 215));
     let y = pad;
     for (let i = 0; i < count; i++) {
-        const line = consoleLines[first + i];
+        const line = rows[first + i];
         rl.drawText(line.text, pad, y, lineH, CONSOLE_COLORS[line.kind] || CONSOLE_COLORS.input);
         y += lineH;
     }

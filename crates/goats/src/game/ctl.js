@@ -19,11 +19,27 @@ let ctlStep = 0;
 // (which goat.js routes its movement reads through).
 const ctlHeld = {};
 
-const HELP = "help ping state stats time weather bots camera features fps " +
-    "jump sleep wake restart kill health energy heal eat grass walk trot run back stop " +
-    "turn yaw pos phase pause resume step lighting shadows sky mute settings setting ui console " +
-    "mod host connect leave who net copy say msg " +
-    "screenshot quit";
+// The vocabulary, grouped one topic per line. The console shows a multi-line
+// reply and wraps anything still too wide, so `help` is a short page rather than
+// one line that runs off the panel.
+const HELP_GROUPS = [
+    ["basics", "help ping"],
+    ["state", "state stats time weather bots camera pos phase features fps"],
+    ["move", "jump sleep wake walk trot run back stop turn yaw"],
+    ["vitals", "health energy heal eat grass restart kill"],
+    ["view", "lighting shadows sky mute settings setting ui console screenshot"],
+    ["session", "host connect leave who net copy say msg"],
+    ["mods", "mod"],
+    ["flow", "pause resume step quit"],
+];
+
+const HELP = (function () {
+    const rows = ["help - commands by topic"];
+    for (let i = 0; i < HELP_GROUPS.length; i++) {
+        rows.push("  " + HELP_GROUPS[i][0].padEnd(8) + HELP_GROUPS[i][1]);
+    }
+    return rows.join("\n");
+})();
 
 // A movement key is down if a script holds it or the real keyboard does, and no
 // menu or the console is swallowing input.
