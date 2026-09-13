@@ -91,7 +91,7 @@ uses.
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, `tools/mod_smoke_test.js`, CI syntax-check, a world-mod determinism test |
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; `tools/birds_mod_test.js` |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
-| **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | One toolchain, and the tests finally exercise the real engine |
+| **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | M15a–M15c **Done** — 141 cases on the engine; M15d (mods) and M15e (cut Node) remain |
 
 ---
 
@@ -1266,26 +1266,51 @@ shows up here.
 
 **Phases.**
 
-- **M15a — Single-source the scene; spike the harness.** `crates/scene` (the
-  list, `SCENE`, `null_rl.js` moved from the server, `harness_rl.js`) plus a
-  `crates/harness` skeleton that boots the scene on Slag, drives a short timeline
-  and returns one observations JSON. The client and the server switch to
-  `scene::SCENE`. Confirms the boundary, the observation shape, and that several
-  contexts can run in parallel across test threads.
-- **M15b — The stub, the timeline and the probes.** Port `harness_rl.js` (the
-  recording `Proxy` stub with the strict numeric guard), the 4050-frame input
-  timeline and the per-frame probes, driven from Rust. Observations come back as
-  one JSON string, parsed into typed Rust structs -- the shape `sceneWorldJson`
-  already established.
-- **M15c — The assertions.** Port the 164 checks to `#[test]`s, expected values
-  transcribed from the current table. This is the bulk of the work, and the point
-  at which Node stops being needed at all.
-- **M15d — The mod tests.** Port `birds_mod_test.js` and `mod_smoke_test.js`.
-  Much of the ground is covered in Rust already -- `crates/mods` has 21 tests over
-  discovery, manifests, ordering, zips, reload and the watcher, and a `server`
-  test loads the real birds fixture through the real loader -- so this is
-  consolidation as much as porting, and the redundant cases are dropped rather
-  than duplicated.
+- **M15a — Single-source the scene; spike the harness. ✅ Done.** `crates/scene`
+  owns the ordered list, the `SCENE` `concat!` and both `rl` stubs -- `null_rl.js`,
+  moved off the server, and the recording `harness_rl.js` -- so the client, the
+  headless server and the harness share one copy and the client/server drift test
+  is gone. `crates/harness` evaluates the scene on Slag (the `jit` feature only:
+  no raylib, no display), drives the scene's own `run()` loop and reads the
+  observations back as one JSON string. The spike pins the footing: the scripted
+  gaits land on the same frames the Node harness used, the run is deterministic,
+  `help` survives as a multi-line page (which exercises `padEnd` on the real
+  engine), and two contexts run on two threads at once. The three Node harnesses
+  were repointed at `crates/scene` so they stay green as the cross-check, and
+  `main.rs` still owns the embedded-asset table their checks read.
+- **M15b — The stub, the timeline and the probes. ✅ Done.** The recording `rl`
+  now covers the whole surface the assertions need: the per-frame timeline and the
+  console probes, the model/shader/texture/audio call tables, the terrain mesh,
+  where the goat and each bot were drawn, the scene's own `console.log` lines, and
+  a counter set a test can zero between measurements. `Observations` carries it as
+  typed Rust, plus `observe` (re-read after driving the scene), `call` (any scene
+  function by name), `eval` (into the scene's own scope) and `reset_counters`,
+  each returning an `{ok, value}` envelope so a failure reports what the scene
+  said rather than a conversion error. Two engine details surfaced, both worth
+  knowing: the host `console.log` is a native function with no
+  `Function.prototype` (so it cannot be forwarded with `.apply`), and `Math.min` /
+  `Math.max` are natives of the same kind. Because the stub's shaders are valid,
+  the harness takes the real lit and shadow paths as the Node harness did: the
+  same run draws 1.49M cubes and costs 35.5s (8.8 ms/frame).
+- **M15c — The assertions. ✅ Done** (the mod cases are M15d). 141 cases in
+  `scene_logic.rs`, on one 4050-frame run reported through a collector, so a
+  failure names itself and the rest still run -- the Node harness's reporting,
+  kept. Ported: the gaits, stats and death; weather, lighting, the sky shader and
+  audio; the splash and the embedded-asset table; grass, eating and the terrain;
+  the settings and the tuning tree; the console and the clipboard; the network
+  bridge, chat and world sync; the herd's animation; and the help page's
+  formatting. The expected values are transcribed, never re-derived, and a
+  name-by-name comparison against the Node harness's case list is what confirmed
+  the coverage -- it caught three bot cases that had been missed.
+- **M15d — The mod tests.** Port the 24 mod cases in `goat_logic_test.js` (the
+  `goats` lifecycle, commands and observers, events, the tuning hook, the
+  accessors, the registries, the world extension and the Mods screen), plus
+  `birds_mod_test.js` and `mod_smoke_test.js`. Much of the last two is covered in
+  Rust already -- `crates/mods` has 18 tests over discovery, manifests, ordering,
+  zips, reload and the watcher, and a `server` test loads the real birds fixture
+  through the real loader -- so that part is consolidation, and the redundant
+  cases are dropped rather than duplicated. The mod cases stage their own tables,
+  so they are their own test file with their own short run.
 - **M15e — Cut Node.** Drop `setup-node`, the `node --check` glob and the three
   `node` steps from `.github/workflows/ci.yml`; delete the three `tools/*_test.js`
   files; update `README.md` (§Releases, §Layout, §Tests), `APIv1.md` (§10) and the
