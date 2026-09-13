@@ -15,10 +15,10 @@
 //! (WebRTC, Silero) as the fancier variant; the gate here has no dependency and
 //! is easy to tune.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -54,38 +54,80 @@ const VAD_FLOOR_RISE: f32 = 0.002; // how fast it creeps up through noise
 const VAD_HOLD_FRAMES: u32 = 15; // 300 ms of tail after the last speech frame
 const PREROLL_FRAMES: usize = 2; // 40 ms kept for the onset
 
-/// The half-buffer raylib streams through, in frames. raylib's stream API is a
-/// virtual double buffer, not a ring: `UpdateAudioStream` fills one half and
-/// zero-fills whatever is left over, and it refuses the call when neither half
-/// is free. So the write has to be exactly one half, and the half has to be at
-/// least the device period (raylib raises it if not, which is why the size is
-/// set well above a desktop period rather than tuned tight). 4096 frames is
-/// ~85 ms at 48 kHz, the size raylib's own streaming example uses. The cost is
-/// that much playout latency; tightening this is M13c's jitter buffer.
-const STREAM_HALF_FRAMES: usize = 4096;
+/// Decoded voice is mixed into one queue that a single raylib stream drains
+/// through its callback, and playback starts once this much is buffered, so the
+/// stream does not open on an empty queue. Four packets is ~80 ms.
+const VOICE_CUSHION_FRAMES: usize = FRAME_SAMPLES * 4;
 
-/// The most audio held for one speaker before the oldest is dropped, so a
-/// stalled mixer cannot grow the queue without bound. Four halves is ~340 ms.
-const MAX_QUEUED_FRAMES: usize = STREAM_HALF_FRAMES * 4;
+/// The most audio held before the oldest is dropped, so a stalled mixer cannot
+/// grow the queue without bound. Half a second is far past useful for voice.
+const VOICE_QUEUE_MAX_FRAMES: usize = SAMPLE_RATE as usize / 2;
 
-/// The frame loop's handle on voice: decoded audio waiting for raylib, the
-/// per-speaker streams, and the master gain the scene owns.
-pub struct Voice {
-    decoded: Receiver<(String, Vec<f32>)>,
-    speakers: HashMap<String, Speaker>,
-    gain: Arc<AtomicU32>,
-    /// The gain already written to every stream, so a change can be pushed to
-    /// streams that have no new audio this frame (a mute takes effect at once).
-    applied_gain: f32,
-    running: Arc<AtomicBool>,
+/// The mix every decoded packet is appended to. It is a `OnceLock` rather than a
+/// field because raylib's stream callback takes no user-data pointer, so a
+/// plain `extern "C"` function has to be able to reach it.
+static MIX: OnceLock<Arc<Mutex<VecDeque<f32>>>> = OnceLock::new();
+
+/// The master gain, as `f32` bits, read by the callback so a mute is heard at
+/// once instead of at the next packet. `1.0` is `0x3F80_0000`.
+static MIX_GAIN: AtomicU32 = AtomicU32::new(0x3F80_0000);
+
+/// Cleared on shutdown, so a callback racing the stream's unload stays silent.
+static MIX_ON: AtomicBool = AtomicBool::new(true);
+
+/// raylib's stream callback: fill `frames` mono `f32` samples from the mix, with
+/// silence for any it cannot supply. raylib asks for exactly what the mixer
+/// needs, so there is no half-buffer to size and nothing to zero-fill by hand.
+///
+/// # Safety
+/// raylib calls this with a writable buffer of `frames` mono `f32` samples,
+/// which is the format the stream is created with.
+unsafe extern "C" fn mix_callback(data: *mut core::ffi::c_void, frames: core::ffi::c_uint) {
+    let frames = frames as usize;
+    if data.is_null() || frames == 0 {
+        return;
+    }
+    // SAFETY: the contract above.
+    let out = unsafe { std::slice::from_raw_parts_mut(data.cast::<f32>(), frames) };
+    out.fill(0.0);
+    if !MIX_ON.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(mix) = MIX.get() else {
+        return;
+    };
+    // raylib's own mixer locks a mutex per callback, so this is no worse than
+    // its playback path; a poisoned lock just means one buffer of silence.
+    let Ok(mut queue) = mix.lock() else {
+        return;
+    };
+    let gain = f32::from_bits(MIX_GAIN.load(Ordering::Relaxed));
+    drain_into(&mut queue, out, gain);
 }
 
-/// One remote speaker: their raylib stream, plus the PCM waiting for a free
-/// half of it.
-struct Speaker {
-    stream: raylib_sys::AudioStream,
-    /// Decoded PCM waiting for a free half of the stream buffer.
-    queued: Vec<f32>,
+/// Fills `out` from the mix at `gain`, with silence where the queue runs dry.
+/// Split from the callback so the mixing is testable without a device.
+fn drain_into(queue: &mut VecDeque<f32>, out: &mut [f32], gain: f32) {
+    out.fill(0.0);
+    if gain <= 0.0 {
+        return;
+    }
+    let take = out.len().min(queue.len());
+    for slot in &mut out[..take] {
+        *slot = queue.pop_front().unwrap_or(0.0) * gain;
+    }
+}
+
+/// The frame loop's handle on voice: decoded audio waiting for the mixer queue,
+/// the one stream every speaker goes through, and the master gain the scene owns.
+pub struct Voice {
+    decoded: Receiver<(String, Vec<f32>)>,
+    mix: Arc<Mutex<VecDeque<f32>>>,
+    /// Created on the first packet, once the scene has opened the audio device.
+    stream: Option<raylib_sys::AudioStream>,
+    /// Whether playback has started (the cushion filled).
+    playing: bool,
+    running: Arc<AtomicBool>,
 }
 
 impl Voice {
@@ -93,15 +135,15 @@ impl Voice {
     /// gets incoming audio: capture simply gives up, with a line on stderr.
     pub fn start(net: &mut Net) -> Voice {
         let running = Arc::new(AtomicBool::new(true));
-        let gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let (pcm_tx, pcm_rx) = mpsc::channel();
 
-        // Every stream is sized from here, so this has to be set before the
-        // first `LoadAudioStream` (which happens lazily in `pump`). The scene
-        // has already opened the audio device by now.
-        // SAFETY: a global setting on raylib's audio state; the value is the
-        // frame count of one buffer half.
-        unsafe { raylib_sys::SetAudioStreamBufferSizeDefault(STREAM_HALF_FRAMES as i32) };
+        // The mix has to exist before any callback can run, and the gadget the
+        // callback reads have no other owner.
+        let mix = MIX
+            .get_or_init(|| Arc::new(Mutex::new(VecDeque::new())))
+            .clone();
+        MIX_ON.store(true, Ordering::Relaxed);
+        MIX_GAIN.store(0x3F80_0000, Ordering::Relaxed); // 1.0
 
         // Decoding: one thread, one decoder, one frame at a time. The PCM goes
         // on the std channel above and reaches raylib from the frame loop.
@@ -156,96 +198,73 @@ impl Voice {
 
         Voice {
             decoded: pcm_rx,
-            speakers: HashMap::new(),
-            gain,
-            applied_gain: 1.0,
+            mix,
+            stream: None,
+            playing: false,
             running,
         }
     }
 
     /// The scene's master mute, as a 0..1 gain on everything a peer sends.
     pub fn set_gain(&self, gain: f32) {
-        self.gain
-            .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        MIX_GAIN.store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
-    /// Hands decoded audio to raylib's mixer. Called once a frame; all raylib
-    /// audio calls stay on this thread.
+    /// Mixes decoded audio into the queue the stream drains. Called once a frame;
+    /// every raylib call stays on this thread, while the callback that pulls from
+    /// the queue runs on raylib's audio thread.
     pub fn pump(&mut self) {
-        let gain = f32::from_bits(self.gain.load(Ordering::Relaxed));
-        if gain != self.applied_gain {
-            self.applied_gain = gain;
-            for speaker in self.speakers.values() {
-                // SAFETY: every stream came from `LoadAudioStream` and is owned
-                // by this map; raylib is only ever touched from this thread.
-                unsafe { raylib_sys::SetAudioStreamVolume(speaker.stream, gain) };
+        while let Ok((_from, samples)) = self.decoded.try_recv() {
+            if self.stream.is_none() {
+                // Created on the first packet, by which time the scene has opened
+                // the audio device. If it has not, the next packet retries rather
+                // than caching an unusable stream.
+                // SAFETY: a fresh stream from raylib, checked before use.
+                let stream = unsafe { raylib_sys::LoadAudioStream(SAMPLE_RATE, 32, 1) };
+                if !unsafe { raylib_sys::IsAudioStreamValid(stream) } {
+                    eprintln!("[voice] no playback stream yet (audio device not ready?)");
+                    return;
+                }
+                // SAFETY: a live stream owned by this struct from here on, and the
+                // callback matches the mono f32 format it is created with.
+                unsafe { raylib_sys::SetAudioStreamCallback(stream, Some(mix_callback)) };
+                if debug_on() {
+                    eprintln!("[voice] playback stream ready");
+                }
+                self.stream = Some(stream);
             }
-        }
 
-        while let Ok((from, samples)) = self.decoded.try_recv() {
-            let speaker = speaker_for(&mut self.speakers, from, gain);
-            speaker.queued.extend_from_slice(&samples);
-            if speaker.queued.len() > MAX_QUEUED_FRAMES {
-                let excess = speaker.queued.len() - MAX_QUEUED_FRAMES;
-                speaker.queued.drain(..excess);
+            let Ok(mut queue) = self.mix.lock() else {
+                return;
+            };
+            queue.extend(samples);
+            while queue.len() > VOICE_QUEUE_MAX_FRAMES {
+                queue.pop_front();
             }
-            // raylib can take exactly one half of the buffer, and only when a
-            // half has finished playing. Feeding anything less zero-fills the
-            // rest of that half, which is heard as a gap.
-            while speaker.queued.len() >= STREAM_HALF_FRAMES
-                && unsafe { raylib_sys::IsAudioStreamProcessed(speaker.stream) }
-            {
-                let block: Vec<f32> = speaker.queued.drain(..STREAM_HALF_FRAMES).collect();
-                if gain > 0.0 {
-                    feed(speaker.stream, &block);
+            let ready = queue.len() >= VOICE_CUSHION_FRAMES;
+            drop(queue);
+
+            if ready && !self.playing {
+                self.playing = true;
+                if let Some(stream) = self.stream {
+                    // SAFETY: the stream is live and owned by this struct.
+                    unsafe { raylib_sys::PlayAudioStream(stream) };
+                }
+                if debug_on() {
+                    eprintln!("[voice] playback started");
                 }
             }
         }
     }
 }
 
-/// The stream for one speaker, created on first use.
-fn speaker_for(speakers: &mut HashMap<String, Speaker>, from: String, gain: f32) -> &mut Speaker {
-    speakers.entry(from.clone()).or_insert_with(|| {
-        // SAFETY: a fresh stream from raylib, checked before use.
-        let stream = unsafe { raylib_sys::LoadAudioStream(SAMPLE_RATE, 32, 1) };
-        if unsafe { raylib_sys::IsAudioStreamValid(stream) } {
-            // SAFETY: a live stream, owned by this map from here on.
-            unsafe { raylib_sys::SetAudioStreamVolume(stream, gain) };
-            unsafe { raylib_sys::PlayAudioStream(stream) };
-            if debug_on() {
-                eprintln!("[voice] playback stream for {from} (gain {gain})");
-            }
-        } else {
-            eprintln!("[voice] could not open a playback stream for {from}");
-        }
-        Speaker {
-            stream,
-            queued: Vec::new(),
-        }
-    })
-}
-
-/// Hands one full half-buffer of PCM to raylib's mixer. The frame count must be
-/// exactly the stream's half-buffer size (`STREAM_HALF_FRAMES`): raylib zero-fills
-/// the remainder of the half, so a short write is silence, not a partial fill.
-fn feed(stream: raylib_sys::AudioStream, samples: &[f32]) {
-    if samples.is_empty() {
-        return;
-    }
-    // SAFETY: `stream` came from `LoadAudioStream`, the slice is live and the
-    // frame count matches it, and raylib is only touched from the frame loop.
-    unsafe {
-        raylib_sys::UpdateAudioStream(stream, samples.as_ptr().cast(), samples.len() as i32);
-    }
-}
-
 impl Drop for Voice {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
-        for (_, speaker) in self.speakers.drain() {
-            // SAFETY: every stream came from `LoadAudioStream` and is freed once.
-            unsafe { raylib_sys::UnloadAudioStream(speaker.stream) };
+        MIX_ON.store(false, Ordering::Relaxed);
+        if let Some(stream) = self.stream.take() {
+            // SAFETY: the stream came from `LoadAudioStream` and is freed once.
+            unsafe { raylib_sys::UnloadAudioStream(stream) };
         }
     }
 }
@@ -728,5 +747,94 @@ mod tests {
         assert_eq!(decoded.len(), FRAME_SAMPLES);
         let peak = decoded.iter().fold(0f32, |max, s| max.max(s.abs()));
         assert!(peak > 0.05, "the decoded frame is near-silent: peak {peak}");
+    }
+
+    #[test]
+    fn the_mix_fills_the_buffer_and_silences_the_rest() {
+        let mut queue: VecDeque<f32> = (0..4).map(|i| i as f32 / 4.0).collect();
+        let mut out = [1.0f32; 6];
+        drain_into(&mut queue, &mut out, 1.0);
+        assert_eq!(out[..4], [0.0, 0.25, 0.5, 0.75]);
+        assert_eq!(out[4..], [0.0, 0.0]);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn the_mix_applies_the_gain_and_respects_a_mute() {
+        let mut queue: VecDeque<f32> = VecDeque::from([1.0, 1.0]);
+        let mut out = [0.0f32; 2];
+        drain_into(&mut queue, &mut out, 0.5);
+        assert_eq!(out, [0.5, 0.5]);
+        assert!(queue.is_empty());
+
+        // Muted: silence, and the queued audio is left for the unmute.
+        let mut queue: VecDeque<f32> = VecDeque::from([1.0, 1.0]);
+        let mut out = [9.0f32; 2];
+        drain_into(&mut queue, &mut out, 0.0);
+        assert_eq!(out, [0.0, 0.0]);
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn the_mix_survives_an_empty_queue() {
+        let mut queue: VecDeque<f32> = VecDeque::new();
+        let mut out = [1.0f32; 3];
+        drain_into(&mut queue, &mut out, 1.0);
+        assert_eq!(out, [0.0, 0.0, 0.0]);
+    }
+
+    /// The playback wiring, against the real device. raylib's audio device needs
+    /// no window, so this runs headless, and it uses the same stream, callback and
+    /// queue the game does. It is `#[ignore]`d because a CI runner has no sound
+    /// card; run it where there is one, and you should hear a quiet 440 Hz tone:
+    ///
+    /// ```text
+    /// cargo test -p goats --release -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs a sound card"]
+    fn the_device_pulls_frames_from_the_mix() {
+        // SAFETY: raylib audio is independent of a window; nothing else is set up.
+        unsafe { raylib_sys::InitAudioDevice() };
+        if !unsafe { raylib_sys::IsAudioDeviceReady() } {
+            eprintln!("[voice] no audio device here; skipping the device check");
+            return;
+        }
+
+        let mix = MIX
+            .get_or_init(|| Arc::new(Mutex::new(VecDeque::new())))
+            .clone();
+        MIX_ON.store(true, Ordering::Relaxed);
+        MIX_GAIN.store(0x3F80_0000, Ordering::Relaxed); // 1.0
+
+        // One second of a quiet 440 Hz tone.
+        let tone: Vec<f32> = (0..SAMPLE_RATE as usize)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / SAMPLE_RATE as f32).sin() * 0.1)
+            .collect();
+        let total = tone.len();
+        mix.lock().expect("mix").extend(tone);
+
+        // SAFETY: a fresh mono f32 stream, with the production callback.
+        let stream = unsafe { raylib_sys::LoadAudioStream(SAMPLE_RATE, 32, 1) };
+        assert!(
+            unsafe { raylib_sys::IsAudioStreamValid(stream) },
+            "the stream could not be created"
+        );
+        unsafe { raylib_sys::SetAudioStreamCallback(stream, Some(mix_callback)) };
+        unsafe { raylib_sys::PlayAudioStream(stream) };
+
+        // Half a second of device time; the mixer should have taken that much.
+        thread::sleep(Duration::from_millis(500));
+        let left = mix.lock().expect("mix").len();
+        unsafe { raylib_sys::UnloadAudioStream(stream) };
+        unsafe { raylib_sys::CloseAudioDevice() };
+
+        let pulled = total - left;
+        eprintln!("[voice] device pulled {pulled} frames in 500 ms");
+        assert!(
+            (16_000..28_000).contains(&pulled),
+            "expected about 24000 frames in 500 ms, got {pulled} (0 means the mixer \
+             never called the callback)"
+        );
     }
 }

@@ -983,12 +983,13 @@ M13c. Until then voice plays at the master level.
   JSON carries the frame, with the payload base64 (a ~60-byte packet, so the
   overhead is tolerable at ≤4 players); a binary envelope is a later optimisation,
   not a redesign.
-- Playback: decoded PCM into a per-peer raylib `AudioStream` (M13a), fed from the
-  frame loop so every raylib call stays on one thread. raylib's stream API is a
-  virtual double buffer, not a ring -- `UpdateAudioStream` fills one half and
-  zero-fills the rest, and refuses the call when neither half is free -- so the
-  module sets the half size and writes exactly one half at a time. The client
-  names `raylib-sys` directly, because Slag does not re-export it.
+- Playback: decoded PCM into one raylib `AudioStream` (M13a) whose callback
+  drains a single mix queue, so every speaker shares a stream and raylib asks for
+  exactly the frames it needs. raylib's per-stream API is a virtual double buffer
+  that is easy to feed wrong -- a short write is zero-filled, and a feed loop can
+  leave one half permanently empty -- so the callback, the API meant for
+  generated audio, is used instead. The client names `raylib-sys` directly,
+  because Slag does not re-export it.
 - Mute: the scene's master mute reaches the module as a `voice_gain` intent and
   becomes the stream gain, so `M` silences voice along with everything else.
 
