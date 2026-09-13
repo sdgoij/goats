@@ -105,14 +105,15 @@ jobs:
       - name: Test the workspace
         run: cargo test --workspace
 
-      # Ship the licence and the readme alongside the self-contained binary.
+      # Ship the licence, the readme and the mod API reference alongside the
+      # self-contained binary.
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/goats.exe, target/release/goatsd.exe dist/
-          Copy-Item README.md, LICENSE.md dist/
+          Copy-Item README.md, LICENSE.md, APIv1.md dist/
           Compress-Archive -Path dist/* -DestinationPath ${{ matrix.package }} -Force
 
       - name: Package (Linux)
@@ -120,7 +121,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/goats target/release/goatsd dist/
-          cp README.md LICENSE.md dist/
+          cp README.md LICENSE.md APIv1.md dist/
           tar -czf ${{ matrix.package }} -C dist .
 
       - uses: actions/upload-artifact@v7

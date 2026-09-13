@@ -250,7 +250,7 @@ cargo run             # debug builds work too; see "Troubleshooting"
 Pushing a `v*` tag publishes all three archives as a GitHub Release; an ordinary
 push only builds and keeps the artifacts. Because the model and every sound are
 embedded, an archive is just the two executables (the game and `goatsd`) plus
-this readme and the licence.
+this readme, the licence and the mod API reference (`APIv1.md`).
 The AArch64 job uses GitHub's hosted arm64 runners, which a public repository
 gets on the free plan.
 
