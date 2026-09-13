@@ -993,11 +993,14 @@ M13c. Until then voice plays at the master level.
 - Mute: the scene's master mute reaches the module as a `voice_gain` intent and
   becomes the stream gain, so `M` silences voice along with everything else.
 
-Verified: unit tests for the gate, the resampler and the gain intent; the harness
-asserts that muting queues the intent; `cargo test --workspace`, `cargo fmt --all
--- --check` and `cargo clippy --workspace --all-targets -- -D warnings` clean. A
-microphone is required, and the two-client listen still needs a run on two
-machines that have one.
+Verified: unit tests for the gate, the resampler, the mix and the gain intent;
+the harness asserts that muting queues the intent; an `#[ignore]`d device test
+drives the real mixer headlessly and asserts the callback drains the mix at the
+device rate; `cargo test --workspace`, `cargo fmt --all -- --check` and `cargo
+clippy --workspace --all-targets -- -D warnings` clean. `GOATS_VOICE_LOOPBACK=1`
+plays the microphone back through the whole chain on one machine, which is how
+the chain is checked without a peer; the two-client listen still needs a run on
+two machines with microphones.
 
 ### M13c — Voice polish
 

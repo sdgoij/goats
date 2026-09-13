@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use crate::net::{Net, VoiceSender};
+use crate::net::{Net, VoiceIn, VoiceSender};
 
 /// Opus works at 48 kHz and the wire carries 20 ms frames, so a frame is 960
 /// samples. The playback stream, the detector and the pre-roll are all sized
@@ -145,9 +145,27 @@ impl Voice {
         MIX_ON.store(true, Ordering::Relaxed);
         MIX_GAIN.store(0x3F80_0000, Ordering::Relaxed); // 1.0
 
+        // In loopback the encoded frames come back to this same client instead of
+        // going out over the network and returning, so one person on one machine
+        // can hear the whole chain: capture, the gate, Opus, decode, the mix.
+        let loopback = loopback_enabled();
+        if loopback {
+            eprintln!("[voice] loopback: the microphone plays back locally");
+        }
+        let (echo_tx, echo_rx) = mpsc::channel::<VoiceIn>();
+        let sender = Outgoing {
+            net: net.voice_sender(),
+            echo: loopback.then_some(echo_tx),
+        };
+
         // Decoding: one thread, one decoder, one frame at a time. The PCM goes
         // on the std channel above and reaches raylib from the frame loop.
-        if let Some(mut voice_rx) = net.take_voice_receiver() {
+        let incoming = if loopback {
+            Some(Incoming::Loop(echo_rx))
+        } else {
+            net.take_voice_receiver().map(Incoming::Net)
+        };
+        if let Some(mut incoming) = incoming {
             let pcm = pcm_tx.clone();
             spawn("voice-out", move || {
                 let Some(mut decoder) = Decoder::new() else {
@@ -155,7 +173,7 @@ impl Voice {
                     return;
                 };
                 let mut played: u64 = 0;
-                while let Some((from, seq, payload)) = voice_rx.blocking_recv() {
+                while let Some((from, seq, payload)) = incoming.next() {
                     let Some(samples) = decoder.decode(&payload) else {
                         if debug_on() {
                             eprintln!("[voice] undecodable frame from {from} (seq {seq})");
@@ -180,7 +198,6 @@ impl Voice {
 
         // Capture and coding. The stream is opened on its own thread and kept
         // alive there; the encoder thread only ever sees 20 ms mono frames.
-        let sender = net.voice_sender();
         let (raw_tx, raw_rx) = mpsc::sync_channel::<Vec<f32>>(CAPTURE_BACKLOG);
         let capture_running = running.clone();
         spawn("voice-in", move || {
@@ -269,9 +286,43 @@ impl Drop for Voice {
     }
 }
 
+/// Where one encoded frame goes: out to the session, and (in loopback) back to
+/// this client's own decoder so the whole chain can be heard on one machine.
+struct Outgoing {
+    net: VoiceSender,
+    echo: Option<mpsc::Sender<VoiceIn>>,
+}
+
+impl Outgoing {
+    fn send(&self, seq: u32, payload: Vec<u8>) {
+        if let Some(echo) = &self.echo {
+            // Named as if it came from a peer, which is what the scene would show.
+            let _ = echo.send(("loopback".to_string(), seq, payload.clone()));
+        }
+        self.net.send(seq, payload);
+    }
+}
+
+/// Where the decoder's frames come from: the session's relay, or the loopback
+/// echo of this client's own encoder. Two channel types, one iterator.
+enum Incoming {
+    Net(tokio::sync::mpsc::Receiver<VoiceIn>),
+    Loop(mpsc::Receiver<VoiceIn>),
+}
+
+impl Incoming {
+    fn next(&mut self) -> Option<VoiceIn> {
+        match self {
+            // `blocking_recv` is called from the decode thread, not a runtime one.
+            Incoming::Net(receiver) => receiver.blocking_recv(),
+            Incoming::Loop(receiver) => receiver.recv().ok(),
+        }
+    }
+}
+
 /// The encoder thread: gate on speech, then encode. A frame is spoken if it
 /// clears the adapted floor, and a hold keeps it going through short gaps.
-fn encode_loop(raw: Receiver<Vec<f32>>, sender: VoiceSender) {
+fn encode_loop(raw: Receiver<Vec<f32>>, sender: Outgoing) {
     let Some(mut encoder) = Encoder::new() else {
         eprintln!("[voice] could not create an Opus encoder");
         return;
@@ -387,7 +438,7 @@ impl Gate {
 }
 
 /// Encodes one frame and queues it, bumping the sequence number on success.
-fn send_frame(encoder: &mut Encoder, sender: &VoiceSender, seq: &mut u32, frame: &[f32]) -> bool {
+fn send_frame(encoder: &mut Encoder, sender: &Outgoing, seq: &mut u32, frame: &[f32]) -> bool {
     if let Some(payload) = encoder.encode(frame) {
         sender.send(*seq, payload);
         *seq = seq.wrapping_add(1);
@@ -404,6 +455,13 @@ fn debug_on() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var("GOATS_VOICE_DEBUG").is_ok_and(|value| value == "1"))
+}
+
+/// Whether the microphone should play back locally instead of over a session.
+/// `GOATS_VOICE_LOOPBACK=1`, so one person on one machine can hear the whole
+/// chain without a peer; only unset, empty and `0` mean off.
+fn loopback_enabled() -> bool {
+    std::env::var("GOATS_VOICE_LOOPBACK").is_ok_and(|value| !value.is_empty() && value != "0")
 }
 
 fn frame_rms(frame: &[f32]) -> f32 {
