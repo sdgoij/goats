@@ -107,6 +107,7 @@ function sceneNetEvent(line) {
         consoleNet("net: unreadable event " + String(line));
         return;
     }
+    modEmit("session", event);
     switch (event.type) {
         case "session":
             // The world is shared by seed: the first event of every session,
@@ -392,6 +393,7 @@ function netApplyWorld(bots, weather, streams, eaten) {
     applyWeatherState(weather);
     sceneUseStreams(streams);
     applyEaten(eaten);
+    modEmit("world", { bots: bots, weather: weather, streams: streams, eaten: eaten });
     if (!Array.isArray(bots)) return;
     if (BOTS.length !== bots.length) setHerdSize(bots.length);
     for (let i = 0; i < bots.length && i < BOTS.length; i++) {

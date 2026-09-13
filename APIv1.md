@@ -238,11 +238,15 @@ reported, not silently ignored).
 
 ## 4. The `goats` API
 
-> **Implemented so far (M14b):** identity (`api`, `game`, `mod`), `log` / `warn` /
-> `error` / `fail`, `mods()`, `frozen()`, the `begin`/`end`/`freeze` lifecycle,
-> asset *lookup* on the per-mod handle (`assets.get`/`slots`/`all`), and the
-> `mod` console verbs. Events, command registration, the registries and the
-> player / camera / world / bots / settings / tuning accessors are M14c.
+> **Implemented so far (M14b/M14c):** identity (`api`, `game`, `mod`), `log` /
+> `warn` / `error` / `fail`, `mods()`, `frozen()`, the `begin`/`end`/`freeze`
+> lifecycle, asset *lookup* on the per-mod handle (`assets.get`/`slots`/`all`),
+> the `mod` console verbs, and the whole hook surface: `on` for every event in
+> §4.2, `command` registration plus `command` observers, `run`, and the
+> `player` / `camera` / `world` / `bots` / `settings` / `tuning` / `net`
+> accessors. Registration closes at `freeze()` (a reload re-opens the window for
+> the mod being reloaded). The content registries of §4.4 (`bots.register`,
+> `clips.register`, `assets.override`) and the mutable asset slots land in M14c2.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
@@ -530,7 +534,7 @@ Rules:
 goats.log("...");     // console.log with a "[mod:<id>]" prefix
 goats.warn("...");
 goats.error("...");
-goats.command("weather rain");   // dispatch a line through sceneCommand
+goats.run("weather rain");       // dispatch a line through sceneCommand
 goats.fail("...");               // mark this mod failed and stop calling its hooks
 ```
 

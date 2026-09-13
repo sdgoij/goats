@@ -148,8 +148,10 @@ function sceneCommand(line) {
             if (WEATHER_STATES[parts[1]] === undefined) {
                 return "error unknown weather: " + parts[1] + " (want " + Object.keys(WEATHER_STATES).join("|") + ")";
             }
+            const previous = weatherKind;
             weatherKind = parts[1];
             weatherTimer = TUNING.weather.hold[weatherKind][0];
+            modEmit("weather", weatherKind, previous);
             return "ok weather " + weatherKind;
         }
         case "bots":
@@ -463,11 +465,16 @@ function sceneCommand(line) {
         case "quit":
             ctlQuit = true;
             return "ok quit";
-        default:
+        default: {
+            // A mod's registered command, or a `command` observer, gets first
+            // refusal on anything that is not a built-in -- built-ins always win.
+            const handled = modHandleCommand(command, parts, line);
+            if (handled !== null) return handled;
             // In a session, anything that is not a command is something to say --
             // that is what makes the console a chat box. Offline it stays an
             // error, so a typo is still caught rather than broadcast.
             if (netInSession()) return netSay(line);
             return "error unknown command: " + command;
+        }
     }
 }

@@ -820,6 +820,76 @@ try {
     modTest.error = String(e);
 }
 
+// The hook API (M14c): a wrapped entry registers a command and event handlers;
+// the command dispatches, the frame loop emits events, the accessors read live
+// state, and freeze gates registration once the entry has finished. The block
+// above already froze, so entry re-entry here is exactly the reload path.
+let modApiTest = {};
+try {
+    sandbox.sceneMods(JSON.stringify([
+        { id: 'com.hooks', name: 'Hooks', version: '1.0.0', api: 1, side: 'client', enabled: true, hash: '0' },
+    ]));
+    vm.runInContext(
+        '(function (goats) {' +
+        '  globalThis.__stashed = goats;' +
+        '  globalThis.__seen = {};' +
+        '  goats.command("dance", function (parts) { return "ok danced " + (parts[1] || "once"); });' +
+        '  goats.on("update", function () { globalThis.__seen.update = true; });' +
+        '  goats.on("draw3d", function () { globalThis.__seen.draw3d = true; });' +
+        '  goats.on("hud", function () { globalThis.__seen.hud = true; });' +
+        '  goats.on("draw", function () { globalThis.__seen.draw = true; });' +
+        '  goats.on("tuning", function (path, value) { globalThis.__seen.tuning = path + "=" + value; });' +
+        '  goats.on("command", function (raw) { if (raw.indexOf("zzz") === 0) return "ok observed"; });' +
+        '})(goats.begin("com.hooks"));',
+        sandbox);
+    sandbox.sceneModResult('com.hooks', true, '');
+    modApiTest.command = sandbox.sceneCommand('dance twice') === 'ok danced twice';
+    modApiTest.observer = sandbox.sceneCommand('zzz hi') === 'ok observed';
+    modApiTest.builtinWins = sandbox.sceneCommand('ping') === 'ok pong';
+    // The tuning hook fires synchronously from tuningSet.
+    vm.runInContext('goats.tuning.set("stats.max", 111)', sandbox);
+    modApiTest.tuneEvent = vm.runInContext('globalThis.__seen.tuning', sandbox) === 'stats.max=111';
+    vm.runInContext('goats.tuning.set("stats.max", 100)', sandbox);
+    // One real frame drives update/draw3d/hud/draw. The scripted run above left
+    // the stub's frame counter at its end, which makes `windowShouldClose` true,
+    // so reset it for this one frame.
+    frameIndex = 0;
+    sandbox.sceneFrame();
+    modApiTest.frames = vm.runInContext(
+        'globalThis.__seen.update && globalThis.__seen.draw3d && globalThis.__seen.hud && globalThis.__seen.draw',
+        sandbox) === true;
+    // The accessors read the live scene.
+    const state = vm.runInContext('JSON.stringify(goats.player.state())', sandbox);
+    modApiTest.accessors = state.indexOf('"mode"') >= 0 && state.indexOf('"health"') >= 0 &&
+        vm.runInContext('goats.camera.get().dist > 0', sandbox) === true &&
+        vm.runInContext('goats.bots.count() === goats.bots.list().length', sandbox) === true &&
+        vm.runInContext('goats.world.weather().kind !== undefined', sandbox) === true &&
+        vm.runInContext('typeof goats.settings.get().bgm === "number"', sandbox) === true &&
+        vm.runInContext('goats.net.inSession() === false', sandbox) === true;
+    // Freeze gates registration once the entry window has closed.
+    modApiTest.lateRejected = false;
+    try {
+        vm.runInContext('globalThis.__stashed.on("update", function () {});', sandbox);
+    } catch (e) {
+        modApiTest.lateRejected = true;
+    }
+    // A reserved (built-in) command name is refused.
+    modApiTest.reserved = false;
+    try {
+        vm.runInContext(
+            '(function (goats) { goats.command("help", function () {}); })(goats.begin("com.hooks"));',
+            sandbox);
+    } catch (e) {
+        modApiTest.reserved = true;
+    }
+    sandbox.sceneModResult('com.hooks', false, 'reserved');
+    modApiTest.all = modApiTest.command && modApiTest.observer && modApiTest.builtinWins &&
+        modApiTest.tuneEvent && modApiTest.frames && modApiTest.accessors &&
+        modApiTest.lateRejected && modApiTest.reserved;
+} catch (e) {
+    modApiTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -899,6 +969,14 @@ const checks = [
         modTest.queued && modTest.disabled && modTest.empty, modTest],
     ['mod rejects an unknown id', modTest.unknown, modTest],
     ['mod lifecycle: wrapper, freeze, end', modTest.lifecycle, modTest],
+    ['mod command registers and dispatches', modApiTest.command, modApiTest],
+    ['mod command observer sees free-form lines', modApiTest.observer, modApiTest],
+    ['built-in commands win over mods', modApiTest.builtinWins, modApiTest],
+    ['mod events fire from the frame loop', modApiTest.frames, modApiTest],
+    ['mod tuning hook sees a change', modApiTest.tuneEvent, modApiTest],
+    ['mod accessors read live state', modApiTest.accessors, modApiTest],
+    ['mod freeze gates late registration', modApiTest.lateRejected, modApiTest],
+    ['mod rejects a reserved command name', modApiTest.reserved, modApiTest],
     // The volumetric march, not the flat M5 layer: these markers only exist in
     // the slab marcher.
     ['the sky shader marches a volume',

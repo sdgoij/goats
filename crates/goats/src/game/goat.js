@@ -409,6 +409,7 @@ function sceneFrame() {
             loaded = true;
             applyStartupSettings();
             if (BOTS.length > 0) console.log("goat: " + BOTS.length + " bot goats");
+            modEmit("ready");
         } else {
             drawLoading();
             return true;
@@ -566,7 +567,9 @@ function sceneFrame() {
     // it cycles through the idle clips instead of always doing the same one.
     if (mode !== lastMode) {
         if (mode === "idle") cyclePlayerVariant("idle");
+        const previousMode = lastMode;
         lastMode = mode;
+        modEmit("mode", mode, previousMode);
     }
 
     curRole = clipRole();
@@ -628,6 +631,9 @@ function sceneFrame() {
     // it was built around, before either the shadow pass or the visible one reads
     // it.
     terrainEnsure(goat.px, goat.pz);
+
+    // Mods see the world after it has moved and before it is drawn.
+    modEmit("update", dt);
 
     // render
     const ty = 0.85 + goatBaseY(goat);
@@ -697,14 +703,17 @@ function sceneFrame() {
         drawPeers(ambTint);
         lightingText = litShader < 0 ? "cube shader" : "off";
     }
+    modEmit("draw3d", { x: cx, y: cy, z: cz, targetX: goat.px, targetY: ty, targetZ: goat.pz, fov: 55 });
     rl.endMode3D();
 drawRain(screenW, screenH);
 if (uiScreen === "hud") {
     drawHud(move);
+    modEmit("hud", { width: screenW, height: screenH });
     if (consoleOpen) drawConsole();
 } else {
     drawUi();
 }
+modEmit("draw");
 rl.endDrawing();
 
 if (sceneFrames % 240 === 0) {
@@ -724,6 +733,7 @@ if (sceneFrames % 240 === 0) {
 
 function sceneShutdown() {
     console.log("window closed after " + sceneFrames + " frames");
+    modEmit("shutdown");
     unloadBots();
     if (haveModel) {
         rl.unloadModel(model);

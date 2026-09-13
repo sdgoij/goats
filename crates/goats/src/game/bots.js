@@ -84,7 +84,7 @@ function botAdd(i) {
     // A golden-angle spread rings the player evenly for any herd size.
     const a = i * 2.399963 + 0.3;
     const r = 6 + botRnd() * 14;
-    BOTS.push({
+    const spawned = {
         model: handle,
         spec: botSpec(i),
         x: goat.px + Math.cos(a) * r,
@@ -108,7 +108,9 @@ function botAdd(i) {
         // Which clip variant this bot plays per role; -1 so the first cycle
         // lands on index 0, and walk/trot/run have only one clip each.
         var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0 },
-    });
+    };
+    BOTS.push(spawned);
+    modEmit("spawn", modBotHandle(spawned));
     return true;
 }
 
@@ -119,6 +121,7 @@ function setHerdSize(n) {
     n = clamp(Math.round(n), 0, 10);
     while (BOTS.length > n) {
         const b = BOTS.pop();
+        modEmit("despawn", modBotHandle(b));
         if (typeof rl.unloadModel === "function") rl.unloadModel(b.model);
     }
     while (BOTS.length < n) {
@@ -127,6 +130,7 @@ function setHerdSize(n) {
 }
 
 function unloadBots() {
+    for (let i = 0; i < BOTS.length; i++) modEmit("despawn", modBotHandle(BOTS[i]));
     if (typeof rl.unloadModel === "function") {
         for (let i = 0; i < BOTS.length; i++) rl.unloadModel(BOTS[i].model);
     }

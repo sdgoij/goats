@@ -308,6 +308,8 @@ function tuningNotify(path, value) {
             console.log("tuning: watcher on '" + watcher.prefix + "' threw: " + String(error));
         }
     }
+    // Mods observe tuning changes through the same notification (mods.js).
+    modEmit("tuning", path, value);
 }
 
 // ---- settings (see menu.js) ----------------------------------------------

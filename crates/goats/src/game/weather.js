@@ -232,9 +232,11 @@ function updateWeather(dt) {
     weatherTimer -= dt;
     if (weatherTimer <= 0) {
         const opts = WEATHER_NEXT[weatherKind];
+        const previous = weatherKind;
         weatherKind = opts[Math.floor(rnd() * opts.length) % opts.length];
         const hold = TUNING.weather.hold[weatherKind];
         weatherTimer = hold[0] + rnd() * (hold[1] - hold[0]);
+        modEmit("weather", weatherKind, previous);
     }
     const target = WEATHER_STATES[weatherKind];
     const k = Math.min(1, dt * 0.6);
@@ -262,8 +264,10 @@ function updateWeatherEffects() {
 
 // C jumps to the next state, for previewing the cycle.
 function forceWeather() {
+    const previous = weatherKind;
     weatherKind = WEATHER_NEXT[weatherKind][0];
     weatherTimer = TUNING.weather.hold[weatherKind][0];
+    modEmit("weather", weatherKind, previous);
 }
 
 function updateClouds(dt) {
