@@ -230,6 +230,21 @@ fn the_scene_runs_the_scripted_timeline() {
         obs.min_gap.is_some_and(|gap| gap > -0.12),
         obs.min_gap,
     );
+    checks.check(
+        "bots animate their own models",
+        obs.counters.bot_poses > 0,
+        obs.counters.bot_poses,
+    );
+    checks.check(
+        "bots get the zoomies (run + jump)",
+        obs.counters.bot_jumps > 0,
+        obs.counters.bot_jumps,
+    );
+    checks.check(
+        "bots play several idle variants",
+        obs.bot_idles.len() >= 2,
+        obs.bot_idles.clone(),
+    );
 
     // ---- weather, lighting and the sky -----------------------------------
     let reported = obs.weather_at(300);
@@ -857,6 +872,43 @@ fn the_scene_runs_the_scripted_timeline() {
         (frozen.x, frozen.z, opened.x, opened.z),
     );
 
+    // ---- help formatting --------------------------------------------------
+    // `help` is a page rather than one line, the console splits a multi-line reply
+    // into one entry per row, and anything still too wide wraps.
+    let mut help_error: Option<String> = None;
+    let help = match help_block(&mut harness) {
+        Ok(help) => help,
+        Err(error) => {
+            help_error = Some(error);
+            Help::default()
+        }
+    };
+    checks.check(
+        "help is a short page grouped by topic",
+        help.paged && help.grouped,
+        &help,
+    );
+    checks.check(
+        "a multi-line reply becomes one entry per row",
+        help.split_lines,
+        &help,
+    );
+    checks.check(
+        "a long console line wraps inside the width",
+        help.wrapped,
+        &help,
+    );
+    checks.check(
+        "a long token is hard-split without loss",
+        help.hard_split,
+        &help,
+    );
+    checks.check(
+        "no help formatting errors",
+        help_error.is_none(),
+        help_error,
+    );
+
     // ---- the clipboard ---------------------------------------------------
     // A ticket is too long to type, so paste has to work; `Ctrl+C` and the `copy`
     // verb are the way back out. The clipboard carries a newline, as one copied
@@ -1008,6 +1060,76 @@ const WATCH_PROBE: &str = "(function () { \
      off(); \
      tuningSet(\"stats.max\", 100); \
      return saw; })()";
+
+/// What the help-formatting cases found. One field per case.
+#[derive(Debug, Default)]
+struct Help {
+    paged: bool,
+    grouped: bool,
+    split_lines: bool,
+    wrapped: bool,
+    hard_split: bool,
+}
+
+/// A long, indented line, wrapped to a panel narrower than it: it must break into
+/// several rows, every row must measure inside the width, and the indentation must
+/// survive so the columns still line up.
+const WRAP_PROBE: &str = r#"(function () {
+    const rows = consoleWrap("      " + Array(80).join("word "), 200, 18);
+    return {
+        count: rows.length,
+        fits: rows.every(function (row) { return consoleTextWidth(row, 18) <= 200; }),
+        indented: rows.every(function (row) { return row.slice(0, 6) === "      "; })
+    };
+})()"#;
+
+/// One long token: it has to be split rather than run off, and nothing may be lost
+/// in the split.
+const SPLIT_PROBE: &str = r#"(function () {
+    const rows = consoleWrap("x".repeat(500), 200, 18);
+    return {
+        count: rows.length,
+        fits: rows.every(function (row) { return consoleTextWidth(row, 18) <= 200; }),
+        whole: rows.join("").length === 500
+    };
+})()"#;
+
+/// Drives the help page and the console's wrapping.
+fn help_block(harness: &mut Harness) -> Result<Help, String> {
+    let mut help = Help::default();
+
+    let reply = harness.command("help")?;
+    let rows: Vec<&str> = reply.split('\n').collect();
+    help.paged = reply.starts_with("ok help - commands by topic") && rows.len() >= 5;
+    let row = |line: &str| rows.contains(&line);
+    help.grouped = row("  basics  help ping")
+        && row("  mods    mod")
+        && row("  flow    pause resume step quit");
+
+    // The reply reaches the scrollback as one entry per row, which is what makes
+    // the page readable rather than one truncated line.
+    harness.command("console close")?;
+    harness.command("console say help")?;
+    let lines = try_command_json(harness, "console")?["lines"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let shown = |line: &str| lines.iter().any(|entry| entry.as_str() == Some(line));
+    help.split_lines = shown("local: ok help - commands by topic")
+        && shown("local:   basics  help ping")
+        && shown("local:   flow    pause resume step quit");
+    harness.command("console close")?;
+
+    let wrapped = harness.eval(WRAP_PROBE)?;
+    help.wrapped = wrapped["count"].as_u64().is_some_and(|count| count > 1)
+        && bool_of(wrapped["fits"].clone())
+        && bool_of(wrapped["indented"].clone());
+    let split = harness.eval(SPLIT_PROBE)?;
+    help.hard_split = split["count"].as_u64().is_some_and(|count| count > 1)
+        && bool_of(split["fits"].clone())
+        && bool_of(split["whole"].clone());
+    Ok(help)
+}
 
 /// The queued network intents, drained. The host calls this once a frame.
 fn net_drain(harness: &mut Harness) -> Result<String, String> {
