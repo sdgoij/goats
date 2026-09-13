@@ -79,7 +79,7 @@ uses.
 | **M12** | World sync: seed handshake + goat snapshots | M10 | M–L | ✅ **Done** (players sync; server-owned bots/weather are M12b) |
 | **M12b** | Server-owned world: headless `goatsd` scene, bots/weather/meadow authority | M12 | L | ✅ **Done** (the world is the server's; the players are the open axis) |
 | **M13a** | Voice playback sink: a per-peer raylib stream from Rust | M12b | S | ✅ Available through `raylib_sys`; no engine binding needed |
-| **M13b** | Voice: capture, VAD, Opus, media channel, playback | M13a | L | ✅ **Done** (needs a live two-client listen) |
+| **M13b** | Voice: capture, VAD, Opus, media channel, playback | M13a | L | ✅ **Done** |
 | **M13c** | Voice polish: jitter buffer, PLC, mute/volume, attenuation | M13b | M | Per-peer controls and the talking indicator |
 
 ---
@@ -1001,9 +1001,17 @@ digital silence (a muted device, the OS privacy switch and another application
 holding it all look like that, and all of them read as "voice is broken" on the
 far end); `cargo test --workspace`, `cargo fmt --all -- --check` and `cargo
 clippy --workspace --all-targets -- -D warnings` clean. `GOATS_VOICE_LOOPBACK=1`
-plays the microphone back through the whole chain on one machine, which is how
-the chain is checked without a peer; the two-client listen still needs a run on
-two machines with microphones.
+plays the microphone back through the whole chain on one machine, which tells a
+one-window problem apart from a session one.
+
+Confirmed live: two clients, one of them hosting, hear each other. Getting there
+cost three playback fixes that this section now records -- gating on
+`IsAudioStreamProcessed` dropped every packet that arrived while the mixer was
+mid-block, writing short into a half-buffer zero-filled the rest of it, and the
+double buffer itself resets to half 0 the moment both halves are free -- and the
+last stretch of "still nothing" turned out to be the microphone, not the code:
+Windows was handing the client digital silence, which the gate correctly refused
+to send. That is why the mic check and loopback exist.
 
 ### M13c — Voice polish
 

@@ -157,10 +157,11 @@ ticket.
   the scene interpolates between them.
 - **Voice chat**: hands-free -- there is no push-to-talk key. A detector decides
   when you are actually speaking and gates the microphone, so idle room noise is
-  never sent; your voice goes out as Opus on the same unreliable datagram channel
-  as the poses, and each speaker plays through their own stream. `M` mutes voice
-  along with the rest of the audio. A microphone is optional: without one the
-  game still plays everyone else.
+  never sent, and your voice goes out as Opus on the same unreliable datagram
+  channel as the poses. Decoded voice is mixed into one raylib stream, so `M`
+  mutes it along with the rest of the audio. A microphone is optional: without
+  one the game still plays everyone else, and `GOATS_VOICE_LOOPBACK=1` plays your
+  own microphone back for testing.
 - **A shared world**: the bots, the weather and the meadow are simulated only by
   whoever hosts -- the game window that ran `host`, or `goatsd` -- and broadcast
   together about 10 times a second. Everyone else mirrors them, so the herd stays
@@ -257,7 +258,7 @@ gets on the free plan.
 | `Cargo.toml` | The workspace manifest: `crates/goats` (its `default-members`, so `cargo run` means the client) plus the networking crates |
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
 | `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
-| `crates/goats/src/audio.rs` | Voice chat: `cpal` capture, the speech gate, Opus coding and per-peer raylib playback |
+| `crates/goats/src/audio.rs` | Voice chat: `cpal` capture, the speech gate, Opus coding, and one raylib stream its callback fills |
 | `crates/goats/src/game/*.js` | The scene, split into 14 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
 | `crates/server/src/headless_rl.js` | The null `rl` module the server evaluates the scene against (no window) |
@@ -504,6 +505,15 @@ cargo test -p runtime --features raylib --lib raylib
   sparse checkout of just
   `test/built-ins/RegExp/property-escapes/generated/` is enough. The default git
   dependency avoids this entirely.
+- **Nobody can hear you, or you hear nobody.** Check the microphone before the
+  network: a muted device, the OS microphone privacy switch (Windows: "Let
+  desktop apps access your microphone") and another application holding the
+  microphone all deliver *digital silence*, which the speech gate then correctly
+  refuses to send -- the far end hears nothing and the sending side never logs a
+  frame. `GOATS_VOICE_DEBUG=1` prints a two-second `rms`/`peak` heartbeat, and a
+  `peak` of `0.0000` while you talk means the audio is silent at the OS.
+  `GOATS_VOICE_LOOPBACK=1` plays the microphone back through the whole chain on
+  one machine, which tells a one-window problem apart from a session one.
 
 ## License
 
