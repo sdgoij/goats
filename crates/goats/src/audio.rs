@@ -151,6 +151,10 @@ impl Voice {
         let loopback = loopback_enabled();
         if loopback {
             eprintln!("[voice] loopback: the microphone plays back locally");
+        } else if debug_on() {
+            // Said out loud so "am I hearing myself from the network or from
+            // loopback?" is never a guess.
+            eprintln!("[voice] loopback: off");
         }
         let (echo_tx, echo_rx) = mpsc::channel::<VoiceIn>();
         let sender = Outgoing {
