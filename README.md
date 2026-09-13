@@ -170,10 +170,12 @@ than simulating it, while the bots it owns outright.
 By default the endpoint binds local sockets with no relay, so it reaches other
 machines on the same network and not the wider internet — and, since that preset
 disables relaying and address lookup too, a ticket only carries local addresses.
-Set `GOATS_INTERNET=1` on every participant to use n0's public relays plus DNS
-discovery instead, which is what lets a ticket pasted across networks dial. That
-path is implemented but unverified: it needs two real networks to test, and it
-makes an endpoint's addresses resolvable through n0's DNS.
+Set `GOATS_INTERNET=1` on **every** participant to use n0's public relays plus
+DNS discovery instead: `RelayMode::Disabled` blocks dialing relays as well as
+listening on them, so a host in the default mode is not reachable this way even
+if it hands out a ticket, and a default client could not use a relay address
+either. Verified: two clients on a home network joined a `goatsd` on a remote VPS
+over n0, with the switch on all three.
 
 The sky and the meadow are the server's as well: the weather state machine, its
 easing, the day/night clock, the PRNG streams and the eaten grass all run only on

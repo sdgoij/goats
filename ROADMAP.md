@@ -900,7 +900,10 @@ exact scene parts, in the client's order, against a null `rl`
 server's part list matches `crates/goats/src/main.rs`, so the two cannot silently
 diverge. `goatsd` seeds the sim from the session seed before `sceneInit`, so the
 world is generated from it rather than adopted after the fact — which closes the
-"the initial layout does not agree" gap the player-sync note left open.
+"the initial layout does not agree" gap the player-sync note left open. It
+behaves like a server in the small ways as well: SIGINT stops it, and SIGTERM on
+Unix, so Ctrl-C and `kill` work and the close is bounded so a quiet peer cannot
+wedge the shutdown. Confirmed on the VPS.
 
 **Landed (the meadow).** The world snapshot gained the PRNG streams and the
 eaten cells, and joining now *replaces* a client's world rather than merging it
@@ -1060,13 +1063,15 @@ indicator on the roster. Uplink is the limit: full mesh is ~24–32 kbps upstrea
    (simple, low-latency, trusts the client) is what we ship first;
    server-authoritative movement, prediction and reconciliation wait until the
    sandbox actually needs them.
-10. ~~**Reach.**~~ **Settled:** LAN/direct is the default and needs no third
-    party at all; `GOATS_INTERNET=1` swaps the preset to `presets::N0` (n0's
-    public relays plus DNS discovery) for internet reach. Worth knowing: a
-    default ticket is LAN-only *by construction*, because `Minimal` disables
-    relaying and address lookup, so the ticket's addresses are local ones. The n0
-    path is implemented but unverified — it needs a run across two real networks,
-    and it makes the endpoint's addresses resolvable through n0's DNS.
+10. ~~**Reach.**~~ **Settled and verified:** LAN/direct is the default and needs
+    no third party at all; `GOATS_INTERNET=1` swaps the preset to `presets::N0`
+    (n0's public relays plus DNS discovery) for internet reach. A `goatsd` on a
+    remote VPS accepted two clients from a home network over it. Two things
+    learned in the doing: a default (`Minimal`) host is not WAN-reachable even
+    through its ticket — it surfaced as a connect timeout — and the switch has to
+    be on **both** ends, not just the host, because `RelayMode::Disabled` also
+    disables dialing relays. Whether the established path ended up direct or
+    relayed was not logged.
 11. **Bots and weather in multiplayer.** Server-owned (recommended — bots
     collide with players, so they diverge the moment anyone interacts) or
     cosmetic per client?
