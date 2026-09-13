@@ -238,12 +238,15 @@ reported, not silently ignored).
 
 ## 4. The `goats` API
 
-> **Implemented (M14b/M14c/M14c2):** identity, logging, the `begin`/`end`/`freeze`
+> **Implemented (M14b–M14e):** identity, logging, the `begin`/`end`/`freeze`
 > lifecycle, the `mod` console verbs, the whole hook surface (`on`, `command`,
 > `run`), the `player` / `camera` / `world` / `bots` / `settings` / `tuning` /
 > `net` accessors, the content registries (`bots.register`, `clips.register`,
-> `assets.override`), and the mutable asset slots: a mod's declared `assets` are
-> applied automatically in load order, last wins. Registration closes at
+> `assets.override`), the mutable asset slots (a mod's declared `assets` are
+> applied automatically in load order, last wins), the world-extension surface
+> (`world.registerStream`, `goats.rng`, `world.extend`, §4.13), and a mod's
+> `tuning.json` (`Manifest::json` carries the tree and `sceneMods` merges it
+> before any entry runs; an unknown key warns). Registration closes at
 > `freeze()`; a reload re-opens it for the mod being reloaded. `clips.register`
 > applies `gait` only for now -- a clip's `asset` is refused with a message,
 > since swapping one clip's source needs the model work; point the `model.goat`
@@ -786,7 +789,8 @@ New console vocabulary (all routed through the existing `sceneCommand`):
 There is **no persistence in v1**: enablement lasts for the session, and a
 restart restores the `mods/` directory's default (every discovered mod
 enabled). The main menu gains a **Mods** screen listing the same table with
-toggles, marked "this session only".
+toggles, marked "this session only". (Implemented in M14e; the screen's toggle
+calls the same `modSetEnabled` helper the console verbs use.)
 
 In a session, `mod` commands that would change the world-mod set are refused
 with a note to leave the session first, because the set was fixed at join.
@@ -811,16 +815,19 @@ with a note to leave the session first, because the set was fixed at join.
 
 ## 10. Testing
 
-New, keep the vanilla suite untouched:
+Landed with the implementation:
 
 - `mods/example/` — a small checked-in fixture (one command, one HUD hook, one
-  asset override) used by the smoke test and as documentation.
-- `tools/mod_smoke_test.js` — stubs `rl`, loads the scene plus the fixture,
-  and asserts: the command is dispatchable, the `"hud"` hook runs, the asset
-  slot returns the override name, an unknown tuning path warns, a throwing
-  handler is isolated, and reload leaves no duplicate handlers.
+  declared asset override, a `tuning.json` with a valid leaf and a deliberate
+  typo) used by the smoke test and as documentation.
+- `tools/mod_smoke_test.js` — stubs `rl`, loads the scene plus the fixture the
+  way the host does, and asserts: the command is dispatchable, the `"hud"` hook
+  runs, the asset slot returns the override name, the known tuning leaf merges
+  while an unknown distinct path warns, a throwing handler is isolated, and
+  reload leaves no duplicate handlers or commands.
 - `node --check` over `mods/**/*.js` in CI, alongside the scene parts.
-- `tools/goat_logic_test.js` stays mod-free: it proves vanilla is unchanged.
+- `tools/goat_logic_test.js` gained the Mods screen and `modSetEnabled` cases
+  but still uses synthetic tables only, so the vanilla assertions are unchanged.
 - `crates/proto` tests for the `ModRef` round-trip; a `session` test for a
   world-mod mismatch rejection; a `server` test that `goatsd --mods` loads the
   same table the client does.

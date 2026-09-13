@@ -145,7 +145,7 @@ impl Manifest {
             };
             assets.insert(slot, value);
         }
-        serde_json::json!({
+        let mut value = serde_json::json!({
             "id": self.id,
             "name": self.name,
             "version": self.version,
@@ -155,7 +155,16 @@ impl Manifest {
             "enabled": true,
             "hash": format!("{:016x}", self.hash),
             "assets": assets,
-        })
+        });
+        // The scene merges this before the entry runs. A malformed tree is the
+        // scene's to warn about; here it is passed through verbatim, since only
+        // the scene knows which paths the tree has.
+        if let Some(text) = &self.tuning_json {
+            if let Ok(tuning) = serde_json::from_str::<serde_json::Value>(text) {
+                value["tuning"] = tuning;
+            }
+        }
+        value
     }
 
     /// Hand the asset bytes over. The host leaks them to `'static` to register
@@ -769,6 +778,27 @@ mod tests {
         assert_eq!(table[0]["side"], "world");
         assert_eq!(table[0]["api"], 1);
         assert!(table[0]["hash"].as_str().unwrap().len() == 16);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_table_json_carries_the_declared_tuning() {
+        let root = workspace("tuning-table");
+        write_mod(
+            &root,
+            "tune",
+            r#"{ "id": "tune", "name": "Tune", "version": "1", "api": 1, "tuning": "tuning.json" }"#,
+        );
+        write(
+            &root.join("tune").join("tuning.json"),
+            r#"{ "stats": { "max": 120 }, "nope": 1 }"#,
+        );
+        let loader = Loader::discover(&root);
+        let table: serde_json::Value = serde_json::from_str(&loader.table_json()).unwrap();
+        // The tree travels verbatim; the scene is what validates a leaf, so a
+        // typo reaches it to be warned about rather than being dropped here.
+        assert_eq!(table[0]["tuning"]["stats"]["max"], 120);
+        assert_eq!(table[0]["tuning"]["nope"], 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 

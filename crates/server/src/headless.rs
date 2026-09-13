@@ -320,4 +320,53 @@ mod tests {
         let c = run_world(0x0fed_cba9, 40);
         assert_ne!(a, c, "a different seed must run a different world");
     }
+
+    #[test]
+    #[ignore = "three fresh sims, and each one re-JITs the scene (~10s); run with -- --ignored"]
+    fn the_same_seed_runs_the_same_modded_world() {
+        // A world mod's seeded stream has to be as reproducible as the scene's
+        // own: the server's snapshot is what every client mirrors, so a mod
+        // that draws from a stream must land on the same numbers everywhere.
+        let dir =
+            std::env::temp_dir().join(format!("goats-server-mod-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dash")).unwrap();
+        std::fs::write(
+            dir.join("dash").join("mod.json"),
+            r#"{ "id": "com.example.dash", "name": "Dash", "version": "1", "api": 1, "side": "world", "entry": "mod.js" }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("dash").join("mod.js"),
+            "goats.world.registerStream(\"dash\", 99);\n\
+             const rnd = goats.rng(\"dash\");\n\
+             let n = 0;\n\
+             goats.on(\"update\", function () { n += rnd(); });\n\
+             goats.world.extend(\"com.example.dash\", {\n\
+               publish: function () { return { n: n }; },\n\
+               apply: function () {}\n\
+             });\n",
+        )
+        .unwrap();
+        let loader = mods::Loader::discover_with(&dir, mods::AssetMode::HashOnly);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+
+        let run = |seed: u32| {
+            let mut sim = Sim::start(seed, &loader).expect("start");
+            for _ in 0..40 {
+                sim.step().expect("step");
+            }
+            sim.world_json().expect("world json")
+        };
+        let a = run(0x1234_5678);
+        let b = run(0x1234_5678);
+        assert_eq!(a, b, "the same seed must run the same modded world");
+        assert!(
+            a.contains("\"com.example.dash\""),
+            "the mod must publish: {a}"
+        );
+        let c = run(0x0fed_cba9);
+        assert_ne!(a, c, "a different seed must run a different modded world");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

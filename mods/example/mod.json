@@ -1,0 +1,11 @@
+{
+  "id": "com.github.sdgoij.goats.hello",
+  "name": "Example Mod",
+  "version": "1.0.0",
+  "api": 1,
+  "side": "client",
+  "description": "The checked-in example: a command, a HUD hook, an asset override and a tuning tweak.",
+  "entry": "mod.js",
+  "tuning": "tuning.json",
+  "assets": { "sfx.bleat": "assets/bleat.wav" }
+}

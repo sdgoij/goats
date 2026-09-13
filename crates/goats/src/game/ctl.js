@@ -237,8 +237,8 @@ function sceneCommand(line) {
         case "ui": {
             const screen = parts[1];
             if (screen === undefined) return "ok " + uiScreen;
-            if (screen !== "hud" && screen !== "main" && screen !== "settings" && screen !== "keymap") {
-                return "error ui expects hud|main|settings|keymap";
+            if (screen !== "hud" && screen !== "main" && screen !== "settings" && screen !== "keymap" && screen !== "mods") {
+                return "error ui expects hud|main|settings|keymap|mods";
             }
             uiScreen = screen;
             return "ok ui " + uiScreen;

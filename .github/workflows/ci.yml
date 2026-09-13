@@ -39,11 +39,15 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - name: Syntax-check every scene part
+      - name: Syntax-check every scene part and mod
         shell: bash
-        run: for f in crates/goats/src/game/*.js tools/*.js; do node --check "$f"; done
+        run: |
+          shopt -s globstar nullglob
+          for f in crates/goats/src/game/*.js tools/*.js mods/**/*.js; do node --check "$f"; done
       - name: Run the goat logic harness
         run: node tools/goat_logic_test.js
+      - name: Run the mod smoke test
+        run: node tools/mod_smoke_test.js
 
   # The game embeds every asset it needs, so each release is a single binary.
   build:

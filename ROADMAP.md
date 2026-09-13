@@ -48,7 +48,7 @@ covers more than it first appears:
 | Text input (character entry) | ❌ | the surface has `isKeyPressed` but no `getCharPressed` (M9) |
 | Voice playback | ✅ Rust-side | the `rl` surface has no audio streams, but `raylib_sys` exposes them and the client already links raylib, so Rust plays into a stream directly (M13a) |
 | Networking | Host only | the JS engine has no sockets; `iroh` lives in the Rust host and reaches the scene over the command bridge (M10) |
-| Mod support | ❌ | no loader yet; Slag's global `eval` plus the engine's in-memory asset registry make it possible with no engine work (M14, see `APIv1.md`) |
+| Mod support | ✅ | `crates/mods/` loads a `mods/` directory into a versioned `goats` hook API; world mods are hashed into the join handshake (M14, see `APIv1.md`) |
 
 The practical consequence: **stats, sleep and death needed no engine work at all**,
 and day/night plus a first pass of weather needed only the M0 primitives. With M0
@@ -88,7 +88,7 @@ uses.
 | **M14c2** | Content registries + mutable asset slots: `bots.register`, `clips.register`, `assets.override` | M14c | M | ✅ **Done** — declared assets apply automatically; clips are gait-only |
 | **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | ✅ **Done (handshake)** — the digest and refusal; the snapshot extension is M14d2 |
 | **M14d2** | World-mod simulation: `goats.rng`, `world.extend`, snapshot merging, `goatsd` evaluates mods | M14d | M | ✅ **Done** — streams + extension state travel in the snapshot's `mods` field |
-| **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | UX and the mod-free vanilla suite |
+| **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, `tools/mod_smoke_test.js`, CI syntax-check, a world-mod determinism test |
 
 ---
 
@@ -1133,14 +1133,25 @@ decisions behind it and the constraints that shape it.
   a `goatsd --mods` world actually runs them; the loader gained
   `AssetMode::HashOnly` so the server hashes assets for the digest without
   keeping a mod's model in memory. APIv1 §4.13 is the reference.
-- **M14e — UI and tests.** A session-only Mods screen in `menu.js`; a
-  checked-in `mods/example/` fixture; `tools/mod_smoke_test.js` (hook fires,
-  command dispatches, asset slot overrides, a throwing handler is isolated,
-  reload leaves no duplicates); `node --check` over `mods/**/*.js`; a
-  determinism test mirroring `the_same_seed_runs_the_same_world`; a `proto`
-  round-trip test for `ModRef` and a `session` test for a world-mod mismatch.
-  `tools/goat_logic_test.js` stays mod-free, which is what proves vanilla is
-  unchanged.
+- **M14e — UI and tests. ✅ Done.** The main menu gained a session-only
+  **Mods screen** (`menu.js`): it lists what the host found with an Enable /
+  Disable toggle each, writing the same flags `mod enable|disable` do, and a
+  `side: "world"` mod cannot be toggled while in a session because the set was
+  fixed at join. The `ui` console verb accepts `mods`. A checked-in
+  `mods/example/` fixture documents the manifest and backs
+  `tools/mod_smoke_test.js`: it registers a command, draws a HUD clock, declares
+  an `sfx.bleat` override (a tiny committed WAV) and ships a `tuning.json` with
+  one valid leaf and one deliberate typo. The smoke test evaluates the real
+  scene plus that fixture the way the host does and asserts the command
+  dispatches, the asset slot re-points, the known tuning leaf merges while the
+  unknown path only warns, the `hud` hook runs, a throwing handler is isolated,
+  and a reload leaves no duplicate handler or command. That last path exposed a
+  gap: `tuning.json` was read by the loader but never applied -- `Manifest::json`
+  now carries the tree and `sceneMods` merges it. CI syntax-checks
+  `mods/**/*.js` and runs the smoke test, and a world-mod determinism test
+  mirrors `the_same_seed_runs_the_same_world`. The harness gained the Mods
+  screen and `modSetEnabled` cases (158 total) but still uses synthetic tables
+  only, so the vanilla assertions are unchanged.
 
 **Constraints to respect.** The scene is one flat global scope joined by
 `concat!`, so `goats.freeze()`, not the loader, is what keeps registrations

@@ -1,4 +1,4 @@
-// Part 12/15 of the goat scene: the main menu, settings and keymap.
+// Part 12/15 of the goat scene: the main menu, settings, mods and keymap.
 // ---- menus ----------------------------------------------------------------
 //
 // The UI is drawn with raygui (the engine builds its bindings as `rl.gui*`).
@@ -6,7 +6,7 @@
 // While a screen is open the frame's `dt` is 0 and the game's input is ignored
 // (see `uiScreen` in goat.js), so the world freezes behind the menu.
 
-let uiScreen = "hud";   // "hud" | "main" | "settings" | "keymap"
+let uiScreen = "hud";   // "hud" | "main" | "settings" | "mods" | "keymap"
 
 // The keymap screen's table.
 const KEYMAP_ROWS = [
@@ -80,7 +80,7 @@ function applyStartupSettings() {
 
 function drawMainMenu(sw, sh) {
     const w = 300;
-    const h = 262;
+    const h = 306;
     const x = Math.round((sw - w) / 2);
     const y = Math.round((sh - h) / 2);
     rl.guiPanel(x, y, w, h, "Slag goat");
@@ -91,6 +91,8 @@ function drawMainMenu(sw, sh) {
     if (rl.guiButton(bx, by, bw, bh, sceneFrames > 0 ? "Continue" : "Play")) uiScreen = "hud";
     by += bh + 10;
     if (rl.guiButton(bx, by, bw, bh, "Settings")) uiScreen = "settings";
+    by += bh + 10;
+    if (rl.guiButton(bx, by, bw, bh, "Mods")) uiScreen = "mods";
     by += bh + 10;
     if (rl.guiButton(bx, by, bw, bh, "Keymap")) uiScreen = "keymap";
     by += bh + 10;
@@ -162,6 +164,37 @@ function drawSettings(sw, sh) {
     if (rl.guiButton(x + w / 2 - 60, y + h - 40, 120, 30, "Back")) uiScreen = "main";
 }
 
+// The Mods screen: what the host found, with a session-only toggle each. It
+// writes the same flags `mod enable|disable` does, so the state agrees.
+let modsNote = "";
+
+function drawMods(sw, sh) {
+    const w = 600;
+    const h = 440;
+    const x = Math.round((sw - w) / 2);
+    const y = Math.round((sh - h) / 2);
+    rl.guiPanel(x, y, w, h, "Mods");
+    rl.guiLabel(x + 20, y + 34, w - 40, 18, "this session only - a restart restores the mods/ directory");
+    const mods = goats.mods();
+    let cy = y + 60;
+    if (mods.length === 0) {
+        rl.guiLabel(x + 20, cy, w - 40, 20, "no mods found - put them in mods/ next to the game");
+    }
+    for (let i = 0; i < mods.length && cy < y + h - 74; i++) {
+        const meta = mods[i];
+        const label = meta.name + " v" + meta.version + "  (" + meta.side + ")" +
+            (meta.failed ? "  FAILED: " + meta.error : "");
+        rl.guiLabel(x + 20, cy + 5, w - 190, 20, label);
+        if (rl.guiButton(x + w - 150, cy, 130, 28, meta.enabled ? "Disable" : "Enable")) {
+            const reply = modSetEnabled(meta.id, !meta.enabled);
+            modsNote = reply.indexOf("error") === 0 ? reply.slice(6) : "";
+        }
+        cy += 34;
+    }
+    if (modsNote !== "") rl.guiLabel(x + 20, y + h - 62, w - 40, 18, modsNote);
+    if (rl.guiButton(x + w / 2 - 60, y + h - 40, 120, 30, "Back")) uiScreen = "main";
+}
+
 function drawKeymap(sw, sh) {
     const w = 540;
     const h = 500;
@@ -187,5 +220,6 @@ function drawUi() {
     rl.drawRectangle(0, 0, sw, sh, rl.color(0, 0, 0, 130));
     if (uiScreen === "main") drawMainMenu(sw, sh);
     else if (uiScreen === "settings") drawSettings(sw, sh);
+    else if (uiScreen === "mods") drawMods(sw, sh);
     else if (uiScreen === "keymap") drawKeymap(sw, sh);
 }

@@ -56,6 +56,7 @@ function modEntry(meta) {
         failed: false,
         error: "",
         assets: meta.assets === undefined ? {} : meta.assets,
+        tuning: meta.tuning === undefined || meta.tuning === null ? null : meta.tuning,
         hash: meta.hash === undefined ? "" : String(meta.hash),
     };
 }
@@ -80,6 +81,17 @@ function sceneMods(json) {
         const slots = Object.keys(declared);
         for (let j = 0; j < slots.length; j++) {
             ASSET_SLOTS[slots[j]] = declared[slots[j]];
+        }
+    }
+    // A mod's `tuning.json` lands before any entry runs, so the entry reads the
+    // values it declared. Every leaf is validated by `tuningMerge`; a typo is a
+    // warning, not a failure, so the rest of the tree still applies.
+    for (let i = 0; i < MODS.length; i++) {
+        if (MODS[i].tuning === null) continue;
+        try {
+            tuningMerge(MODS[i].tuning);
+        } catch (error) {
+            console.log("mods: " + MODS[i].id + " tuning: " + String(error));
         }
     }
     return "ok";
@@ -806,6 +818,28 @@ function modQueue(type, id) {
     modOutbox.push(JSON.stringify({ type: type, id: id }));
 }
 
+// Toggle a mod for this session. A world mod may not change mid-session: the
+// host fixed the compatibility set at join time, so changing it would desync.
+function modSetEnabled(id, enabled) {
+    if (id === undefined) return "error mod " + (enabled ? "enable" : "disable") + " expects an id";
+    const meta = modFind(id);
+    if (meta === null) return "error unknown mod: " + id;
+    if (netInSession() && meta.side === "world") {
+        return "error " + id + " is a world mod; leave the session first";
+    }
+    if (enabled) {
+        meta.enabled = true;
+        meta.failed = false;
+        meta.error = "";
+        modQueue("enable", id);
+        return "ok mod enable " + id;
+    }
+    meta.enabled = false;
+    meta.loaded = false;
+    modQueue("disable", id);
+    return "ok mod disable " + id;
+}
+
 function modCommand(parts) {
     const verb = parts[1] === undefined ? "list" : parts[1];
     if (verb === "" || verb === "list") {
@@ -838,24 +872,17 @@ function modCommand(parts) {
             commands: modCommandsOf(meta.id),
         });
     }
-    if (verb === "enable" || verb === "disable" || verb === "reload") {
+    if (verb === "enable") return modSetEnabled(parts[2], true);
+    if (verb === "disable") return modSetEnabled(parts[2], false);
+    if (verb === "reload") {
         const id = parts[2];
-        if (id === undefined) return "error mod " + verb + " expects an id";
+        if (id === undefined) return "error mod reload expects an id";
         const meta = modFind(id);
         if (meta === null) return "error unknown mod: " + id;
-        if (verb === "enable") {
-            meta.enabled = true;
-            meta.failed = false;
-            meta.error = "";
-        } else if (verb === "disable") {
-            meta.enabled = false;
-            meta.loaded = false;
-        } else {
-            meta.failed = false;
-            meta.error = "";
-        }
-        modQueue(verb, id);
-        return "ok mod " + verb + " " + id;
+        meta.failed = false;
+        meta.error = "";
+        modQueue("reload", id);
+        return "ok mod reload " + id;
     }
     return "error mod expects list|info|key|enable|disable|reload";
 }

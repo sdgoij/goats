@@ -984,6 +984,64 @@ try {
     modWorldTest.error = String(e);
 }
 
+// The Mods screen (M14e): the screen is reachable from the `ui` command, and
+// `modSetEnabled` is exactly the session-only toggle whose buttons it draws. A
+// world mod may not change mid-session, because the host fixed that set at join.
+let modMenuTest = {};
+try {
+    sandbox.sceneMods(JSON.stringify([
+        { id: 'com.e.client', name: 'Client pack', version: '1', api: 1, side: 'client', enabled: true, hash: '0' },
+        { id: 'com.e.world', name: 'World pack', version: '1', api: 1, side: 'world', enabled: true, hash: '0' },
+    ]));
+    // Reachable like the other screens, and the current screen is reported back.
+    modMenuTest.screen = sandbox.sceneCommand('ui mods') === 'ok ui mods' &&
+        sandbox.sceneCommand('ui') === 'ok mods';
+    // A client toggle flips the flag and queues the host intent in lockstep.
+    const off = vm.runInContext('modSetEnabled("com.e.client", false)', sandbox);
+    modMenuTest.disabled = off === 'ok mod disable com.e.client' &&
+        vm.runInContext('goats.mods()[0].enabled', sandbox) === false &&
+        sandbox.sceneModDrain().indexOf('"type":"disable"') >= 0;
+    const on = vm.runInContext('modSetEnabled("com.e.client", true)', sandbox);
+    modMenuTest.enabled = on === 'ok mod enable com.e.client' &&
+        vm.runInContext('goats.mods()[0].enabled', sandbox) === true &&
+        sandbox.sceneModDrain().indexOf('"type":"enable"') >= 0;
+    modMenuTest.unknown = vm.runInContext('modSetEnabled("nope", true)', sandbox) === 'error unknown mod: nope';
+    modMenuTest.noId = vm.runInContext('modSetEnabled(undefined, true)', sandbox).indexOf('error') === 0;
+    // Offline a world mod toggles like any other.
+    modMenuTest.offlineWorld = vm.runInContext('modSetEnabled("com.e.world", false)', sandbox) ===
+        'ok mod disable com.e.world';
+    vm.runInContext('modSetEnabled("com.e.world", true)', sandbox);
+    sandbox.sceneModDrain();
+    // In a session the world set is fixed, so a world toggle is refused and the
+    // flag is left untouched; a client mod still toggles.
+    sandbox.sceneNetEvent('{"type":"hosting","name":"bob"}');
+    const refused = vm.runInContext('modSetEnabled("com.e.world", false)', sandbox);
+    modMenuTest.worldGuard = refused.indexOf('error') === 0 && refused.indexOf('world') >= 0 &&
+        vm.runInContext('goats.mods()[1].enabled', sandbox) === true &&
+        sandbox.sceneModDrain() === '';
+    modMenuTest.clientInSession = vm.runInContext('modSetEnabled("com.e.client", false)', sandbox) ===
+        'ok mod disable com.e.client';
+    vm.runInContext('modSetEnabled("com.e.client", true)', sandbox);
+    sandbox.sceneModDrain();
+    sandbox.sceneNetEvent('{"type":"disconnected"}');
+    // The screen draws a panel, a row per mod and a Back button. The base stub's
+    // raygui calls are no-ops, so wrap them just for this draw.
+    const realPanel = rl.guiPanel, realLabel = rl.guiLabel, realButton = rl.guiButton;
+    let panelDraws = 0, labelDraws = 0, buttonDraws = 0;
+    rl.guiPanel = () => { panelDraws += 1; };
+    rl.guiLabel = () => { labelDraws += 1; };
+    rl.guiButton = () => { buttonDraws += 1; return false; };
+    vm.runInContext('drawMods(600, 440)', sandbox);
+    rl.guiPanel = realPanel; rl.guiLabel = realLabel; rl.guiButton = realButton;
+    modMenuTest.draws = panelDraws === 1 && labelDraws >= 3 && buttonDraws === 3;
+    sandbox.sceneCommand('ui hud');
+    modMenuTest.all = modMenuTest.screen && modMenuTest.disabled && modMenuTest.enabled &&
+        modMenuTest.unknown && modMenuTest.noId && modMenuTest.offlineWorld &&
+        modMenuTest.worldGuard && modMenuTest.clientInSession && modMenuTest.draws;
+} catch (e) {
+    modMenuTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -1081,6 +1139,14 @@ const checks = [
     ['mod world publish reaches the snapshot', modWorldTest.publish, modWorldTest],
     ['mod world apply and stream adoption',
         modWorldTest.apply && modWorldTest.adopt, modWorldTest],
+    ['the mods screen opens and draws a row per mod',
+        modMenuTest.screen && modMenuTest.draws, modMenuTest],
+    ['mod enable/disable flips the flag and queues the intent',
+        modMenuTest.disabled && modMenuTest.enabled, modMenuTest],
+    ['mod enable/disable rejects an unknown or missing id',
+        modMenuTest.unknown && modMenuTest.noId, modMenuTest],
+    ['a world mod is fixed once in a session, a client one is not',
+        modMenuTest.offlineWorld && modMenuTest.worldGuard && modMenuTest.clientInSession, modMenuTest],
     // The volumetric march, not the flat M5 layer: these markers only exist in
     // the slab marcher.
     ['the sky shader marches a volume',
