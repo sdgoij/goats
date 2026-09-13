@@ -83,10 +83,23 @@ impl Voice {
                     eprintln!("[voice] could not create an Opus decoder");
                     return;
                 };
-                while let Some((from, _seq, payload)) = voice_rx.blocking_recv() {
-                    if let Some(samples) = decoder.decode(&payload)
-                        && pcm.send((from, samples)).is_err()
-                    {
+                let mut played: u64 = 0;
+                while let Some((from, seq, payload)) = voice_rx.blocking_recv() {
+                    let Some(samples) = decoder.decode(&payload) else {
+                        if debug_on() {
+                            eprintln!("[voice] undecodable frame from {from} (seq {seq})");
+                        }
+                        continue;
+                    };
+                    played += 1;
+                    if debug_on() && (played <= 5 || played.is_multiple_of(100)) {
+                        eprintln!(
+                            "[voice] {from} seq {seq}: {} bytes -> {} samples",
+                            payload.len(),
+                            samples.len()
+                        );
+                    }
+                    if pcm.send((from, samples)).is_err() {
                         break;
                     }
                 }
@@ -152,6 +165,9 @@ impl Voice {
                     // SAFETY: a live stream, owned by this map from here on.
                     unsafe { raylib_sys::SetAudioStreamVolume(stream, gain) };
                     unsafe { raylib_sys::PlayAudioStream(stream) };
+                    if debug_on() {
+                        eprintln!("[voice] playback stream for {from} (gain {gain})");
+                    }
                     self.streams.insert(from.clone(), stream);
                     stream
                 }
@@ -197,24 +213,50 @@ fn encode_loop(raw: Receiver<Vec<f32>>, sender: VoiceSender) {
     let mut gate = Gate::new();
     let mut preroll: VecDeque<Vec<f32>> = VecDeque::new();
     let mut seq = 0u32;
+    let mut sent: u64 = 0;
+    let mut heard: u64 = 0;
+    let mut peak: f32 = 0.0;
 
     while let Ok(frame) = raw.recv() {
-        match gate.push(frame_rms(&frame)) {
+        let rms = frame_rms(&frame);
+        heard += 1;
+        peak = frame.iter().fold(peak, |max, sample| max.max(sample.abs()));
+        // A heartbeat even in silence, so "the callback never fired" and "the
+        // microphone is too quiet" do not look the same. Every two seconds.
+        if debug_on() && heard.is_multiple_of(100) {
+            eprintln!(
+                "[voice] in {heard} frames, rms {rms:.4}, peak {peak:.4}, floor {:.4}",
+                gate.floor
+            );
+            peak = 0.0;
+        }
+        match gate.push(rms) {
             Step::Silence => {
                 if preroll.len() == PREROLL_FRAMES {
                     preroll.pop_front();
                 }
                 preroll.push_back(frame);
+                continue;
             }
             Step::Onset => {
+                if debug_on() {
+                    eprintln!("[voice] speech detected (floor {:.4})", gate.floor);
+                }
                 // Speech just started: flush what was buffered so the first
                 // syllable is whole.
                 for buffered in preroll.drain(..) {
-                    send_frame(&mut encoder, &sender, &mut seq, &buffered);
+                    if send_frame(&mut encoder, &sender, &mut seq, &buffered) {
+                        sent += 1;
+                    }
                 }
-                send_frame(&mut encoder, &sender, &mut seq, &frame);
             }
-            Step::Speech => send_frame(&mut encoder, &sender, &mut seq, &frame),
+            Step::Speech => {}
+        }
+        if send_frame(&mut encoder, &sender, &mut seq, &frame) {
+            sent += 1;
+            if debug_on() && sent.is_multiple_of(50) {
+                eprintln!("[voice] sent {sent} frames ({:.1} s)", sent as f32 * 0.02);
+            }
         }
     }
 }
@@ -279,11 +321,23 @@ impl Gate {
 }
 
 /// Encodes one frame and queues it, bumping the sequence number on success.
-fn send_frame(encoder: &mut Encoder, sender: &VoiceSender, seq: &mut u32, frame: &[f32]) {
+fn send_frame(encoder: &mut Encoder, sender: &VoiceSender, seq: &mut u32, frame: &[f32]) -> bool {
     if let Some(payload) = encoder.encode(frame) {
         sender.send(*seq, payload);
         *seq = seq.wrapping_add(1);
+        true
+    } else {
+        false
     }
+}
+
+/// Whether to print voice diagnostics. Off unless `GOATS_VOICE_DEBUG=1`, so a
+/// normal run stays quiet; the seams below are the ones worth watching when a
+/// microphone or a peer is not doing what it should.
+fn debug_on() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("GOATS_VOICE_DEBUG").is_ok_and(|value| value == "1"))
 }
 
 fn frame_rms(frame: &[f32]) -> f32 {
@@ -305,7 +359,10 @@ fn open_input(raw: SyncSender<Vec<f32>>) -> Option<cpal::Stream> {
     let rate = supported.sample_rate();
     let format = supported.sample_format();
     let config = supported.config();
-    eprintln!("[voice] capture: {rate} Hz, {channels} ch, {format:?}");
+    let name = device
+        .description()
+        .map_or_else(|_| "unnamed device".to_string(), |d| d.name().to_string());
+    eprintln!("[voice] capture: {name}: {rate} Hz, {channels} ch, {format:?}");
 
     let built = match format {
         cpal::SampleFormat::F32 => build::<f32>(&device, config, channels, rate, raw, |s| s),
@@ -604,5 +661,25 @@ mod tests {
         let loud = frame_rms(&[1.0f32; FRAME_SAMPLES]);
         assert!((loud - 1.0).abs() < 1e-6, "got {loud}");
         assert!(frame_rms(&[0.0f32; FRAME_SAMPLES]) == 0.0);
+    }
+
+    #[test]
+    fn a_frame_survives_the_opus_round_trip() {
+        let mut encoder = Encoder::new().expect("encoder");
+        let mut decoder = Decoder::new().expect("decoder");
+        // A 440 Hz tone at a realistic level: quiet enough to be a real test of
+        // the codec, loud enough that a silent result is a failure.
+        let tone: Vec<f32> = (0..FRAME_SAMPLES)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / SAMPLE_RATE as f32).sin() * 0.3)
+            .collect();
+
+        let payload = encoder.encode(&tone).expect("encode");
+        assert!(!payload.is_empty(), "the encoder produced no bytes");
+        assert!(payload.len() <= MAX_PACKET_BYTES, "{} bytes", payload.len());
+
+        let decoded = decoder.decode(&payload).expect("decode");
+        assert_eq!(decoded.len(), FRAME_SAMPLES);
+        let peak = decoded.iter().fold(0f32, |max, s| max.max(s.abs()));
+        assert!(peak > 0.05, "the decoded frame is near-silent: peak {peak}");
     }
 }

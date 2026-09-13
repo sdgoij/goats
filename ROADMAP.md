@@ -978,6 +978,8 @@ M13c. Until then voice plays at the master level.
 - Transport: a `Voice` datagram beside the peer and world ones, tagged with the
   sender's name by the relay like a pose, with its own burst limit. It is the
   roadmap's generic "media" channel, so the transform channel does not change.
+  Wire version 6: a version-5 relay does not know the variant, decodes it as an
+  error and drops it, so the bump turns that silence into a failed handshake.
   JSON carries the frame, with the payload base64 (a ~60-byte packet, so the
   overhead is tolerable at ≤4 players); a binary envelope is a later optimisation,
   not a redesign.

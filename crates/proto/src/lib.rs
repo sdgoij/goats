@@ -16,7 +16,12 @@ use serde::{Deserialize, Serialize};
 /// The wire version, bumped whenever a message changes shape. It is also the
 /// ALPN suffix, so a peer with a different major version fails the QUIC
 /// handshake before it reaches any of this.
-pub const PROTOCOL_VERSION: u16 = 5;
+///
+/// 5 added the server-owned world; 6 adds the voice datagram. Bumping for voice
+/// matters because a relay built at 5 does not know the variant: it decodes the
+/// datagram as an error and drops it, so without the bump a stale server accepts
+/// the join and then silently swallows every packet.
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
