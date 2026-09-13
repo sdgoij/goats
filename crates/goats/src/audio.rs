@@ -54,9 +54,19 @@ const VAD_FLOOR_RISE: f32 = 0.002; // how fast it creeps up through noise
 const VAD_HOLD_FRAMES: u32 = 15; // 300 ms of tail after the last speech frame
 const PREROLL_FRAMES: usize = 2; // 40 ms kept for the onset
 
-/// Packets buffered before a speaker is heard, so playback does not start
-/// against an empty mixer. Two packets is ~40 ms, the usual order for voice.
-const PLAYOUT_CUSHION_PACKETS: usize = 2;
+/// The half-buffer raylib streams through, in frames. raylib's stream API is a
+/// virtual double buffer, not a ring: `UpdateAudioStream` fills one half and
+/// zero-fills whatever is left over, and it refuses the call when neither half
+/// is free. So the write has to be exactly one half, and the half has to be at
+/// least the device period (raylib raises it if not, which is why the size is
+/// set well above a desktop period rather than tuned tight). 4096 frames is
+/// ~85 ms at 48 kHz, the size raylib's own streaming example uses. The cost is
+/// that much playout latency; tightening this is M13c's jitter buffer.
+const STREAM_HALF_FRAMES: usize = 4096;
+
+/// The most audio held for one speaker before the oldest is dropped, so a
+/// stalled mixer cannot grow the queue without bound. Four halves is ~340 ms.
+const MAX_QUEUED_FRAMES: usize = STREAM_HALF_FRAMES * 4;
 
 /// The frame loop's handle on voice: decoded audio waiting for raylib, the
 /// per-speaker streams, and the master gain the scene owns.
@@ -70,15 +80,12 @@ pub struct Voice {
     running: Arc<AtomicBool>,
 }
 
-/// One remote speaker: their raylib stream, plus the audio held back while the
-/// playout cushion fills.
+/// One remote speaker: their raylib stream, plus the PCM waiting for a free
+/// half of it.
 struct Speaker {
     stream: raylib_sys::AudioStream,
-    /// Samples buffered before playback starts. A 20 ms packet lands while the
-    /// mixer is mid-block as often as not, so starting with a cushion keeps the
-    /// first words whole. Empty once playing.
-    cushion: Vec<f32>,
-    playing: bool,
+    /// Decoded PCM waiting for a free half of the stream buffer.
+    queued: Vec<f32>,
 }
 
 impl Voice {
@@ -88,6 +95,13 @@ impl Voice {
         let running = Arc::new(AtomicBool::new(true));
         let gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let (pcm_tx, pcm_rx) = mpsc::channel();
+
+        // Every stream is sized from here, so this has to be set before the
+        // first `LoadAudioStream` (which happens lazily in `pump`). The scene
+        // has already opened the audio device by now.
+        // SAFETY: a global setting on raylib's audio state; the value is the
+        // frame count of one buffer half.
+        unsafe { raylib_sys::SetAudioStreamBufferSizeDefault(STREAM_HALF_FRAMES as i32) };
 
         // Decoding: one thread, one decoder, one frame at a time. The PCM goes
         // on the std channel above and reaches raylib from the frame loop.
@@ -170,20 +184,21 @@ impl Voice {
 
         while let Ok((from, samples)) = self.decoded.try_recv() {
             let speaker = speaker_for(&mut self.speakers, from, gain);
-            if !speaker.playing {
-                speaker.cushion.extend_from_slice(&samples);
-                if speaker.cushion.len() < PLAYOUT_CUSHION_PACKETS * FRAME_SAMPLES {
-                    continue;
-                }
-                speaker.playing = true;
-                let buffered = std::mem::take(&mut speaker.cushion);
-                if gain > 0.0 {
-                    feed(speaker.stream, &buffered);
-                }
-                continue;
+            speaker.queued.extend_from_slice(&samples);
+            if speaker.queued.len() > MAX_QUEUED_FRAMES {
+                let excess = speaker.queued.len() - MAX_QUEUED_FRAMES;
+                speaker.queued.drain(..excess);
             }
-            if gain > 0.0 {
-                feed(speaker.stream, &samples);
+            // raylib can take exactly one half of the buffer, and only when a
+            // half has finished playing. Feeding anything less zero-fills the
+            // rest of that half, which is heard as a gap.
+            while speaker.queued.len() >= STREAM_HALF_FRAMES
+                && unsafe { raylib_sys::IsAudioStreamProcessed(speaker.stream) }
+            {
+                let block: Vec<f32> = speaker.queued.drain(..STREAM_HALF_FRAMES).collect();
+                if gain > 0.0 {
+                    feed(speaker.stream, &block);
+                }
             }
         }
     }
@@ -206,16 +221,14 @@ fn speaker_for(speakers: &mut HashMap<String, Speaker>, from: String, gain: f32)
         }
         Speaker {
             stream,
-            cushion: Vec::new(),
-            playing: false,
+            queued: Vec::new(),
         }
     })
 }
 
-/// Hands one block of PCM to raylib's mixer. raylib keeps a ring buffer, so
-/// writing whenever audio arrives is correct: it absorbs the jitter between
-/// packets, where gating on `IsAudioStreamProcessed` drops whole packets that
-/// land while the mixer is mid-block (which is most of them).
+/// Hands one full half-buffer of PCM to raylib's mixer. The frame count must be
+/// exactly the stream's half-buffer size (`STREAM_HALF_FRAMES`): raylib zero-fills
+/// the remainder of the half, so a short write is silence, not a partial fill.
 fn feed(stream: raylib_sys::AudioStream, samples: &[f32]) {
     if samples.is_empty() {
         return;
