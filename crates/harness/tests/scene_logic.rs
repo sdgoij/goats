@@ -222,45 +222,12 @@ fn the_scene_runs_the_scripted_timeline() {
         obs.player_idles.clone(),
     );
 
-    // ---- the run finished where it should --------------------------------
-    // The console's scripted frames sit after the restart, so these also prove
-    // the run reached them rather than stopping early.
-    let probe = obs.probe(4016).expect("the console probe at 4016");
+    // ---- the herd --------------------------------------------------------
+    // `minGap` is what the bots logged, so a negative one means they collided.
+    checks.check("bot goats load", obs.bot_count >= 2, obs.bot_count);
     checks.check(
-        "the console is open at its probe",
-        probe.state.open,
-        probe.state.open,
-    );
-    checks.check(
-        "the console kept the command in its history",
-        probe.state.history.iter().any(|entry| entry == "ping"),
-        probe.state.history.clone(),
-    );
-    checks.check(
-        "the console answered the command",
-        probe
-            .state
-            .lines
-            .iter()
-            .any(|line| line == "local: ok pong"),
-        probe.state.lines.clone(),
-    );
-    checks.check(
-        "the console copied the pasted line",
-        obs.clipboard_writes
-            .iter()
-            .any(|w| w.ends_with("endpointABC")),
-        obs.clipboard_writes.clone(),
-    );
-    checks.check("the herd loaded", obs.bot_count >= 2, obs.bot_count);
-    checks.check(
-        "the herd was drawn",
-        !obs.bot_draw.is_empty(),
-        obs.bot_draw.len(),
-    );
-    checks.check(
-        "the bots kept their distance",
-        obs.min_gap.is_some(),
+        "goats never overlap",
+        obs.min_gap.is_some_and(|gap| gap > -0.12),
         obs.min_gap,
     );
 
@@ -727,6 +694,132 @@ fn the_scene_runs_the_scripted_timeline() {
         "the herd stands on the terrain",
         herd_stands,
         obs.bot_draw.len(),
+    );
+
+    // ---- the console -----------------------------------------------------
+    // The scripted input drives it after the restart: backquote opens it at 4010,
+    // "ping" is typed at 4012 and submitted at 4014, UP recalls it at 4016, ESC
+    // closes at 4018 and 4020 reopens it.
+    let at = |i: u32| {
+        obs.probe(i)
+            .unwrap_or_else(|| panic!("no console probe at frame {i}"))
+    };
+    checks.check(
+        "the console starts closed",
+        !at(4008).state.open,
+        at(4008).state.open,
+    );
+    checks.check(
+        "backquote opens the console",
+        at(4011).state.open,
+        at(4011).state.open,
+    );
+    let typed = at(4016).state.lines.clone();
+    checks.check(
+        "the console echoes what was typed",
+        typed.iter().any(|line| line == "echo: > ping"),
+        typed.clone(),
+    );
+    checks.check(
+        "the console runs the command",
+        typed.iter().any(|line| line == "local: ok pong"),
+        typed.clone(),
+    );
+    checks.check(
+        "the console keeps command history",
+        at(4016).state.history.iter().any(|entry| entry == "ping"),
+        at(4016).state.history.clone(),
+    );
+    checks.check(
+        "UP recalls the last command",
+        at(4016).state.input == "ping",
+        at(4016).state.input.clone(),
+    );
+    checks.check(
+        "ESC closes the console",
+        !at(4018).state.open,
+        at(4018).state.open,
+    );
+    checks.check(
+        "ESC does not open the menu",
+        at(4018).ui == "hud",
+        at(4018).ui.clone(),
+    );
+    checks.check(
+        "backquote reopens the console",
+        at(4021).state.open,
+        at(4021).state.open,
+    );
+    // The overlay must not freeze the world, but must gate the movement keys.
+    let (moving, still) = (at(4007), at(4008));
+    checks.check(
+        "the goat moves while the console is closed",
+        moving.x != still.x || moving.z != still.z,
+        (moving.x, moving.z, still.x, still.z),
+    );
+    let (frozen, opened) = (at(4009), at(4011));
+    checks.check(
+        "the console freezes the goat",
+        frozen.x == opened.x && frozen.z == opened.z,
+        (frozen.x, frozen.z, opened.x, opened.z),
+    );
+
+    // ---- the clipboard ---------------------------------------------------
+    // A ticket is too long to type, so paste has to work; `Ctrl+C` and the `copy`
+    // verb are the way back out. The clipboard carries a newline, as one copied
+    // from a terminal does, so the paste has to strip it.
+    let pasted = at(4032).state.input.clone();
+    checks.check(
+        "the console pastes and strips the newline",
+        pasted.ends_with("endpointABC") && !pasted.contains('\n'),
+        pasted,
+    );
+    checks.check(
+        "Ctrl+C copies the line",
+        obs.clipboard_writes
+            .iter()
+            .any(|write| write.ends_with("endpointABC")),
+        obs.clipboard_writes.clone(),
+    );
+
+    // `obs` is the state at the end of the run, and these two commands come after
+    // it, so the clipboard is re-read rather than reused.
+    let mut clipboard_error: Option<String> = None;
+    let copy_reply = match harness.command("copy hello") {
+        Ok(reply) => reply,
+        Err(error) => {
+            clipboard_error = Some(error);
+            String::new()
+        }
+    };
+    let wrote = match harness.observe() {
+        Ok(after) => after.clipboard_writes.last().cloned().unwrap_or_default(),
+        Err(error) => {
+            clipboard_error = clipboard_error.or(Some(error));
+            String::new()
+        }
+    };
+    let nothing = match harness.command("copy") {
+        Ok(reply) => reply,
+        Err(error) => {
+            clipboard_error = clipboard_error.or(Some(error));
+            String::new()
+        }
+    };
+    checks.check(
+        "the copy verb writes the clipboard",
+        copy_reply == "ok copy" && wrote == "hello",
+        (copy_reply, wrote),
+    );
+    checks.check(
+        "copy with nothing to copy is an error",
+        nothing == "error nothing to copy",
+        nothing,
+    );
+    checks.check(
+        "no clipboard errors",
+        clipboard_error.is_none(),
+        clipboard_error,
     );
 
     checks.finish();
