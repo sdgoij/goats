@@ -895,4 +895,58 @@ mod tests {
              never called the callback)"
         );
     }
+
+    /// The other half of the chain: does the microphone actually deliver samples?
+    /// A muted device, a Windows privacy block or another application holding the
+    /// microphone all show up as digital silence, which the gate then correctly
+    /// refuses to send -- and which reads as "voice does not work" on the far end.
+    /// `#[ignore]`d because a machine may have no microphone; run it where there is
+    /// one and make a little noise:
+    ///
+    /// ```text
+    /// cargo test -p goats --release -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs a microphone"]
+    fn the_microphone_delivers_audio() {
+        let (tx, rx) = mpsc::sync_channel::<Vec<f32>>(CAPTURE_BACKLOG);
+        let Some(stream) = open_input(tx) else {
+            eprintln!("[voice] no input device here; skipping the microphone check");
+            return;
+        };
+
+        let mut peak: f32 = 0.0;
+        let mut frames = 0usize;
+        let mut samples = 0usize;
+        let mut nonzero = 0usize;
+        let deadline = std::time::Instant::now() + Duration::from_millis(1500);
+        while std::time::Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(frame) => {
+                    frames += 1;
+                    for sample in frame {
+                        samples += 1;
+                        if sample != 0.0 {
+                            nonzero += 1;
+                        }
+                        peak = peak.max(sample.abs());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        drop(stream);
+
+        eprintln!(
+            "[voice] microphone delivered {frames} frames ({samples} samples), \
+             {nonzero} non-zero, peak {peak:.6}"
+        );
+        assert!(frames > 0, "the capture callback never ran");
+        assert!(
+            peak > 0.0,
+            "the microphone delivered {samples} samples of digital silence: it is \
+             muted, blocked by the OS microphone privacy setting (Windows: 'Let \
+             desktop apps access your microphone'), or held by another application"
+        );
+    }
 }

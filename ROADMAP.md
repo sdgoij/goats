@@ -996,7 +996,10 @@ M13c. Until then voice plays at the master level.
 Verified: unit tests for the gate, the resampler, the mix and the gain intent;
 the harness asserts that muting queues the intent; an `#[ignore]`d device test
 drives the real mixer headlessly and asserts the callback drains the mix at the
-device rate; `cargo test --workspace`, `cargo fmt --all -- --check` and `cargo
+device rate, and a second one checks the microphone itself is not delivering
+digital silence (a muted device, the OS privacy switch and another application
+holding it all look like that, and all of them read as "voice is broken" on the
+far end); `cargo test --workspace`, `cargo fmt --all -- --check` and `cargo
 clippy --workspace --all-targets -- -D warnings` clean. `GOATS_VOICE_LOOPBACK=1`
 plays the microphone back through the whole chain on one machine, which is how
 the chain is checked without a peer; the two-client listen still needs a run on
