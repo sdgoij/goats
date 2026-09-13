@@ -12,14 +12,14 @@ let sleepTime = 0;       // seconds slept since last awake
 let deathTime = 0;       // seconds since the death started
 let idleTimer = 0;       // seconds spent idle while exhausted
 let lastMode = "idle";   // for cycling the player's idle animation variant
-const stats = { health: MAX_STAT, energy: MAX_STAT };
+const stats = { health: TUNING.stats.max, energy: TUNING.stats.max };
 let exhausted = false;
 let xTex = -1;           // X-eye sprite texture (made after the window opens)
 let moonTex = -1;        // procedural cratered moon disc
 let glowTex = -1;        // radial sun/star glow
-let camYaw = 0.7;
-let camPitch = 0.42;
-let camDist = 5.2;
+let camYaw = TUNING.camera.yaw;
+let camPitch = TUNING.camera.pitch;
+let camDist = TUNING.camera.dist;
 
 // Filled in by `sceneInit`; the host owns the frame loop now (see below).
 let screenW = 1;
@@ -53,7 +53,7 @@ function clipRole() {
 
 function jumpDuration() {
     const info = playerClip("jump");
-    return info !== null && info !== undefined ? info.duration : FALLBACK_JUMP_TIME;
+    return info !== null && info !== undefined ? info.duration : TUNING.jump.fallbackTime;
 }
 
 // Seconds of an idle/walk/run loop (one full cycle), for phase advance.
@@ -70,8 +70,8 @@ function groundSpeed() {
     let base;
     if (!haveModel) {
         let mult = 1;
-        if (mode === "run") mult = FALLBACK_RUN_MULT;
-        else if (mode === "trot") mult = FALLBACK_TROT_MULT;
+        if (mode === "run") mult = TUNING.jump.fallbackRunMult;
+        else if (mode === "trot") mult = TUNING.jump.fallbackTrotMult;
         base = ((2 * V_STRIDE) / V_CYCLE) * mult;
     } else if (mode === "run" && CLIP.run) {
         base = runSpeed();
@@ -91,8 +91,8 @@ function startJump(move, gait) {
     jumpDir = move;
     if (!haveModel) {
         let mult = 1;
-        if (gait === "run") mult = FALLBACK_RUN_MULT;
-        else if (gait === "trot") mult = FALLBACK_TROT_MULT;
+        if (gait === "run") mult = TUNING.jump.fallbackRunMult;
+        else if (gait === "trot") mult = TUNING.jump.fallbackTrotMult;
         jumpSpeed = ((2 * V_STRIDE) / V_CYCLE) * mult;
     } else if (gait === "run" && CLIP.run) {
         jumpSpeed = runSpeed();
@@ -102,7 +102,7 @@ function startJump(move, gait) {
         jumpSpeed = walkSpeed();
     }
     jumpSpeed *= weatherSpeed;   // a wet goat does not jump as far
-    stats.energy = Math.max(0, stats.energy - JUMP_ENERGY_COST);
+    stats.energy = Math.max(0, stats.energy - TUNING.stats.jumpEnergyCost);
     playBleat(0.9);
 }
 
@@ -127,8 +127,8 @@ function die() {
 }
 
 function restart() {
-    stats.health = MAX_STAT;
-    stats.energy = MAX_STAT;
+    stats.health = TUNING.stats.max;
+    stats.energy = TUNING.stats.max;
     exhausted = false;
     idleTimer = 0;
     sleepTime = 0;
@@ -150,24 +150,24 @@ function updateStats(dt) {
     }
     if (mode === "sleep") {
         sleepTime += dt;
-        stats.energy = Math.min(MAX_STAT, stats.energy + SLEEP_ENERGY_RECOVER * dt);
-        stats.health = Math.min(MAX_STAT, stats.health + SLEEP_HEALTH_RECOVER * dt);
+        stats.energy = Math.min(TUNING.stats.max, stats.energy + TUNING.stats.sleepEnergyRecover * dt);
+        stats.health = Math.min(TUNING.stats.max, stats.health + TUNING.stats.sleepHealthRecover * dt);
         return "sleep";
     }
-    let drain = ENERGY_DRAIN.idle;
-    if (mode === "run") drain = ENERGY_DRAIN.run;
-    else if (mode === "trot") drain = ENERGY_DRAIN.trot;
-    else if (mode === "walk") drain = ENERGY_DRAIN.walk;
-    if (skyLight < 0.25) drain *= NIGHT_DRAIN_MULT;   // cold nights burn energy faster
+    let drain = TUNING.stats.energyDrain.idle;
+    if (mode === "run") drain = TUNING.stats.energyDrain.run;
+    else if (mode === "trot") drain = TUNING.stats.energyDrain.trot;
+    else if (mode === "walk") drain = TUNING.stats.energyDrain.walk;
+    if (skyLight < 0.25) drain *= TUNING.world.nightDrainMult;   // cold nights burn energy faster
     drain *= weatherDrain;                            // ...and so does being soaked
     stats.energy = Math.max(0, stats.energy - drain * dt);
     if (stats.energy <= 0) {
         exhausted = true;
-        stats.health = Math.max(0, stats.health - EXHAUST_HEALTH_DRAIN * dt);
+        stats.health = Math.max(0, stats.health - TUNING.stats.exhaustHealthDrain * dt);
     } else {
         exhausted = false;
-        if (mode === "idle" && stats.energy > RESTED_ENERGY) {
-            stats.health = Math.min(MAX_STAT, stats.health + IDLE_HEALTH_RECOVER * dt);
+        if (mode === "idle" && stats.energy > TUNING.stats.restedEnergy) {
+            stats.health = Math.min(TUNING.stats.max, stats.health + TUNING.stats.idleHealthRecover * dt);
         }
     }
     return stats.health <= 0 ? "die" : "awake";
@@ -249,7 +249,7 @@ function drawEyes() {
     // Only the dead state still uses a sprite; the sleeping goat's eyes are closed
     // by the GoatSleep clip's eyelid bones.
     if (!(mode === "dead" && xTex >= 0 && CLIP.death &&
-        deathTime >= CLIP.death.duration * DEAD_EYE_FRACTION)) return;
+        deathTime >= CLIP.death.duration * TUNING.stats.deadEyeFraction)) return;
     const eyes = DEATH_EYES;
     const size = 0.13;
     const c = Math.cos(goat.yaw);
@@ -288,10 +288,10 @@ function drawHud(move) {
     const bw = 160;
     const bx = rl.getScreenWidth() - bw - 12;
     rl.drawRectangle(bx, 10, bw, 14, rl.color(28, 28, 34, 220));
-    rl.drawRectangle(bx + 1, 11, Math.round((bw - 2) * stats.health / MAX_STAT), 12,
+    rl.drawRectangle(bx + 1, 11, Math.round((bw - 2) * stats.health / TUNING.stats.max), 12,
         rl.color(208, 62, 62, 255));
     rl.drawRectangle(bx, 30, bw, 14, rl.color(28, 28, 34, 220));
-    rl.drawRectangle(bx + 1, 31, Math.round((bw - 2) * stats.energy / MAX_STAT), 12,
+    rl.drawRectangle(bx + 1, 31, Math.round((bw - 2) * stats.energy / TUNING.stats.max), 12,
         rl.color(222, 190, 62, 255));
     rl.drawText("health " + Math.round(stats.health) + "   energy " + Math.round(stats.energy) +
         "   belly " + Math.round(satiety * 100) + "%", bx, 50, 14, rl.RAYWHITE);
@@ -351,7 +351,7 @@ function sceneLoadStep() {
     else if (i === 8) makeBotTextures();
     else {
         // One bot per step, so the bar keeps moving through the model loads.
-        const want = clamp(Math.round(SETTINGS.herd), 0, 10);
+        const want = clamp(Math.round(TUNING.herd.count), 0, 10);
         if (BOTS.length < want) botAdd(BOTS.length);
     }
 }
@@ -391,7 +391,7 @@ function sceneInit() {
     // The load runs a step at a time from `sceneFrame`, so the splash shows.
     loaded = false;
     loadStep = 0;
-    loadTotal = 9 + clamp(Math.round(SETTINGS.herd), 0, 10);
+    loadTotal = 9 + clamp(Math.round(TUNING.herd.count), 0, 10);
     screenW = rl.getScreenWidth();
     screenH = rl.getScreenHeight();
     sceneFrames = 0;
@@ -433,7 +433,7 @@ function sceneFrame() {
 
     // food: the nearest tuft decides whether the action menu shows, and the E
     // handler below eats it.
-    foodTarget = nearestTuft(goat.px, goat.pz, EAT_RANGE);
+    foodTarget = nearestTuft(goat.px, goat.pz, TUNING.food.eatRange);
     foodReady = foodTarget !== null && mode !== "dead" && mode !== "sleep" &&
         mode !== "jump" && mode !== "eat";
 
@@ -442,7 +442,7 @@ function sceneFrame() {
     // The clock and the weather are server-owned in a client session; the local
     // T accelerator and the C force are for the host and offline play.
     const fast = netWeatherLocal() && ctlKeyDown(rl.KEY_T);
-    worldTime = mod24(worldTime + (dt / DAY_LENGTH) * 24 * (fast ? TIME_FAST : 1));
+    worldTime = mod24(worldTime + (dt / TUNING.world.dayLength) * 24 * (fast ? TUNING.world.timeFast : 1));
     const sky = skySample(worldTime);
     if (netWeatherLocal()) {
         updateWind(dt);
@@ -480,7 +480,7 @@ function sceneFrame() {
     if (ctlKeyDown(rl.KEY_DOWN)) camPitch -= 1.0 * dt;
     if (uiScreen === "hud" && !consoleOpen) camDist -= rl.getMouseWheelMove() * 0.4;
     camPitch = clamp(camPitch, 0.08, 1.35);
-    camDist = clamp(camDist, 2.2, 12.0);
+    camDist = clamp(camDist, TUNING.camera.minDist, TUNING.camera.maxDist);
 
     // input
     if (press(rl.KEY_P)) paused = !paused;
@@ -521,7 +521,7 @@ function sceneFrame() {
     const trotting = ctlKeyDown(rl.KEY_LEFT_CONTROL) || ctlKeyDown(rl.KEY_RIGHT_CONTROL);
     let gait = running ? "run" : trotting ? "trot" : "walk";
     if (exhausted) gait = "walk";   // an exhausted goat cannot run or trot
-    if (mode !== "sleep" && mode !== "dead" && mode !== "eat") goat.yaw += turn * TURN_RATE * dt;
+    if (mode !== "sleep" && mode !== "dead" && mode !== "eat") goat.yaw += turn * TUNING.movement.turnRate * dt;
 
     // state machine: jump, sleep, eat and death lock the mode; everything else
     // follows the requested gait. A menu freezes the machine entirely.
@@ -530,7 +530,7 @@ function sceneFrame() {
     } else if (mode === "dead") {
         if (press(rl.KEY_R)) restart();
     } else if (mode === "sleep") {
-        if (press(rl.KEY_Z) || move !== 0 || stats.energy >= MAX_STAT) {
+        if (press(rl.KEY_Z) || move !== 0 || stats.energy >= TUNING.stats.max) {
             wakeUp();
         }
     } else if (mode === "jump") {
@@ -554,7 +554,7 @@ function sceneFrame() {
         // drop off on our own once exhausted and standing still
         if (exhausted && move === 0) {
             idleTimer += dt;
-            if (idleTimer >= AUTO_SLEEP_DELAY) startSleep();
+            if (idleTimer >= TUNING.stats.autoSleepDelay) startSleep();
         } else {
             idleTimer = 0;
         }
@@ -583,7 +583,7 @@ function sceneFrame() {
                 goat.pz += -Math.sin(goat.yaw) * jumpDir * jumpSpeed * dt;
             }
             if (!haveModel) {
-                goat.py = V_DROP + FALLBACK_JUMP_H *
+                goat.py = V_DROP + TUNING.jump.fallbackHeight *
                     Math.sin(Math.PI * Math.min(jumpTime / jumpDuration(), 1));
             }
         } else if (mode === "sleep") {

@@ -730,6 +730,47 @@ try {
     clipTest.error = String(e);
 }
 
+// Tuning (M14a): the mutable tree the gameplay constants moved into. These
+// reads/writes are side-effect free apart from the watchers, so the run above is
+// untouched.
+let tuningTest = {};
+try {
+    tuningTest.defaults = sandbox.tuningGet('stats.max') === 100 &&
+        sandbox.tuningGet('movement.turnRate') === 1.8 &&
+        sandbox.tuningGet('weather.rainSlow') === 0.28 &&
+        sandbox.tuningGet('lighting.shadow.half') === 7.0;
+    // A set stores the coerced value and is visible through a get.
+    const set = sandbox.tuningSet('stats.jumpEnergyCost', 3.5);
+    tuningTest.set = set === 3.5 && sandbox.tuningGet('stats.jumpEnergyCost') === 3.5;
+    sandbox.tuningSet('stats.jumpEnergyCost', 2.0);
+    // A bounded leaf clamps (camera, so no watcher fires).
+    tuningTest.clamped = sandbox.tuningSet('camera.minDist', 0) === 0.1;
+    sandbox.tuningSet('camera.minDist', 2.2);
+    // A watcher sees the path and value, then unsubscribes.
+    let sawPath = null;
+    const off = sandbox.tuningWatch('stats.max', (path, value) => { sawPath = path + '=' + value; });
+    sandbox.tuningSet('stats.max', 120);
+    off();
+    sandbox.tuningSet('stats.max', 100);
+    tuningTest.watched = sawPath === 'stats.max=120';
+    // A nested merge validates every leaf; a typo, a branch and a non-finite
+    // write are all loud.
+    sandbox.tuningMerge({ weather: { windSlow: 0.09 } });
+    tuningTest.merged = sandbox.tuningGet('weather.windSlow') === 0.09;
+    sandbox.tuningSet('weather.windSlow', 0.07);
+    tuningTest.unknown = false;
+    try { sandbox.tuningGet('stats.nope'); } catch (e) { tuningTest.unknown = true; }
+    tuningTest.branch = false;
+    try { sandbox.tuningSet('stats', 1); } catch (e) { tuningTest.branch = true; }
+    tuningTest.notFinite = false;
+    try { sandbox.tuningSet('stats.max', NaN); } catch (e) { tuningTest.notFinite = true; }
+    tuningTest.all = tuningTest.defaults && tuningTest.set && tuningTest.clamped &&
+        tuningTest.watched && tuningTest.merged && tuningTest.unknown &&
+        tuningTest.branch && tuningTest.notFinite;
+} catch (e) {
+    tuningTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -796,6 +837,13 @@ const checks = [
     ['eaten grass stops being drawn', tuftVanishes, tuftDrawDrop],
     ['settings default to the spec', settingsDefaults, null],
     ['cloud quality can be set', cloudLevels, null],
+    ['tuning tree carries the defaults', tuningTest.defaults, tuningTest],
+    ['tuning set/get round-trips', tuningTest.set, tuningTest],
+    ['tuning clamps a bounded leaf', tuningTest.clamped, tuningTest],
+    ['tuning watchers fire and unsubscribe', tuningTest.watched, tuningTest],
+    ['tuning merge validates every leaf', tuningTest.merged, tuningTest],
+    ['tuning rejects unknown, branch and non-finite writes',
+        tuningTest.unknown && tuningTest.branch && tuningTest.notFinite, tuningTest],
     // The volumetric march, not the flat M5 layer: these markers only exist in
     // the slab marcher.
     ['the sky shader marches a volume',

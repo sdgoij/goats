@@ -21,16 +21,11 @@ const DEATH_EYES = [
     { x: 0.7945, y: 0.1493, z: 1.6031 },
 ];
 
-// Authored stride and stance fraction of each locomotion clip, used to derive
-// the ground speed that keeps the hooves from skating. The walk is a 4-beat
-// lateral walk and the trot a 2-beat diagonal gait (each foot planted half the
-// cycle); the run is a 2-beat gait with a short flight phase (each foot planted
-// a third of the cycle).
-const GAIT = {
-    walk: { stride: 0.40, duty: 0.50 },
-    trot: { stride: 0.46, duty: 0.50 },
-    run: { stride: 0.50, duty: 0.34 },
-};
+// Authored stride and stance fraction of each locomotion clip now live in
+// `TUNING.gait` (core.js), used to derive the ground speed that keeps the
+// hooves from skating. The walk is a 4-beat lateral walk and the trot a 2-beat
+// diagonal gait (each foot planted half the cycle); the run is a 2-beat gait
+// with a short flight phase (each foot planted a third of the cycle).
 
 function findClip(names, wanted) {
     for (let i = 0; i < names.length; i++) {
@@ -59,7 +54,7 @@ function clipInfo(index) {
 
 function gaitSpeed(role) {
     const info = CLIP[role];
-    const gait = GAIT[role];
+    const gait = TUNING.gait[role];
     if (info === null || gait === undefined || info.duration <= 0) return null;
     return gait.stride / (gait.duty * info.duration);
 }
@@ -178,7 +173,8 @@ function poseModel(role, phase) {
 function drawModelGoat(g, tint) {
     const yawDeg = (g.yaw * 180) / Math.PI;
     rl.drawModelEx(model, g.px, goatBaseY(g) + groundOffset, g.pz,
-        0, 1, 0, yawDeg, MODEL_SCALE, MODEL_SCALE, MODEL_SCALE, tint);
+        0, 1, 0, yawDeg, TUNING.movement.modelScale, TUNING.movement.modelScale,
+        TUNING.movement.modelScale, tint);
 }
 
 // ---- the cube fallback ---------------------------------------------------

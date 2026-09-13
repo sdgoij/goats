@@ -11,16 +11,9 @@
 // rain slowdown (see `rainSlowFactor` in weather.js), and satiety decays, so the
 // goat has to keep grazing to keep the benefit.
 
-const EAT_RANGE = 1.1;          // metres: a tuft closer than this is in reach
-                                // (the posed muzzle reaches ~0.8 m ahead, so a
-                                // tuft further out would be eaten from thin air)
-const EAT_ENERGY = 8;           // energy per tuft
-const EAT_SATIETY = 0.55;       // belly fill per tuft, 0..1
-const SATIETY_DECAY = 0.02;     // per second
-const RAIN_SHELTER = 0.6;       // a full belly removes this share of the rain slowdown
+// The meal's reach, energy, belly fill and regrowth windows live in
+// `TUNING.food` (core.js); `rainSlowFactor` in weather.js reads the same tree.
 const EAT_FALLBACK_TIME = 2.4;  // cube-fallback meal length
-const REGROW_MIN = 40;          // seconds before an eaten tuft comes back
-const REGROW_MAX = 90;          // ...at most, so the meadow recovers patchily
 
 // Eaten cells map to the seconds left before they return. A private PRNG keeps
 // the regrow jitter off the weather's and the bots' streams (the harness asserts
@@ -78,7 +71,8 @@ function assignRegrow(key) {
     foodRngState ^= foodRngState >>> 17;
     foodRngState ^= foodRngState << 5;
     foodRngState >>>= 0;
-    EATEN.set(key, REGROW_MIN + (foodRngState / 4294967296) * (REGROW_MAX - REGROW_MIN));
+    EATEN.set(key, TUNING.food.regrowMin +
+        (foodRngState / 4294967296) * (TUNING.food.regrowMax - TUNING.food.regrowMin));
     eatenCount += 1;
 }
 
@@ -122,8 +116,8 @@ function startEat(target) {
     if (!consumeTuft(target)) return false;
     // Face the tuft, so the head comes down where the grass actually was.
     goat.yaw = Math.atan2(-(target.z - goat.pz), target.x - goat.px);
-    stats.energy = Math.min(MAX_STAT, stats.energy + EAT_ENERGY);
-    satiety = Math.min(1, satiety + EAT_SATIETY);
+    stats.energy = Math.min(TUNING.stats.max, stats.energy + TUNING.food.eatEnergy);
+    satiety = Math.min(1, satiety + TUNING.food.eatSatiety);
     mode = "eat";
     eatTime = 0;
     cyclePlayerVariant("eat");
@@ -135,7 +129,7 @@ function startEat(target) {
 
 // Once per frame: let the belly empty out and let eaten tufts grow back.
 function updateFood(dt) {
-    satiety = Math.max(0, satiety - SATIETY_DECAY * dt);
+    satiety = Math.max(0, satiety - TUNING.food.satietyDecay * dt);
     // The meadow is the server's in a session: a client mirrors `EATEN` from the
     // snapshots instead of counting it down, so the two cannot disagree about
     // when a tuft returns.

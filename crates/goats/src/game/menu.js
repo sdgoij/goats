@@ -64,7 +64,6 @@ function applySettings() {
         SETTINGS.fullscreen !== rl.isWindowFullscreen()) {
         rl.toggleFullscreen();
     }
-    setHerdSize(SETTINGS.herd);
 }
 
 // The subset of `applySettings` that is safe before the first frame: the shadow
@@ -155,10 +154,9 @@ function drawSettings(sw, sh) {
 
     rl.guiGroupBox(lx, cy, lw, 66, "Gameplay");
     cy += 26;
-    const herd = rl.guiSlider(lx + 10, cy, lw - 20, 24, "Herd size", "", SETTINGS.herd, 0, 10);
-    if (Math.round(herd.value) !== SETTINGS.herd) {
-        SETTINGS.herd = Math.round(herd.value);
-        setHerdSize(SETTINGS.herd);
+    const herd = rl.guiSlider(lx + 10, cy, lw - 20, 24, "Herd size", "", TUNING.herd.count, 0, 10);
+    if (Math.round(herd.value) !== TUNING.herd.count) {
+        tuningSet("herd.count", Math.round(herd.value));
     }
 
     if (rl.guiButton(x + w / 2 - 60, y + h - 40, 120, 30, "Back")) uiScreen = "main";

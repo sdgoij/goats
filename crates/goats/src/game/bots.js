@@ -15,16 +15,9 @@
 // How far a bot will look for grass to walk to when it decides to graze.
 const GRAZE_SEEK_RANGE = 12;
 
-// Coat colour (for the procedural fleece), body scale, and temperament.
-// `bold` scales a bot's cruising speed; `lazy` biases it toward standing still.
-const BOT_SPEC = [
-    { coat: [196, 168, 128], scale: 0.80, bold: 0.95, lazy: 0.55, name: "tan kid" },
-    { coat: [222, 216, 206], scale: 1.06, bold: 1.00, lazy: 0.50, name: "cream" },
-    { coat: [116, 92, 70], scale: 1.22, bold: 0.70, lazy: 0.72, name: "big brown" },
-    { coat: [156, 126, 92], scale: 0.94, bold: 1.18, lazy: 0.32, name: "lively" },
-    { coat: [88, 90, 98], scale: 1.12, bold: 0.85, lazy: 0.62, name: "charcoal" },
-    { coat: [208, 180, 142], scale: 0.74, bold: 1.05, lazy: 0.45, name: "small beige" },
-];
+// Coat colour (for the procedural fleece), body scale, and temperament live in
+// `TUNING.herd.spec` (core.js). `bold` scales a bot's cruising speed; `lazy`
+// biases it toward standing still.
 
 const BOTS = [];
 const BOT_TEX = [];
@@ -52,8 +45,8 @@ function botRnd() {
 function makeBotTextures() {
     if (typeof rl.makeTexture !== "function") return;
     const N = 64;
-    for (let i = 0; i < BOT_SPEC.length; i++) {
-        const c = BOT_SPEC[i].coat;
+    for (let i = 0; i < TUNING.herd.spec.length; i++) {
+        const c = TUNING.herd.spec[i].coat;
         let hex = "";
         for (let y = 0; y < N; y++) {
             for (let x = 0; x < N; x++) {
@@ -74,8 +67,8 @@ function makeBotTextures() {
 // the sixth the coats recycle with a bigger body -- enough variety up to the
 // settings' ten goats.
 function botSpec(i) {
-    const base = BOT_SPEC[i % BOT_SPEC.length];
-    const cycle = Math.floor(i / BOT_SPEC.length);
+    const base = TUNING.herd.spec[i % TUNING.herd.spec.length];
+    const cycle = Math.floor(i / TUNING.herd.spec.length);
     if (cycle === 0) return base;
     return { coat: base.coat, scale: base.scale * (1 + 0.08 * cycle), bold: base.bold, lazy: base.lazy };
 }
@@ -170,7 +163,7 @@ function botStartEat(b, t) {
     const info = clipAt("eat", b.var.eat);
     consumeTuft(t);
     b.yaw = Math.atan2(-(t.z - b.z), t.x - b.x);
-    b.satiety = Math.min(1, b.satiety + EAT_SATIETY);
+    b.satiety = Math.min(1, b.satiety + TUNING.food.eatSatiety);
     b.mode = "eat";
     b.eatTime = 0;
     b.eatDur = info !== null && info !== undefined ? info.duration : EAT_FALLBACK_TIME;
@@ -186,7 +179,7 @@ function botNewAction(b) {
     // arrival check in `updateBots` reads the `graze` flag). The cooldown keeps
     // the herd from stripping the field bare.
     if (b.eatCool <= 0 && botRnd() < 0.6) {
-        const near = nearestTuft(b.x, b.z, EAT_RANGE);
+        const near = nearestTuft(b.x, b.z, TUNING.food.eatRange);
         if (near !== null) {
             botStartEat(b, near);
             return;
@@ -239,7 +232,7 @@ function updateBots(dt) {
         b.timer -= dt;
         if (b.jumpCool > 0) b.jumpCool -= dt;
         if (b.eatCool > 0) b.eatCool -= dt;
-        if (b.satiety > 0) b.satiety = Math.max(0, b.satiety - SATIETY_DECAY * dt);
+        if (b.satiety > 0) b.satiety = Math.max(0, b.satiety - TUNING.food.satietyDecay * dt);
         if (b.satiety > botBellyMax) botBellyMax = b.satiety;
 
         if (b.mode === "jump") {
@@ -268,7 +261,7 @@ function updateBots(dt) {
             // Speed for the current gait, from the same stride/duty the player uses.
             const role = botRole(b);
             const info = clipAt(role, b.var[role]);
-            const gait = GAIT[role];
+            const gait = TUNING.gait[role];
             let spd = 0;
             if (b.mode !== "idle" && b.mode !== "sleep") {
                 const base = (info !== null && info.duration > 0 && gait !== undefined)
@@ -290,7 +283,7 @@ function updateBots(dt) {
                         // Arrived: eat whatever is under the nose now (the tuft
                         // may have been taken meanwhile), else give up.
                         b.graze = false;
-                        const t = nearestTuft(b.x, b.z, EAT_RANGE);
+                        const t = nearestTuft(b.x, b.z, TUNING.food.eatRange);
                         if (t !== null) botStartEat(b, t);
                         else {
                             b.mode = "idle";
@@ -330,7 +323,7 @@ function updateBots(dt) {
                     const nj = clipCount("jump");
                     if (nj > 1) b.var.jump = (b.var.jump + 1) % nj;
                     const jinfo = clipAt("jump", b.var.jump);
-                    b.jumpDur = jinfo !== null && jinfo !== undefined ? jinfo.duration : FALLBACK_JUMP_TIME;
+                    b.jumpDur = jinfo !== null && jinfo !== undefined ? jinfo.duration : TUNING.jump.fallbackTime;
                     b.jumpTime = 0;
                     b.jumpSpeed = spd * 1.15;
                     b.jumpCool = 0.5 + botRnd() * 1.3;
@@ -360,13 +353,13 @@ function updateBots(dt) {
 // Bots yield fully to the player (it can shove them) and split the push evenly
 // with each other. Runs after both the player and the bots have moved.
 function resolveGoatCollisions() {
-    const pr = GOAT_RADIUS * MODEL_SCALE;
+    const pr = TUNING.movement.goatRadius * TUNING.movement.modelScale;
     // Two relaxation passes: shoving a bot off the player can push it into
     // another bot, so a second pass settles the chain.
     for (let pass = 0; pass < 2; pass++) {
         for (let i = 0; i < BOTS.length; i++) {
             const b = BOTS[i];
-            const rr = pr + GOAT_RADIUS * b.spec.scale;
+            const rr = pr + TUNING.movement.goatRadius * b.spec.scale;
             const dx = b.x - goat.px;
             const dz = b.z - goat.pz;
             const d2 = dx * dx + dz * dz;
@@ -383,10 +376,10 @@ function resolveGoatCollisions() {
         }
         for (let i = 0; i < BOTS.length; i++) {
             const a = BOTS[i];
-            const ar = GOAT_RADIUS * a.spec.scale;
+            const ar = TUNING.movement.goatRadius * a.spec.scale;
             for (let j = i + 1; j < BOTS.length; j++) {
                 const b = BOTS[j];
-                const rr = ar + GOAT_RADIUS * b.spec.scale;
+                const rr = ar + TUNING.movement.goatRadius * b.spec.scale;
                 const dx = b.x - a.x;
                 const dz = b.z - a.z;
                 const d2 = dx * dx + dz * dz;
@@ -410,13 +403,13 @@ function goatMinGap() {
         const b = BOTS[i];
         let dx = b.x - goat.px;
         let dz = b.z - goat.pz;
-        let d = Math.sqrt(dx * dx + dz * dz) - GOAT_RADIUS * (MODEL_SCALE + b.spec.scale);
+        let d = Math.sqrt(dx * dx + dz * dz) - TUNING.movement.goatRadius * (TUNING.movement.modelScale + b.spec.scale);
         if (d < best) best = d;
         for (let j = i + 1; j < BOTS.length; j++) {
             const c = BOTS[j];
             dx = c.x - b.x;
             dz = c.z - b.z;
-            d = Math.sqrt(dx * dx + dz * dz) - GOAT_RADIUS * (b.spec.scale + c.spec.scale);
+            d = Math.sqrt(dx * dx + dz * dz) - TUNING.movement.goatRadius * (b.spec.scale + c.spec.scale);
             if (d < best) best = d;
         }
     }
@@ -430,7 +423,7 @@ function drawBots(tint) {
         const b = BOTS[i];
         const dx = b.x - goat.px;
         const dz = b.z - goat.pz;
-        if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) {
+        if (dx * dx + dz * dz > shadowGrassCull2()) {
             rl.drawCube(b.x, terrainHeight(b.x, b.z) + 0.06, b.z,
                 1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
         }
@@ -454,7 +447,7 @@ function drawBotsShadow() {
         const b = BOTS[i];
         const dx = b.x - goat.px;
         const dz = b.z - goat.pz;
-        if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) continue;
+        if (dx * dx + dz * dz > shadowGrassCull2()) continue;
         rl.setModelShader(b.model, depthShader);
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, -1);
         const role = botRole(b);
@@ -468,3 +461,10 @@ function drawBotsShadow() {
         rl.setModelShader(b.model, litShader);
     }
 }
+
+// The herd size is `TUNING.herd.count`, so the menu and the console write it
+// through `tuningSet` and a mod retunes it the same way. Only resize once the
+// world is live: before that the load steps read the count themselves.
+tuningWatch("herd.count", function (path, value) {
+    if (loaded) setHerdSize(value);
+});

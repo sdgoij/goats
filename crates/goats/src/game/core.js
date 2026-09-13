@@ -70,22 +70,253 @@
 //   ESC           main menu / resume
 
 // ---- tuning --------------------------------------------------------------
+//
+// Every gameplay value the sandbox reads lives in one mutable tree so mods can
+// retune it without patching code (see `APIv1.md`). The scene reads the tree
+// directly; `tuningSet`/`tuningMerge` are the validated write path, and
+// `tuningWatch` is how a system reacts to a change. The defaults here are
+// exactly the constants they replaced, so a mod-free run is unchanged.
 
 const MODEL_PATH = "goat_animated.glb";
-const MODEL_SCALE = 1.0;
-const GOAT_RADIUS = 0.45;  // body collision radius at scale 1, so goats block
-const TURN_RATE = 1.8;     // rad/s
-const FALLBACK_TROT_MULT = 1.3;  // how much faster the cube goat "trots"
-const FALLBACK_RUN_MULT = 1.6;   // how much faster the cube goat "runs"
-const FALLBACK_JUMP_TIME = 0.6;  // seconds of the cube goat's hop
-const FALLBACK_JUMP_H = 0.55;    // metres of the cube goat's hop
+
+const TUNING = {
+    stats: {
+        max: 100,
+        energyDrain: { idle: 0.4, walk: 1.0, trot: 2.0, run: 4.0 },  // per second
+        jumpEnergyCost: 2.0,
+        sleepEnergyRecover: 12,    // per second
+        sleepHealthRecover: 2,
+        idleHealthRecover: 0.1,
+        exhaustHealthDrain: 3,
+        restedEnergy: 20,          // health only regenerates above this
+        autoSleepDelay: 2.0,       // seconds idle while exhausted
+        deadEyeFraction: 0.75,     // show the X eyes once the death clip is this far in
+    },
+    movement: {
+        turnRate: 1.8,             // rad/s
+        goatRadius: 0.45,          // body collision radius at scale 1, so goats block
+        modelScale: 1.0,
+    },
+    gait: {
+        walk: { stride: 0.40, duty: 0.50 },
+        trot: { stride: 0.46, duty: 0.50 },
+        run: { stride: 0.50, duty: 0.34 },
+    },
+    jump: {
+        fallbackTime: 0.6,         // seconds of the cube goat's hop
+        fallbackHeight: 0.55,      // metres of the cube goat's hop
+        fallbackTrotMult: 1.3,     // how much faster the cube goat "trots"
+        fallbackRunMult: 1.6,      // how much faster the cube goat "runs"
+    },
+    food: {
+        eatRange: 1.1,             // metres: a tuft closer than this is in reach
+        eatEnergy: 8,              // energy per tuft
+        eatSatiety: 0.55,          // belly fill per tuft, 0..1
+        satietyDecay: 0.02,        // per second
+        rainShelter: 0.6,          // a full belly removes this share of the rain slowdown
+        regrowMin: 40,             // seconds before an eaten tuft comes back
+        regrowMax: 90,             // ...at most, so the meadow recovers patchily
+    },
+    weather: {
+        windBase: 1.6,             // m/s
+        cloudDrift: 0.35,          // clouds move slower than the ground wind
+        rainMax: 160,              // streaks; each is a drawLine, so this is a cost knob
+        rainSlow: 0.28,            // at full rain the goat moves up to 28% slower
+        windSlow: 0.07,            // a full gust slows it a little more
+        wetDrain: 0.65,            // up to +65% energy drain in heavy rain
+        windDrain: 0.20,
+        windNorm: 1.4,             // windSway value that counts as "a full gust"
+        hold: { clear: [22, 45], cloudy: [16, 34], rain: [20, 40], clearing: [8, 16] },
+    },
+    terrain: {
+        relief: 2.1,               // peak displacement, in metres
+        flat: 6,                   // spawn-bowl radius that stays level, in units
+        ramp: 16,                  // units over which the bowl reaches full relief
+        snap: 24,                  // rebuild when the goat has moved this far
+        uv: 0.06,                  // texture tiles per world unit
+    },
+    world: {
+        dayLength: 240,            // real seconds for one 24 h day
+        timeFast: 40,              // hold T to advance time this many times faster
+        nightDrainMult: 1.6,       // energy drains faster in the cold
+    },
+    herd: {
+        count: 7,                  // bot goats, 0..10
+        spec: [
+            { coat: [196, 168, 128], scale: 0.80, bold: 0.95, lazy: 0.55, name: "tan kid" },
+            { coat: [222, 216, 206], scale: 1.06, bold: 1.00, lazy: 0.50, name: "cream" },
+            { coat: [116, 92, 70], scale: 1.22, bold: 0.70, lazy: 0.72, name: "big brown" },
+            { coat: [156, 126, 92], scale: 0.94, bold: 1.18, lazy: 0.32, name: "lively" },
+            { coat: [88, 90, 98], scale: 1.12, bold: 0.85, lazy: 0.62, name: "charcoal" },
+            { coat: [208, 180, 142], scale: 0.74, bold: 1.05, lazy: 0.45, name: "small beige" },
+        ],
+    },
+    camera: {
+        yaw: 0.7,
+        pitch: 0.42,
+        dist: 5.2,
+        minDist: 2.2,
+        maxDist: 12.0,
+    },
+    sky: {
+        cloudBase: 5.0,            // world height of the layer bottom
+        cloudTop: 9.5,             // world height of the layer top
+        scale: 0.055,              // base shape frequency
+        detail: 0.35,              // high-frequency edge erosion
+        absorb: 1.35,              // extinction per unit density
+        cirrusLevel: 15.0,         // world height of the thin high layer
+        speed: 0.55,               // how fast the layer drifts with the wind
+        steps: [6, 12, 22],        // march steps per quality level
+    },
+    lighting: {
+        shadow: {
+            size: 1024,
+            half: 7.0,             // half-width of the light's box, in world units
+            dist: 22.0,            // how far the light sits from its centre
+            near: 1.0,
+            far: 48.0,
+            bias: 0.0018,
+            strength: 0.85,        // how dark a fully-shadowed sample gets
+        },
+    },
+};
+
+// A write is validated against the value it replaces: numbers stay finite,
+// arrays stay arrays, and a branch is not a leaf. Bounds are only listed where
+// the game needs one.
+const TUNING_CLAMP = {
+    "herd.count": [0, 10],
+    "camera.minDist": [0.1, 1000],
+    "camera.maxDist": [0.1, 1000],
+    "lighting.shadow.size": [16, 8192],
+};
+
+// Leaves that must stay whole numbers (counts and pixel sizes). Integer-ness is
+// explicit rather than inferred: a default of `2.0` is just a number, and a mod
+// may legitimately want `2.5` for a duration or cost.
+const TUNING_INT = {
+    "herd.count": true,
+    "lighting.shadow.size": true,
+};
+
+function tuningHas(node, key) {
+    return Object.prototype.hasOwnProperty.call(node, key);
+}
+
+function tuningKindOf(value) {
+    if (typeof value === "number") return "number";
+    if (Array.isArray(value)) return "array";
+    return "other";
+}
+
+// The value at a dotted path. An unknown path is an error rather than
+// `undefined`, so a typo is loud.
+function tuningGet(path) {
+    const parts = String(path).split(".");
+    let node = TUNING;
+    for (let i = 0; i < parts.length; i++) {
+        if (node === null || typeof node !== "object" || !tuningHas(node, parts[i])) {
+            throw new Error("tuning: unknown path '" + path + "'");
+        }
+        node = node[parts[i]];
+    }
+    return node;
+}
+
+// Validate and coerce `value` against the leaf's current value.
+function tuningCoerce(path, current, value) {
+    const kind = tuningKindOf(current);
+    if (kind === "number") {
+        const n = Number(value);
+        if (!isFinite(n)) throw new Error("tuning: '" + path + "' expects a finite number");
+        let out = tuningHas(TUNING_INT, path) ? Math.round(n) : n;
+        const bounds = TUNING_CLAMP[path];
+        if (bounds !== undefined) out = clamp(out, bounds[0], bounds[1]);
+        return out;
+    }
+    if (kind === "array") {
+        if (!Array.isArray(value)) throw new Error("tuning: '" + path + "' expects an array");
+        if (path === "herd.spec" && value.length === 0) {
+            throw new Error("tuning: 'herd.spec' must not be empty");
+        }
+        if (path === "sky.steps" && value.length !== current.length) {
+            throw new Error("tuning: 'sky.steps' expects " + current.length + " entries");
+        }
+        return value;
+    }
+    throw new Error("tuning: '" + path + "' is not a leaf");
+}
+
+// Set one leaf and notify watchers. Returns the stored (coerced) value.
+function tuningSet(path, value) {
+    const parts = String(path).split(".");
+    const leaf = parts.pop();
+    let parent = TUNING;
+    for (let i = 0; i < parts.length; i++) {
+        if (parent === null || typeof parent !== "object" || !tuningHas(parent, parts[i])) {
+            throw new Error("tuning: unknown path '" + path + "'");
+        }
+        parent = parent[parts[i]];
+    }
+    if (parent === null || typeof parent !== "object" || !tuningHas(parent, leaf)) {
+        throw new Error("tuning: unknown path '" + path + "'");
+    }
+    const next = tuningCoerce(path, parent[leaf], value);
+    parent[leaf] = next;
+    tuningNotify(path, next);
+    return next;
+}
+
+// Merge a nested object leaf by leaf, so every write is validated. Used by a
+// mod's `tuning.json` and by `goats.tuning.merge`.
+function tuningMerge(object, prefix) {
+    const base = prefix === undefined ? "" : prefix;
+    const keys = Object.keys(object);
+    for (let i = 0; i < keys.length; i++) {
+        const path = base === "" ? keys[i] : base + "." + keys[i];
+        const value = object[keys[i]];
+        if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+            tuningMerge(value, path);
+        } else {
+            tuningSet(path, value);
+        }
+    }
+}
+
+// Watch a path (or a branch, by prefix). Returns an unsubscribe function. A
+// watcher that throws is reported and skipped, never aborting the write.
+const tuningWatchers = [];
+function tuningWatch(prefix, fn) {
+    const entry = { prefix: String(prefix === undefined ? "" : prefix), fn: fn };
+    tuningWatchers.push(entry);
+    return function () {
+        const at = tuningWatchers.indexOf(entry);
+        if (at >= 0) tuningWatchers.splice(at, 1);
+    };
+}
+
+function tuningNotify(path, value) {
+    for (let i = 0; i < tuningWatchers.length; i++) {
+        const watcher = tuningWatchers[i];
+        const hit = watcher.prefix === "" || path === watcher.prefix ||
+            path.indexOf(watcher.prefix + ".") === 0;
+        if (!hit) continue;
+        try {
+            watcher.fn(path, value);
+        } catch (error) {
+            console.log("tuning: watcher on '" + watcher.prefix + "' threw: " + String(error));
+        }
+    }
+}
 
 // ---- settings (see menu.js) ----------------------------------------------
 //
 // Live values the main menu edits. Kept here, in the first part, so every later
 // part can read them; `applySettings` in menu.js pushes them into the systems
 // that own the behaviour. `shadow` holds a SHADOW_* index from lighting.js (the
-// numeric literals avoid a cross-part initialiser dependency).
+// numeric literals avoid a cross-part initialiser dependency). The herd size is
+// not here: it is `TUNING.herd.count`, which menu.js and ctl.js write through
+// `tuningSet`, so a mod retunes it the same way.
 
 const SETTINGS = {
     bgm: 90,        // background music volume, 0..100
@@ -95,21 +326,7 @@ const SETTINGS = {
     sky: true,      // sky shader on/off
     cloud: 1,       // volumetric cloud quality: 0 low, 1 medium, 2 high
     fullscreen: true,  // start (and toggle) full-screen
-    herd: 7,        // bot goats, 0..10
 };
-
-// ---- stats ---------------------------------------------------------------
-
-const MAX_STAT = 100;
-const ENERGY_DRAIN = { idle: 0.4, walk: 1.0, trot: 2.0, run: 4.0 };  // per second
-const JUMP_ENERGY_COST = 2.0;
-const SLEEP_ENERGY_RECOVER = 12;   // per second
-const SLEEP_HEALTH_RECOVER = 2;
-const IDLE_HEALTH_RECOVER = 0.1;
-const EXHAUST_HEALTH_DRAIN = 3;
-const RESTED_ENERGY = 20;          // health only regenerates above this
-const AUTO_SLEEP_DELAY = 2.0;      // seconds idle while exhausted
-const DEAD_EYE_FRACTION = 0.75;    // show the X eyes once the death clip is this far in
 
 // Cube-fallback gait only (ignored when the model loads).
 const V_STRIDE = 0.20;

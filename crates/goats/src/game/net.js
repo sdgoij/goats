@@ -282,7 +282,7 @@ function drawPeers(tint) {
         const p = PEERS[i];
         const dx = p.x - goat.px;
         const dz = p.z - goat.pz;
-        if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) {
+        if (dx * dx + dz * dz > shadowGrassCull2()) {
             rl.drawCube(p.x, terrainHeight(p.x, p.z) + 0.06, p.z, 1.3, 0.012, 1.75, ambShadow);
         }
         poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);
@@ -296,7 +296,7 @@ function drawPeersShadow() {
         const p = PEERS[i];
         const dx = p.x - goat.px;
         const dz = p.z - goat.pz;
-        if (dx * dx + dz * dz > SHADOW_GRASS_CULL2) continue;
+        if (dx * dx + dz * dz > shadowGrassCull2()) continue;
         rl.setModelShader(p.model, depthShader);
         rl.setModelTexture(p.model, SHADOW_MAP_INDEX, -1);
         poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);

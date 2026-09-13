@@ -21,11 +21,6 @@
 
 const TERRAIN_CELL = 2;         // world units per grid cell (matches the grass)
 const TERRAIN_QUADS = 48;       // quads per side: a field of +/- 48 units
-const TERRAIN_RELIEF = 2.1;     // peak displacement, in metres
-const TERRAIN_FLAT = 6;         // spawn-bowl radius that stays level, in units
-const TERRAIN_RAMP = 16;        // units over which the bowl reaches full relief
-const TERRAIN_SNAP = 24;        // rebuild when the goat has moved this far
-const TERRAIN_UV = 0.06;        // texture tiles per world unit
 const TERRAIN_DETAIL = 64;      // detail-texture size, in pixels
 
 // Per-cell ground heights for the grass, keyed by cell. The field is
@@ -65,15 +60,15 @@ function terrainShape(x, z) {
 }
 
 // The ground height at (x, z). A bowl around the origin stays level so the goat
-// starts on flat grass, and the relief eases in over `TERRAIN_RAMP` so there is
-// no cliff at its edge.
+// starts on flat grass, and the relief eases in over `TUNING.terrain.ramp` so
+// there is no cliff at its edge.
 function terrainHeight(x, z) {
     if (!TERRAIN_MESH_OK) return 0;
     const d = Math.sqrt(x * x + z * z);
-    let t = (d - TERRAIN_FLAT) / TERRAIN_RAMP;
+    let t = (d - TUNING.terrain.flat) / TUNING.terrain.ramp;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     t = t * t * (3 - 2 * t);
-    return (terrainShape(x, z) - 0.5) * 2 * TERRAIN_RELIEF * t;
+    return (terrainShape(x, z) - 0.5) * 2 * TUNING.terrain.relief * t;
 }
 
 // The goat's ground-contact height. `g.py` is the height *above* the ground
@@ -157,8 +152,8 @@ function terrainBuild() {
             cols[k * 4 + 1] = c[1];
             cols[k * 4 + 2] = c[2];
             cols[k * 4 + 3] = 255;
-            uvs[k * 2] = wx * TERRAIN_UV;
-            uvs[k * 2 + 1] = wz * TERRAIN_UV;
+            uvs[k * 2] = wx * TUNING.terrain.uv;
+            uvs[k * 2 + 1] = wz * TUNING.terrain.uv;
         }
     }
     // Wound like raylib's own `GenMeshPlane` (the same two triangles per quad).
@@ -196,18 +191,18 @@ function makeTerrain() {
         return;
     }
     makeTerrainTexture();
-    terrainAnchorX = Math.round(goat.px / TERRAIN_SNAP) * TERRAIN_SNAP;
-    terrainAnchorZ = Math.round(goat.pz / TERRAIN_SNAP) * TERRAIN_SNAP;
+    terrainAnchorX = Math.round(goat.px / TUNING.terrain.snap) * TUNING.terrain.snap;
+    terrainAnchorZ = Math.round(goat.pz / TUNING.terrain.snap) * TUNING.terrain.snap;
     terrainBuild();
 }
 
 // Rebuild the grid when the goat has left the one it was built around. Called
 // once per frame; the snapped anchor means the rebuild lands every
-// `TERRAIN_SNAP` units of travel, not every frame.
+// `TUNING.terrain.snap` units of travel, not every frame.
 function terrainEnsure(px, pz) {
     if (terrainDetail < 0) return;
-    const ax = Math.round(px / TERRAIN_SNAP) * TERRAIN_SNAP;
-    const az = Math.round(pz / TERRAIN_SNAP) * TERRAIN_SNAP;
+    const ax = Math.round(px / TUNING.terrain.snap) * TUNING.terrain.snap;
+    const az = Math.round(pz / TUNING.terrain.snap) * TUNING.terrain.snap;
     if (terrainBuilt && ax === terrainAnchorX && az === terrainAnchorZ) return;
     terrainAnchorX = ax;
     terrainAnchorZ = az;
@@ -236,9 +231,8 @@ function setTerrainShader(shader) {
 
 // ---- day/night -----------------------------------------------------------
 
-const DAY_LENGTH = 240;         // real seconds for one 24 h day
-const TIME_FAST = 40;           // hold T to advance time this many times faster
-const NIGHT_DRAIN_MULT = 1.6;   // energy drains faster in the cold
+// The clock and its speed are `TUNING.world.dayLength` / `TUNING.world.timeFast`,
+// and the cold-night energy penalty is `TUNING.world.nightDrainMult`.
 
 // Sky keyframes by hour: sky-top and horizon colours plus a 0..1 light factor
 // used to tint the whole scene. Hour 24 repeats hour 0.

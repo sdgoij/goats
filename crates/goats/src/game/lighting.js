@@ -224,8 +224,9 @@ function setLitUniforms(cx, cy, cz) {
     rl.setShaderValueVector3(litShader, litUniforms.camPos, cx, cy, cz);
     if (litShadow !== null) {
         setMatrixOn(litShader, litShadow.lightVP, LIGHT_MATRIX);
-        rl.setShaderValueVector2(litShader, litShadow.texel, 1 / SHADOW_SIZE, 1 / SHADOW_SIZE);
-        rl.setShaderValue(litShader, litShadow.bias, SHADOW_BIAS, rl.SHADER_UNIFORM_FLOAT);
+        rl.setShaderValueVector2(litShader, litShadow.texel,
+            1 / TUNING.lighting.shadow.size, 1 / TUNING.lighting.shadow.size);
+        rl.setShaderValue(litShader, litShadow.bias, TUNING.lighting.shadow.bias, rl.SHADER_UNIFORM_FLOAT);
         rl.setShaderValue(litShader, litShadow.strength, shadowStrengthNow, rl.SHADER_UNIFORM_FLOAT);
         // The grass and the cube fallback are immediate-mode geometry, which
         // never sees the model's material map 1, so bind the shadow sampler
@@ -267,20 +268,16 @@ const SHADOW_OFF = 0;
 const SHADOW_PLANAR = 1;
 const SHADOW_MAP = 2;
 
-const SHADOW_SIZE = 1024;
-const SHADOW_HALF = 7.0;      // half-width of the light's box, in world units
-const SHADOW_DIST = 22.0;     // how far the light sits from its centre
-const SHADOW_NEAR = 1.0;
-const SHADOW_FAR = 48.0;
-const SHADOW_BIAS = 0.0018;
-const SHADOW_STRENGTH = 0.85; // how dark a fully-shadowed sample gets
 const SHADOW_MAP_INDEX = 1;   // MATERIAL_MAP_METALNESS -> sampler `texture1`
-// The map only spans a SHADOW_HALF box around the goat, so every tuft inside it
-// is exactly the grass shadow the lit shader can sample (anything outside would
+// The map's size, box and depth range are `TUNING.lighting.shadow` (core.js).
+// The map only spans a `half` box around the goat, so every tuft inside it is
+// exactly the grass shadow the lit shader can sample (anything outside would
 // project to out-of-range uv and be ignored). The small margin catches tufts
 // just outside whose short shadow leans into the box.
-const SHADOW_GRASS_HALF = SHADOW_HALF + 2.0;
-const SHADOW_GRASS_CULL2 = SHADOW_GRASS_HALF * SHADOW_GRASS_HALF;
+function shadowGrassCull2() {
+    const half = TUNING.lighting.shadow.half + 2.0;
+    return half * half;
+}
 
 let shadowMapReady = false;
 let shadowMode = SHADOW_PLANAR;
@@ -331,9 +328,9 @@ function unit3(v) {
     return [v[0]/l, v[1]/l, v[2]/l];
 }
 
-// Orthographic world -> light-clip matrix: x/y span a SHADOW_HALF box around
-// (cx, cy, cz), z runs SHADOW_NEAR..SHADOW_FAR along the light direction, with
-// the light at distance SHADOW_DIST.
+// Orthographic world -> light-clip matrix: x/y span the `TUNING.lighting.shadow`
+// half-width box around (cx, cy, cz), z runs its near..far range along the light
+// direction, with the light at its `dist`.
 //
 // The 16 values are the matrix in COLUMN-major order, which is what
 // `SetShaderValueMatrix` uploads and GLSL reads: the R/U/L basis vectors are the
@@ -342,20 +339,21 @@ function unit3(v) {
 // origin -- the shadow then only appears while the goat is still near spawn and
 // fades out (and comes back) as it walks away and returns.
 function buildLightMatrix(cx, cy, cz) {
+    const shadow = TUNING.lighting.shadow;
     const L = unit3(LIGHT_DIR);
     const up = Math.abs(L[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
     const R = unit3(cross3(up, L));
     const U = cross3(L, R);
-    const k = 2 / (SHADOW_FAR - SHADOW_NEAR);
+    const k = 2 / (shadow.far - shadow.near);
     const dL = dot3([cx, cy, cz], L);
     const dR = dot3([cx, cy, cz], R);
     const dU = dot3([cx, cy, cz], U);
-    const t2 = k*(SHADOW_DIST + dL) - k*SHADOW_NEAR - 1;
+    const t2 = k*(shadow.dist + dL) - k*shadow.near - 1;
     return [
-        R[0]/SHADOW_HALF, U[0]/SHADOW_HALF, -k*L[0], 0,
-        R[1]/SHADOW_HALF, U[1]/SHADOW_HALF, -k*L[1], 0,
-        R[2]/SHADOW_HALF, U[2]/SHADOW_HALF, -k*L[2], 0,
-        -dR/SHADOW_HALF, -dU/SHADOW_HALF, t2, 1,
+        R[0]/shadow.half, U[0]/shadow.half, -k*L[0], 0,
+        R[1]/shadow.half, U[1]/shadow.half, -k*L[1], 0,
+        R[2]/shadow.half, U[2]/shadow.half, -k*L[2], 0,
+        -dR/shadow.half, -dU/shadow.half, t2, 1,
     ];
 }
 
@@ -380,7 +378,7 @@ function makeShadowMap() {
         bias: rl.getShaderLocation(litShader, "shadowBias"),
         strength: rl.getShaderLocation(litShader, "shadowStrength"),
     };
-    shadowRT = rl.loadRenderTexture(SHADOW_SIZE, SHADOW_SIZE);
+    shadowRT = rl.loadRenderTexture(TUNING.lighting.shadow.size, TUNING.lighting.shadow.size);
     if (shadowRT < 0 || !rl.isRenderTextureValid(shadowRT)) {
         shadowRT = -1;
         console.log("shadow map: no render texture - keeping the planar shadow");
@@ -413,7 +411,7 @@ function updateShadow() {
     for (let i = 0; i < 16; i++) LIGHT_MATRIX[i] = m[i];
     // Fade the shadow out as the light drops toward the horizon.
     const low = Math.min(1, Math.max(0, (LIGHT_DIR[1] - 0.06) / 0.25));
-    shadowStrengthNow = SHADOW_STRENGTH * low * (0.35 + 0.65 * skyLight);
+    shadowStrengthNow = TUNING.lighting.shadow.strength * low * (0.35 + 0.65 * skyLight);
 }
 
 // Render the goat and the near grass from the light's point of view into the
@@ -429,7 +427,7 @@ function renderShadowMap() {
     // same `drawTufts` the visible pass uses, so the shadow tracks the wind.
     rl.beginShaderMode(depthShader);
     setMatrixOn(depthShader, depthUniforms.lightVP, LIGHT_MATRIX);
-    drawTufts(goat, rl.WHITE, SHADOW_GRASS_CULL2, SHADOW_GRASS_CULL2);
+    drawTufts(goat, rl.WHITE, shadowGrassCull2(), shadowGrassCull2());
     rl.endShaderMode();
     rl.setModelShader(model, depthShader);
     // Detach the shadow target while it is the framebuffer's own attachment.

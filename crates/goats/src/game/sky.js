@@ -3,7 +3,8 @@
 //
 // The sky is drawn as one full-screen pass. For each pixel the shader rebuilds
 // the camera ray from the camera basis, shades an analytic atmosphere, and then
-// raymarches a slab of cloud between `CLOUD_BASE` and `CLOUD_TOP`.
+// raymarches a slab of cloud between `TUNING.sky.cloudBase` and
+// `TUNING.sky.cloudTop`.
 //
 // What makes it read as a volume rather than a texture:
 //
@@ -22,16 +23,7 @@
 // near a cloud surface, and the step count comes from the `clouds` setting.
 // `B` still falls back to the M2 gradient and the noise-puff billboards.
 
-const CLOUD_BASE = 5.0;        // world height of the layer bottom
-const CLOUD_TOP = 9.5;         // world height of the layer top
-const CLOUD_SCALE = 0.055;     // base shape frequency
-const CLOUD_DETAIL = 0.35;     // high-frequency edge erosion
-const CLOUD_ABSORB = 1.35;     // extinction per unit density
-const CIRRUS_LEVEL = 15.0;     // world height of the thin high layer
-const CLOUD_SPEED = 0.55;      // how fast the layer drifts with the wind
-
-// March steps per cloud quality setting: low / medium / high.
-const CLOUD_STEPS = [6, 12, 22];
+// The slab geometry, density and march steps are `TUNING.sky` (core.js).
 const CLOUD_LEVELS = ["low", "medium", "high"];
 
 let skyShader = -1;
@@ -265,7 +257,7 @@ function makeSkyShader() {
         cloudSteps: rl.getShaderLocation(skyShader, "cloudSteps"),
     };
     console.log("sky: shader " + skyShader + ", clouds " + CLOUD_LEVELS[SETTINGS.cloud] +
-        " (" + CLOUD_STEPS[SETTINGS.cloud] + " steps)");
+        " (" + TUNING.sky.steps[SETTINGS.cloud] + " steps)");
 }
 
 function channelOf(packed, shift) {
@@ -278,7 +270,7 @@ function cloudLevel() {
 }
 
 function cloudSteps() {
-    return CLOUD_STEPS[cloudLevel()];
+    return TUNING.sky.steps[cloudLevel()];
 }
 
 // Draw the whole sky. `cx/cy/cz` is the camera, `tx/ty/tz` its target; the
@@ -319,19 +311,19 @@ function drawSky(cx, cy, cz, tx, ty, tz, sw, sh, dt) {
         LIGHT_COLOR[0], LIGHT_COLOR[1], LIGHT_COLOR[2], 1.0);
     rl.setShaderValue(skyShader, skyUniforms.cloudiness, cloudiness, rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(skyShader, skyUniforms.time, skyTime, rl.SHADER_UNIFORM_FLOAT);
-    rl.setShaderValueVector2(skyShader, skyUniforms.wind, windX * CLOUD_SPEED, windZ * CLOUD_SPEED);
+    rl.setShaderValueVector2(skyShader, skyUniforms.wind, windX * TUNING.sky.speed, windZ * TUNING.sky.speed);
     rl.setShaderValueVector3(skyShader, skyUniforms.cloudLit,
         Math.min(1, lit + 0.10 * skyWarm), Math.min(1, lit + 0.02 * skyWarm),
         Math.min(1, lit - 0.06 * skyWarm));
     rl.setShaderValueVector3(skyShader, skyUniforms.cloudShadow,
         shadow * 0.95, shadow * 0.97, shadow * 1.06);
-    rl.setShaderValue(skyShader, skyUniforms.cloudBase, CLOUD_BASE, rl.SHADER_UNIFORM_FLOAT);
-    rl.setShaderValue(skyShader, skyUniforms.cloudTop, CLOUD_TOP, rl.SHADER_UNIFORM_FLOAT);
-    rl.setShaderValue(skyShader, skyUniforms.cloudScale, CLOUD_SCALE, rl.SHADER_UNIFORM_FLOAT);
-    rl.setShaderValue(skyShader, skyUniforms.cloudDetail, CLOUD_DETAIL, rl.SHADER_UNIFORM_FLOAT);
-    rl.setShaderValue(skyShader, skyUniforms.cloudAbsorb, CLOUD_ABSORB, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.cloudBase, TUNING.sky.cloudBase, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.cloudTop, TUNING.sky.cloudTop, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.cloudScale, TUNING.sky.scale, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.cloudDetail, TUNING.sky.detail, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.cloudAbsorb, TUNING.sky.absorb, rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(skyShader, skyUniforms.cirrus, cirrus, rl.SHADER_UNIFORM_FLOAT);
-    rl.setShaderValue(skyShader, skyUniforms.cirrusHeight, CIRRUS_LEVEL, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(skyShader, skyUniforms.cirrusHeight, TUNING.sky.cirrusLevel, rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(skyShader, skyUniforms.nightDim, 1 - skyLight, rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(skyShader, skyUniforms.cloudSteps, cloudSteps(), rl.SHADER_UNIFORM_INT);
     rl.drawRectangle(0, 0, sw, sh, rl.WHITE);

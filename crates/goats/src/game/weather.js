@@ -1,21 +1,13 @@
 // Part 7/14 of the goat scene: the weather state machine, wind and effects.
 // ---- weather -------------------------------------------------------------
 
-const WIND_BASE = 1.6;              // m/s
-const CLOUD_DRIFT = 0.35;           // clouds move slower than the ground wind
+// The wind, rain and gameplay-impact numbers live in `TUNING.weather`
+// (core.js). `CLOUD_WRAP` stays here: it is structural rather than a tuning
+// knob.
 const CLOUD_WRAP = 100;             // recycle clouds this far from the goat
-const RAIN_MAX = 160;       // streaks; each is a drawLine, so this is a cost knob
 
 const OVERCAST_TOP = rl.color(96, 102, 116, 255);
 const OVERCAST_BOT = rl.color(150, 154, 162, 255);
-
-// Weather bites into gameplay: rain and wind slow the goat down, and being wet
-// and cold burns energy faster (on top of the existing night penalty).
-const RAIN_SLOW = 0.28;      // at full rain the goat moves up to 28% slower
-const WIND_SLOW = 0.07;      // a full gust slows it a little more
-const WET_DRAIN = 0.65;      // up to +65% energy drain in heavy rain
-const WIND_DRAIN = 0.20;
-const WIND_NORM = 1.4;       // windSway value that counts as "a full gust"
 
 const WEATHER_STATES = {
     clear: { cloud: 0.05, rain: 0.0 },
@@ -29,7 +21,6 @@ const WEATHER_NEXT = {
     rain: ["clearing"],
     clearing: ["clear", "cloudy"],
 };
-const WEATHER_HOLD = { clear: [22, 45], cloudy: [16, 34], rain: [20, 40], clearing: [8, 16] };
 
 let cloudTex = -1;
 let weatherKind = "clear";
@@ -179,8 +170,11 @@ const CLOUDS = [];
 })();
 
 const RAIN = [];
+// Built once, but with headroom: `TUNING.weather.rainMax` selects how many of
+// these are active, so a mod can raise the count without rebuilding the array.
+const RAIN_CAPACITY = 1024;
 (function buildRain() {
-    for (let i = 0; i < RAIN_MAX; i++) {
+    for (let i = 0; i < RAIN_CAPACITY; i++) {
         RAIN.push({ x: hash(i * 1.7), y: hash(i * 2.9), speed: 0.6 + hash(i * 4.3) });
     }
 })();
@@ -212,17 +206,17 @@ function updateWind(dt) {
     swayTime += dt;
     const gust = 0.55 + 0.35 * Math.sin(swayTime * 0.7) + 0.2 * Math.sin(swayTime * 1.9 + 1.3);
     const dir = 0.5 * Math.sin(swayTime * 0.23);
-    const speed = WIND_BASE * Math.max(0.2, gust);
+    const speed = TUNING.weather.windBase * Math.max(0.2, gust);
     windX = Math.cos(dir) * speed;
     windZ = Math.sin(dir) * speed;
-    windSway = Math.min(1.4, speed / WIND_BASE) * (0.55 + 0.45 * cloudiness);
+    windSway = Math.min(1.4, speed / TUNING.weather.windBase) * (0.55 + 0.45 * cloudiness);
 }
 
 // The rain's slowdown share, eased by how full the goat's belly is: `satiety`
-// (food.js) scales it down by up to RAIN_SHELTER, so a grazed goat keeps more
-// of its speed in the wet. Wind is not affected.
+// (food.js) scales it down by up to `TUNING.food.rainShelter`, so a grazed goat
+// keeps more of its speed in the wet. Wind is not affected.
 function rainSlowFactor(sat) {
-    return RAIN_SLOW * (1 - RAIN_SHELTER * clamp(sat, 0, 1));
+    return TUNING.weather.rainSlow * (1 - TUNING.food.rainShelter * clamp(sat, 0, 1));
 }
 
 // The ground-speed multiplier the weather imposes on a goat with the given
@@ -230,8 +224,8 @@ function rainSlowFactor(sat) {
 // rain share. Shared by the player and the bots so the herd feels the same
 // weather, each according to its own grazing.
 function weatherSpeedFor(sat) {
-    const windNorm = Math.min(1, windSway / WIND_NORM);
-    return 1 - (rainSlowFactor(sat) + WIND_SLOW * windNorm) * rainAmount;
+    const windNorm = Math.min(1, windSway / TUNING.weather.windNorm);
+    return 1 - (rainSlowFactor(sat) + TUNING.weather.windSlow * windNorm) * rainAmount;
 }
 
 function updateWeather(dt) {
@@ -239,7 +233,7 @@ function updateWeather(dt) {
     if (weatherTimer <= 0) {
         const opts = WEATHER_NEXT[weatherKind];
         weatherKind = opts[Math.floor(rnd() * opts.length) % opts.length];
-        const hold = WEATHER_HOLD[weatherKind];
+        const hold = TUNING.weather.hold[weatherKind];
         weatherTimer = hold[0] + rnd() * (hold[1] - hold[0]);
     }
     const target = WEATHER_STATES[weatherKind];
@@ -254,12 +248,12 @@ function updateWeather(dt) {
 // the server's cloudiness/rain/wind and still has to run this every frame -- the
 // belly is its own.
 function updateWeatherEffects() {
-    const windNorm = Math.min(1, windSway / WIND_NORM);
+    const windNorm = Math.min(1, windSway / TUNING.weather.windNorm);
     // Gate on rain: "clear" stays exactly neutral, and wind only bites when the
     // goat is actually wet. A full belly (`satiety`, food.js) takes the edge off
     // the rain's slowdown.
     weatherSpeed = weatherSpeedFor(satiety);
-    weatherDrain = 1 + (WET_DRAIN + WIND_DRAIN * windNorm) * rainAmount;
+    weatherDrain = 1 + (TUNING.weather.wetDrain + TUNING.weather.windDrain * windNorm) * rainAmount;
     weatherText = weatherKind + "   wind " +
         Math.sqrt(windX * windX + windZ * windZ).toFixed(1) + " m/s";
     if (rainAmount > 0.02) weatherText = weatherText + "   rain " + Math.round(rainAmount * 100) + "%";
@@ -269,15 +263,15 @@ function updateWeatherEffects() {
 // C jumps to the next state, for previewing the cycle.
 function forceWeather() {
     weatherKind = WEATHER_NEXT[weatherKind][0];
-    weatherTimer = WEATHER_HOLD[weatherKind][0];
+    weatherTimer = TUNING.weather.hold[weatherKind][0];
 }
 
 function updateClouds(dt) {
     const W = CLOUD_WRAP;
     for (let i = 0; i < CLOUDS.length; i++) {
         const c = CLOUDS[i];
-        c.x += windX * CLOUD_DRIFT * dt;
-        c.z += windZ * CLOUD_DRIFT * dt;
+        c.x += windX * TUNING.weather.cloudDrift * dt;
+        c.z += windZ * TUNING.weather.cloudDrift * dt;
         if (c.x - goat.px > W) c.x -= 2 * W;
         else if (c.x - goat.px < -W) c.x += 2 * W;
         if (c.z - goat.pz > W) c.z -= 2 * W;
@@ -302,7 +296,7 @@ function drawClouds() {
 }
 
 function updateRain(dt) {
-    rainActive = Math.round(RAIN_MAX * rainAmount);
+    rainActive = Math.min(RAIN.length, Math.round(TUNING.weather.rainMax * rainAmount));
     for (let i = 0; i < rainActive; i++) {
         const d = RAIN[i];
         d.y += (0.7 + d.speed) * dt;

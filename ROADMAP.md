@@ -48,6 +48,7 @@ covers more than it first appears:
 | Text input (character entry) | ❌ | the surface has `isKeyPressed` but no `getCharPressed` (M9) |
 | Voice playback | ✅ Rust-side | the `rl` surface has no audio streams, but `raylib_sys` exposes them and the client already links raylib, so Rust plays into a stream directly (M13a) |
 | Networking | Host only | the JS engine has no sockets; `iroh` lives in the Rust host and reaches the scene over the command bridge (M10) |
+| Mod support | ❌ | no loader yet; Slag's global `eval` plus the engine's in-memory asset registry make it possible with no engine work (M14, see `APIv1.md`) |
 
 The practical consequence: **stats, sleep and death needed no engine work at all**,
 and day/night plus a first pass of weather needed only the M0 primitives. With M0
@@ -81,6 +82,11 @@ uses.
 | **M13a** | Voice playback sink: a per-peer raylib stream from Rust | M12b | S | ✅ Available through `raylib_sys`; no engine binding needed |
 | **M13b** | Voice: capture, VAD, Opus, media channel, playback | M13a | L | ✅ **Done** |
 | **M13c** | Voice polish: jitter buffer, PLC, mute/volume, attenuation | M13b | M | Per-peer controls and the talking indicator |
+| **M14a** | Tuning registry: lift the gameplay `const`s into `goats.tuning` | — | M | ✅ **Done** — the tree + `tuningGet/Set/Merge/Watch` live in `core.js`; herd size is now `TUNING.herd.count` |
+| **M14b** | Mod loader: `mods/` discovery, manifest, host asset registry, console verbs | M9 | M | The host is the only side that touches the disk |
+| **M14c** | `goats` API v1: events, commands, registries, accessors | M14a, M14b | L | The modding contract; see `APIv1.md` |
+| **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | World mods must match host + peers exactly |
+| **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | UX and the mod-free vanilla suite |
 
 ---
 
@@ -1022,6 +1028,90 @@ so it suits ≤4 players; beyond that the host should mix and relay.
 
 ---
 
+## M14 — Modding support
+
+Mod support lets players add code, content and tuning without forking the
+game. The full contract is `APIv1.md`; this section is the milestone plan, the
+decisions behind it and the constraints that shape it.
+
+**Decisions (settled).**
+
+- **Trust model:** mods are trusted code, but **`fs` stays off**. JavaScript
+  never touches the filesystem; the Rust host discovers, reads and validates,
+  and hands the scene opaque asset names. All I/O goes through Rust.
+- **Format:** script mods against a versioned `goats` hook API (the `APIv1.md`
+  design), not raw monkey-patching of scene internals. Data-only packs
+  (assets + tuning, no `entry`) are the same format with no code.
+- **Multiplayer:** world mods work in a session. `side: "world"` mods are a
+  compatibility set, hashed and checked in the join handshake; `side:
+  "client"` mods are local and unhashed.
+- **Persistence:** none yet. Enablement is per session; a restart restores the
+  `mods/` directory's default.
+- **Asset replacement:** allowed, through logical asset slots the host
+  resolves. A mod may point `model.goat` or `sfx.music` at its own file.
+
+**Where it lives.**
+
+| Piece | Path |
+| --- | --- |
+| The API + registries (new scene part) | `crates/goats/src/game/mods.js` |
+| Loader, manifest parsing, asset registry | `crates/goats/src/main.rs` (+ a `mods` module) |
+| The same loader on the server | `crates/server/src/` (`goatsd --mods`) |
+| `ModRef` and the join handshake | `crates/proto/src/lib.rs`, `crates/session/`, `net.js` |
+| Mod console verbs + Mods screen | `crates/goats/src/game/ctl.js`, `menu.js` |
+| Fixture and tests | `mods/example/`, `tools/mod_smoke_test.js` |
+
+**Phases.**
+
+- **M14a — Tuning registry. ✅ Done.** Every gameplay constant moved into one
+  mutable tree (`TUNING`, `core.js`) the scene reads directly, with
+  `tuningGet`/`tuningSet`/`tuningMerge`/`tuningWatch` as the validated write
+  path (a typo, a branch write or a non-finite number throws; bounded leaves
+  clamp). Defaults are byte-for-byte the old constants, so the vanilla run is
+  unchanged; `tools/goat_logic_test.js` gained six tuning cases (135 pass).
+  Herd size is now `TUNING.herd.count`, written by the menu and the console
+  through `tuningSet`, with a watcher that resizes the herd. This is the
+  prerequisite for the loader's `tuning.json` and for `goats.tuning`.
+- **M14b — Loader.** Discovery (`--mods`, `GOATS_MODS`, `mods/` next to the
+  exe or in the CWD, `--no-mods`), deterministic ordering, manifest validation,
+  the borrowed-bytes asset registry (leak to `'static`, register under an
+  opaque name, no path ever reaches JS), the `sceneMods(json)` host→scene
+  channel, and the `mod list|info|enable|disable|reload|key` console verbs.
+- **M14c — `goats` API v1.** The per-mod wrapper and reload lifecycle; the
+  event set (`load ready update draw3d hud draw command weather mode spawn
+  despawn session world tuning shutdown`); `goats.command`; the registries
+  (`bots.register`, `clips.register`, `assets.override`); the player / camera /
+  world / bots / settings / tuning / assets / net accessors; `goats.log` and
+  `goats.fail`. Built-in commands always win; registration closes at
+  `goats.freeze()`.
+- **M14d — World mods and compatibility.** `registerStream`/`rng` extension of
+  `sceneUseSeed`/`sceneStreams`; `world.extend` merged into the snapshot built
+  by `sceneWorldBots`/`sceneWeatherState`/`sceneStreams`/`sceneEaten` and
+  applied in `netApplyWorld`; `ModRef { id, version, hash }` in
+  `ClientMessage::Hello` with a `PROTOCOL_VERSION` bump and an `Error` naming a
+  mismatch; `goatsd --mods`. World-mod rules are documented in `APIv1.md` §6.4
+  (seeded randomness only, no wall clock, JSON-only publish/apply).
+- **M14e — UI and tests.** A session-only Mods screen in `menu.js`; a
+  checked-in `mods/example/` fixture; `tools/mod_smoke_test.js` (hook fires,
+  command dispatches, asset slot overrides, a throwing handler is isolated,
+  reload leaves no duplicates); `node --check` over `mods/**/*.js`; a
+  determinism test mirroring `the_same_seed_runs_the_same_world`; a `proto`
+  round-trip test for `ModRef` and a `session` test for a world-mod mismatch.
+  `tools/goat_logic_test.js` stays mod-free, which is what proves vanilla is
+  unchanged.
+
+**Constraints to respect.** The scene is one flat global scope joined by
+`concat!`, so `goats.freeze()`, not the loader, is what keeps registrations
+sane. Embedded assets win over disk (`AssetFile::open` checks the registry
+first), so replacement goes through slots rather than same-named files. The
+client and the server evaluate the same parts, so a world mod has to work
+against the null `rl` in `crates/server/src/headless_rl.js` and guard on
+capability as the scene already does. Direct `rl.load*` with a path is allowed
+-- a mod may point raylib at a file the slots do not cover -- but `goats.assets`
+slots are the portable route, since the host owns resolution.
+
+---
+
 ## Cross-cutting work
 
 - **Host status page.** ✅ **Done.** `goatsd --listen host:port` serves a small
@@ -1124,3 +1214,16 @@ so it suits ≤4 players; beyond that the host should mix and relay.
 14. **`bevy_iroh`.** Trial it and pin a version: it advertises exactly the
     replication/rooms/presence we want, but it is Bevy-shaped and days old. Fall
     back to a hand-rolled session layer over plain `iroh` if it does not fit.
+15. ~~**Mod trust model?**~~ **Settled:** mods are trusted code, but `fs` stays
+    off and JavaScript never touches the filesystem -- the Rust host does all
+    I/O and hands the scene opaque asset names (`APIv1.md` §7).
+16. ~~**Can mods work in a session?**~~ **Settled:** yes -- `side: "world"`
+    mods are a compatibility set hashed into the join handshake, while
+    `side: "client"` mods are local and unhashed (M14d, `APIv1.md` §6).
+17. ~~**Mod format: raw patching or an API?**~~ **Settled:** a versioned
+    `goats` hook API, with data-only packs (assets + tuning, no code) as the
+    same format (`APIv1.md`).
+18. ~~**Mod persistence?**~~ **Settled:** not yet -- enablement is per session
+    and a restart restores the `mods/` directory's default.
+19. ~~**May a mod replace built-in assets?**~~ **Settled:** yes, through
+    logical asset slots the host resolves (`APIv1.md` §3.3).

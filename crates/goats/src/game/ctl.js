@@ -105,7 +105,7 @@ function sceneCommand(line) {
                 exhausted: exhausted,
                 paused: paused,
                 satiety: ctlRound(satiety),
-                foodInReach: nearestTuft(goat.px, goat.pz, EAT_RANGE) !== null,
+                foodInReach: nearestTuft(goat.px, goat.pz, TUNING.food.eatRange) !== null,
                 eaten: eatenCount,
                 x: ctlRound(goat.px),
                 y: ctlRound(goat.py),
@@ -149,7 +149,7 @@ function sceneCommand(line) {
                 return "error unknown weather: " + parts[1] + " (want " + Object.keys(WEATHER_STATES).join("|") + ")";
             }
             weatherKind = parts[1];
-            weatherTimer = WEATHER_HOLD[weatherKind][0];
+            weatherTimer = TUNING.weather.hold[weatherKind][0];
             return "ok weather " + weatherKind;
         }
         case "bots":
@@ -164,9 +164,9 @@ function sceneCommand(line) {
                 return "ok " + JSON.stringify({ yaw: ctlRound(camYaw), pitch: ctlRound(camPitch), dist: ctlRound(camDist) });
             }
             if (parts[1] === "reset") {
-                camYaw = 0.7;
-                camPitch = 0.42;
-                camDist = 5.2;
+                camYaw = TUNING.camera.yaw;
+                camPitch = TUNING.camera.pitch;
+                camDist = TUNING.camera.dist;
                 return "ok camera reset";
             }
             const yaw = ctlArg(parts, 1);
@@ -175,7 +175,7 @@ function sceneCommand(line) {
             if (yaw === null || pitch === null || dist === null) return "error camera expects <yawDeg> <pitchDeg> <dist>";
             camYaw = yaw * Math.PI / 180;
             camPitch = clamp(pitch * Math.PI / 180, 0.08, 1.35);
-            camDist = clamp(dist, 2.2, 12.0);
+            camDist = clamp(dist, TUNING.camera.minDist, TUNING.camera.maxDist);
             return "ok camera " + ctlRound(camYaw) + " " + ctlRound(camPitch) + " " + ctlRound(camDist);
         }
         case "features":
@@ -202,7 +202,7 @@ function sceneCommand(line) {
                 sky: SETTINGS.sky,
                 cloud: CLOUD_LEVELS[cloudLevel()],
                 fullscreen: SETTINGS.fullscreen,
-                herd: SETTINGS.herd
+                herd: TUNING.herd.count
             });
         case "setting": {
             const key = parts[1];
@@ -225,7 +225,7 @@ function sceneCommand(line) {
             } else if (key === "herd") {
                 const v = ctlArg(parts, 2);
                 if (v === null) return "error setting herd expects a number";
-                SETTINGS.herd = clamp(Math.round(v), 0, 10);
+                tuningSet("herd.count", Math.round(v));
             } else {
                 return "error unknown setting: " + (key === undefined ? "" : key);
             }
@@ -339,19 +339,19 @@ function sceneCommand(line) {
         case "health": {
             const value = ctlArg(parts, 1);
             if (value === null) return "error health expects a number";
-            stats.health = clamp(value, 0, MAX_STAT);
+            stats.health = clamp(value, 0, TUNING.stats.max);
             return "ok health " + ctlRound(stats.health);
         }
         case "energy": {
             const value = ctlArg(parts, 1);
             if (value === null) return "error energy expects a number";
-            stats.energy = clamp(value, 0, MAX_STAT);
+            stats.energy = clamp(value, 0, TUNING.stats.max);
             exhausted = stats.energy <= 0;
             return "ok energy " + ctlRound(stats.energy);
         }
         case "heal":
-            stats.health = MAX_STAT;
-            stats.energy = MAX_STAT;
+            stats.health = TUNING.stats.max;
+            stats.energy = TUNING.stats.max;
             exhausted = false;
             return "ok heal";
 
@@ -364,12 +364,12 @@ function sceneCommand(line) {
                 x: ctlRound(t.x),
                 z: ctlRound(t.z),
                 dist: ctlRound(Math.sqrt(t.d2)),
-                inReach: t.d2 <= EAT_RANGE * EAT_RANGE,
+                inReach: t.d2 <= TUNING.food.eatRange * TUNING.food.eatRange,
                 key: tuftKey(t.cx, t.cz)
             });
         }
         case "eat": {
-            const t = nearestTuft(goat.px, goat.pz, EAT_RANGE);
+            const t = nearestTuft(goat.px, goat.pz, TUNING.food.eatRange);
             if (t === null) return "error no grass in reach";
             startEat(t);
             return "ok eat";
