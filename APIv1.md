@@ -197,6 +197,8 @@ A slot is a **logical** name the scene already uses. A mod points a slot at a
 file; the host reads the file, registers its bytes under an opaque name, and
 the scene's asset accessor returns that opaque name. This is how a mod
 **replaces a built-in asset** while keeping the filesystem out of JavaScript.
+The reading, validation and hashing all live in the pure `crates/mods/` crate;
+`crates/goats/src/main.rs` does the registration.
 
 Built-in file-backed slots in v1:
 
@@ -235,6 +237,12 @@ reported, not silently ignored).
 ---
 
 ## 4. The `goats` API
+
+> **Implemented so far (M14b):** identity (`api`, `game`, `mod`), `log` / `warn` /
+> `error` / `fail`, `mods()`, `frozen()`, the `begin`/`end`/`freeze` lifecycle,
+> asset *lookup* on the per-mod handle (`assets.get`/`slots`/`all`), and the
+> `mod` console verbs. Events, command registration, the registries and the
+> player / camera / world / bots / settings / tuning accessors are M14c.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.

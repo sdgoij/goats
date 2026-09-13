@@ -16,13 +16,22 @@
 //! logs goes to stderr, so stdout stays a clean one-line-in, one-line-out
 //! command channel.
 //!
+//! The host also loads mods. `--mods <dir>` (or `$GOATS_MODS`, or `mods/` next
+//! to the executable, or `mods/` in the working directory) is scanned by the
+//! `mods` crate, the manifests are validated and ordered, every asset is
+//! registered with the engine under an opaque name, and each entry is evaluated
+//! against the scene's `goats` global. See `APIv1.md`; the scene end is
+//! `crates/goats/src/game/mods.js`.
+//!
 //! Run: `cargo run --release`
 
 mod audio;
 mod net;
 
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
+use mods::Loader;
 use slag::{Context, HostCallbacks, JsValue};
 
 /// Every asset the scene loads, embedded so the binary is self-contained. The
@@ -114,6 +123,7 @@ const SCENE: &str = concat!(
     include_str!("game/menu.js"),
     include_str!("game/console.js"),
     include_str!("game/net.js"),
+    include_str!("game/mods.js"),
 );
 
 /// One of the scene's global functions, resolved by name.
@@ -137,7 +147,174 @@ fn scene_function_if_present(context: &Context, name: &str) -> Option<JsValue> {
     }
 }
 
+const USAGE: &str = "\
+goats [--mods DIRECTORY] [--no-mods]
+
+  --mods DIRECTORY   load mods from DIRECTORY instead of the default search
+                     ($GOATS_MODS, then mods/ next to the executable, then
+                     mods/ in the current directory)
+  --no-mods          ignore every mod
+  -h, --help         this text";
+
+/// What the command line asked for.
+struct Options {
+    mods_dir: Option<PathBuf>,
+    no_mods: bool,
+    help: bool,
+}
+
+fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
+    let mut options = Options {
+        mods_dir: None,
+        no_mods: false,
+        help: false,
+    };
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => options.help = true,
+            "--no-mods" => options.no_mods = true,
+            "--mods" => {
+                options.mods_dir = Some(PathBuf::from(
+                    args.next().ok_or("--mods needs a directory")?,
+                ));
+            }
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    Ok(options)
+}
+
+/// The mods directory: an explicit flag, else `$GOATS_MODS`, else `mods/` next
+/// to the executable, else `mods/` in the working directory. An explicit flag
+/// is honoured even if it does not exist, so the loader can explain why.
+fn resolve_mods_dir(options: &Options) -> Option<PathBuf> {
+    if options.no_mods {
+        return None;
+    }
+    if let Some(dir) = &options.mods_dir {
+        return Some(dir.clone());
+    }
+    if let Some(dir) = std::env::var_os("GOATS_MODS") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join("mods");
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+    let candidate = PathBuf::from("mods");
+    if candidate.is_dir() {
+        return Some(candidate);
+    }
+    None
+}
+
+/// Call one of the scene's optional host-facing functions, logging (not
+/// panicking) when it is absent or throws. A scene without the mod surface
+/// simply ignores mods.
+fn call_scene(context: &mut Context, name: &str, args: &[JsValue]) {
+    let function = match scene_function_if_present(context, name) {
+        Some(function) => function,
+        None => return,
+    };
+    if let Err(error) = context.call(&function, &JsValue::undefined(), args) {
+        eprintln!("[mods] {name}: {error}");
+    }
+}
+
+fn report_mod(context: &mut Context, id: &str, ok: bool, error: &str) {
+    call_scene(
+        context,
+        "sceneModResult",
+        &[
+            JsValue::string(id),
+            JsValue::boolean(ok),
+            JsValue::string(error),
+        ],
+    );
+}
+
+/// Load one mod's entry into the running scene. A missing entry is a success (a
+/// data-only mod); a throwing entry is reported, never fatal.
+fn eval_entry(context: &mut Context, loader: &Loader, id: &str) {
+    call_scene(context, "sceneModEnd", &[JsValue::string(id)]);
+    let js = match loader.get(id).and_then(|manifest| manifest.entry_js()) {
+        Some(js) => js,
+        None => {
+            report_mod(context, id, true, "");
+            return;
+        }
+    };
+    match context.eval(&js) {
+        Ok(_) => report_mod(context, id, true, ""),
+        Err(error) => {
+            let message = error.to_string();
+            eprintln!("[mods] {id} failed: {message}");
+            report_mod(context, id, false, &message);
+        }
+    }
+}
+
+/// One enable/disable/reload the console asked for.
+fn handle_mod_intent(context: &mut Context, loader: &Loader, line: &str) {
+    let intent: serde_json::Value = match serde_json::from_str(line) {
+        Ok(intent) => intent,
+        Err(error) => {
+            eprintln!("[mods] unreadable intent: {error}");
+            return;
+        }
+    };
+    let kind = intent
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let id = intent
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if id.is_empty() {
+        eprintln!("[mods] intent without an id: {line}");
+        return;
+    }
+    match kind {
+        "disable" => call_scene(context, "sceneModEnd", &[JsValue::string(id)]),
+        "enable" | "reload" => eval_entry(context, loader, id),
+        other => eprintln!("[mods] unknown intent '{other}'"),
+    }
+}
+
 fn main() {
+    let options = match parse_args(std::env::args().skip(1)) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("goats: {message}\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    if options.help {
+        println!("{USAGE}");
+        return;
+    }
+
+    // Discover mods before the window opens: a bad manifest is reported now,
+    // and the assets have to be in the engine's registry before the scene loads.
+    let mut loader = match resolve_mods_dir(&options) {
+        Some(dir) => {
+            eprintln!("[mods] scanning {}", dir.display());
+            Loader::discover(&dir)
+        }
+        None => Loader::empty(),
+    };
+    for error in loader.errors() {
+        eprintln!("[mods] {error}");
+    }
+
     let mut context = Context::new().unwrap();
     let callbacks = HostCallbacks {
         console_log: Some(Box::new(|text| eprintln!("[js] {text}"))),
@@ -151,8 +328,30 @@ fn main() {
     for &(name, data) in ASSETS {
         context.register_raylib_asset(name, data);
     }
+    // Mod assets go in under opaque names, so the scene resolves them without a
+    // path. `register_raylib_asset` wants `&'static`, so the bytes are leaked
+    // for the life of the process; the loader gives up its copy here.
+    for manifest in loader.mods_mut() {
+        for asset in manifest.take_assets() {
+            let name: &'static str = Box::leak(asset.name.into_boxed_str());
+            let data: &'static [u8] = Box::leak(asset.bytes.into_boxed_slice());
+            context.register_raylib_asset(name, data);
+        }
+    }
     // The scene only defines its frame functions here; the loop below drives it.
     context.eval(SCENE).unwrap();
+
+    // Hand the scene the metadata table, load every entry in order, then close
+    // registration. A scene without the mod surface ignores all of this.
+    let table = loader.table_json();
+    call_scene(&mut context, "sceneMods", &[JsValue::string(table)]);
+    for id in loader.ids() {
+        eval_entry(&mut context, &loader, &id);
+    }
+    call_scene(&mut context, "sceneModFreeze", &[]);
+    if !loader.mods().is_empty() {
+        eprintln!("[mods] {} discovered", loader.mods().len());
+    }
 
     let init = scene_function(&context, "sceneInit");
     let frame = scene_function(&context, "sceneFrame");
@@ -184,6 +383,7 @@ fn main() {
     // host only moves lines between the frame loop and the runtime thread.
     let net_event = scene_function_if_present(&context, "sceneNetEvent");
     let net_drain = scene_function_if_present(&context, "sceneNetDrain");
+    let mod_drain = scene_function_if_present(&context, "sceneModDrain");
     let mut net = net::Net::start();
     let mut voice = audio::Voice::start(&mut net);
 
@@ -226,6 +426,24 @@ fn main() {
             .unwrap_or(false);
         if !running {
             break;
+        }
+
+        // Mod enable/disable/reload intents the console queued. The host
+        // re-reads and evaluates the entry, exactly as it did at startup.
+        if let Some(drain) = &mod_drain {
+            match context.call(drain, &JsValue::undefined(), &[]) {
+                Ok(value) => {
+                    if let Some(text) = value.as_string() {
+                        for line in text.lines() {
+                            let line = line.trim();
+                            if !line.is_empty() {
+                                handle_mod_intent(&mut context, &loader, line);
+                            }
+                        }
+                    }
+                }
+                Err(error) => eprintln!("[mods] sceneModDrain: {error}"),
+            }
         }
 
         // The scene's queued intents leave on the same boundary. The voice gain

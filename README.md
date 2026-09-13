@@ -262,7 +262,8 @@ gets on the free plan.
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
 | `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
 | `crates/goats/src/audio.rs` | Voice chat: `cpal` capture, the speech gate, Opus coding, and one raylib stream its callback fills |
-| `crates/goats/src/game/*.js` | The scene, split into 14 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net) |
+| `crates/goats/src/game/*.js` | The scene, split into 15 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net, mods) |
+| `crates/mods/` | The mod loader: discovery, manifest validation, ordering and asset reads (pure Rust, no engine) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
 | `crates/server/src/headless_rl.js` | The null `rl` module the server evaluates the scene against (no window) |
 | `crates/server/src/web.rs` | The optional status page: ticket, client count and a download link, behind `--listen` |

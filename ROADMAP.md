@@ -83,7 +83,7 @@ uses.
 | **M13b** | Voice: capture, VAD, Opus, media channel, playback | M13a | L | ✅ **Done** |
 | **M13c** | Voice polish: jitter buffer, PLC, mute/volume, attenuation | M13b | M | Per-peer controls and the talking indicator |
 | **M14a** | Tuning registry: lift the gameplay `const`s into `goats.tuning` | — | M | ✅ **Done** — the tree + `tuningGet/Set/Merge/Watch` live in `core.js`; herd size is now `TUNING.herd.count` |
-| **M14b** | Mod loader: `mods/` discovery, manifest, host asset registry, console verbs | M9 | M | The host is the only side that touches the disk |
+| **M14b** | Mod loader: `mods/` discovery, manifest, host asset registry, console verbs | M9 | M | ✅ **Done** — the pure loader is `crates/mods/`; the host wiring and the scene part are in place |
 | **M14c** | `goats` API v1: events, commands, registries, accessors | M14a, M14b | L | The modding contract; see `APIv1.md` |
 | **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | World mods must match host + peers exactly |
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | UX and the mod-free vanilla suite |
@@ -1055,7 +1055,8 @@ decisions behind it and the constraints that shape it.
 | Piece | Path |
 | --- | --- |
 | The API + registries (new scene part) | `crates/goats/src/game/mods.js` |
-| Loader, manifest parsing, asset registry | `crates/goats/src/main.rs` (+ a `mods` module) |
+| Loader: discovery, manifest validation, ordering, hashing, asset reads | `crates/mods/` (pure crate, no engine) |
+| Loader wiring, asset registration, entry evaluation | `crates/goats/src/main.rs` |
 | The same loader on the server | `crates/server/src/` (`goatsd --mods`) |
 | `ModRef` and the join handshake | `crates/proto/src/lib.rs`, `crates/session/`, `net.js` |
 | Mod console verbs + Mods screen | `crates/goats/src/game/ctl.js`, `menu.js` |
@@ -1072,11 +1073,23 @@ decisions behind it and the constraints that shape it.
   Herd size is now `TUNING.herd.count`, written by the menu and the console
   through `tuningSet`, with a watcher that resizes the herd. This is the
   prerequisite for the loader's `tuning.json` and for `goats.tuning`.
-- **M14b — Loader.** Discovery (`--mods`, `GOATS_MODS`, `mods/` next to the
-  exe or in the CWD, `--no-mods`), deterministic ordering, manifest validation,
-  the borrowed-bytes asset registry (leak to `'static`, register under an
-  opaque name, no path ever reaches JS), the `sceneMods(json)` host→scene
-  channel, and the `mod list|info|enable|disable|reload|key` console verbs.
+- **M14b — Loader. ✅ Done.** The pure loader is its own crate,
+  `crates/mods/`: it discovers mod directories, parses and validates `mod.json`
+  (api major, id, side, size caps, no paths escaping the mod directory), orders
+  them by id with a deterministic `loadAfter` topological sort (missing deps and
+  cycles are warnings, not failures), reads entries/tuning/assets into memory,
+  and computes the FNV-1a compatibility hash. It has no engine dependency, so it
+  is unit-tested without a window (8 tests) and `goatsd` can reuse it in M14d.
+  The client wires it up in `main.rs`: `--mods <dir>` / `$GOATS_MODS` / `mods/`
+  next to the exe or in the CWD, `--no-mods`, assets leaked to `'static` and
+  registered under opaque `mod:<id>:<slot>` names (no path ever reaches JS), the
+  metadata table pushed with `sceneMods(json)`, each entry evaluated inside a
+  scoped wrapper, then `goats.freeze()`. The scene part `mods.js` holds the
+  table, the minimal `goats` lifecycle, and the `mod
+  list|info|key|enable|disable|reload` verbs; the console queues host intents
+  and the frame loop drains them with `sceneModDrain()`, so enable/disable/reload
+  genuinely re-read and re-evaluate. Events, commands, registries and the
+  accessors are M14c.
 - **M14c — `goats` API v1.** The per-mod wrapper and reload lifecycle; the
   event set (`load ready update draw3d hud draw command weather mode spawn
   despawn session world tuning shutdown`); `goats.command`; the registries
@@ -1122,12 +1135,12 @@ slots are the portable route, since the host owns resolution.
   headless host's footprint to the session alone. `GET /info` returns the same
   facts as JSON.
 - **Splitting the scene.** ✅ **Done.** The scene is
-  `crates/goats/src/game/*.js` in thirteen parts (core, model, world, lighting,
-  sky, audio, weather, food, bots, goat, ctl, menu, console), joined in the order
-  listed in `crates/goats/src/main.rs`. The host concatenates them and evaluates
-  the result as one script, so every part shares a single top-level scope and the
-  engine still needs no module system; the headless harness parses the same list
-  out of the same file.
+  `crates/goats/src/game/*.js` in fifteen parts (core, model, world, lighting,
+  sky, audio, weather, food, bots, goat, ctl, menu, console, net, mods), joined in
+  the order listed in `crates/goats/src/main.rs`. The host concatenates them and
+  evaluates the result as one script, so every part shares a single top-level
+  scope and the engine still needs no module system; the headless harness parses
+  the same list out of the same file.
 - **Workspace.** ✅ **Done.** The repo is a Cargo workspace: `crates/goats` (the
   client and the JS scene, and its `default-members`, so `cargo run` means the
   client), `crates/proto` (the wire types, framing and name rules, with no iroh

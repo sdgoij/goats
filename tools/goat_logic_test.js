@@ -771,6 +771,55 @@ try {
     tuningTest.error = String(e);
 }
 
+// Mods (M14b): the host pushes a metadata table; the scene lists it and queues
+// enable/disable/reload intents for the host. `goats` is a top-level `const`, so
+// it is not a property of the vm sandbox -- the lifecycle is probed by
+// evaluating inside the same context, the way the host's wrapper does.
+let modTest = {};
+try {
+    const table = [
+        { id: 'com.a.client', name: 'Client Thing', version: '1.0.0', api: 1, side: 'client',
+            enabled: true, hash: '0000000000000001' },
+        { id: 'com.b.world', name: 'World Thing', version: '2.0.0', api: 1, side: 'world',
+            enabled: true, hash: '0000000000000002' },
+    ];
+    sandbox.sceneMods(JSON.stringify(table));
+    const list = JSON.parse(sandbox.sceneCommand('mod list').slice(3));
+    modTest.listed = list.length === 2 && list[0].id === 'com.a.client' &&
+        list[1].side === 'world';
+    const info = JSON.parse(sandbox.sceneCommand('mod info com.b.world').slice(3));
+    modTest.info = info.side === 'world' && info.version === '2.0.0' &&
+        info.hash === '0000000000000002' && info.loaded === false;
+    const key = JSON.parse(sandbox.sceneCommand('mod key').slice(3));
+    modTest.key = key.length === 1 && key[0] === 'com.b.world@2.0.0#0000000000000002';
+    // Disabling flips the flag now and queues the unload for the host.
+    const reply = sandbox.sceneCommand('mod disable com.b.world');
+    const drained = sandbox.sceneModDrain();
+    modTest.queued = reply === 'ok mod disable com.b.world' &&
+        drained.indexOf('"type":"disable"') >= 0;
+    modTest.disabled = JSON.parse(sandbox.sceneCommand('mod list').slice(3))[1].enabled === false;
+    modTest.empty = sandbox.sceneModDrain() === '';
+    modTest.unknown = sandbox.sceneCommand('mod info nope') === 'error unknown mod: nope';
+    // A wrapped entry, exactly as the host evaluates it: a scoped IIFE handed
+    // the per-mod handle.
+    vm.runInContext(
+        '(function (goats) { goats.log("wrapped entry"); })(goats.begin("com.a.client"));',
+        sandbox);
+    modTest.wrapped = logs.some((line) => line.indexOf('[mod:com.a.client] wrapped entry') >= 0);
+    const frozenBefore = vm.runInContext('goats.frozen()', sandbox);
+    vm.runInContext('goats.freeze()', sandbox);
+    const frozenAfter = vm.runInContext('goats.frozen()', sandbox);
+    const loadedBefore = JSON.parse(sandbox.sceneCommand('mod info com.a.client').slice(3)).loaded;
+    vm.runInContext('goats.end("com.a.client")', sandbox);
+    const loadedAfter = JSON.parse(sandbox.sceneCommand('mod info com.a.client').slice(3)).loaded;
+    modTest.lifecycle = modTest.wrapped && frozenBefore === false &&
+        frozenAfter === true && loadedBefore === true && loadedAfter === false;
+    modTest.all = modTest.listed && modTest.info && modTest.key && modTest.queued &&
+        modTest.disabled && modTest.empty && modTest.unknown && modTest.lifecycle;
+} catch (e) {
+    modTest.error = String(e);
+}
+
 const checks = [
     ['no throw', thrown === null, thrown],
     ['idle at frame 3', isClip(clipAt(3), 'GoatIdle'), clipAt(3)],
@@ -844,6 +893,12 @@ const checks = [
     ['tuning merge validates every leaf', tuningTest.merged, tuningTest],
     ['tuning rejects unknown, branch and non-finite writes',
         tuningTest.unknown && tuningTest.branch && tuningTest.notFinite, tuningTest],
+    ['mods list and describe the pushed table', modTest.listed && modTest.info, modTest],
+    ['mod key lists the world set', modTest.key, modTest],
+    ['mod disable queues a host intent and flips the flag',
+        modTest.queued && modTest.disabled && modTest.empty, modTest],
+    ['mod rejects an unknown id', modTest.unknown, modTest],
+    ['mod lifecycle: wrapper, freeze, end', modTest.lifecycle, modTest],
     // The volumetric march, not the flat M5 layer: these markers only exist in
     // the slab marcher.
     ['the sky shader marches a volume',

@@ -35,6 +35,7 @@ const SCENE_PARTS: &[&str] = &[
     "menu.js",
     "console.js",
     "net.js",
+    "mods.js",
 ];
 
 /// The scene, joined exactly as the client joins it: one script, one scope, so
@@ -54,6 +55,7 @@ const SCENE: &str = concat!(
     include_str!("../../goats/src/game/menu.js"),
     include_str!("../../goats/src/game/console.js"),
     include_str!("../../goats/src/game/net.js"),
+    include_str!("../../goats/src/game/mods.js"),
 );
 
 /// Appended to the scene: the one seam the server needs, a JSON view of the

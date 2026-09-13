@@ -1,4 +1,4 @@
-// Part 9/14 of the goat scene: the bot herd.
+// Part 9/15 of the goat scene: the bot herd.
 //
 // Each bot owns its own model handle. That is not wasteful book-keeping: this is
 // a CPU-skinning build, so `updateModelAnimation` deforms the vertices *inside

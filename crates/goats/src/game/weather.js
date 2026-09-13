@@ -1,4 +1,4 @@
-// Part 7/14 of the goat scene: the weather state machine, wind and effects.
+// Part 7/15 of the goat scene: the weather state machine, wind and effects.
 // ---- weather -------------------------------------------------------------
 
 // The wind, rain and gameplay-impact numbers live in `TUNING.weather`

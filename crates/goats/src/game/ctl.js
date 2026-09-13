@@ -1,4 +1,4 @@
-// Part 11/14 of the goat scene: the stdin command channel.
+// Part 11/15 of the goat scene: the stdin command channel.
 // ---- control channel ------------------------------------------------------
 //
 // The host (`crates/goats/src/main.rs`) reads a line from stdin, calls
@@ -22,7 +22,7 @@ const ctlHeld = {};
 const HELP = "help ping state stats time weather bots camera features fps " +
     "jump sleep wake restart kill health energy heal eat grass walk trot run back stop " +
     "turn yaw pos phase pause resume step lighting shadows sky mute settings setting ui console " +
-    "host connect leave who net copy say msg " +
+    "mod host connect leave who net copy say msg " +
     "screenshot quit";
 
 // A movement key is down if a script holds it or the real keyboard does, and no
@@ -450,6 +450,10 @@ function sceneCommand(line) {
         case "mute":
             setMuted(ctlToggle(muted, parts[1]));
             return "ok mute " + (muted ? "on" : "off");
+
+        // ---- mods --------------------------------------------------------
+        case "mod":
+            return modCommand(parts);
 
         // ---- host --------------------------------------------------------
         case "screenshot":

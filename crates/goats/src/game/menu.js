@@ -1,4 +1,4 @@
-// Part 12/14 of the goat scene: the main menu, settings and keymap.
+// Part 12/15 of the goat scene: the main menu, settings and keymap.
 // ---- menus ----------------------------------------------------------------
 //
 // The UI is drawn with raygui (the engine builds its bindings as `rl.gui*`).
