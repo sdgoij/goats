@@ -121,8 +121,19 @@
         if (i === 4036) pressed[96] = true;                     // ` closes
     }
 
+    // Colours are packed numbers on the real binding, and a draw call has to get
+    // one: an object colour reaching `drawCube` is what aborted the birds on the
+    // client, and a stub looser than the engine would have missed it. The check is
+    // one `typeof` per call -- an `arguments` walk costs a JIT deopt and triples
+    // the run.
+    const pack = (r, g, b, a) =>
+        (((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | ((a === undefined ? 255 : a) & 255)) >>> 0;
+
     const base = globalThis.rl;
     globalThis.rl = Object.assign({}, base, {
+        color: pack,
+        WHITE: pack(255, 255, 255),
+        RAYWHITE: pack(245, 245, 245),
         // ---- input: the script, not the keyboard ---------------------------
         isKeyDown: (k) => !!keys[k],
         isKeyPressed: (k) => !!pressed[k],
@@ -197,7 +208,10 @@
                 if (name.indexOf('GoatJump') === 0) counters.botJumps += 1;
             }
         },
-        drawModelEx: (model, x, y, z) => {
+        drawModelEx: function (model, x, y, z, axisX, axisY, axisZ, angle, sx, sy, sz, tint) {
+            if (tint !== undefined && typeof tint !== 'number') {
+                throw new TypeError('rl.drawModelEx: tint must be a packed colour, not ' + typeof tint);
+            }
             // The goat is handle 0 and the terrain meshes are 1000+; everything
             // else is a bot. The bots are drawn at the ground under them, so the
             // recorded y must equal `terrainHeight` there -- which is what the
@@ -241,7 +255,13 @@
         guiProgressBar: () => { counters.progressBarCalls += 1; return { action: 0, value: 0 }; },
 
         // ---- drawing -------------------------------------------------------
-        drawCube: () => {
+        //
+        // Deliberately parameterless. On Slag, naming a hot function's parameters
+        // costs a quarter of the whole run -- 38s against 30s for the same 1.4M
+        // calls -- so the tint check lives on `drawModelEx` instead, which is called
+        // a few thousand times. The packed `color` above is what really closes the
+        // hole the birds hit: the stub cannot hand out an object colour at all.
+        drawCube: function () {
             if (shadowPass) counters.shadowCubeDraws += 1;
             counters.cubeDraws += 1;
         },
