@@ -92,6 +92,7 @@ uses.
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; the birds fixture test |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
+| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ⬜ Measured: the snapshot is already over its 1200-byte cap in vanilla play |
 
 ---
 
@@ -1374,6 +1375,127 @@ change as the port.
 
 ---
 
+## M16 — The world datagram: binary, quantized and bounded
+
+The world snapshot is JSON, sent ~10×/s (the pose channel is ~20 Hz and voice
+~50 Hz), and it is **already over budget in vanilla play** -- before any mod is
+involved. Measured on the headless scene, encoding the real `Datagram::World`
+(`crates/server`, one 150 s run, released build):
+
+| Configuration | bots | meadow | mods | datagram | headroom |
+| --- | --- | --- | --- | --- | --- |
+| herd 7 (the default), empty meadow | 602 | 2 | 24 | 886 | +314 |
+| herd 7, meadow at 10 cells | 602 | 320 | 24 | **1202** | **-2** |
+| herd 10 (the clamp), empty meadow | 866 | 2 | 24 | 1150 | +50 |
+| herd 7 + the `birds` flock | 602 | 2 | 235 | 1097 | +103 |
+| herd 10 + a 20x5 mod payload | 866 | 2 | 403 | **1529** | **-329** |
+
+The meadow is not a corner case: it is where the bot herd's own grazing puts it.
+The same run reports `eaten` at 6 cells after 25 s and 10 after 150 s -- entries
+expire only after `TUNING.food.regrowMin..regrowMax`, 40-90 s -- so a default
+session crosses the cap about two minutes in and then oscillates across it.
+Crossing means `Host::broadcast` returns silently: every client freezes at the
+last good snapshot, and just before that the world arrives in fits. Nothing logs
+it, and the same failure takes down the whole snapshot whatever field caused it,
+so one greedy mod evicts everyone's world rather than losing its own state.
+
+**All four levers, plus a binary wire.** The levers compose, and the format
+change is what buys the most -- it also *subsumes* "make the JSON smaller", since
+there is no point hand-tuning key names that are about to disappear.
+
+**Why not protobuf.** protobuf earns its keep with a schema two independent
+implementations share, and it costs `protoc` at build time (or a hand-rolled
+`prost` derive) plus a second set of types. Here both ends are the same Rust
+crate from the same build behind a `PROTOCOL_VERSION` gate, and the types are
+already `serde`-typed: a serde-based compact codec -- **postcard** (`varint`, pure
+Rust, no build step) or **bincode 2** -- gets the same win from the same derives,
+with `serde_json` kept for the frames and the JS bridge. Two obstacles have to be
+handled whichever way it goes:
+
+- `Datagram` carries `#[serde(tag = "kind")]`, and an internally tagged enum needs
+  a self-describing format to deserialize. It becomes a one-byte tag (or an
+  externally tagged enum), which is also cheaper.
+- `WorldState::mods` is a `serde_json::Value`, and a non-self-describing format
+  cannot decode one (`deserialize_any`). That is not a loss: the transport has no
+  schema for what a mod publishes, and the payload only ever enters and leaves
+  Rust as JSON. It travels as **length-prefixed JSON bytes** (`RawValue`, so the
+  client can splice it into the bridge JSON without re-encoding) -- which is also
+  the argument for M16d.
+
+**The frames stay JSON.** The control streams carry chat text, tickets and names,
+ride the JS bridge (which is JSON by construction), and are read by humans when a
+session misbehaves. Their bytes are not the problem; the 10 Hz datagram is.
+
+**What it is worth (estimated from the field widths above, not yet measured).**
+
+| Configuration | Today | postcard | + quantized | with M16d |
+| --- | --- | --- | --- | --- |
+| herd 7, meadow ~10, no mods | **1202** | ~265 | ~155 | ~155 |
+| herd 10, meadow ~20, no mods | ~1600 | ~395 | ~255 | ~255 |
+| herd 7, meadow ~10, + `birds` | ~1415 | ~500 | ~400 | ~155 + a ~240-byte mods datagram |
+
+A bot is 86 bytes of JSON today (`{"index":0,"x":1.234,"z":-12.345,"yaw":0.5,
+"phase":0.123,"gait":"walk","variant":0}`) and ~19 as a binary record, ~10 as a
+quantized one. A peer pose, the highest-rate datagram of the three, goes from
+~120 bytes to ~30.
+
+**Phases.**
+
+- **M16a — Make the snapshot budget-aware. ⬜** The failure is silent and
+  total, so this lands first and stands alone: build the snapshot, measure it,
+  and shed in a defined order -- the meadow first, then mod state, **never** the
+  bots or the weather -- logging once on both ends when a shed happens. The
+  budget is handed to the scene at startup (`sceneNetBudget(maxWorldBytes)`)
+  rather than duplicated as a JS constant that can drift from `proto`'s.
+- **M16b — A binary datagram channel. ⬜** `postcard` (or bincode 2) for
+  `Datagram` only, with a one-byte tag and the mod payload as length-prefixed raw
+  JSON; the frames keep `serde_json`. Two codecs in `proto`, so `encode`/`decode`
+  split into frame and datagram pairs; the eight call sites in `crates/session`
+  are the whole blast radius. `PROTOCOL_VERSION` bumps, which the release model
+  already handles (both ends ship together, and an older relay refuses the join
+  rather than mis-decoding it). The quantized fields ride along: `x`/`z` at 1 cm
+  as `i16` (which spans ±327 m, well past the field), `yaw` at 1/10000 turn,
+  `phase` at 1/255, `EatenCell::left` in quarter-seconds as `u16`, the gait as the
+  enum it already is. `is_finite` becomes structural for the quantized fields and
+  stays for the rest; the round-trip tests already in `proto` cover the change.
+- **M16c — The meadow at its own cadence. ⬜** It is the one field with no need
+  for 10 Hz: a tuft that returns in 40-90 s does not need 100 ms resolution, and
+  the client counts its own copy down between snapshots. Send `eaten` on its own,
+  slower tick (or as a delta with a periodic full resync), which also stops the
+  meadow's size from being coupled to the world's rate.
+- **M16d — World mods get their own datagram. ⬜** `Datagram::Mods`, sent only
+  when a world mod is loaded, so a mod's payload can no longer evict the world and
+  the world's cap no longer bounds what a mod may publish. It rides the same
+  channel and reliability, so the two cannot be reordered by a lost world. Alongside
+  it, a publish helper (`goats.world.publishRows(name, rows)`) so a mod's payload
+  is rows of numbers by construction -- compact, bounded, and the same shape the
+  `birds` flock already writes by hand.
+- **M16e — A guard so the budget cannot silently erode again. ⬜** A test that
+  builds the worst case that is reachable without mods -- herd 10, a full meadow,
+  the `birds` fixture -- and asserts the snapshot fits with headroom, so the next
+  field added to `WorldState` has to argue for its bytes. Plus the stale comment
+  in `food.js` ("does not regrow within a session", which the 40-90 s regrow
+  contradicts).
+
+**Where it lives.**
+
+| Piece | Path |
+| --- | --- |
+| The wire types, the two codecs, the tag and the caps | `crates/proto/` |
+| The datagram paths (world, pose, voice, mods) | `crates/session/` |
+| The snapshot assembly, the shed order and the mods datagram | `crates/goats/src/game/net.js`, `mods.js` |
+| The budget handed to the scene | `crates/goats/src/main.rs`, `crates/server/src/main.rs` |
+| The worst-case guard | `crates/server/src/headless.rs`, `crates/harness/tests/` |
+
+**Constraints to respect.** `MAX_DATAGRAM_BYTES` stays 1200: it is the IPv6
+minimum-MTU-safe value and both ends refuse anything larger, so raising it trades
+a bug for an MTU-dependent one. Quantization must not lose anything observable to
+a player -- the fields chosen are all below the resolution the sim reads back at
+-- and a quantized field that saturates has to clamp rather than wrap. The mods
+datagram must stay optional: a vanilla session should pay nothing for it.
+
+---
+
 ## Cross-cutting work
 
 - **Host status page.** ✅ **Done.** `goatsd --listen host:port` serves a small
@@ -1491,14 +1613,13 @@ change as the port.
     and a restart restores the `mods/` directory's default.
 19. ~~**May a mod replace built-in assets?**~~ **Settled:** yes, through
     logical asset slots the host resolves (`APIv1.md` §3.3).
-20. **Room for world-mod state in the world datagram?** The world snapshot is
-    one 1200-byte datagram and the default herd already fills ~870 of it; the
-    `birds` flock's compact five-numbers-per-bird payload leaves ~144 bytes.
-    A world mod that publishes more, or a player who raises the herd size, can
-    push the snapshot over the cap, where it is dropped and clients freeze at
-    the last world. The clean fix is a per-mod datagram (or a smaller herd
-    encoding); until then, world mods must keep `publish` to a handful of
-    rounded numbers per entity.
+20. ~~**Room for world-mod state in the world datagram?**~~ **Settled: and it is
+    not only about mods.** Measured, the snapshot is over its 1200-byte cap in
+    vanilla play once the meadow has ~10 eaten cells -- about two minutes into a
+    session -- and the overflow is dropped silently, taking the whole world with
+    it. M16 gives it a binary, quantized wire, a shed order with a log, its own
+    cadence for the meadow, and a datagram of its own for world mods, so the
+    world and a mod can no longer evict each other.
 21. **Slag performance.** Now measurable instead of guessed: the harness runs on
     the engine (M15), where the 4050-frame scene costs ~7.6 ms/frame against
     ~0.47 ms on Node, so CI's test step goes from ~2 s of Node to ~45 s of
