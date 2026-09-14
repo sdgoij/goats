@@ -1,8 +1,17 @@
-// The compiled-wasm arm of the kernel benchmark.
+// The interpreter arm of the kernel benchmark, and the Rust-hosted call cost.
 //
 // This file is not part of any build: it belongs to the *slag* workspace, which
-// the Goat repository never commits. It is kept here so the compiled figure in
-// ROADMAP.md M17 is reproducible rather than folklore.
+// the Goat repository never commits. It is kept here so the figures in
+// ROADMAP.md M17 that the Goat-side benchmark cannot produce are reproducible
+// rather than folklore.
+//
+// Since `perf(wasm): run the compiled wasm path by default on native targets`,
+// the compiled path is what a native embed gets, and
+// `crates/harness/tests/plugin_bench.rs` measures it through the JS API. This
+// test is the other side of the boundary: `Store::set_compile(false)` for the
+// interpreter -- which is what a wasm32 host would run, and which the JS API
+// cannot ask for -- and `Store::invoke` for the per-call cost from Rust rather
+// than from JavaScript.
 //
 // To reproduce:
 //
@@ -11,11 +20,9 @@
 //        cargo test --release -p wasm --features compile --test kernel_bench -- --nocapture
 //   3. delete it again
 //
-// It exists because no Goat crate can reach the `wasm` crate's `compile`
-// feature today (M17's upstream prerequisite), so the compiled arm cannot be a
-// fourth arm of `crates/harness/tests/plugin_bench.rs` yet. The interpreter row
-// appears in both benchmarks and is the bridge between them: the two hosts
-// agree on it, and on the state checksum printed at the end of each row.
+// Both arms print the arena's checksum and the test asserts they are equal, which
+// is not a formality now that compiled is the default: two hosts agree on a world
+// mod only if the two codegen paths agree.
 
 #![cfg(feature = "compile")]
 
@@ -25,8 +32,8 @@ use wasm::exec::{ExternVal, Store};
 use wasm::values::Value;
 use wasm::{decode, validate};
 
-/// The same sizes and frame counts the Goat-side benchmark uses, so the two
-/// tables line up.
+/// The frame counts the Goat-side benchmark used when this was written: the two
+/// overlap on 6, 64 and 1024, which is where their checksums are compared.
 const SIZES: [(i32, u32); 4] = [(6, 2000), (64, 488), (256, 30), (1024, 5)];
 const WARMUP: u32 = 2;
 

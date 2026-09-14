@@ -44,17 +44,21 @@ no WASI. Rust is the language the host is written in, so it is the one case wher
 a Rust-shaped ABI would go unnoticed. Two languages with nothing in common but
 the specification is the smallest set that can catch that.
 
-## The compiled measurement
+## The interpreter and Rust-host measurements
 
-`bench.wasm` is also run against the `wasm` crate's Cranelift backend, which no
-Goat crate can reach today (no feature pass-through -- M17's upstream
-prerequisite). `kernel-bench-compiled.rs` is that throwaway test, kept here so
-the compiled figure in `ROADMAP.md` M17 is reproducible rather than folklore.
-It belongs to the slag workspace: copy it to
+`bench.wasm` is also driven from Rust, which the Goat-side benchmark cannot do:
+no Goat crate can reach the `wasm` crate's `Store` or its feature pass-through
+(M17's upstream prerequisite). `kernel-bench-compiled.rs` is that throwaway test,
+kept here so the figures in `ROADMAP.md` M17 which the JS-API benchmark cannot
+produce are reproducible rather than folklore -- specifically the interpreter
+(`Store::set_compile(false)`, which the JS API cannot ask for and which is what a
+wasm32 host would run) and the per-call cost of `Store::invoke` from Rust. It
+belongs to the slag workspace: copy it to
 `slag/crates/wasm/tests/kernel_bench.rs`, run
 `cargo test --release -p wasm --features compile --test kernel_bench --
---nocapture` from `slag/`, then delete it. The Goat-side benchmark prints the
-same state checksum, which is how the two runs are shown to agree.
+--nocapture` from `slag/`, then delete it. It asserts that the interpreted and
+compiled runs leave the same state, and prints the checksum the Goat-side
+benchmark prints, so the two runs can be checked against each other.
 
 ## Deliberate properties
 
