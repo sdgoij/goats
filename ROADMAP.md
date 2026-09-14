@@ -1669,26 +1669,35 @@ JS boundary, so the ABI is `i32`/`f32`/`f64` only.
    the engine's own equivalence-gate rule: two hosts must agree on the world
    whatever codegen path they built.
 
-**Engine prerequisite (upstream Slag).** From `goats`, the `wasm` crate is not
-reachable: `slag`'s own dependencies are `crux`/`runtime`/`jit`, the `wasm` crate
-hangs off `runtime` behind a feature, and `Context` exposes no instantiation API.
-The zero-JS shape therefore needs either a re-export of the engine surface from
-`slag`, or a second dependency on the same git revision (Cargo unifies it, but the
-two declarations then move in lockstep forever). Same shape as M9's upstream
-prerequisite.
+**Engine prerequisite (upstream Slag).** Narrower than it was. The embedding API
+now registers native functions -- `Context::create_object`, `create_function`,
+`register_fn`, and re-entrant `FunctionCall::call`/`eval` -- so a plugin's imports
+can be Rust closures over host state, and the ABI test runs the fixture through
+both capability implementations to keep that honest. The JS-API shape therefore
+needs no engine change at all. What is still missing is M17b's shape: driving a
+module's *exports* from Rust, which needs the `wasm` crate's `Store`, and from
+`goats` that crate is not reachable (`slag` depends on `crux`/`runtime`/`jit`;
+`wasm` hangs off `runtime` behind a feature; `Context` exposes no instantiation
+API). So either `slag` re-exports the engine surface, or `goats` takes a second
+dependency on the same git revision. Same shape as M9's upstream prerequisite.
 
 - **M17a — The ABI and wasm as a primitive.** The host hands a mod's `.wasm`
   over as bytes, never a path, the way every other asset already crosses; the
-  scene's `WebAssembly` does the rest, so a mod ships wasm plus JS glue and
-  receives the existing events. Deliverables: `ABIv1.md`, the two-language
-  fixture and its test (done), a fixture mod that uses them, and the Mods screen
-  reporting what the module declares it wants.
-- **M17b — The Rust-side host.** Drive the module's exports from Rust, with the
-  deterministic subset of `goats` (`rng`, `publish`/`apply`, world queries)
-  implemented in Rust, so a plugin needs no JavaScript at all. This is the shape
-  that delivers the promise, and it is the one that needs the prerequisite above.
-  Reload becomes "drop the instance, instantiate again", extending M14g's
-  `--watch` to compiled mods.
+  scene's `WebAssembly` does the rest. The import namespace is the host's, and
+  since the embedding API can register native functions its capabilities can
+  already be Rust closures -- so what a mod ships is only `.wasm`, with the
+  driver host-owned rather than mod-owned. Deliverables: `ABIv1.md`, the
+  two-language fixture and its test (done, through both capability
+  implementations), a fixture mod that uses them, and the Mods screen reporting
+  what the module declares it wants.
+- **M17b — The Rust-side host.** Move the driver itself into Rust: instantiate
+  the module with the `wasm` crate's `Store`, own its memory, and call its exports
+  per frame with no JavaScript in between. The capabilities are already
+  host-native (M17a); what this buys is the memory -- a capability that reads the
+  plugin's memory has to be implemented where the memory is -- and a frame path
+  with nothing interpreted in front of the plugin. It is the one sub-step that
+  needs the prerequisite above. Reload becomes "drop the instance, instantiate
+  again", extending M14g's `--watch` to compiled mods.
 - **M17c — World-side plugins in the compatibility set.** The digest covers the
   artifact's bytes **and** the ABI version, and section 6.4's determinism rules
   gain the corresponding line. The open question is host-provided math: core wasm

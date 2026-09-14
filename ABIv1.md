@@ -110,6 +110,12 @@ v1 is exactly two, and the fixtures implement exactly these:
 | `log` | `(ptr: i32, len: i32)` | The host reads `len` UTF-8 bytes at `ptr` and logs them under the mod's id. |
 | `rng` | `(stream: i32) -> f64` | One draw from a host-owned, seeded stream. The host decides what the stream is; the *ordering* of draws is part of the ABI. |
 
+Both signatures are shaped by *where the memory is*, not by privileges. `rng`
+carries values, so it can be a native host function anywhere. `log` carries a
+pointer into the module's linear memory, so whoever implements it has to be able
+to read that memory -- the driver, in the shape where the JS API instantiates the
+module; the Rust host, in the shape where `Store` does. Section 5.
+
 Reserved for the version that follows, and deliberately **not** in v1, because
 each is a policy decision rather than a function:
 
@@ -193,28 +199,40 @@ conveniently, the whole idea would have failed at its single job.
 
 ## 5. The fork in the road: who drives the plugin
 
-The fixtures are loaded through the JS `WebAssembly` API, which is what exists
-today. That covers the "wasm as a compute core" shape: a mod ships wasm plus JS
-glue, and the glue receives the scene's events. It does **not** free a mod from
-JavaScript -- it moves the interesting code into wasm and leaves the plumbing.
+Both shapes build the `goats` namespace in the host, and the capabilities can be
+Rust. The embedding API registers native functions (`Context::create_object`,
+`create_function`, `register_fn`, and the re-entrant `FunctionCall::call` /
+`eval`), so a capability may be a closure over host state rather than a
+JavaScript function. `crates/harness/tests/plugin_abi.rs` runs the fixture with
+the namespace built each way and requires the same behaviour: the implementation
+language of a capability is no more part of the ABI than the implementation
+language of a plugin.
 
-The other shape is the host driving the module directly: fixed exports called
-from Rust, imports implemented in Rust, no JS anywhere. That is the one that
-delivers the promise, and it needs one thing that does not exist yet: from
-`goats`, the `wasm` crate is not reachable. `slag`'s own dependencies are
-`crux`/`runtime`/`jit`, the `wasm` crate hangs off `runtime` behind a feature,
-and `Context` exposes no instantiation API. So either `goats` adds a second
-dependency on the same slag git revision (which Cargo unifies, but the two
-declarations then move in lockstep forever) or Slag re-exports the engine
-surface. That is an **engine prerequisite (upstream Slag)**, the same shape
-`ROADMAP.md` already has under M9.
+So the fork is narrower than it first looks -- it is about **who instantiates the
+module**, not about who implements the capabilities.
 
-Given that, the two shapes are not exclusive and not equally urgent:
+1. **The JS API instantiates it** (works today). The host owns the driver: the
+   few lines that build the import object and call `WebAssembly.Instance`. The
+   mod ships only `.wasm`. Capabilities can already be host-native, and one that
+   needs the scene can reach it through the re-entrant `FunctionCall::call` /
+   `eval`.
+2. **Rust instantiates it** (needs one thing that does not exist yet). Driving a
+   module's exports from Rust, and owning its memory, means the `wasm` crate's
+   `Store` -- and from `goats` that crate is not reachable: `slag`'s dependencies
+   are `crux`/`runtime`/`jit`, the `wasm` crate hangs off `runtime` behind a
+   feature, and `Context` exposes no instantiation API. Either `goats` takes a
+   second dependency on the same git revision (Cargo unifies it, but the two
+   declarations then move in lockstep forever) or Slag re-exports the engine
+   surface. That is an **engine prerequisite (upstream Slag)**, the same shape
+   `ROADMAP.md` already has under M9.
 
-1. Wasm as a compute core (works today, needs no engine change).
-2. A Rust-side host driving exports, with the deterministic subset of `goats`
-   (`rng`, `publish`/`apply`, world queries) implemented in Rust, and the
-   scene-mutating parts staying JS for now.
+**What shape 2 buys, and what shape 1 costs.** Shape 2 owns the memory, which is
+what a pointer-and-length capability needs (section 3.3), and it puts no
+JavaScript in front of the plugin's per-frame call. Shape 1 pays one JS-to-wasm
+crossing per frame -- measured at 4.6-13 ns per call on the benchmark kernel, so
+noise beside the work -- and needs a decode step in the driver for any capability
+that reads the module's memory. Neither is a privilege difference: both drivers
+are the host's code, and the mod never sees either.
 
 ## 6. Not in v1
 
