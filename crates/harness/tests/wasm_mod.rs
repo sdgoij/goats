@@ -2,12 +2,13 @@
 //! module and no JavaScript at all (M17a, `ABIv1.md`).
 //!
 //! What the loader half owns -- the manifest's `wasm` block, the module's bytes,
-//! the refusal of a world-side module and of a file that is not a module -- is
-//! `crates/mods`' own test, which runs the real loader over `mods/wasm/`. What is
-//! left here is the scene half, driven by the real `mods/wasm/plugin.wasm`:
-//! the host delivers bytes, the driver instantiates with the capabilities it
-//! grants, the ABI version is negotiated, one coarse call a frame is made, and
-//! the host reads the results back out of the module's memory.
+//! and that a file that is not a module is refused -- is `crates/mods`' own test,
+//! which runs the real loader over `mods/wasm/`. What is left here is the scene
+//! half, driven by the real `mods/wasm/plugin.wasm`: the host delivers bytes, the
+//! driver instantiates with the capabilities it grants, the ABI version is
+//! negotiated, one coarse call a frame is made, and the host reads the results
+//! back out of the module's memory. A `side: "world"` module runs only where the
+//! world is authoritative and re-derives its streams from the session seed.
 //!
 //! The module is compiled in (`include_bytes!`), like the `mods/example` fixture
 //! beside it: a rebuilt or broken artifact then fails this test rather than
@@ -32,20 +33,30 @@ const MODULE_ABI2: &[u8] = include_bytes!("../../../fixtures/wasm/mod-abi2.wasm"
 /// Enough frames for the scene to load and settle before the mod is delivered.
 const SHORT: u32 = 60;
 
+/// A second, world-side id, for the compatibility-set cases.
+const WORLD_ID: &str = "com.example.worldwasm";
+
 /// The records the module is working on, read back out of its memory by the host.
 /// `(x, z, vx)` per record: what the values *mean* is the module's business, and
 /// this is the host looking at the bytes it handed over.
-const RECORDS: &str = r#"(function () {
-    const live = modWasmLive.get("com.github.sdgoij.goats.wasm");
+fn records(harness: &mut Harness, id: &str) -> Vec<Vec<f64>> {
+    let probe = format!(
+        r#"(function () {{
+    const live = modWasmLive.get("{id}");
     if (live === undefined) return null;
     const view = new Float32Array(live.instance.exports.memory.buffer);
     const base = live.ptr / 4;
     const out = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 6; i++) {{
         out.push([view[base + i * 4 + 0], view[base + i * 4 + 1], view[base + i * 4 + 3]]);
-    }
+    }}
     return JSON.stringify(out);
-})()"#;
+}})()"#
+    );
+    let value = harness.eval(&probe).expect("read the module's memory");
+    let text = value.as_str().expect("a JSON string");
+    serde_json::from_str(text).expect("rows of f64")
+}
 
 /// A scene with the compiled mod's metadata installed, before delivery.
 fn staged() -> Harness {
@@ -71,14 +82,6 @@ fn staged() -> Harness {
 fn plugin(harness: &mut Harness) -> serde_json::Value {
     let info = command_json(harness, &format!("mod info {ID}"));
     info["wasm"].clone()
-}
-
-/// The records as the host reads them out of the module's memory.
-fn records(harness: &mut Harness) -> Vec<Vec<f64>> {
-    let value = harness.eval(RECORDS).expect("read the module's memory");
-    let text = value.as_str().expect("a JSON string");
-    let rows: Vec<Vec<f64>> = serde_json::from_str(text).expect("rows of f64");
-    rows
 }
 
 #[test]
@@ -113,7 +116,7 @@ fn the_host_instantiates_drives_and_reads_a_compiled_mod() {
 
     // And the host can see what the module computed, by reading its memory: the
     // records have moved, which is the whole point of the coarse crossing.
-    let moved = records(&mut harness);
+    let moved = records(&mut harness, ID);
     assert_eq!(moved.len(), 6);
     assert!(
         moved.iter().any(|row| row[0] != 0.0),
@@ -135,14 +138,14 @@ fn the_same_module_replays_the_same_records() {
     first
         .call("harnessStep", &[json!(90), json!(1.0 / 60.0)])
         .expect("step");
-    let a = records(&mut first);
+    let a = records(&mut first, ID);
 
     let mut second = staged();
     second.wasm_module(ID, MODULE).expect("deliver");
     second
         .call("harnessStep", &[json!(90), json!(1.0 / 60.0)])
         .expect("step");
-    let b = records(&mut second);
+    let b = records(&mut second, ID);
 
     assert_eq!(a, b, "the same module must replay the same numbers");
     assert!(a.iter().any(|row| row[0] != 0.0), "and have done work");
@@ -165,8 +168,13 @@ fn a_module_built_for_another_abi_is_refused_by_name() {
         "{info}"
     );
 
-    // Nothing was left running: no module is driven and no frames are counted.
-    assert_eq!(harness.eval(RECORDS).expect("read"), json!(null));
+    // Nothing was left running: no module was kept, so no frames will be counted.
+    assert_eq!(
+        harness
+            .eval(&format!("modWasmLive.has('{ID}')"))
+            .expect("read"),
+        json!(false)
+    );
 }
 
 #[test]
@@ -185,5 +193,89 @@ fn something_that_is_not_a_module_is_refused_by_name() {
             .unwrap_or("")
             .contains("invalid module"),
         "{info}"
+    );
+}
+
+/// A scene with a `side: "world"` compiled mod delivered, seeded with `seed`.
+fn staged_world(seed: i64) -> Harness {
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(SHORT).expect("run the scene");
+    let table = json!([{
+        "id": WORLD_ID,
+        "name": "World Compiled",
+        "version": "1.0.0",
+        "api": 1,
+        "side": "world",
+        "enabled": true,
+        "wasm": "plugin.wasm",
+    }]);
+    harness
+        .call("sceneMods", &[json!(table.to_string())])
+        .expect("install the table");
+    harness
+        .wasm_module(WORLD_ID, MODULE)
+        .expect("deliver the module");
+    // The same module serves either side: what makes it a world mod is the
+    // manifest, and this is where its streams re-derive from the session seed.
+    harness
+        .call("sceneUseSeed", &[json!(seed)])
+        .expect("set the session seed");
+    harness
+}
+
+#[test]
+fn a_world_compiled_mod_is_driven_and_seed_dependent() {
+    // A solo host is authoritative, so a world mod runs -- and its randomness
+    // comes from the session seed, so the same seed replays the same records and
+    // a different seed does not. That is the rule that makes two hosts of the
+    // same world agree, and the reason there is no clock in the ABI.
+    let mut first = staged_world(1001);
+    first
+        .call("harnessStep", &[json!(80), json!(1.0 / 60.0)])
+        .expect("step");
+    let info = command_json(&mut first, &format!("mod info {WORLD_ID}"));
+    assert_eq!(info["wasm"]["frames"], 80, "{info}");
+
+    let mut same = staged_world(1001);
+    same.call("harnessStep", &[json!(80), json!(1.0 / 60.0)])
+        .expect("step");
+    assert_eq!(
+        records(&mut first, WORLD_ID),
+        records(&mut same, WORLD_ID),
+        "the same seed must replay the same world"
+    );
+
+    let mut other = staged_world(1002);
+    other
+        .call("harnessStep", &[json!(80), json!(1.0 / 60.0)])
+        .expect("step");
+    assert_ne!(
+        records(&mut first, WORLD_ID),
+        records(&mut other, WORLD_ID),
+        "a different seed must play a different world"
+    );
+}
+
+#[test]
+fn a_mirroring_client_does_not_drive_a_world_compiled_mod() {
+    // A joining client mirrors; it does not simulate. The same module, delivered
+    // on a client, is instantiated but its frame count stops where it was.
+    let mut harness = staged_world(1001);
+    harness
+        .call("harnessStep", &[json!(10), json!(1.0 / 60.0)])
+        .expect("step");
+    let info = command_json(&mut harness, &format!("mod info {WORLD_ID}"));
+    assert_eq!(info["wasm"]["frames"], 10, "{info}");
+
+    harness
+        .eval("netMode = 'client'; 0")
+        .expect("flip to client");
+    harness
+        .call("harnessStep", &[json!(10), json!(1.0 / 60.0)])
+        .expect("step");
+    let info = command_json(&mut harness, &format!("mod info {WORLD_ID}"));
+    assert_eq!(
+        info["wasm"]["frames"], 10,
+        "a mirroring client must not simulate: {info}"
     );
 }

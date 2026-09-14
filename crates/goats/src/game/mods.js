@@ -644,6 +644,15 @@ function modSeedStreams(seed) {
     for (const stream of modStreams.values()) {
         stream.state = (stream.seed ^ next()) || 1;
     }
+    // A compiled world mod's streams live inside its module, not in
+    // `modStreams`, so they are re-derived here from the same seed and the same
+    // generator -- one draw per stream, so no two streams move in lockstep.
+    for (const live of modWasmLive.values()) {
+        if (live.side !== "world") continue;
+        for (let i = 0; i < MOD_WASM_STREAMS; i++) {
+            live.rng[i] = (live.rngSeed[i] ^ next()) || 1;
+        }
+    }
 }
 
 function modStreamStates() {
@@ -1076,15 +1085,17 @@ function sceneWasmModule(id, bytes) {
         return "error invalid module";
     }
 
-    // A per-mod, per-stream seed, so one compiled mod's draws cannot disturb
-    // another's and the same mod replays the same numbers.
+    // A per-mod, per-stream base seed, so one compiled mod's draws cannot disturb
+    // another's. The *current* stream is re-derived from the session seed in
+    // `modSeedStreams` for a world mod; the base is the fixed, per-mod part.
     const seed = modHashKey("wasm:" + id) || 1;
-    const streams = [];
+    const rngSeed = [];
     for (let i = 0; i < MOD_WASM_STREAMS; i++) {
-        streams.push(((seed ^ (i * 0x9e3779b9)) >>> 0) || 1);
+        rngSeed.push(((seed ^ (i * 0x9e3779b9)) >>> 0) || 1);
     }
     const live = {
         id: id,
+        side: meta.side,
         instance: null,
         ptr: 0,
         abi: 0,
@@ -1092,7 +1103,8 @@ function sceneWasmModule(id, bytes) {
         frames: 0,
         error: "",
         lastLog: "",
-        rng: streams,
+        rngSeed: rngSeed,
+        rng: rngSeed.slice(),
     };
 
     try {
@@ -1155,6 +1167,10 @@ function modWasmTick(dt) {
     if (modWasmLive.size === 0) return;
     for (const live of modWasmLive.values()) {
         if (live.error !== "") continue;
+        // A world mod runs only where the world is authoritative; a client that
+        // mirrors does not simulate, exactly like a JS world mod. A client-side
+        // mod is local and always runs.
+        if (live.side === "world" && !netWorldLocal()) continue;
         try {
             live.instance.exports.goats_update(live.ptr, MOD_WASM_RECORDS, dt);
             live.frames += 1;
