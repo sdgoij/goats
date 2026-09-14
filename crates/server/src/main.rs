@@ -143,6 +143,36 @@ fn world_mod_refs(loader: &mods::Loader) -> Vec<session::ModRef> {
     refs
 }
 
+/// The status page's mod facts: the mods this host loaded, and the directory they
+/// came from packaged as a `.zip` so a visitor can obtain exactly the set in use.
+/// The archive is `None` when there are no mods, or when the directory cannot be
+/// read (a page without a download link is better than no page at all).
+fn status_page_mods(
+    loader: &mods::Loader,
+    dir: Option<&std::path::Path>,
+) -> (Vec<web::Mod>, Option<Vec<u8>>) {
+    let listed: Vec<web::Mod> = loader
+        .mods()
+        .iter()
+        .map(|manifest| web::Mod {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            side: manifest.side.as_str(),
+        })
+        .collect();
+    let zip = match dir {
+        Some(dir) if !listed.is_empty() => match mods::archive_dir(dir) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                eprintln!("goatsd: could not package the mods for download: {error}");
+                None
+            }
+        },
+        _ => None,
+    };
+    (listed, zip)
+}
+
 #[tokio::main]
 async fn main() {
     let options = match parse_args(std::env::args().skip(1)) {
@@ -158,13 +188,14 @@ async fn main() {
         }
     };
 
-    let loader = match resolve_mods_dir(&options) {
+    let mods_dir = resolve_mods_dir(&options);
+    let loader = match &mods_dir {
         Some(dir) => {
             eprintln!("goatsd: scanning {}", dir.display());
             // Hash the assets for the digest but do not keep them (a server has
             // no engine to register them with), while keeping a mod's wasm
             // module: that is code the headless world runs, not data to register.
-            mods::Loader::discover_with(&dir, mods::AssetMode::KeepWasm)
+            mods::Loader::discover_with(dir, mods::AssetMode::KeepWasm)
         }
         None => mods::Loader::empty(),
     };
@@ -181,6 +212,11 @@ async fn main() {
     // The hashes, not just the count: a refused joiner is told what this end
     // had, and this is the line to read that against.
     eprintln!("goatsd: world set: {}", describe_mods(&world_mods));
+
+    // The status page's mod facts: every mod this host loaded, and the directory
+    // they came from packaged as a `.zip`, so a visitor can obtain exactly the
+    // set in use rather than assembling it by hand. Built once at boot.
+    let (listed_mods, mods_zip) = status_page_mods(&loader, mods_dir.as_deref());
 
     let mut host = match Host::start_with_mods(&options.name, world_mods).await {
         Ok(host) => host,
@@ -218,6 +254,9 @@ async fn main() {
     let info = Arc::new(web::Info::new(
         host.ticket().to_string(),
         options.download.clone(),
+        proto::PROTOCOL_VERSION,
+        listed_mods,
+        mods_zip,
     ));
     if let Some(address) = &options.listen {
         let address = if let Ok(port) = address.parse::<u16>() {
@@ -468,5 +507,46 @@ mod tests {
         assert!(parse(&["--download"]).is_err(), "a missing value");
         assert!(parse(&["--nope"]).is_err(), "an unknown option");
         assert!(parse(&["one", "two"]).is_err(), "two names");
+    }
+
+    /// The status page, wired from the real fixture mods the way `main` does it:
+    /// the mods are listed with their versions and the directory is packaged for
+    /// download, so a visitor can obtain exactly the set the session requires.
+    #[test]
+    fn the_status_page_lists_and_packages_the_fixture_mods() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("mods");
+        let loader = mods::Loader::discover_with(&dir, mods::AssetMode::KeepWasm);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+
+        let (listed, zip) = status_page_mods(&loader, Some(&dir));
+        assert!(
+            listed
+                .iter()
+                .any(|module| module.id == "com.github.sdgoij.goats.birds"),
+            "the birds fixture must be listed"
+        );
+        let zip = zip.expect("the mods directory packaged");
+        assert_eq!(&zip[..2], b"PK", "a zip archive");
+
+        let info = web::Info::new(
+            "ticket".to_string(),
+            "https://example.test".to_string(),
+            proto::PROTOCOL_VERSION,
+            listed,
+            Some(zip),
+        );
+        let page = info.page();
+        assert!(page.contains("com.github.sdgoij.goats.birds@"), "{page}");
+        assert!(
+            page.contains(&format!(
+                "Protocol version: <strong>{}</strong>",
+                proto::PROTOCOL_VERSION
+            )),
+            "{page}"
+        );
+        assert!(page.contains("href=\"/mods.zip\""), "{page}");
     }
 }

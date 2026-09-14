@@ -898,6 +898,61 @@ fn hash_manifest(
     hash
 }
 
+/// Package a mods directory into a `.zip` in memory, every file stored under its
+/// path relative to `dir`. Extracting the archive into a joiner's `mods/`
+/// reproduces the set this host is running -- the distribution side of
+/// [`Loader::discover`], which `goatsd`'s status page hands out.
+///
+/// The layout is preserved rather than flattened because the loader expects one
+/// directory per mod (or a single `*.zip`), and a directory mod and its zipped
+/// twin must hash the same.
+pub fn archive_dir(dir: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Write as _;
+
+    fn add<W: std::io::Write + std::io::Seek>(
+        archive: &mut zip::ZipWriter<W>,
+        root: &Path,
+        dir: &Path,
+    ) -> Result<(), String> {
+        let read =
+            std::fs::read_dir(dir).map_err(|error| format!("'{}': {error}", dir.display()))?;
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for entry in read {
+            let entry = entry.map_err(|error| format!("'{}': {error}", dir.display()))?;
+            paths.push(entry.path());
+        }
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                add(archive, root, &path)?;
+                continue;
+            }
+            let name = path
+                .strip_prefix(root)
+                .map_err(|error| format!("'{}': {error}", path.display()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let bytes =
+                std::fs::read(&path).map_err(|error| format!("'{}': {error}", path.display()))?;
+            let options = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            archive
+                .start_file(&name, options)
+                .map_err(|error| format!("zip '{name}': {error}"))?;
+            archive
+                .write_all(&bytes)
+                .map_err(|error| format!("zip '{name}': {error}"))?;
+        }
+        Ok(())
+    }
+
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut archive = zip::ZipWriter::new(cursor);
+    add(&mut archive, dir, dir)?;
+    let cursor = archive.finish().map_err(|error| format!("zip: {error}"))?;
+    Ok(cursor.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1290,6 +1345,53 @@ mod tests {
                 .unwrap_or("")
                 .contains("procedural birds"),
             "the entry must be the real birds source"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_mods_directory_archives_and_reloads_identically() {
+        // What `goatsd`'s status page hands out: the mods directory packaged as
+        // a `.zip`. Extracting it must reproduce the same mods, digests and all,
+        // or a joiner who downloaded it would still be refused at the join.
+        let mods_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("mods");
+        let original = Loader::discover(&mods_dir);
+        assert!(original.errors().is_empty(), "{:?}", original.errors());
+        assert!(!original.mods().is_empty(), "the fixture tree has mods");
+
+        let bytes = archive_dir(&mods_dir).expect("archive the mods directory");
+        assert_eq!(&bytes[..2], b"PK", "a zip archive");
+
+        // Extract it the way the page says to: into a mods directory.
+        let root = workspace("archived");
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("read the archive");
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            assert!(!name.contains(".."), "an entry must stay inside: {name}");
+            let path = root.join(&name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut file = std::fs::File::create(&path).unwrap();
+            std::io::copy(&mut entry, &mut file).unwrap();
+        }
+
+        let reloaded = Loader::discover(&root);
+        assert!(reloaded.errors().is_empty(), "{:?}", reloaded.errors());
+        let summarise = |loader: &Loader| -> Vec<(String, u64)> {
+            loader
+                .mods()
+                .iter()
+                .map(|manifest| (manifest.id.clone(), manifest.hash))
+                .collect()
+        };
+        assert_eq!(
+            summarise(&original),
+            summarise(&reloaded),
+            "the archive must reload as the same mods"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

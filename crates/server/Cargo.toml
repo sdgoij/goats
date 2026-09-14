@@ -20,14 +20,12 @@ scene = { workspace = true }
 mods = { workspace = true }
 # The compiled-mod host (M17b): the server drives world `.wasm` mods from Rust.
 plugin = { workspace = true }
+# The wire protocol: the status page reports the version in use, and the birds
+# fixture test checks the whole world still fits one datagram (its cap).
+proto = { workspace = true }
 # The scene is shared with the client, so the headless world moves by the same
 # rules. No `raylib` feature: the server has no window, and `src/headless_rl.js`
 # supplies the null `rl` the scene is evaluated against instead.
 slag = { workspace = true, features = ["jit"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
-
-[dev-dependencies]
-# The birds fixture test checks the whole world still fits one datagram, which
-# is `proto`'s cap.
-proto = { workspace = true }
