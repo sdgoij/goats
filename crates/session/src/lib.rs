@@ -32,7 +32,7 @@ use tokio::sync::{Mutex, mpsc};
 // `proto` directly.
 pub use proto::{
     BotState, Datagram, EatenCell, Gait, ModRef, PeerFrame, PeerState, Streams, VoiceFrame,
-    WeatherKind, WeatherState, WorldState,
+    WeatherKind, WeatherState, WorldOutcome, WorldState,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a
@@ -69,7 +69,10 @@ pub enum Event {
         bots: Vec<BotState>,
         weather: WeatherState,
         streams: Streams,
-        eaten: Vec<EatenCell>,
+        /// `None` when the host's snapshot could not carry the meadow (it was
+        /// over the datagram budget). A client keeps the meadow it has: an empty
+        /// list would put back every tuft the host has eaten.
+        eaten: Option<Vec<EatenCell>>,
         mods: serde_json::Value,
     },
     /// A client ate a grass cell, for the host's scene to record. Only the host
@@ -555,14 +558,24 @@ impl Host {
         self.broadcast(datagram).await;
     }
 
-    /// Broadcasts the server's bots. Only the host may send these, which is what
-    /// makes the world authoritative: a client mirrors what it is told and does
-    /// not simulate.
-    pub async fn publish_world(&self, world: &WorldState) {
-        if !world.is_finite() {
-            return;
+    /// Broadcasts the server's world, shedding the optional parts if it does not
+    /// fit one datagram. Only the host may send a world, which is what makes it
+    /// authoritative: a client mirrors what it is told and does not simulate.
+    ///
+    /// The outcome comes back rather than being logged here -- a library does not
+    /// own the log -- so the caller can report what happened when it *changes*,
+    /// instead of ten times a second.
+    pub async fn publish_world(&self, world: &WorldState) -> WorldOutcome {
+        let mut fitted = world.clone();
+        let outcome = proto::fit_world(&mut fitted, proto::MAX_DATAGRAM_BYTES);
+        if matches!(
+            outcome,
+            WorldOutcome::TooLarge { .. } | WorldOutcome::NotFinite
+        ) {
+            return outcome;
         }
-        self.broadcast(Datagram::World(world.clone())).await;
+        self.broadcast(Datagram::World(fitted)).await;
+        outcome
     }
 
     /// Broadcasts one voice packet as the local player. The host sends its own
@@ -1454,6 +1467,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_over_budget_world_reaches_its_clients_without_the_meadow() {
+        // The failure this exists to prevent: a snapshot over the cap was dropped
+        // whole, so every client silently froze at the last good world. The
+        // optional parts go instead, and the world keeps arriving.
+        within(async {
+            let host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+
+            // A herd at the clamp and a meadow well along: measured, this is over
+            // the 1200-byte cap as JSON, with no mod involved.
+            let world = WorldState {
+                bots: (0..10)
+                    .map(|index| BotState {
+                        index,
+                        x: 1.0 + f32::from(index),
+                        z: -2.0,
+                        yaw: 0.5,
+                        phase: 0.25,
+                        gait: proto::Gait::Walk,
+                        variant: 0,
+                    })
+                    .collect(),
+                weather: WeatherState {
+                    kind: WeatherKind::Rain,
+                    cloudiness: 0.8,
+                    rain_amount: 0.6,
+                    wind_x: 1.4,
+                    wind_z: 0.2,
+                    wind_sway: 1.0,
+                    world_time: 9.25,
+                },
+                streams: Streams {
+                    weather: 7,
+                    bots: 8,
+                    food: 9,
+                    audio: 10,
+                },
+                eaten: Some(
+                    (0..24)
+                        .map(|i| EatenCell {
+                            key: 33_570_816 + i,
+                            left: 61.234,
+                        })
+                        .collect(),
+                ),
+                mods: serde_json::Value::Null,
+            };
+
+            let mut outcome = WorldOutcome::Whole;
+            for _ in 0..10 {
+                outcome = host.publish_world(&world).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(outcome, WorldOutcome::MeadowShed);
+            assert!(
+                outcome
+                    .describe()
+                    .is_some_and(|text| text.contains("meadow"))
+            );
+
+            match client_world(&mut alice).await {
+                Event::World { bots, eaten, .. } => {
+                    assert_eq!(bots.len(), 10, "the world still arrives");
+                    assert_eq!(eaten, None, "the meadow is the part that went");
+                }
+                other => panic!("expected a world, got {other:?}"),
+            }
+
+            // A world that fits is untouched, and says so.
+            let small = WorldState {
+                eaten: Some(vec![EatenCell {
+                    key: 4242,
+                    left: 12.5,
+                }]),
+                ..world
+            };
+            assert_eq!(host.publish_world(&small).await, WorldOutcome::Whole);
+
+            alice.close().await;
+            host.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn the_servers_world_reaches_its_clients() {
         within(async {
             let host = Host::start("host").await.expect("host");
@@ -1495,10 +1593,10 @@ mod tests {
                     food: 9,
                     audio: 10,
                 },
-                eaten: vec![EatenCell {
+                eaten: Some(vec![EatenCell {
                     key: 4242,
                     left: 12.5,
-                }],
+                }]),
                 mods: serde_json::json!({ "data": { "com.example.a": { "n": 1 } } }),
             };
             for _ in 0..10 {

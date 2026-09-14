@@ -102,9 +102,14 @@ function sceneEaten() {
 
 // Replace the meadow with the server's, wholesale. Joining adopts the server's
 // world rather than merging it with the one this client had already generated.
+//
+// A snapshot that could not carry the meadow -- the world was over its datagram
+// budget, so the meadow was the part that went -- sends `null` instead, and that
+// means "keep the one you have". Clearing it would put back every tuft the host
+// has eaten, and a client that believes a tuft is there cannot eat it.
 function applyEaten(list) {
-    EATEN.clear();
     if (!Array.isArray(list)) return;
+    EATEN.clear();
     for (let i = 0; i < list.length; i++) {
         EATEN.set(list[i].key, list[i].left);
     }

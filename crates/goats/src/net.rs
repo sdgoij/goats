@@ -107,12 +107,14 @@ enum Event {
         state: session::PeerState,
     },
     /// The server's world -- bots, sky, streams, meadow and world-mod state --
-    /// for a client to mirror instead of simulating.
+    /// for a client to mirror instead of simulating. `eaten` is `null` when the
+    /// host's snapshot could not carry the meadow (it was over the datagram
+    /// budget), which the scene reads as "keep the one you have".
     World {
         bots: Vec<session::BotState>,
         weather: session::WeatherState,
         streams: session::Streams,
-        eaten: Vec<session::EatenCell>,
+        eaten: Option<Vec<session::EatenCell>>,
         mods: serde_json::Value,
     },
     /// A client's bite, for the host's scene (host side only).
@@ -261,7 +263,9 @@ impl Live {
         }
     }
 
-    /// Sends the world. Only a host has one to send; a client silently drops it.
+    /// Sends the world. Only a host has one to send; a client drops it, and there
+    /// is then nothing to report. The outcome comes back so the caller can say
+    /// what happened when it changes.
     async fn publish_world(
         &self,
         bots: &[session::BotState],
@@ -269,16 +273,22 @@ impl Live {
         streams: session::Streams,
         eaten: &[session::EatenCell],
         mods: serde_json::Value,
-    ) {
-        if let Live::Host(host) = self {
-            host.publish_world(&session::WorldState {
-                bots: bots.to_vec(),
-                weather: weather.clone(),
-                streams,
-                eaten: eaten.to_vec(),
-                mods,
-            })
-            .await;
+    ) -> Option<session::WorldOutcome> {
+        match self {
+            Live::Host(host) => Some(
+                host.publish_world(&session::WorldState {
+                    bots: bots.to_vec(),
+                    weather: weather.clone(),
+                    streams,
+                    // The scene only ever queues a world while it is hosting, and
+                    // it always has a meadow to send: a `None` here is Rust's,
+                    // not the scene's.
+                    eaten: Some(eaten.to_vec()),
+                    mods,
+                })
+                .await,
+            ),
+            Live::Client(_) => None,
         }
     }
 
@@ -314,6 +324,9 @@ async fn run(
     world_mods: Vec<session::ModRef>,
 ) {
     let mut live: Option<Live> = None;
+    // The last thing said about the world snapshot. The host sends ten a second,
+    // so a report belongs on the change, not on every send.
+    let mut last_world = session::WorldOutcome::Whole;
     loop {
         /// What one turn of the loop produced.
         enum Outcome {
@@ -395,10 +408,16 @@ async fn run(
                     eaten,
                     mods,
                 } => {
-                    if let Some(session) = live.as_ref() {
-                        session
+                    if let Some(session) = live.as_ref()
+                        && let Some(outcome) = session
                             .publish_world(&bots, &weather, streams, &eaten, mods)
-                            .await;
+                            .await
+                        && outcome != last_world
+                    {
+                        if let Some(text) = outcome.describe() {
+                            eprintln!("[net] {text}");
+                        }
+                        last_world = outcome;
                     }
                 }
                 // A bite this player took, reported to the host so its scene can
@@ -741,7 +760,7 @@ mod tests {
         assert!(line.contains(r#""name":"alice""#), "{line}");
         assert!(line.contains(r#""gait":"idle""#), "{line}");
 
-        let line = serde_json::to_string(&bridge(session::Event::World {
+        let world_event = |eaten| session::Event::World {
             bots: vec![session::BotState {
                 index: 0,
                 x: 1.0,
@@ -766,9 +785,13 @@ mod tests {
                 food: 3,
                 audio: 4,
             },
-            eaten: vec![session::EatenCell { key: 5, left: 6.0 }],
+            eaten,
             mods: serde_json::json!({ "data": { "com.example.a": { "n": 1 } } }),
-        }))
+        };
+        let line = serde_json::to_string(&bridge(world_event(Some(vec![session::EatenCell {
+            key: 5,
+            left: 6.0,
+        }]))))
         .expect("encode");
         assert!(line.contains(r#""type":"world""#), "{line}");
         assert!(line.contains(r#""index":0"#), "{line}");
@@ -776,6 +799,12 @@ mod tests {
         assert!(line.contains(r#""food":3"#), "{line}");
         assert!(line.contains(r#""key":5"#), "{line}");
         assert!(line.contains(r#""com.example.a""#), "{line}");
+
+        // A meadow the host could not send reaches the scene as `null`, which is
+        // what tells it to keep the one it has rather than clearing it -- see
+        // `applyEaten` in `food.js`.
+        let line = serde_json::to_string(&bridge(world_event(None))).expect("encode");
+        assert!(line.contains(r#""eaten":null"#), "{line}");
 
         let line =
             serde_json::to_string(&bridge(session::Event::Consume { key: 7 })).expect("encode");

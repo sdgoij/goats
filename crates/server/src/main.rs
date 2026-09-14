@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use session::{Event, Host, WorldState};
+use session::{Event, Host, WorldOutcome, WorldState};
 
 /// The world snapshot cadence, in sim frames (the sim runs at a fixed 60 Hz).
 const WORLD_EVERY: u64 = 6;
@@ -249,6 +249,9 @@ async fn main() {
     // rather than firing a burst of steps after a stall.
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut frames: u64 = 0;
+    // The last thing said about the world snapshot, so a shed is reported when it
+    // happens and when it stops happening, not on every tick.
+    let mut last_world = WorldOutcome::Whole;
 
     // Built once and pinned, not re-created each iteration: a signal can land
     // while no handler future is registered, and this loop turns over every
@@ -286,7 +289,7 @@ async fn main() {
                 frames += 1;
                 if frames.is_multiple_of(WORLD_EVERY) {
                     match sim.world_json() {
-                        Ok(json) => publish_world(&host, &json).await,
+                        Ok(json) => publish_world(&host, &json, &mut last_world).await,
                         Err(error) => eprintln!("goatsd: could not read the world: {error}"),
                     }
                 }
@@ -323,11 +326,22 @@ async fn main() {
     }
 }
 
-/// Hands one world snapshot to the session, which broadcasts it to the clients.
-/// A malformed read is logged rather than fatal: the next one is 100 ms away.
-async fn publish_world(host: &Host, json: &str) {
+/// Hands one world snapshot to the session, which broadcasts it to the clients
+/// and sheds the parts that do not fit a datagram. A malformed read is logged
+/// rather than fatal: the next one is 100 ms away. The last thing said about the
+/// snapshot is what `last` carries, so a report lands on the change rather than
+/// ten times a second.
+async fn publish_world(host: &Host, json: &str, last: &mut WorldOutcome) {
     match serde_json::from_str::<WorldState>(json) {
-        Ok(world) => host.publish_world(&world).await,
+        Ok(world) => {
+            let outcome = host.publish_world(&world).await;
+            if outcome != *last {
+                if let Some(text) = outcome.describe() {
+                    eprintln!("goatsd: {text}");
+                }
+                *last = outcome;
+            }
+        }
         Err(error) => eprintln!("goatsd: bad world snapshot: {error}"),
     }
 }

@@ -92,7 +92,7 @@ uses.
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; the birds fixture test |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
-| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ⬜ Measured: the snapshot is already over its 1200-byte cap in vanilla play |
+| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | M16a **Done** — the snapshot sheds in a defined order and says so; M16b–M16e remain |
 
 ---
 
@@ -1441,12 +1441,34 @@ quantized one. A peer pose, the highest-rate datagram of the three, goes from
 
 **Phases.**
 
-- **M16a — Make the snapshot budget-aware. ⬜** The failure is silent and
-  total, so this lands first and stands alone: build the snapshot, measure it,
-  and shed in a defined order -- the meadow first, then mod state, **never** the
-  bots or the weather -- logging once on both ends when a shed happens. The
-  budget is handed to the scene at startup (`sceneNetBudget(maxWorldBytes)`)
-  rather than duplicated as a JS constant that can drift from `proto`'s.
+- **M16a — Make the snapshot budget-aware. ✅ Done.** The failure was silent and
+  total, so this landed first and stands alone. The shedding is in Rust, not in
+  the scene: `proto::fit_world(&mut WorldState, budget)` measures the real
+  encoded datagram and trims it -- the meadow first, then world-mod state, never
+  the bots, the sky or the streams -- returning a `WorldOutcome` that names what
+  happened (`Whole`, `MeadowShed`, `ModsShed`, `TooLarge { size }`, `NotFinite`),
+  with `describe()` holding the wording so the client host and `goatsd` say the
+  same thing. Both get it through `Host::publish_world`, which now returns the
+  outcome, and the two callers report it **on the change** rather than ten times
+  a second. The plan's `sceneNetBudget(maxWorldBytes)` turned out to be
+  unnecessary: the snapshot only exists as a `WorldState` on the Rust side, where
+  its encoded size is exact, so the scene never needs the number and there is no
+  constant to keep in step with `proto`'s.
+
+  Two things the work settled along the way. **Shedding has to mean "keep", not
+  "empty"**: `WorldState::eaten` is now `Option<Vec<EatenCell>>`, and a snapshot
+  that could not carry the meadow omits the field, which `applyEaten` reads as
+  "keep the one you have". Sending it as an empty list would put back every tuft
+  the host had eaten -- and since a client picks its eat target with
+  `nearestTuft` and reports the key, a client that believes a tuft is there
+  cannot eat it, which would have made the shed meadow a gameplay bug rather than
+  a cosmetic one. A world mod's `null` already meant the same thing, so only the
+  meadow needed the change. And **a refused world is handed back untouched**, so
+  the `TooLarge` size it reports is what the irreducible parts come to on their
+  own. Seven `proto` tests (the measured over-cap fixture, the shed order, the
+  refusal, and the round trip of a meadow that is missing rather than empty) and
+  a `session` test that an over-budget world still reaches a client without its
+  meadow.
 - **M16b — A binary datagram channel. ⬜** `postcard` (or bincode 2) for
   `Datagram` only, with a one-byte tag and the mod payload as length-prefixed raw
   JSON; the frames keep `serde_json`. Two codecs in `proto`, so `encode`/`decode`
@@ -1484,7 +1506,7 @@ quantized one. A peer pose, the highest-rate datagram of the three, goes from
 | The wire types, the two codecs, the tag and the caps | `crates/proto/` |
 | The datagram paths (world, pose, voice, mods) | `crates/session/` |
 | The snapshot assembly, the shed order and the mods datagram | `crates/goats/src/game/net.js`, `mods.js` |
-| The budget handed to the scene | `crates/goats/src/main.rs`, `crates/server/src/main.rs` |
+| The shed order, the outcome, and the two reporters | `crates/proto/`, `crates/session/`, `crates/goats/src/net.rs`, `crates/server/src/main.rs` |
 | The worst-case guard | `crates/server/src/headless.rs`, `crates/harness/tests/` |
 
 **Constraints to respect.** `MAX_DATAGRAM_BYTES` stays 1200: it is the IPv6
