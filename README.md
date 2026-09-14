@@ -546,6 +546,19 @@ cargo test -p runtime --features raylib --lib raylib
   spend far more stack per activation, so keep per-frame helper calls shallow —
   the scene computes its HUD read-outs once in `run()` rather than nesting them
   inside `drawHud()`. Build `--release` for headroom.
+- **`goatsd` (or the client) crashes with a stack overflow before it starts.**
+  The same thing, one level up: the scene is evaluated on the main thread, and
+  Windows gives that thread 1 MiB, which a *debug* build exceeds while loading
+  the scene. It is not about mods — `goatsd --no-mods` does it too — and it is
+  only in debug: `cargo run --release -p server` starts normally. Rust's test
+  threads get more stack, which is why the tests pass.
+- **A join is refused with `world mods do not match`.** Both ends print their set
+  at startup — `goatsd: world set: <id>@<version>#<hash>` and the client's
+  `[mods] world set: ...` — and the refusal names both sides' versions and
+  hashes. The usual cause is the same mod hashing differently on two platforms,
+  which line endings used to cause; the loader normalises them now, so a mismatch
+  means the content really is different (a stale checkout, or a mod edited on one
+  side). `mod info <id>` shows the local hash at any time.
 - **Goat renders untextured.** The `SUPPORT_FILEFORMAT_JPG` feature is missing
   from the raylib build (see above).
 - **Fur looks stretched.** The Blender materials tile the fleece with a Mapping

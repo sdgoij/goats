@@ -793,8 +793,32 @@ ModRef { id, version, hash }
 ```
 
 where `hash` is a stable 64-bit FNV-1a over the manifest id and version, the
-entry source bytes and every asset's bytes. This is a compatibility hash, not
-security: it catches "same version, different content" during development.
+entry source text, the `tuning.json` text and every asset's bytes. This is a
+compatibility hash, not security: it catches "same version, different content"
+during development.
+
+Two details matter when two ends disagree:
+
+- **Line endings are normalised to `\n`** before an entry or a tuning tree is
+  hashed or evaluated, and the repository pins `eol=lf` in `.gitattributes`. A
+  digest over raw text made the same mod hash differently on a Windows checkout
+  and a Linux one -- the same commit could not play itself -- and made the
+  Windows and Linux release archives disagree. JavaScript does not care which
+  line ending ends a statement, so a mod's identity does not either. Opaque
+  assets are still compared byte for byte: the loader does not know what they
+  are.
+- **The tuning tree is content.** A world mod whose `tuning.json` differs but
+  whose code does not is exactly the silent divergence the digest exists to
+  catch.
+
+Both ends print what they have, so a refusal can be read against them: `goatsd`
+logs `goatsd: world set: <id>@<version>#<hash>` at startup and the client logs
+`[mods] world set: ...`; the console's `mod info <id>` shows the same hash. A
+refusal names both sides, e.g.
+
+```
+world mods do not match (differing com.example.birds (host 1.0.0#bf1f98a740460a01, you 1.0.0#3c9d2e5f10ab7742))
+```
 
 `"client"` mods are excluded.
 
@@ -808,7 +832,8 @@ ClientMessage::Hello { version: u16, name: String, mods: Vec<ModRef> }
 
 The server compares the client's sorted world-mod set with its own. On a
 mismatch it replies with `ServerMessage::Error` naming the missing, extra and
-differing ids, waits for the peer to read it, and drops the connection; the
+differing ids -- and, for a differing one, both sides' version and hash -- waits
+for the peer to read it, and drops the connection; the
 client surfaces that in the console's network stream. This shipped in M14d:
 `PROTOCOL_VERSION` is `7`, `ModRef { id, version, hash }` rides `Hello` and
 `Welcome`, `proto::compare_world_mods` is the shared comparison, and
