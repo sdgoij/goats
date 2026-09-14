@@ -226,13 +226,17 @@ module**, not about who implements the capabilities.
    surface. That is an **engine prerequisite (upstream Slag)**, the same shape
    `ROADMAP.md` already has under M9.
 
-**What shape 2 buys, and what shape 1 costs.** Shape 2 owns the memory, which is
-what a pointer-and-length capability needs (section 3.3), and it puts no
-JavaScript in front of the plugin's per-frame call. Shape 1 pays one JS-to-wasm
-crossing per frame -- measured at 4.6-13 ns per call on the benchmark kernel, so
-noise beside the work -- and needs a decode step in the driver for any capability
-that reads the module's memory. Neither is a privilege difference: both drivers
-are the host's code, and the mod never sees either.
+**What shape 2 buys, and what shape 1 costs.** Both run the same compiled code
+-- the Cranelift path is the engine's default on native targets -- so the
+difference is the boundary and the memory. Shape 1 pays one JS-to-wasm call per
+frame: 2.2 us in isolation, and about 8 us in the benchmark's own rows, a gap
+that is host-side rather than kernel and is written down there rather than
+explained. It also needs a decode step in the driver for any capability that
+reads the module's memory. Shape 2 owns that memory, which is what a
+pointer-and-length capability needs (section 3.3), and calls into the module from
+Rust, which the same 6-record call costs about 0.4 us to do. Neither is a
+privilege difference: both drivers are the host's code, and the mod never sees
+either.
 
 ## 6. Not in v1
 
@@ -270,8 +274,9 @@ are the host's code, and the mod never sees either.
    the property `dlopen` can never have.
 5. **Reload.** An instance drops and re-instantiates cleanly, so `--watch`
    (M14g) should extend to compiled mods -- unlike a loaded dynamic library.
-6. ~~**The performance debt, as a number.**~~ **Measured** (M17): on the flock's
-   kernel shape the interpreter is 23-33x slower than JavaScript with the JIT,
-   and the Cranelift path is 8-18x *faster* than that JIT. The interpreter, not
-   wasm, is the cost -- and the ceiling is worth paying for. `ROADMAP.md` M17 has
-   the table, the provenance and the caveats.
+6. ~~**The performance debt, as a number.**~~ **Measured, and paid** (M17): the
+   Cranelift path is the engine's default on native targets, and on the flock's
+   kernel shape it is 12-19x faster than JavaScript with the JIT, while the
+   interpreter -- what a wasm32 host would run -- is 84-197x slower per pair.
+   What is left is a per-call cost on small flocks whose size the benchmark
+   reports but does not yet explain. `ROADMAP.md` M17 has the table.

@@ -1705,58 +1705,65 @@ dependency on the same git revision. Same shape as M9's upstream prerequisite.
   becomes a divergence hazard) or plugins bring their own -- and the scene's JS
   world mods have the same hazard through `Math.*` today, so it should be decided
   once for both.
-- **M17d — The performance debt, paid or priced.** Enable `wasm --features
-  compile` in the client behind a flag, keep the equivalence gate, and act on the
-  measurement below. The measurement now says the debt is worth paying -- the
-  compiled path is 8-18x past the JavaScript JIT on the kernel -- but until it
-  lands the shipped claim stays "another language", not "faster".
+- **M17d — The performance debt. Paid upstream.** `wasm --features compile` is
+  the default for native targets now, so the compiled path *is* the shipped path,
+  and the wasm arm of the benchmark is 12-19x past the JavaScript JIT on the
+  kernel. What is left here is not the flag but its consequence: two hosts agree
+  on a world mod only if the compiled and interpreted paths agree, which makes the
+  engine's equivalence gate part of M17c's determinism story rather than a
+  performance detail.
 
 **What it costs (measured).** `crates/harness/tests/plugin_bench.rs` runs
 `fixtures/wasm/c/bench.c` -- the boid inner loop, one O(n^2) neighbour pass per
-frame, f64 with f32 storage -- four ways. Nanoseconds per agent-pair per frame,
+frame, f64 with f32 storage -- three ways. Nanoseconds per agent-pair per frame,
 release, one machine, one kernel:
 
-| n | js (interpreted) | js + jit | wasm interpreter | wasm `compile` |
-| --- | --- | --- | --- | --- |
-| 6 | 297 | 109 | 3159 | 13 |
-| 64 | 253 | 77 | 2503 | 4.6 |
-| 256 | 363 | 123 | 2857 | 6.9 |
-| 1024 | 362 | 125 | 2897 | 6.9 |
+| n | js interpreted | js + jit | wasm | wasm per frame | wasm / js+jit |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 843 | 484 | 7995 | 8.0 us | 16.5x |
+| 6 | 297 | 96 | 236 | 8.5 us | 2.5x |
+| 64 | 258 | 77 | 6.6 | 27.0 us | 0.09x |
+| 1024 | 351 | 123 | 6.8 | 7.1 ms | 0.06x |
 
-Three things fall out of it.
+`n=1` is a floor probe: one record and no pair-iterations at all.
 
-- **The interpreter is the whole problem.** It is 23-33x slower than JavaScript
-  with the JIT installed, which is what the wasm engine's own authors said and
-  now has a number. Nothing about wasm is slow here; the bytecode loop is.
-- **The ceiling is high.** Cranelift closes the gap and passes JavaScript:
-  390-537x over the interpreter, and 8-18x faster than the JIT on the same
-  arithmetic. So "if we optimized wasm the way we optimized JS" is not a hope --
-  the compiled path already exists and already wins. It is off by default because
-  its equivalence gate is unfinished, not because it is slow.
-- **JavaScript's own JIT leaves something on the table.** On this kernel the JIT
-  buys 2.5-3.3x over interpreted JavaScript, where native codegen is 8-18x past
-  it. That is a signal for the "keep optimizing Slag" thread, not for M17.
+- **The compiled path is the shipped path now, and it is 12-19x faster than
+  JavaScript.** `perf(wasm): run the compiled wasm path by default on native
+  targets` puts Cranelift behind every native embed, so the 6.6-6.8 ns a pair in
+the rows above is what a mod gets without anyone opting in. The interpreter is
+  reachable only through `Store::set_compile(false)`, which the JS API does not
+expose -- `fixtures/wasm/kernel-bench-compiled.rs` measures it, and it is what a
+  wasm32 host would run. It is 84-197x slower per pair than the compiled path.
+- **Small flocks pay for the call, not the kernel.** The flock is six birds, and
+  `n=1` and `n=6` cost the same ~8 us a frame while doing 36 times less work, so
+  that figure is a per-call cost rather than the kernel's. The same call measured
+  in isolation costs 2.2 us, and from Rust (`Store::invoke`) about 0.4 us.
+  **The ~6 us between those numbers is unexplained** -- it is host-side, it is not
+  the work, and it is printed by the benchmark rather than smoothed over, because
+  it is the next thing to chase. Even at its worst it is 0.05% of a 60 Hz frame,
+  so the ABI's one-crossing-per-frame rule is not the constraint.
+- **JavaScript's own JIT leaves the most on the table.** 2.5-3.3x over
+  interpreted JavaScript, where native codegen is 12-19x past it. That is a
+  "keep optimizing Slag" result, not an M17 one.
 
-Both benchmarks print a checksum of the arena when they finish, and the four
-execution paths agree on it to the digit: the C kernel driven by a JS host
+Both benchmarks print a checksum of the arena, and the four execution paths agree
+on it exactly where their sizes coincide: the C kernel driven by a JS host
 (`WebAssembly`), driven by a Rust host (`Store`), interpreted, and compiled all
-leave the same f32 state. That is the determinism property M17c needs, already
-signed by four implementations.
+leave the same f32 state. That equivalence is the determinism property M17c needs
+-- and it is load-bearing rather than academic now that compiled is the default,
+because two hosts only agree if the two codegen paths do.
 
-**Provenance and caveats.** The JavaScript and interpreter rows come from
+**Provenance and caveats.** The JavaScript and wasm rows come from
 `cargo test --release --offline -p harness --test plugin_bench -- --ignored
---nocapture`, which is `#[ignore]`d because it is a timing. The `compile` row
-cannot come from this workspace -- no Goat crate can reach the `wasm` crate's
-`compile` feature, which is the upstream prerequisite above -- so it was measured
-by a throwaway test in the slag workspace, kept as
-`fixtures/wasm/kernel-bench-compiled.rs` with the two commands to run it. The
-interpreter row appears in both runs and is the bridge: the two hosts agree on it
-within ~10% and on the checksum exactly. One machine, one run per cell, so the
-ratios are the claim and the absolute nanoseconds are not. The JavaScript arm is
-given its best case -- contiguous `Float32Array`, no objects, no allocation --
-and the wasm arm pays one JS-to-wasm crossing per frame. And it is one kernel: an
-O(n^2) float pass prices the *interpreter*, not the design, so M17a does not
-become urgent on these numbers alone.
+--nocapture`, which is `#[ignore]`d because it is a timing; the interpreter and
+the Rust-hosted call come from `fixtures/wasm/kernel-bench-compiled.rs`, a
+throwaway test for the slag workspace, because no Goat crate can reach the `wasm`
+crate's `Store` or its feature pass-through (the upstream prerequisite above). One
+machine, one run per cell, so the ratios are the claim and the absolute
+nanoseconds are not. The JavaScript arm is given its best case -- contiguous
+`Float32Array`, no objects, no allocation -- and the wasm arm pays one JS-to-wasm
+crossing per frame. And it is one kernel: an O(n^2) float pass prices the
+interpreter, the crossing and the JIT, not the design.
 
 **Constraints to respect.** The ABI is frozen by version negotiation, not by
 convention: `goats_abi()` is called first and a version the host does not know is
