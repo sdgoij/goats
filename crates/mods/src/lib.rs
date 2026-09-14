@@ -477,7 +477,13 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
         }
     }
 
-    let hash = hash_manifest(&raw.id, &raw.version, entry_source.as_deref(), &assets);
+    let hash = hash_manifest(
+        &raw.id,
+        &raw.version,
+        entry_source.as_deref(),
+        tuning_json.as_deref(),
+        &assets,
+    );
     Ok(Manifest {
         id: raw.id,
         name: raw.name,
@@ -591,6 +597,17 @@ fn valid_relative(relative: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Read a text file the loader parses -- an entry, a tuning tree -- with its
+/// line endings normalised to `\n`.
+///
+/// This is not cosmetic. The compatibility digest is taken over this text, so a
+/// `\r\n` checkout of the same mod on Windows and an `\n` one on Linux would
+/// otherwise hash differently and the two ends would refuse each other's
+/// sessions -- which is exactly what happened: the same commit, built on a
+/// Windows box and a Linux server, could not play together. JavaScript and JSON
+/// do not care which line ending a statement ends with, so neither does a mod's
+/// identity. (Opaque assets are still compared byte for byte: the loader does not
+/// know what they are, and normalising bytes it cannot read would be worse.)
 fn read_source_text(
     source: &ModSource,
     relative: &str,
@@ -598,7 +615,12 @@ fn read_source_text(
     what: &str,
 ) -> Result<String, String> {
     let bytes = source.read(relative, max, what)?;
-    String::from_utf8(bytes).map_err(|_| format!("{what} '{relative}' is not UTF-8"))
+    let text = String::from_utf8(bytes).map_err(|_| format!("{what} '{relative}' is not UTF-8"))?;
+    Ok(if text.contains('\r') {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    })
 }
 
 /// Read an asset from either source, returning its bytes (empty in hash-only
@@ -781,7 +803,18 @@ fn fnv1a(hash: &mut u64, bytes: &[u8]) {
 /// The compatibility hash: a stable FNV-1a over the identity and the content.
 /// It is for "same version, different content" during development, not for
 /// security.
-fn hash_manifest(id: &str, version: &str, entry: Option<&str>, assets: &[Asset]) -> u64 {
+///
+/// The content is the entry's text and the tuning tree (both normalised to `\n`
+/// by `read_source_text`) plus every asset's name and bytes. The tuning belongs
+/// here: a world mod whose `tuning.json` differs but whose code does not is
+/// exactly the silent divergence this digest exists to catch.
+fn hash_manifest(
+    id: &str,
+    version: &str,
+    entry: Option<&str>,
+    tuning: Option<&str>,
+    assets: &[Asset],
+) -> u64 {
     let mut hash = FNV_OFFSET;
     fnv1a(&mut hash, id.as_bytes());
     fnv1a(&mut hash, &[0]);
@@ -789,6 +822,10 @@ fn hash_manifest(id: &str, version: &str, entry: Option<&str>, assets: &[Asset])
     if let Some(source) = entry {
         fnv1a(&mut hash, &[0]);
         fnv1a(&mut hash, source.as_bytes());
+    }
+    if let Some(tuning) = tuning {
+        fnv1a(&mut hash, &[0]);
+        fnv1a(&mut hash, tuning.as_bytes());
     }
     for asset in assets {
         fnv1a(&mut hash, &[0]);
@@ -823,6 +860,90 @@ mod tests {
 
     fn write_mod(root: &Path, id: &str, manifest: &str) {
         write(&root.join(id).join("mod.json"), manifest);
+    }
+
+    #[test]
+    fn a_windows_checkout_hashes_like_a_linux_one() {
+        // The bug this exists for: the digest is taken over the entry's text, so a
+        // `\r\n` checkout on Windows and an `\n` one on Linux hashed differently
+        // for the same mod -- the same commit, built on a Windows box and a Linux
+        // server, refused each other's sessions. JavaScript does not care which
+        // line ending ends a statement, so a mod's identity must not either.
+        let lf = workspace("eol-lf");
+        let crlf = workspace("eol-crlf");
+        let manifest = r#"{ "id": "com.example.eol", "name": "Eol", "version": "1",
+            "api": 1, "side": "world", "entry": "mod.js", "tuning": "tuning.json" }"#;
+        write_mod(&lf, "eol", manifest);
+        write_mod(&crlf, "eol", manifest);
+
+        let source = "let n = 1;\nreturn n;\n";
+        let tuning = "{\n  \"camera\": { \"dist\": 6.5 }\n}\n";
+        write(&lf.join("eol").join("mod.js"), source);
+        write(&lf.join("eol").join("tuning.json"), tuning);
+        write(
+            &crlf.join("eol").join("mod.js"),
+            &source.replace('\n', "\r\n"),
+        );
+        write(
+            &crlf.join("eol").join("tuning.json"),
+            &tuning.replace('\n', "\r\n"),
+        );
+
+        let a = Loader::discover(&lf);
+        let b = Loader::discover(&crlf);
+        assert!(a.errors().is_empty(), "{:?}", a.errors());
+        assert!(b.errors().is_empty(), "{:?}", b.errors());
+
+        // The two fixtures really do differ on disk, byte for byte: without the
+        // normalisation in `read_source_text` this test *is* the bug report.
+        assert_ne!(
+            std::fs::read(lf.join("eol").join("mod.js")).expect("the lf entry"),
+            std::fs::read(crlf.join("eol").join("mod.js")).expect("the crlf entry"),
+            "the fixtures should differ as bytes"
+        );
+
+        let a = a.get("com.example.eol").expect("the lf mod");
+        let b = b.get("com.example.eol").expect("the crlf mod");
+        assert_eq!(a.hash, b.hash, "line endings are not content");
+        assert_eq!(a.entry_source, b.entry_source);
+        assert_eq!(a.tuning_json, b.tuning_json);
+        // What runs is the same too, not just what is hashed.
+        assert_eq!(a.entry_js(), b.entry_js());
+
+        let _ = std::fs::remove_dir_all(&lf);
+        let _ = std::fs::remove_dir_all(&crlf);
+    }
+
+    #[test]
+    fn a_different_tuning_tree_is_a_different_mod() {
+        // A world mod whose `tuning.json` differs but whose code does not is
+        // exactly the silent divergence the digest exists to catch.
+        let root = workspace("tuning-digest");
+        write_mod(
+            &root,
+            "t",
+            r#"{ "id": "com.example.t", "name": "T", "version": "1",
+                "api": 1, "side": "world", "entry": "mod.js", "tuning": "tuning.json" }"#,
+        );
+        write(&root.join("t").join("mod.js"), "1;\n");
+        write(
+            &root.join("t").join("tuning.json"),
+            r#"{ "camera": { "dist": 6.5 } }"#,
+        );
+        let before = Loader::discover(&root);
+        let hash = before.get("com.example.t").expect("the mod").hash;
+
+        write(
+            &root.join("t").join("tuning.json"),
+            r#"{ "camera": { "dist": 8.0 } }"#,
+        );
+        let after = Loader::discover(&root);
+        assert_ne!(
+            hash,
+            after.get("com.example.t").expect("the mod").hash,
+            "the tuning tree is content"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
