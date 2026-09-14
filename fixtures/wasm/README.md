@@ -27,7 +27,12 @@ no trigonometry and no imports so it measures compute rather than the host. It i
 what `crates/harness/tests/plugin_bench.rs` drives; M17 in `ROADMAP.md` has the
 numbers.
 
-`build.sh` rebuilds all three. It needs:
+`mods/wasm/plugin.wasm` (`c/mod.c`) is the M17a fixture mod: a module with the
+same ABI, compiled into the real `mods/` tree so the game, the server and the
+harness all load it. `mod-abi2.wasm` is the same source built against an ABI the
+build does not know, so the host's version refusal has something real to refuse.
+
+`build.sh` rebuilds all of them. It needs:
 
 - `clang` with a wasm32 target -- the `wasm-ld` linker ships with LLVM;
 - `rustup target add wasm32-unknown-unknown`.

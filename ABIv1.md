@@ -79,6 +79,21 @@ That has three consequences worth stating:
 
 ## 3. The ABI
 
+A mod declares a module beside `entry` in its manifest -- a mod may have one or
+the other, or both:
+
+```json
+{ "id": "com.example.wasm", "api": 1, "side": "client",
+  "wasm": { "module": "plugin.wasm" } }
+```
+
+The host reads the file, refuses one that does not start with the wasm magic, and
+hands the bytes to the scene as an `ArrayBuffer` through a single scene entry
+point (`sceneWasmModule(id, bytes)`) -- never a path, and never as JSON, because
+a module is content (`APIv1.md` section 0). The scene instantiates it with the
+capabilities below and drives it. `side: "world"` is refused until the
+compatibility digest covers the artifact (section 7).
+
 ### 3.1 Scalars
 
 | Type | Use |
@@ -133,9 +148,9 @@ each is a policy decision rather than a function:
 | `goats_abi` | `() -> i32` | The ABI version this module was built against. The host calls it first and refuses a module it does not know. |
 | `goats_alloc` | `(len: i32) -> i32` | A buffer of `len` bytes in this module's memory. v1 does not specify an allocator; a real plugin brings its own, a fixture can bump-allocate. |
 | `goats_init` | `(seed: i32) -> i32` | Called once after instantiation. `0` is success, anything else is a failure the host reports. |
-| `goats_update` | `(ptr: i32, count: i32, dt: f32) -> i32` | The frame call. Returns the record count it processed. |
+| `goats_update` | `(ptr: i32, count: i32, dt: f32) -> i32` | The frame call. The return is the mod's own status: this host reports it and does not interpret it. |
 
-### 3.5 The record, and the arithmetic
+### 3.5 The record
 
 One record is 16 bytes, and the layout is part of the ABI:
 
@@ -143,18 +158,22 @@ One record is 16 bytes, and the layout is part of the ABI:
 f32 x | f32 z | f32 yaw | f32 vx
 ```
 
-`goats_update` must compute, for each record `i` in ascending order, exactly:
+What the four floats *mean* is the mod's business. The host seeds them once,
+hands the buffer over and reads the bytes back; it does not interpret them, and
+the ABI does not say what the mod must compute. An earlier revision of this
+document specified the benchmark kernel's arithmetic as though it were the ABI's,
+which it never was.
 
-```
-vx[i] = f32( f64(vx[i]) + rng(i) * f64(dt) )
-```
+Two things about the arithmetic *are* the ABI's, because a world mod's
+compatibility depends on them:
 
-One draw from stream `i` per record, in ascending order -- and that sentence is
-the interesting one. A world mod's arithmetic is part of the compatibility set:
-two hosts that agree on the ABI but differ on the order of `rng` draws, or on
-whether the multiply happens in `f32` or `f64`, would simulate different worlds
-from the same seed and never know. Specifying the value is not pedantry; it is
-the same reason the wire format has a `PROTOCOL_VERSION`.
+- Randomness comes from `goats.rng` and never from a clock -- which is not
+  importable at all -- so the stream belongs to the host.
+- The number and order of draws is part of the mod's contract with its peers: two
+  hosts that agree on the ABI but differ on the draw order would simulate
+  different worlds from the same seed and never know. That is the same reason the
+  wire format has a `PROTOCOL_VERSION`, and it is why the fixture draws once per
+  record, ascending.
 
 The fixtures' `goats_log` messages differ by language ("plugin-c: ready",
 "plugin-rust: ready") so the test can tell the modules apart. Everything that
@@ -211,11 +230,12 @@ language of a plugin.
 So the fork is narrower than it first looks -- it is about **who instantiates the
 module**, not about who implements the capabilities.
 
-1. **The JS API instantiates it** (works today). The host owns the driver: the
-   few lines that build the import object and call `WebAssembly.Instance`. The
-   mod ships only `.wasm`. Capabilities can already be host-native, and one that
-   needs the scene can reach it through the re-entrant `FunctionCall::call` /
-   `eval`.
+1. **The JS API instantiates it** (shipped in M17a). The host owns the driver --
+   in the game it is `mods.js`, whose `sceneWasmModule` builds the import object
+   and calls `WebAssembly.Instance`, then `modWasmTick` drives the module once a
+   frame. The mod ships only `.wasm`. Capabilities can be host-native, and one
+   that needs the scene can reach it through the re-entrant
+   `FunctionCall::call`/`eval`.
 2. **Rust instantiates it** (needs one thing that does not exist yet). Driving a
    module's exports from Rust, and owning its memory, means the `wasm` crate's
    `Store` -- and from `goats` that crate is not reachable: `slag`'s dependencies
@@ -264,16 +284,17 @@ either.
 2. **An instruction budget.** Without fuel, a plugin can hang a frame. The
    engine has a depth limit and memory can be capped at instantiation; fuel is
    the missing piece.
-3. **Who owns the boundary, and how far the deterministic subset reaches.** See
-   section 5. The narrow path is `rng` + `publish`/`apply` in Rust; the broad one
-   is a scene bridge, which brings JavaScript's reentrancy rules back in.
+3. ~~**Who owns the boundary, and how far the deterministic subset reaches.**~~
+   **Settled for v1:** the scene's driver is the boundary (M17a), and its
+   capabilities are host closures. The Rust-hosted shape (M17b) is the remaining
+   fork, for the memory and the cheaper call, not for the capabilities.
 4. **Digest and distribution.** A client-side plugin is unhashed like any
-   `side: "client"` mod. A world-side one joins the compatibility set, so the
-   digest must cover the artifact's bytes *and* the ABI version -- and, because
-   wasm is portable, one artifact can serve all three release targets, which is
-   the property `dlopen` can never have.
-5. **Reload.** An instance drops and re-instantiates cleanly, so `--watch`
-   (M14g) should extend to compiled mods -- unlike a loaded dynamic library.
+   `side: "client"` mod, and ships one portable artifact for all three release
+   targets. A world-side one would join the compatibility set, so until M17c
+   prices the artifact into the digest the loader refuses `wasm` on a
+   `side: "world"` mod rather than let two hosts disagree silently.
+5. ~~**Reload.**~~ **Settled:** `sceneModEnd` drops a compiled mod's instance, so
+   `--watch` (M14g) already re-instantiates it the same way it re-reads an entry.
 6. ~~**The performance debt, as a number.**~~ **Measured, and paid** (M17): the
    Cranelift path is the engine's default on native targets, and on the flock's
    kernel shape it is 12-19x faster than JavaScript with the JIT, while the

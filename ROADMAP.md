@@ -93,7 +93,7 @@ uses.
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
 | **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ✅ **Done** — binary and quantized, shed in a defined order, the mods on their own datagram, and a guard so the budget cannot erode again (M16c deferred on the numbers) |
-| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | **Planned** — the engine already has the wasm core and the JS API; the work is the ABI, the host and the policy (M17a–d), plus one upstream re-export |
+| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | **In progress** — M17a is done (the ABI, the two-language proof, the `mods/wasm` fixture); the Rust host and the digest (M17b/c) are open |
 
 ---
 
@@ -1681,15 +1681,20 @@ module's *exports* from Rust, which needs the `wasm` crate's `Store`, and from
 API). So either `slag` re-exports the engine surface, or `goats` takes a second
 dependency on the same git revision. Same shape as M9's upstream prerequisite.
 
-- **M17a — The ABI and wasm as a primitive.** The host hands a mod's `.wasm`
-  over as bytes, never a path, the way every other asset already crosses; the
-  scene's `WebAssembly` does the rest. The import namespace is the host's, and
-  since the embedding API can register native functions its capabilities can
-  already be Rust closures -- so what a mod ships is only `.wasm`, with the
-  driver host-owned rather than mod-owned. Deliverables: `ABIv1.md`, the
-  two-language fixture and its test (done, through both capability
-  implementations), a fixture mod that uses them, and the Mods screen reporting
-  what the module declares it wants.
+- **M17a — The ABI and wasm as a primitive. ✅ Done.** `mods/wasm/` is a mod
+  with no JavaScript: `mod.json` declares `"wasm": { "module": "plugin.wasm" }`,
+  the loader reads the bytes -- and refuses a `side: "world"` module, a path that
+  escapes the mod's directory, or a file without the wasm magic -- and the client
+  hands the bytes to the scene as an `ArrayBuffer` through `sceneWasmModule`,
+  never a path. The scene's driver in `mods.js` instantiates with the host's
+  `goats.log`/`goats.rng`, negotiates `goats_abi()`, seeds the record buffer and
+  calls `goats_update` once a frame, reading the results back out of the module's
+  memory. A trap, a wrong ABI or a module missing an export is a named failure
+  like any other. The harness runs the real artifact through the real loader
+  (`wasm_mod`, four cases including a deterministic replay and the ABI refusal);
+  the console's `mod info` reports the declared imports, the ABI, the frame count
+  and the last log. What the Mods screen renders of that is not wired yet, and a
+  world-side module stays refused until M17c prices it into the digest.
 - **M17b — The Rust-side host.** Move the driver itself into Rust: instantiate
   the module with the `wasm` crate's `Store`, own its memory, and call its exports
   per frame with no JavaScript in between. The capabilities are already

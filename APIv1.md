@@ -212,6 +212,7 @@ mods/
 | `author` | no | Free text. |
 | `loadAfter` | no | Ids that must load first. |
 | `entry` | no | JS entry. Absent means a data-only mod (assets + tuning). |
+| `wasm` | no | A compiled module: `{ "module": "plugin.wasm" }`. The bytes are handed to the scene as an `ArrayBuffer`, never a path; see `ABIv1.md`. |
 | `tuning` | no | JSON merged into `goats.tuning` (§3.4). |
 | `assets` | no | Slot → file, or slot → list of files (§3.3). |
 
