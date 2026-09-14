@@ -336,6 +336,32 @@ impl Harness {
         self.call("harnessResetFrame", &[]).map(|_| ())
     }
 
+    /// Delivers a compiled mod's module to the scene. The bytes cross as an
+    /// `ArrayBuffer` rather than as JSON: a module is content, and the host hands
+    /// over bytes, never a path (`APIv1.md` section 0).
+    ///
+    /// The reply is the scene's own: `"ok"`, or a message naming what was refused
+    /// -- an ABI the build does not know, a capability the host does not grant, a
+    /// module missing an export.
+    pub fn wasm_module(&mut self, id: &str, bytes: &[u8]) -> Result<String, String> {
+        let buffer = self
+            .context
+            .array_buffer_from_bytes(bytes)
+            .map_err(|error| error.to_string())?;
+        let function = global_function(&self.context, "harnessWasmModule")?;
+        let value = self
+            .context
+            .call(
+                &function,
+                &JsValue::undefined(),
+                &[JsValue::string(id), buffer],
+            )
+            .map_err(|error| error.to_string())?;
+        value
+            .as_string()
+            .ok_or_else(|| "harnessWasmModule did not return a string".to_string())
+    }
+
     /// Runs the scripted timeline for up to `frames` ready frames and returns
     /// what the stub recorded. A harness runs once: the scene's loop ends with
     /// `sceneShutdown`.

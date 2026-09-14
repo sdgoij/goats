@@ -58,6 +58,7 @@ function modEntry(meta) {
         assets: meta.assets === undefined ? {} : meta.assets,
         tuning: meta.tuning === undefined || meta.tuning === null ? null : meta.tuning,
         hash: meta.hash === undefined ? "" : String(meta.hash),
+        wasm: meta.wasm === undefined || meta.wasm === null ? null : String(meta.wasm),
     };
 }
 
@@ -117,6 +118,10 @@ function sceneModResult(id, ok, error) {
 // The host unloaded a mod's instance (a disable, or the first half of a reload).
 function sceneModEnd(id) {
     if (modInstances.has(id)) goatsEnd(id);
+    // A compiled mod's instance goes with the mod: `disable` and the first half
+    // of a reload both land here, and a live module that outlived its mod would
+    // keep being driven.
+    modWasmLive.delete(id);
     const meta = modFind(id);
     if (meta !== null) meta.loaded = false;
     return "ok";
@@ -311,6 +316,7 @@ function goatsMods() {
             loaded: meta.loaded,
             failed: meta.failed,
             error: meta.error,
+            wasm: modWasmDescribe(meta.id),
         };
     });
 }
@@ -952,6 +958,7 @@ function modCommand(parts) {
             hash: meta.hash,
             assets: Object.keys(meta.assets),
             commands: modCommandsOf(meta.id),
+            wasm: modWasmDescribe(meta.id),
         });
     }
     if (verb === "enable") return modSetEnabled(parts[2], true);
@@ -975,4 +982,193 @@ function modCommandsOf(id) {
         if (entry.id === id) out.push(name);
     }
     return out.sort();
+}
+
+// ---- compiled mods (M17a) -------------------------------------------------
+//
+// A mod may ship a WebAssembly module instead of an entry (`ABIv1.md`). The ABI
+// is deliberately small: the module imports `goats.log` and `goats.rng`, exports
+// `goats_abi`/`goats_alloc`/`goats_init`/`goats_update`, and every frame the host
+// hands it one buffer of records in the module's own memory.
+//
+// This driver is *host* code, which is the point of the milestone: the mod ships
+// only the module, and what it may do is exactly what the import object below
+// contains. The host does not read the records to decide anything -- the four
+// floats are the mod's own state, and this side only moves the bytes.
+//
+// The crossing is coarse on purpose: one call a frame amortises the boundary
+// against the work. A mod that crossed once per record would be paying for the
+// boundary rather than for its own simulation.
+
+const MOD_WASM_ABI = 1;
+const MOD_WASM_RECORDS = 6;
+const MOD_WASM_RECORD_BYTES = 16;
+const MOD_WASM_STREAMS = 8;
+
+// id -> the live module: { instance, ptr, abi, imports, frames, error, rng }.
+const modWasmLive = new Map();
+
+// What the module declared it wants, and how it has behaved. The console and the
+// Mods screen read this; nothing in it is inferred.
+function modWasmDescribe(id) {
+    const live = modWasmLive.get(id);
+    if (live === undefined) return null;
+    return {
+        abi: live.abi,
+        imports: live.imports,
+        frames: live.frames,
+        ok: live.error === "",
+        error: live.error,
+        log: live.lastLog,
+    };
+}
+
+// The host's side of the ABI, closed over the live state so that `log` can read
+// the module's own memory -- the bytes are there, and this side holds the memory.
+function modWasmImports(live) {
+    return {
+        goats: {
+            log: function (ptr, len) {
+                const memory = live.instance === null ? null : live.instance.exports.memory;
+                if (memory === null || memory === undefined) return;
+                const bytes = new Uint8Array(memory.buffer);
+                const at = Number(ptr) | 0;
+                const count = Math.min(Number(len) | 0, 200);
+                let text = "";
+                for (let i = 0; i < count; i++) {
+                    const code = bytes[at + i];
+                    if (code === undefined) break;
+                    text += String.fromCharCode(code);
+                }
+                live.lastLog = text;
+                console.log("mods: '" + live.id + "' wasm: " + text);
+            },
+            // Host-owned randomness: the module has no clock to read and no
+            // entropy of its own, so every draw comes from here. The order of the
+            // draws is what a mod has to keep stable; the generator is the host's.
+            rng: function (stream) {
+                const at = (Number(stream) | 0) % MOD_WASM_STREAMS;
+                let s = live.rng[at < 0 ? at + MOD_WASM_STREAMS : at];
+                s ^= s << 13;
+                s >>>= 0;
+                s ^= s >>> 17;
+                s ^= s << 5;
+                s >>>= 0;
+                live.rng[at] = s;
+                return s / 4294967296;
+            },
+        },
+    };
+}
+
+// The host delivers a compiled mod: bytes, never a path. Called once per mod,
+// after `sceneMods`, by whichever host is running the scene.
+function sceneWasmModule(id, bytes) {
+    const meta = modFind(id);
+    if (meta === null) return "error unknown mod: " + id;
+    if (modWasmLive.has(id)) return "error already delivered";
+
+    let module;
+    try {
+        module = new WebAssembly.Module(bytes);
+    } catch (error) {
+        sceneModResult(id, false, "invalid module: " + String(error));
+        return "error invalid module";
+    }
+
+    // A per-mod, per-stream seed, so one compiled mod's draws cannot disturb
+    // another's and the same mod replays the same numbers.
+    const seed = modHashKey("wasm:" + id) || 1;
+    const streams = [];
+    for (let i = 0; i < MOD_WASM_STREAMS; i++) {
+        streams.push(((seed ^ (i * 0x9e3779b9)) >>> 0) || 1);
+    }
+    const live = {
+        id: id,
+        instance: null,
+        ptr: 0,
+        abi: 0,
+        imports: [],
+        frames: 0,
+        error: "",
+        lastLog: "",
+        rng: streams,
+    };
+
+    try {
+        live.instance = new WebAssembly.Instance(module, modWasmImports(live));
+    } catch (error) {
+        // A capability the host does not grant fails here, before a line of the
+        // mod's code runs: the import list is the API, and the linker enforces it.
+        sceneModResult(id, false, "could not instantiate: " + String(error));
+        return "error could not instantiate";
+    }
+
+    const exports = live.instance.exports;
+    const abi = typeof exports.goats_abi === "function" ? exports.goats_abi() : 0;
+    if (abi !== MOD_WASM_ABI) {
+        // The module's own number, not the manifest's: it is what the code in
+        // front of us was actually compiled against.
+        sceneModResult(id, false, "compiled for ABI " + abi + ", this build is ABI " + MOD_WASM_ABI);
+        return "error unsupported abi";
+    }
+    if (
+        typeof exports.goats_alloc !== "function" ||
+        typeof exports.goats_init !== "function" ||
+        typeof exports.goats_update !== "function" ||
+        exports.memory === undefined
+    ) {
+        sceneModResult(id, false, "incomplete module: needs goats_alloc, goats_init, goats_update and an exported memory");
+        return "error incomplete module";
+    }
+    live.abi = abi;
+    live.imports = WebAssembly.Module.imports(module).map(function (entry) {
+        return entry.module + "." + entry.name;
+    });
+
+    live.ptr = exports.goats_alloc(MOD_WASM_RECORDS * MOD_WASM_RECORD_BYTES) | 0;
+    // The host seeds the records once. What they mean is the mod's; this is so
+    // the mod has something to compute with, laid out where the host reads the
+    // results back.
+    const view = new Float32Array(exports.memory.buffer);
+    const base = live.ptr / 4;
+    for (let i = 0; i < MOD_WASM_RECORDS; i++) {
+        view[base + i * 4 + 0] = i * 0.6 - 1.5;
+        view[base + i * 4 + 1] = 0;
+        view[base + i * 4 + 2] = 0;
+        view[base + i * 4 + 3] = 0;
+    }
+
+    modWasmLive.set(id, live);
+    try {
+        exports.goats_init(0);
+    } catch (error) {
+        live.error = String(error);
+    }
+    sceneModResult(id, live.error === "", live.error);
+    return live.error === "" ? "ok" : "error init";
+}
+
+// One frame for every compiled mod. A trap is that mod's failure and nobody
+// else's: it is reported once, the mod stops being driven, and the game runs on.
+function modWasmTick(dt) {
+    if (modWasmLive.size === 0) return;
+    for (const live of modWasmLive.values()) {
+        if (live.error !== "") continue;
+        try {
+            live.instance.exports.goats_update(live.ptr, MOD_WASM_RECORDS, dt);
+            live.frames += 1;
+        } catch (error) {
+            live.error = String(error);
+            console.log("mods: '" + live.id + "' compiled update failed: " + live.error);
+        }
+    }
+}
+
+// One frame's worth of mod work: the `update` event, then the compiled mods.
+// Everything that ticks per frame goes through here, so the game loop and the
+// harness cannot drift on what a frame means.
+function modFrameTick(dt) {
+    modEmit("update", dt);
+    modWasmTick(dt);
 }

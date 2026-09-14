@@ -426,6 +426,24 @@ fn main() {
     for id in loader.ids() {
         eval_entry(&mut context, &loader, &id);
     }
+    // A compiled mod ships a module rather than an entry: the scene's driver
+    // instantiates it with the capabilities the host grants (`ABIv1.md`, M17a).
+    // The bytes cross as an `ArrayBuffer`, never as a path, and a module that
+    // cannot be instantiated is reported through `sceneModResult` like any other
+    // load failure -- the driver decides that, so both hosts agree on it.
+    for manifest in loader.mods() {
+        let Some(wasm) = manifest.wasm.as_ref() else {
+            continue;
+        };
+        match context.array_buffer_from_bytes(&wasm.bytes) {
+            Ok(buffer) => call_scene(
+                &mut context,
+                "sceneWasmModule",
+                &[JsValue::string(manifest.id.clone()), buffer],
+            ),
+            Err(error) => eprintln!("[mods] {}: module bytes: {error}", manifest.id),
+        }
+    }
     call_scene(&mut context, "sceneModFreeze", &[]);
     if !loader.mods().is_empty() {
         eprintln!("[mods] {} discovered", loader.mods().len());

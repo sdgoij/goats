@@ -35,8 +35,15 @@ function harnessReady() {
 // A case that simulates minutes of a mod's behaviour would otherwise be thousands
 // of Rust/JS crossings; this makes it one.
 function harnessStep(frames, dt) {
-    for (let i = 0; i < frames; i++) modEmit("update", dt);
+    for (let i = 0; i < frames; i++) modFrameTick(dt);
     return null;
+}
+
+// Deliver a compiled mod's module to the scene. The bytes cross as an
+// `ArrayBuffer` rather than as JSON, because that is what the ABI takes: a
+// module is content, and the host hands over bytes rather than a path.
+function harnessWasmModule(id, bytes) {
+    return sceneWasmModule(String(id), bytes);
 }
 
 // Call any scene function by name, with JSON-encoded arguments. This is how a

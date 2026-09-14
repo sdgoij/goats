@@ -1,0 +1,9 @@
+{
+  "id": "com.github.sdgoij.goats.wasm",
+  "name": "Compiled Mod",
+  "version": "1.0.0",
+  "api": 1,
+  "side": "client",
+  "description": "A mod with no JavaScript: a WebAssembly module the host instantiates and drives. See ABIv1.md.",
+  "wasm": { "module": "plugin.wasm" }
+}

@@ -633,7 +633,7 @@ function sceneFrame() {
     terrainEnsure(goat.px, goat.pz);
 
     // Mods see the world after it has moved and before it is drawn.
-    modEmit("update", dt);
+    modFrameTick(dt);
 
     // render
     const ty = 0.85 + goatBaseY(goat);
