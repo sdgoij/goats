@@ -1118,16 +1118,39 @@ decisions behind it and the constraints that shape it.
   swapping one clip's source is a different job); `goats.assets.override`
   re-points a slot at an opaque asset name. All three are pre-freeze.
 - **M14d — World-mod digest and join handshake. ✅ Done.** A `side: "world"` mod
-  is identified by `ModRef { id, version, hash }` (the loader's FNV-1a hash), and
-  the set travels in `ClientMessage::Hello`; the host compares it with
-  `proto::compare_world_mods` and refuses a mismatch with an `Error` naming the
-  missing, extra and differing ids, waiting for the peer to read it before the
-  connection drops. `PROTOCOL_VERSION` is `7`; `session` gains
-  `Host::start_with_mods` / `Client::join_with_mods`; the client bridge sends
-  the client's set when hosting or joining; and `goatsd --mods`/`--no-mods`
-  discovers mods (the shared `crates/mods` loader) and requires the set of every
-  joiner. The server does not simulate the mods yet -- M14d2 does that -- but the
-  gate is real, so a client with different world mods cannot silently diverge.
+  is identified by `ModRef { id, version, hash }` -- the loader's FNV-1a hash
+  over the id, the version, the entry's text, the `tuning.json` tree and every
+  asset's bytes -- and the set travels in `ClientMessage::Hello`; the host
+  compares it with `proto::compare_world_mods` and refuses a mismatch with an
+  `Error` naming the missing, extra and differing ids, waiting for the peer to
+  read it before the connection drops. `PROTOCOL_VERSION` is `7` (M16b raises
+  it to `8`); `session` gains `Host::start_with_mods` /
+  `Client::join_with_mods`; the client bridge sends the client's set when
+  hosting or joining; and `goatsd --mods`/`--no-mods` discovers mods (the shared
+  `crates/mods` loader) and requires the set of every joiner. The server does
+  not simulate the mods yet -- M14d2 does that -- but the gate is real, so a
+  client with different world mods cannot silently diverge.
+
+  A digest taken over text was a portability trap, and the first user hit it: at
+  the same commit (`0ab6137`) a Windows build hashed `mods/birds/mod.js` from a
+  CRLF worktree while the Linux build hashed the LF blob, so a client and a
+  `goatsd` that agreed on everything refused each other with `world mods do not
+  match (differing com.github.sdgoij.goats.birds)` -- and the Windows and Linux
+  release archives shipped a `birds.zip` that differed for the same reason. The
+  digest is now the same number on every platform: `read_source_text` normalises
+  `\r\n` to `\n` before an entry or a tuning tree is hashed or evaluated
+  (JavaScript does not care which line ending ends a statement, so a mod's
+  identity does not either), and `.gitattributes` pins `eol=lf`, so a checkout
+  is the same bytes everywhere and the archives agree. The tuning tree joined
+  the inputs at the same time, because a world mod whose `tuning.json` differs
+  while its code does not is exactly the silent divergence the digest exists to
+  catch. A refusal names both sides now -- `(host 1.0.0#bf1f98a740460a01, you
+  1.0.0#3c9d2e5f10ab7742)` -- and `goatsd` and the client each log their set at
+  startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
+  diagnosis one look rather than a guess. Opaque assets are still compared byte
+  for byte, since the loader cannot know what they are. `mods/birds` itself is
+  pinned at `bf1f98a740460a01` by a test, because a release ships it and an
+  older client refuses a server whose birds differs.
 - **M14d2 — World-mod simulation. ✅ Done.** `goats.world.registerStream` and
   `goats.rng` own a seeded PRNG stream per `side: "world"` mod; `sceneUseSeed`
   re-derives them from the session seed, and their state travels in the
