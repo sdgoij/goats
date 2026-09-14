@@ -368,9 +368,12 @@ impl EatenCell {
 }
 
 /// The server's world, as far as a client has to mirror it: the bots, the sky,
-/// the PRNG streams, the eaten meadow, and whatever world mods publish. A client
-/// that joins takes this whole thing -- it does not keep the world it had
-/// generated before joining.
+/// the PRNG streams and the eaten meadow. A client that joins takes this whole
+/// thing -- it does not keep the world it had generated before joining.
+///
+/// World-mod state is **not** here: it travels on its own datagram
+/// ([`ModsState`]), so a mod publishing more than the world can carry degrades
+/// that mod rather than the world.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorldState {
     pub bots: Vec<BotState>,
@@ -385,11 +388,6 @@ pub struct WorldState {
     /// tuft is there cannot eat it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eaten: Option<Vec<EatenCell>>,
-    /// World-mod state: `{ streams: {...}, data: { <id>: <published> } }`. A
-    /// generic value because the protocol does not know what a mod publishes;
-    /// the transport's datagram cap bounds it.
-    #[serde(default)]
-    pub mods: serde_json::Value,
 }
 
 impl WorldState {
@@ -405,22 +403,67 @@ impl WorldState {
     }
 }
 
+/// What every world mod contributes: `{ streams: {...}, data: { <id>: <published> } }`,
+/// exactly the JSON the scene's `sceneWorldMods()` returns.
+///
+/// Opaque on purpose -- the transport has no schema for what a mod publishes, so
+/// it carries the value and bounds it by the datagram cap -- and on a datagram of
+/// its own, so that the world's budget cannot cap what a mod may say and a lost
+/// one costs only a mod's state rather than everyone's world.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModsState(pub serde_json::Value);
+
+/// What became of the world-mod datagram.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModsOutcome {
+    /// Sent.
+    Sent,
+    /// Not sent: it does not fit one datagram. Because that datagram is every
+    /// world mod at once, all of their state is held back until it shrinks -- the
+    /// per-mod answer (a datagram each, so a greedy mod loses only its own state)
+    /// is the next step.
+    TooLarge { size: usize },
+}
+
+impl ModsOutcome {
+    /// A one-line report for a log, or `None` when nothing went wrong.
+    pub fn describe(&self) -> Option<String> {
+        match self {
+            ModsOutcome::Sent => None,
+            ModsOutcome::TooLarge { size } => Some(format!(
+                "the world-mod state is {size} bytes and does not fit its \
+                 {MAX_DATAGRAM_BYTES}-byte datagram: a world mod is publishing too much"
+            )),
+        }
+    }
+}
+
+/// Whether the world-mod state fits a datagram of its own.
+///
+/// There is nothing to shed inside it -- the transport cannot tell one mod's
+/// contribution from another's -- so this is a size check and a report.
+pub fn fit_mods(mods: &ModsState) -> ModsOutcome {
+    match encode_datagram(&Datagram::Mods(mods.clone())) {
+        Ok(bytes) if bytes.len() <= MAX_DATAGRAM_BYTES => ModsOutcome::Sent,
+        Ok(bytes) => ModsOutcome::TooLarge { size: bytes.len() },
+        Err(_) => ModsOutcome::TooLarge { size: usize::MAX },
+    }
+}
+
 /// What became of a world snapshot on its way out of a host.
 ///
-/// A snapshot that does not fit one datagram is not sent at all by
-/// [`crate::fit_world`]'s caller, so every way of not sending it is named here
-/// rather than dropped in silence: the datagram channel is fire-and-forget, and
-/// "the clients stopped receiving the world" is invisible otherwise.
+/// A snapshot that does not fit one datagram is not sent at all, so every way of
+/// not sending it is named here rather than dropped in silence: the datagram
+/// channel is fire-and-forget, and "the clients stopped receiving the world" is
+/// invisible otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorldOutcome {
     /// Sent whole.
     Whole,
     /// Sent without the eaten meadow.
     MeadowShed,
-    /// Sent without the meadow or the world-mod state.
-    ModsShed,
-    /// Not sent: it does not fit even without the optional parts. `size` is what
-    /// the bots, the sky and the streams alone come to.
+    /// Not sent: it does not fit even without the meadow. `size` is what the bots,
+    /// the sky and the streams alone come to.
     TooLarge { size: usize },
     /// Not sent: a number in it is not finite, which would poison every peer's
     /// interpolation.
@@ -438,10 +481,6 @@ impl WorldOutcome {
                 "the world is over the {MAX_DATAGRAM_BYTES}-byte datagram budget: \
                  the meadow was left out"
             )),
-            WorldOutcome::ModsShed => Some(format!(
-                "the world is over the {MAX_DATAGRAM_BYTES}-byte datagram budget: \
-                 the meadow and the world-mod state were left out"
-            )),
             WorldOutcome::TooLarge { size } => Some(format!(
                 "the world does not fit a {MAX_DATAGRAM_BYTES}-byte datagram: the bots, \
                  sky and streams alone are {size} bytes"
@@ -455,18 +494,15 @@ impl WorldOutcome {
 
 /// Trims `world` until it fits `budget`, and says whether it can go out at all.
 ///
-/// The shed order is fixed, cheapest loss first: the meadow, then a world mod's
-/// published state. **Never** the bots, the sky or the streams -- those are the
-/// world itself, and a client that stops receiving them freezes at the last
-/// snapshot it got, which is the failure this exists to prevent.
+/// The meadow is the only thing that can be given up: the bots, the sky and the
+/// streams are the world itself -- a client that stops receiving them freezes at
+/// the last snapshot it got -- and a world mod's state is not on this datagram at
+/// all (see [`ModsState`]).
 ///
-/// Both optional parts are all-or-nothing rather than truncated. A client's
-/// `applyEaten` replaces its whole map, so a short list would resurrect every
-/// cell left out of it; a mod's `apply` would see a state that looks like the mod
-/// itself lost its data.
-///
-/// A refused world is handed back untouched, so the reported `TooLarge` size is
-/// what the parts that can never be shed come to on their own.
+/// The meadow is all-or-nothing rather than truncated: a client's `applyEaten`
+/// replaces its whole map, so a short list would resurrect every cell left out of
+/// it. A refused world is handed back untouched, so the reported `TooLarge` size
+/// is what the parts that can never be shed come to on their own.
 pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
     if !world.is_finite() {
         return WorldOutcome::NotFinite;
@@ -476,20 +512,12 @@ pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
     }
 
     let eaten = world.eaten.take();
-    if datagram_size(world) <= budget {
+    let bare = datagram_size(world);
+    if bare <= budget {
         return WorldOutcome::MeadowShed;
     }
 
-    let mods = std::mem::take(&mut world.mods);
-    let bare = datagram_size(world);
-    if bare <= budget {
-        return WorldOutcome::ModsShed;
-    }
-
-    // Neither optional part was the problem, so hand the world back untouched
-    // and report what the parts that can never be shed come to on their own.
     world.eaten = eaten;
-    world.mods = mods;
     WorldOutcome::TooLarge { size: bare }
 }
 
@@ -518,10 +546,11 @@ impl VoiceFrame {
     }
 }
 
-/// One datagram. The transform channel carries three kinds of traffic -- a
-/// player's own goat, relayed between peers; the server's world; and voice -- so
-/// the payload is tagged. Only the server may send [`Datagram::World`]; a client
-/// that sends one has it dropped rather than forwarded.
+/// One datagram. The transform channel carries four kinds of traffic -- a
+/// player's own goat, relayed between peers; the server's world; the world mods'
+/// state; and voice -- so the payload is tagged. Only the server may send
+/// [`Datagram::World`] or [`Datagram::Mods`]; a client that sends one has it
+/// dropped rather than forwarded.
 ///
 /// The tag is one byte on the wire ([`encode_datagram`]); this enum is the
 /// vocabulary, not the encoding.
@@ -529,6 +558,7 @@ impl VoiceFrame {
 pub enum Datagram {
     Peer(PeerFrame),
     World(WorldState),
+    Mods(ModsState),
     Voice(VoiceFrame),
 }
 
@@ -540,7 +570,10 @@ impl Datagram {
         match self {
             Datagram::Peer(frame) => frame.state.is_finite(),
             Datagram::World(world) => world.is_finite(),
-            Datagram::Voice(_) => true,
+            // A mod's payload is JSON: it cannot carry a NaN (`JSON.stringify`
+            // would have written `null`), and the transport does not look inside
+            // it anyway.
+            Datagram::Mods(_) | Datagram::Voice(_) => true,
         }
     }
 }
@@ -919,9 +952,9 @@ mod tests {
     #[test]
     fn world_and_datagrams_round_trip() {
         // Every number here is on the quantization grid, so this is an exact
-        // round trip of the *envelope*: the variant, the field set, the sky, the
-        // streams and a mod's bytes. Positions land on 1 cm, yaw on 1/10000 of a
-        // turn, `left` on a quarter second, so any two-decimal value is exact.
+        // round trip of the *envelope*: the variant, the field set, the sky and
+        // the streams. Positions land on 1 cm, yaw on 1/10000 of a turn, `left`
+        // on a quarter second, so any two-decimal value is exact.
         let world = WorldState {
             bots: vec![
                 BotState {
@@ -965,15 +998,17 @@ mod tests {
                 },
                 EatenCell { key: -7, left: 3.0 },
             ]),
-            mods: serde_json::json!({
-                "streams": { "com.example.dash:sprint": 1234 },
-                "data": { "com.example.dash": { "cooldown": 1.5 } },
-            }),
         };
         let datagram = Datagram::World(world.clone());
         let bytes = encode_datagram(&datagram).expect("encode");
         assert_eq!(decode_datagram(&bytes).expect("decode"), datagram);
         assert!(world.is_finite());
+
+        // A world mod's state rides its own datagram, and the transport does not
+        // look inside it: it is the scene's JSON, round-tripped as bytes.
+        let mods = Datagram::Mods(a_mods_state());
+        let bytes = encode_datagram(&mods).expect("encode");
+        assert_eq!(decode_datagram(&bytes).expect("decode"), mods);
 
         // The weather kind is the scene's own spelling in the *frames*, so
         // nothing has to map it at the bridge.
@@ -1011,9 +1046,9 @@ mod tests {
     }
 
     /// A world shaped like a session that has been running for a couple of
-    /// minutes: the default herd, a settled sky, the streams, `eaten` meadow
-    /// cells and a world mod's published flock. The sizes are the real ones --
-    /// this is the fixture the datagram budget is argued about with.
+    /// minutes: the default herd, a settled sky, the streams and `eaten` meadow
+    /// cells. The sizes are the real ones -- this is the fixture the datagram
+    /// budget is argued about with.
     fn a_running_world(eaten: usize) -> WorldState {
         WorldState {
             bots: (0..7).map(bot).collect(),
@@ -1040,14 +1075,19 @@ mod tests {
                     })
                     .collect(),
             ),
-            mods: serde_json::json!({
-                "streams": { "com.github.sdgoij.goats.birds:flock": 1_234_567 },
-                "data": { "com.github.sdgoij.goats.birds": [
-                    [20.0, 9.0, -20.0, 0.5, 3.0],
-                    [26.0, 9.0, -26.0, 0.5, 3.0],
-                ]},
-            }),
         }
+    }
+
+    /// What a world mod publishes: the `birds` flock, as `sceneWorldMods()`
+    /// shapes it -- a stream state per mod and a row per entity.
+    fn a_mods_state() -> ModsState {
+        ModsState(serde_json::json!({
+            "streams": { "com.github.sdgoij.goats.birds:flock": 1_234_567 },
+            "data": { "com.github.sdgoij.goats.birds": [
+                [20.0, 9.0, -20.0, 0.5, 3.0],
+                [26.0, 9.0, -26.0, 0.5, 3.0],
+            ]},
+        }))
     }
 
     /// A bot as the scene sends one.
@@ -1061,12 +1101,6 @@ mod tests {
             gait: Gait::Walk,
             variant: 1,
         }
-    }
-
-    /// The world with no world mod's state in it, as the scene sends one when
-    /// nothing is loaded (and not `null`, which is what a shed one carries).
-    fn without_mods(world: &mut WorldState) {
-        world.mods = serde_json::json!({ "streams": {}, "data": {} });
     }
 
     #[test]
@@ -1083,24 +1117,22 @@ mod tests {
     }
 
     #[test]
-    fn an_over_budget_world_without_the_meadow_sheds_the_mod_state_too() {
-        let mut world = a_running_world(10);
-        let meadow_shed = {
-            let mut probe = world.clone();
-            probe.eaten = None;
-            datagram_size(&probe)
-        };
-        let bare = {
-            let mut probe = world.clone();
-            probe.eaten = None;
-            probe.mods = serde_json::Value::Null;
-            datagram_size(&probe)
-        };
-        assert!(bare < meadow_shed, "the mod state should be worth bytes");
-        let budget = meadow_shed - 1;
-        assert_eq!(fit_world(&mut world, budget), WorldOutcome::ModsShed);
-        assert!(world.eaten.is_none() && world.mods.is_null(), "{world:?}");
-        assert!(datagram_size(&world) <= budget);
+    fn a_big_meadow_is_what_makes_the_snapshot_shed() {
+        // The shed path is still the safety net, and a long session with several
+        // players eating is how it is reached: 260 cells is a meadow well past
+        // the point where the world fits. The meadow is all that can go, and it
+        // is enough -- the bots, the sky and the streams keep arriving.
+        let world = a_running_world(260);
+        let full = datagram_size(&world);
+        assert!(full > MAX_DATAGRAM_BYTES, "{full} bytes");
+
+        let mut world = world;
+        let outcome = fit_world(&mut world, MAX_DATAGRAM_BYTES);
+        assert_eq!(outcome, WorldOutcome::MeadowShed);
+        assert!(world.eaten.is_none(), "the meadow goes first");
+        assert_eq!(world.bots.len(), 7, "the bots are never shed");
+        assert!(datagram_size(&world) <= MAX_DATAGRAM_BYTES);
+        assert!(outcome.describe().is_some());
     }
 
     #[test]
@@ -1110,7 +1142,6 @@ mod tests {
         let bare = {
             let mut probe = world.clone();
             probe.eaten = None;
-            probe.mods = serde_json::Value::Null;
             datagram_size(&probe)
         };
         let outcome = fit_world(&mut world, bare - 1);
@@ -1175,16 +1206,15 @@ mod tests {
     }
 
     #[test]
-    fn the_vanilla_world_now_fits_with_room_for_a_mod() {
-        // What M16 was planned from, re-stated for the binary wire. Under JSON the
-        // worst case a player can reach without any mod was 1600 bytes and
+    fn the_vanilla_world_fits_with_room_to_spare() {
+        // The worst case a player can reach without any mod: the herd at its
+        // clamp and a meadow well along. Under JSON this was 1600 bytes and
         // climbing against a 1200-byte cap; binary and quantized it fits whole,
         // with most of the budget still free. This is the guard against the
-        // budget eroding again: the next field added to `WorldState` has to
+        // budget eroding again -- the next field added to `WorldState` has to
         // argue for its bytes.
         let mut world = a_running_world(20);
         world.bots = (0..10).map(bot).collect();
-        without_mods(&mut world);
         let size = datagram_size(&world);
         assert_eq!(
             fit_world(&mut world, MAX_DATAGRAM_BYTES),
@@ -1194,41 +1224,59 @@ mod tests {
         assert!(world.eaten.is_some(), "nothing had to be shed");
         assert!(
             size < MAX_DATAGRAM_BYTES / 3,
-            "{size} bytes of a {MAX_DATAGRAM_BYTES}-byte budget leaves no room for a mod"
+            "{size} bytes of a {MAX_DATAGRAM_BYTES}-byte budget"
         );
     }
 
     #[test]
-    fn a_greedy_world_mod_is_what_makes_the_snapshot_shed() {
-        // The shed path is still the safety net -- a mod may publish far more than
-        // it should -- and the meadow is still what goes first, so the world
-        // itself keeps arriving and the mod keeps its state.
-        let mut world = a_running_world(20);
-        world.bots = (0..10).map(bot).collect();
-        without_mods(&mut world);
-        // Sized from the measurement rather than by hand, so the test says what
-        // it means: the blob is big enough to push the snapshot over the cap, and
-        // the meadow is worth more than the overshoot, so the meadow alone is
-        // what has to go.
-        let base = datagram_size(&world);
-        let room = MAX_DATAGRAM_BYTES.saturating_sub(base);
-        world.mods = serde_json::json!({
-            "data": { "com.example.big": { "blob": "x".repeat(room + 40) } },
-        });
-        let full = datagram_size(&world);
-        assert!(
-            full > MAX_DATAGRAM_BYTES,
-            "{full} bytes against {base} before the mod"
-        );
+    fn a_world_mods_state_has_a_datagram_of_its_own() {
+        // The mods are not on the world's datagram at all, which is the point:
+        // they cannot push the world out, and the world's cap cannot bound what a
+        // mod publishes. Both travel whole, and the flock's state is the same
+        // bytes either way.
+        let world = a_running_world(20);
+        let mods = a_mods_state();
+        assert_eq!(fit_mods(&mods), ModsOutcome::Sent);
+        assert_eq!(ModsOutcome::Sent.describe(), None);
 
-        assert_eq!(
-            fit_world(&mut world, MAX_DATAGRAM_BYTES),
-            WorldOutcome::MeadowShed
-        );
-        assert!(world.eaten.is_none(), "the meadow goes first");
-        assert_eq!(world.bots.len(), 10, "the bots are never shed");
-        assert!(world.mods.is_object(), "the mod keeps its state");
-        assert!(datagram_size(&world) <= MAX_DATAGRAM_BYTES);
+        let round_tripped =
+            decode_datagram(&encode_datagram(&Datagram::Mods(mods.clone())).expect("encode"))
+                .expect("decode");
+        assert_eq!(round_tripped, Datagram::Mods(mods));
+
+        // A world that is at its limit still leaves the mods alone.
+        let mut tight = world;
+        let budget = datagram_size(&tight) - 1;
+        assert_eq!(fit_world(&mut tight, budget), WorldOutcome::MeadowShed);
+        assert_eq!(fit_mods(&a_mods_state()), ModsOutcome::Sent);
+    }
+
+    #[test]
+    fn an_over_budget_mods_state_is_reported_rather_than_dropped_in_silence() {
+        // There is nothing to shed inside it -- the transport cannot tell one
+        // mod's contribution from another's -- so the report is all the caller
+        // gets, and it has to name the size.
+        let big = ModsState(serde_json::json!({
+            "streams": {},
+            "data": { "com.example.big": { "blob": "x".repeat(1_500) } },
+        }));
+        let outcome = fit_mods(&big);
+        match outcome {
+            ModsOutcome::TooLarge { size } => {
+                assert!(size > MAX_DATAGRAM_BYTES, "{size} bytes");
+                assert!(
+                    outcome
+                        .describe()
+                        .is_some_and(|text| text.contains(&size.to_string())),
+                    "{outcome:?}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+
+        // And a state that fits is sent, so this is a check rather than a blanket
+        // refusal.
+        assert_eq!(fit_mods(&a_mods_state()), ModsOutcome::Sent);
     }
 
     #[test]

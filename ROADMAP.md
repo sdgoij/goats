@@ -92,7 +92,7 @@ uses.
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; the birds fixture test |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
-| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | M16a–M16b **Done** — the snapshot is binary, quantized and sheds in a defined order; M16c–M16e remain |
+| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | M16a–M16d **Done** — binary, quantized, shed in a defined order, and the mods have their own datagram; M16e remains |
 
 ---
 
@@ -1427,25 +1427,28 @@ ride the JS bridge (which is JSON by construction), and are read by humans when 
 session misbehaves. Their bytes are not the problem; the 10 Hz datagram is.
 
 **What it is worth (measured).** The "before" column is what the same fixture
-encoded to as JSON when M16a landed; these are read off `datagram_size` and
-`encode_datagram` in a test, not estimated.
+encoded to as JSON when M16a landed -- *including* the world mods, which travelled
+inside the world then. These are read off `datagram_size` and `encode_datagram`
+in a test, not estimated.
 
 | Configuration | JSON | binary + quantized |
 | --- | --- | --- |
-| herd 7 (the default), empty meadow, no mod | 886 | **145** |
-| herd 7, empty meadow, the `birds` flock | 1097 | **274** |
-| herd 10 (the clamp), empty meadow, no mod | 1150 | **175** |
-| herd 10, meadow at 20 cells, no mod | ~1470 | **295** |
-| herd 7, meadow at 20 cells, the `birds` flock | ~1600 | **394** |
+| herd 7 (the default), empty meadow, no mod | 886 | **119** |
+| herd 7, meadow at 20 cells, no mod | ~1470 | **239** |
+| herd 10 (the clamp), meadow at 20 cells, no mod | ~1600 | **269** |
+| the `birds` flock, on the mods datagram | 1097 (with the flock in the world) | **155** |
 | one bot, inside a world | 86 | **10** |
-| one peer pose (~120 by hand) | 120 | **17** |
-| one voice frame, 60-byte Opus payload | ~104 | **69** |
+| one peer pose | ~120 | **17** |
+| one voice frame, a 60-byte Opus payload | ~104 | **69** |
 
 The rows marked `~` are extrapolated from the measured ones (six bytes a meadow
 cell, 211 for the flock); everything else was read off `datagram_size` and
-`encode_datagram`. The headline is the herd-10 pair: at 1150 bytes that shape
-used to fit only with an empty meadow, and at 295 it now fits with a full one and
-room to spare.
+`encode_datagram`. The headline is the herd-7 pair: at 886 bytes that shape used
+to fit only with an empty meadow, and at 119 it fits with room for eighteen of
+them. M16d did not make the bytes fewer -- the flock's 155 is what it always cost,
+since a mod's payload was already opaque JSON -- but it made them *separate*: a
+session with the flock now spends 119 on the world and 155 on the mods instead of
+274 in one datagram, where either could push the other out.
 
 A bot was 86 bytes of JSON (`{"index":0,"x":1.234,"z":-12.345,"yaw":0.5,
 "phase":0.123,"gait":"walk","variant":0}`) and is 10 as a quantized record: an
@@ -1515,14 +1518,24 @@ gait's variant byte, and the rest varint.
   for 10 Hz: a tuft that returns in 40-90 s does not need 100 ms resolution, and
   the client counts its own copy down between snapshots. Send `eaten` on its own,
   slower tick (or as a delta with a periodic full resync), which also stops the
-  meadow's size from being coupled to the world's rate.
-- **M16d — World mods get their own datagram. ⬜** `Datagram::Mods`, sent only
-  when a world mod is loaded, so a mod's payload can no longer evict the world and
-  the world's cap no longer bounds what a mod may publish. It rides the same
-  channel and reliability, so the two cannot be reordered by a lost world. Alongside
-  it, a publish helper (`goats.world.publishRows(name, rows)`) so a mod's payload
-  is rows of numbers by construction -- compact, bounded, and the same shape the
-  `birds` flock already writes by hand.
+  meadow's size from being coupled to the world's rate. It is the smallest
+  remaining win -- a meadow is ~6 bytes a cell and only a pathological one forces
+  a shed -- so it is the most foldable into M16e or into a later pass.
+- **M16d — World mods get their own datagram. ✅ Done.** `Datagram::Mods`
+  carries `{ streams, data }` -- exactly what `sceneWorldMods()` returns, opaque
+  as ever -- and the scene queues it beside the world snapshot, only while a
+  world mod is loaded. `WorldState` lost its `mods` field, so `fit_world` lost
+  its second shed step, and the mods gained a `fit_mods` of their own: there is
+  nothing to shed *inside* that payload (the transport cannot tell one mod's
+  contribution from another's), so it is a size check and a report, and the
+  per-mod answer -- a datagram each, so a greedy mod loses only its own state --
+  remains open. Alongside it, `goats.world.publishRows(rows)` is the compact way
+  to publish a table: rows of finite numbers rounded to three decimals, at most
+  64 rows of 8, with a `NaN` thrown at the publisher -- where the log names the
+  mod -- rather than becoming a `null` at every peer, and a warning when one
+  table passes ~600 bytes. The `birds` fixture publishes through it now. The
+  callback dropped its `name` argument from the plan: `rows` alone says it, and
+  the diagnostics already carry the mod's id.
 - **M16e — A guard so the budget cannot silently erode again. ⬜** A test that
   builds the worst case that is reachable without mods -- herd 10, a full meadow,
   the `birds` fixture -- and asserts the snapshot fits with headroom, so the next

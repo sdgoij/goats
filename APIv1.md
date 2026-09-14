@@ -322,6 +322,7 @@ handlers.
 | `"despawn"` | A bot is removed | `(bot)` |
 | `"session"` | A net event (`session`, `joined`, `left`, `roster`, `chat`, …) | `(event)` |
 | `"world"` | A server world snapshot was applied (client side) | `(world)` |
+| `"mods"` | The world mods' state was applied (client side) | `(mods)` |
 | `"tuning"` | A tuning value changed | `(path, value)` |
 | `"shutdown"` | The game is closing, or this mod is being reloaded | *(none)* |
 
@@ -530,16 +531,16 @@ World-facing mods also get §4.13.
 
 ### 4.13 World extension (multiplayer simulation)
 
-> **Implemented (M14d2).** A `side: "world"` mod may register a seeded stream
-> and publish state; it travels in the snapshot's `mods` section and the host
-> must run it (the digest in §6 guarantees every peer has the same set).
+> **Implemented (M14d2, own datagram since M16d).** A `side: "world"` mod may
+> register a seeded stream and publish state; it travels on its own datagram
+> beside the world, and the host must run it (the digest in §6 guarantees every
+> peer has the same set).
 
 This is the seam that lets a `side: "world"` mod add simulated state and have
-it travel in the existing world snapshot. A world mod registers extensions;
-the scene merges their `publish` output into the snapshot and calls their
-`apply` on receipt. The snapshot is already JSON built by `sceneWorldBots` /
-`sceneWeatherState` / `sceneStreams` / `sceneEaten`, so this is an additive
-field (`sceneWorldMods()`), not a new protocol.
+it travel to every peer. A world mod registers extensions; the scene merges
+their `publish` output into `sceneWorldMods()` and calls their `apply` on
+receipt. That state is its own datagram, so it does not share the world's
+budget, and a lost one costs a mod's state rather than the world.
 
 ```js
 goats.world.registerStream("sprint", 0x1234abcd);   // a seeded PRNG stream
@@ -551,27 +552,42 @@ goats.world.extend("com.example.fastgoat", {
 });
 ```
 
+For state that is a table of entities, `publishRows` is the compact way to say
+it: rows of finite numbers, each rounded to three decimals, so a payload costs
+what its digits cost and a `NaN` is a thrown error here rather than a `null` at
+every peer.
+
+```js
+goats.world.extend("com.example.flock", {
+    publish() {
+        return goats.world.publishRows(BIRDS.map((b) => [b.x, b.y, b.z, b.yaw, b.st]));
+    },
+    apply(rows) { /* rows[i][0..4] */ },
+});
+```
+
 Rules:
 
 - `registerStream`/`rng` names are namespaced to the mod (`<id>:<name>`).
   Streams are re-derived from the session seed inside `sceneUseSeed`, and their
-  state travels in the snapshot's `mods.streams`, so a client that joins
-  mid-session continues where the host is rather than replaying from zero.
+  state travels in `mods.streams`, so a client that joins mid-session continues
+  where the host is rather than replaying from zero.
 - `publish`/`apply` must be pure JSON round-trips. No functions, no class
   instances. Only `side: "world"` mods may register a stream or an extension.
+- `publishRows(rows)` validates as it goes: rows at most 64 long and 8 numbers
+  wide, every value a finite number. A row that is not one, a non-number, a
+  `NaN` or an infinity throws, which `sceneWorldMods` catches and logs with the
+  mod's id -- a bug in a `publish` costs that mod's tick, not the session. It
+  also warns, naming the mod, when one published table passes ~600 bytes.
 - On a client, `publish` is not called (the server is authoritative); only
   `apply` is, and only for extensions the client also registered.
 - The scene calls `extend` contributions in registration order, so ordering is
   part of the compatibility digest's guarantee.
-- The `mods` section rides the unreliable world datagram, so it is bounded by
-  `MAX_DATAGRAM_BYTES` (1200, binary since M16b). The world is compact enough
-  that a few hundred bytes of mod state fit alongside the herd, the weather, the
-  streams and the meadow -- but the budget is shared, so a snapshot that does not
-  fit sheds the meadow first and then the mod state, and says so in the host's
-  log. A world mod should still publish a handful of rounded numbers per entity
-  rather than a full object each: see the `birds` example (§5.4) for the shape of
-  a compact `publish`, and M16d in `ROADMAP.md` for giving mods a datagram of
-  their own.
+- A world mod's state rides a datagram of its own, so the world's 1200-byte
+  budget neither caps what a mod may publish nor is spent by it. It is still
+  unreliable and still bounded: a state that does not fit its own datagram is
+  not sent, and the host logs the size. Keep a published table to a few hundred
+  bytes -- the `birds` flock (§5.4) is six rows of five numbers.
 
 ### 4.14 Utility
 
@@ -671,7 +687,7 @@ goats.on("update", (dt) => {
 
 goats.on("mode", (mode) => { if (mode === "dead") { dashTime = 0; cooldown = 0; } });
 
-// Travels in the world snapshot so every client sees the dash.
+// Travels beside the world, on the mods datagram, so every client sees the dash.
 goats.world.extend("com.example.dash", {
     publish() { return { cooldown: cooldown, active: dashTime > 0 }; },
     apply(s) { if (s) { cooldown = s.cooldown; dashTime = s.active ? DASH_TIME : 0; } },
@@ -719,7 +735,8 @@ Tools a mod already has, without new API:
 - **Its own simulation.** `update` fires once a frame with `dt` (and `dt` is 0
   while the menu or console is open, so birds freeze with the world).
 - **Its own shared state.** `world.registerStream` seeds a PRNG,
-  `world.extend(id, { publish, apply })` rides the world snapshot.
+  `world.extend(id, { publish, apply })` rides the mods datagram, beside the
+  world's.
 
 Two things are worth knowing before writing one.
 
@@ -742,13 +759,12 @@ stretches) and `land`. The state and its clock travel in the snapshot; a client
 eases toward the host's positions and re-derives the flap from `(state, clock)`,
 so the flap function is shared and nothing cosmetic is sent over the wire.
 
-> **Watch the datagram.** A world mod's `publish` output shares the single
-> `MAX_DATAGRAM_BYTES` (1200) world datagram with the herd, the weather, the
-> streams and the meadow. Since M16b that datagram is binary and quantized, so
-> the room is real: the flock's five numbers per bird cost ~40 bytes against
-> ~290 for the herd, weather, streams and a full meadow, and a snapshot that
-> does not fit sheds the meadow (and then the mod state) rather than being
-> dropped. M16d in `ROADMAP.md` is where mods get a datagram of their own.
+> **Watch the byte count, not the shared budget.** A world mod's `publish`
+> output has its own 1200-byte datagram since M16d, so it no longer competes
+> with the herd, the weather and the meadow -- and it also cannot take the world
+> down with it. Keep a published table to a few hundred bytes anyway (the flock
+> is ~40), because the datagram is all the world mods at once: a state that does
+> not fit is not sent at all, and every mod's state waits with it.
 
 ---
 
@@ -800,7 +816,7 @@ client surfaces that in the console's network stream. This shipped in M14d:
 takes `--mods`/`--no-mods`, hashes the assets without keeping them
 (`mods::AssetMode::HashOnly`), requires its world-mod set of every joiner, and
 now **runs its mods** in the headless world (M14d2), so their published state
-and streams reach clients in the snapshot.
+and streams reach clients beside the world rather than inside it.
 
 `Goatsd` takes `--mods <dir>` and loads the same loader; a server with no
 `mods/` only accepts clients with no world mods.

@@ -148,7 +148,11 @@ function sceneNetEvent(line) {
             break;
         case "world":
             // The server's world. Not printed either.
-            netApplyWorld(event.bots, event.weather, event.streams, event.eaten, event.mods);
+            netApplyWorld(event.bots, event.weather, event.streams, event.eaten);
+            break;
+        case "mods":
+            // Every world mod's state, on the server's own datagram. Not printed.
+            netApplyMods(event.mods);
             break;
         case "consume":
             // A client's bite, on the host: record it in this meadow. The next
@@ -383,21 +387,21 @@ function netMaybePublishWorld() {
         weather: sceneWeatherState(),
         streams: sceneStreams(),
         eaten: sceneEaten(),
-        mods: sceneWorldMods(),
     });
+    // A world mod's state rides its own datagram, beside the world: it may be
+    // bigger than the world's budget, and losing it costs a mod rather than
+    // everyone's world. Nothing is sent when no world mod is loaded.
+    if (modWorldActive()) netQueue({ type: "mods", mods: sceneWorldMods() });
 }
 
-// Mirror the server's world: its sky, its streams, its meadow, its bots and its
-// world mods. A client runs neither the weather state machine nor the bot AI,
-// and does not count its meadow down, so this is the whole of all of it.
-function netApplyWorld(bots, weather, streams, eaten, mods) {
+// Mirror the server's world: its sky, its streams, its meadow and its bots. A
+// client runs neither the weather state machine nor the bot AI, and does not
+// count its meadow down, so this is the whole of all of it.
+function netApplyWorld(bots, weather, streams, eaten) {
     applyWeatherState(weather);
     sceneUseStreams(streams);
     applyEaten(eaten);
-    // Mod streams continue where the host is; a mod's published state arrives
-    // through its `apply`.
-    sceneApplyWorldMods(mods);
-    modEmit("world", { bots: bots, weather: weather, streams: streams, eaten: eaten, mods: mods });
+    modEmit("world", { bots: bots, weather: weather, streams: streams, eaten: eaten });
     if (!Array.isArray(bots)) return;
     if (BOTS.length !== bots.length) setHerdSize(bots.length);
     for (let i = 0; i < bots.length && i < BOTS.length; i++) {
@@ -423,6 +427,15 @@ function netApplyWorld(bots, weather, streams, eaten, mods) {
         b.var.jump = v;
         b.var.eat = v;
     }
+}
+
+// Every world mod's state, on its own datagram: the host's stream states continue
+// here, and each mod's published value goes to its `apply`. A client keeps the
+// last one it got, so a lost datagram costs a tick of a mod's state rather than
+// anything about the world.
+function netApplyMods(mods) {
+    sceneApplyWorldMods(mods);
+    modEmit("mods", mods);
 }
 
 // The remote goats as the harness sees them: names, render and target positions,

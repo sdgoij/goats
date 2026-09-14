@@ -23,8 +23,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BotState, Datagram, EatenCell, Error, Gait, PeerFrame, PeerState, Streams, VoiceFrame,
-    WeatherState, WorldState,
+    BotState, Datagram, EatenCell, Error, Gait, ModsState, PeerFrame, PeerState, Streams,
+    VoiceFrame, WeatherState, WorldState,
 };
 
 // ---- the quantization grid -------------------------------------------------
@@ -109,6 +109,7 @@ fn seconds_of(units: u16) -> f32 {
 pub(crate) enum WireDatagram {
     Peer(WirePeer),
     World(WireWorld),
+    Mods(WireMods),
     Voice(WireVoice),
 }
 
@@ -133,11 +134,14 @@ pub(crate) struct WireWorld {
     /// `None` when the snapshot could not carry the meadow -- see
     /// [`WorldState::eaten`].
     eaten: Option<Vec<WireEaten>>,
-    /// A world mod's published state, as the JSON the scene handed over. The
-    /// transport has no schema for it (see [`WorldState::mods`]), so it travels
-    /// as opaque bytes: it costs exactly its JSON length, and a `Vec<u8>` under
-    /// postcard is a length and the bytes rather than an array of numbers.
-    mods: Option<Vec<u8>>,
+}
+
+/// The world mods' state, packed. One field, because the transport has no schema
+/// for it: the JSON the scene handed over, as bytes. That costs exactly its JSON
+/// length and lets it be as large as its own datagram, rather than the world's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WireMods {
+    json: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,7 +176,8 @@ impl WireDatagram {
     pub(crate) fn pack(datagram: &Datagram) -> Result<WireDatagram, Error> {
         Ok(match datagram {
             Datagram::Peer(frame) => WireDatagram::Peer(WirePeer::pack(frame)),
-            Datagram::World(world) => WireDatagram::World(WireWorld::pack(world)?),
+            Datagram::World(world) => WireDatagram::World(WireWorld::pack(world)),
+            Datagram::Mods(mods) => WireDatagram::Mods(WireMods::pack(mods)?),
             Datagram::Voice(frame) => WireDatagram::Voice(WireVoice {
                 from: frame.from.clone(),
                 seq: frame.seq,
@@ -184,7 +189,8 @@ impl WireDatagram {
     pub(crate) fn unpack(self) -> Result<Datagram, Error> {
         Ok(match self {
             WireDatagram::Peer(peer) => Datagram::Peer(peer.unpack()),
-            WireDatagram::World(world) => Datagram::World(world.unpack()?),
+            WireDatagram::World(world) => Datagram::World(world.unpack()),
+            WireDatagram::Mods(mods) => Datagram::Mods(mods.unpack()?),
             WireDatagram::Voice(voice) => Datagram::Voice(VoiceFrame {
                 from: voice.from,
                 seq: voice.seq,
@@ -223,8 +229,8 @@ impl WirePeer {
 }
 
 impl WireWorld {
-    fn pack(world: &WorldState) -> Result<WireWorld, Error> {
-        Ok(WireWorld {
+    fn pack(world: &WorldState) -> WireWorld {
+        WireWorld {
             bots: world.bots.iter().map(WireBot::pack).collect(),
             weather: world.weather.clone(),
             streams: world.streams,
@@ -232,32 +238,32 @@ impl WireWorld {
                 .eaten
                 .as_deref()
                 .map(|cells| cells.iter().map(WireEaten::pack).collect()),
-            mods: match &world.mods {
-                // The vocabulary says "not sent" with `null`; the wire says it by
-                // leaving the bytes out.
-                serde_json::Value::Null => None,
-                value => Some(
-                    serde_json::to_vec(value).map_err(|error| Error::Encode(error.to_string()))?,
-                ),
-            },
-        })
+        }
     }
 
-    fn unpack(self) -> Result<WorldState, Error> {
-        Ok(WorldState {
+    fn unpack(self) -> WorldState {
+        WorldState {
             bots: self.bots.into_iter().map(WireBot::unpack).collect(),
             weather: self.weather,
             streams: self.streams,
             eaten: self
                 .eaten
                 .map(|cells| cells.into_iter().map(WireEaten::unpack).collect()),
-            mods: match self.mods {
-                None => serde_json::Value::Null,
-                Some(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
-                    Error::Decode(format!("world mod state is not JSON: {error}"))
-                })?,
-            },
+        }
+    }
+}
+
+impl WireMods {
+    fn pack(mods: &ModsState) -> Result<WireMods, Error> {
+        Ok(WireMods {
+            json: serde_json::to_vec(&mods.0).map_err(|error| Error::Encode(error.to_string()))?,
         })
+    }
+
+    fn unpack(self) -> Result<ModsState, Error> {
+        serde_json::from_slice(&self.json)
+            .map(ModsState)
+            .map_err(|error| Error::Decode(format!("world mod state is not JSON: {error}")))
     }
 }
 

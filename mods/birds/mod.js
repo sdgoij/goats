@@ -692,11 +692,12 @@ goats.world.extend(MOD_ID, {
         const out = [];
         for (let i = 0; i < BIRDS.length; i++) {
             const b = BIRDS[i];
-            // Five numbers per bird, rounded to a decimetre: the world snapshot
-            // shares one 1200-byte datagram with the herd and the weather.
+            // Five numbers per bird. `publishRows` rounds them and refuses a
+            // NaN, so a bug here lands in the log with this mod's name on it
+            // rather than arriving at every peer as `null`.
             out.push([r1(b.x), r1(b.y), r1(b.z), r2(b.yaw), b.st]);
         }
-        return out;
+        return goats.world.publishRows(out);
     },
     apply: function (state) {
         if (!Array.isArray(state)) return;

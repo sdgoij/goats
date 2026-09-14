@@ -677,7 +677,7 @@ function modDropWorld(id) {
     }
 }
 
-// The host's contribution to the world snapshot: every world mod's stream
+// The host's contribution to the world mods' datagram: every world mod's stream
 // states and whatever it publishes. Only the host builds this.
 function sceneWorldMods() {
     const data = {};
@@ -690,6 +690,66 @@ function sceneWorldMods() {
         }
     }
     return { streams: modStreamStates(), data: data };
+}
+
+// Whether there is any world-mod state to send at all: a registered extension or
+// a seeded stream. Nothing else about a mod is the host's to broadcast, so this
+// is what keeps a vanilla session from sending an empty datagram ten times a
+// second.
+function modWorldActive() {
+    return modWorldExts.size > 0 || modStreams.size > 0;
+}
+
+// How many rows and how many numbers a row a mod may publish through
+// `publishRows`. A structural guard, not the budget: the datagram holds ~1200
+// bytes and the transport refuses anything larger (logging the size), so the
+// real limit is the byte count. This is what stops a runaway loop from building
+// a megabyte before anyone notices.
+const PUBLISH_ROWS_MAX = 64;
+const PUBLISH_COLS_MAX = 8;
+// The published state that earns a warning: half the datagram, which leaves no
+// room for another mod's. It names the mod, which the datagram-level report
+// cannot -- it sees only the whole.
+const PUBLISH_WARN_BYTES = 600;
+
+// The compact way to publish: rows of finite numbers.
+//
+// The transport carries a mod's payload as opaque JSON, so rows of short numbers
+// are what keeps it small -- and rounding to three decimals is what makes them
+// short. It also catches the value `JSON.stringify` would silently turn into
+// `null`: a NaN or an infinity is a mod's bug, and it is thrown here where the
+// log can name the mod rather than arriving at every peer as `null`.
+function modPublishRows(id, rows) {
+    if (!Array.isArray(rows)) throw new Error("publishRows: rows must be an array");
+    if (rows.length > PUBLISH_ROWS_MAX) {
+        throw new Error("publishRows: " + rows.length + " rows, at most " +
+            PUBLISH_ROWS_MAX + " (a payload larger than the datagram is not sent)");
+    }
+    const out = [];
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (!Array.isArray(row)) throw new Error("publishRows: row " + i + " is not an array");
+        if (row.length > PUBLISH_COLS_MAX) {
+            throw new Error("publishRows: row " + i + " has " + row.length +
+                " numbers, at most " + PUBLISH_COLS_MAX);
+        }
+        const rounded = [];
+        for (let j = 0; j < row.length; j++) {
+            const value = row[j];
+            if (typeof value !== "number" || !isFinite(value)) {
+                throw new Error("publishRows: row " + i + ", column " + j + " is " + value +
+                    ", and every value must be a finite number");
+            }
+            rounded.push(Math.round(value * 1000) / 1000);
+        }
+        out.push(rounded);
+    }
+    const size = JSON.stringify(out).length;
+    if (size > PUBLISH_WARN_BYTES) {
+        console.log("mods: '" + id + "' publishes " + size + " bytes of rows; keep a " +
+            "published table under " + PUBLISH_WARN_BYTES + " so it fits the datagram");
+    }
+    return out;
 }
 
 // A client applies the host's contribution.
@@ -720,6 +780,7 @@ function modWorldFor(id) {
         terrainHeight: goatsWorld.terrainHeight,
         registerStream: function (name, seed) { return modRegisterStream(id, name, seed); },
         extend: function (extensionId, handlers) { return modExtend(id, extensionId, handlers); },
+        publishRows: function (rows) { return modPublishRows(id, rows); },
     };
 }
 

@@ -101,6 +101,26 @@ fn the_mod_surface_works() {
         world.apply && world.adopt,
         &world,
     );
+    checks.check(
+        "a world mod is what makes the mods datagram worth sending",
+        world.active,
+        &world,
+    );
+    checks.check(
+        "publishRows rounds rows of finite numbers",
+        world.rows,
+        &world,
+    );
+    checks.check(
+        "publishRows refuses a NaN and a row that is not one",
+        world.rows_refused,
+        &world,
+    );
+    checks.check(
+        "a client applies the mods event on its own datagram",
+        world.event,
+        &world,
+    );
 
     let menu = staged("the mods-screen block", menu_block(&mut harness));
     checks.check(
@@ -488,6 +508,10 @@ struct ModWorld {
     publish: bool,
     apply: bool,
     adopt: bool,
+    active: bool,
+    rows: bool,
+    rows_refused: bool,
+    event: bool,
 }
 
 /// A `side: "world"` mod owns a seeded stream and publishes into the snapshot; the
@@ -497,6 +521,10 @@ fn world_block(harness: &mut Harness) -> Result<ModWorld, String> {
     harness.call("sceneMods", &[json!(TABLE_WORLD)])?;
     harness.eval(WORLD_ENTRY)?;
     harness.call("sceneModResult", &[json!("com.w"), json!(true), json!("")])?;
+
+    // A world mod means there is something to put on the mods datagram, which is
+    // what gates sending one at all.
+    world.active = bool_of(harness.eval("modWorldActive()")?);
 
     // `registerStream`'s handle and `goats.rng` draw from the same seeded stream.
     harness.call("sceneUseSeed", &[json!(1234)])?;
@@ -527,6 +555,29 @@ fn world_block(harness: &mut Harness) -> Result<ModWorld, String> {
     )?;
     world.apply = harness.eval("globalThis.__applied.n")? == json!(7);
     world.adopt = harness.eval("sceneWorldMods().streams[\"com.w:sprint\"]")? == json!(999);
+
+    // The compact publish path: rows of finite numbers, rounded to three
+    // decimals so a row costs what it should.
+    world.rows = bool_of(harness.eval(
+        "JSON.stringify(globalThis.__g.world.publishRows([[1.23456, -2.0], [0.5]])) \
+         === \"[[1.235,-2],[0.5]]\"",
+    )?);
+    // A value `JSON.stringify` would have written as `null` is refused here,
+    // where the log can name the mod, rather than arriving at every peer as
+    // `null`. So is a row that is not a row.
+    let not_a_number = throws(harness, "globalThis.__g.world.publishRows([[1, NaN]])");
+    let not_rows = throws(harness, "globalThis.__g.world.publishRows(\"nope\")");
+    let not_a_row = throws(harness, "globalThis.__g.world.publishRows([[1], [2], 3])");
+    world.rows_refused = not_a_number && not_rows && not_a_row;
+
+    // And the host's state reaches a client as its own event, which is the
+    // datagram the transport carries it on.
+    net_feed(
+        harness,
+        r#"{"type":"mods","mods":{"streams":{"com.w:sprint":1234},"data":{"com.w":{"n":9}}}}"#,
+    )?;
+    world.event = harness.eval("globalThis.__applied.n")? == json!(9)
+        && harness.eval("sceneWorldMods().streams[\"com.w:sprint\"]")? == json!(1234);
     Ok(world)
 }
 

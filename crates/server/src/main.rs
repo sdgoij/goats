@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use session::{Event, Host, WorldOutcome, WorldState};
+use session::{Event, Host, ModsOutcome, WorldOutcome, WorldState};
 
 /// The world snapshot cadence, in sim frames (the sim runs at a fixed 60 Hz).
 const WORLD_EVERY: u64 = 6;
@@ -249,9 +249,10 @@ async fn main() {
     // rather than firing a burst of steps after a stall.
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut frames: u64 = 0;
-    // The last thing said about the world snapshot, so a shed is reported when it
-    // happens and when it stops happening, not on every tick.
+    // The last thing said about each high-rate datagram, so a shed is reported
+    // when it happens and when it stops happening, not on every tick.
     let mut last_world = WorldOutcome::Whole;
+    let mut last_mods = ModsOutcome::Sent;
 
     // Built once and pinned, not re-created each iteration: a signal can land
     // while no handler future is registered, and this loop turns over every
@@ -291,6 +292,13 @@ async fn main() {
                     match sim.world_json() {
                         Ok(json) => publish_world(&host, &json, &mut last_world).await,
                         Err(error) => eprintln!("goatsd: could not read the world: {error}"),
+                    }
+                    // The mods ride beside it, on a datagram of their own, and only
+                    // while a world mod is loaded.
+                    match sim.mods_json() {
+                        Ok(Some(json)) => publish_mods(&host, &json, &mut last_mods).await,
+                        Ok(None) => {}
+                        Err(error) => eprintln!("goatsd: could not read the mods: {error}"),
                     }
                 }
             }
@@ -346,6 +354,24 @@ async fn publish_world(host: &Host, json: &str, last: &mut WorldOutcome) {
     }
 }
 
+/// Hands the world mods' state to the session, on a datagram of its own. Same
+/// rules as the world: a malformed read is logged, and a report lands on the
+/// change.
+async fn publish_mods(host: &Host, json: &str, last: &mut ModsOutcome) {
+    match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(state) => {
+            let outcome = host.publish_mods(&session::ModsState(state)).await;
+            if outcome != *last {
+                if let Some(text) = outcome.describe() {
+                    eprintln!("goatsd: {text}");
+                }
+                *last = outcome;
+            }
+        }
+        Err(error) => eprintln!("goatsd: bad world-mod state: {error}"),
+    }
+}
+
 /// One line per event, so a session's comings and goings read as a log. The
 /// roster is also what keeps the status page's client count current.
 fn report(event: Event, info: &web::Info) {
@@ -367,10 +393,14 @@ fn report(event: Event, info: &web::Info) {
         }
         Event::Notice(text) => format!("notice {text}"),
         // Positions arrive many times a second; logging each would bury the
-        // session log, so they are not reported. The world is the server's own,
-        // a bite is handled by the sim above, and a headless host has no audio,
-        // so a voice packet is relayed and forgotten.
-        Event::Peer { .. } | Event::World { .. } | Event::Consume { .. } | Event::Voice { .. } => {
+        // session log, so they are not reported. The world and the mods are the
+        // server's own, a bite is handled by the sim above, and a headless host
+        // has no audio, so a voice packet is relayed and forgotten.
+        Event::Peer { .. }
+        | Event::World { .. }
+        | Event::Mods { .. }
+        | Event::Consume { .. }
+        | Event::Voice { .. } => {
             return;
         }
         Event::Disconnected => "disconnected".to_string(),

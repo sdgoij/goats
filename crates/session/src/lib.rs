@@ -31,8 +31,8 @@ use tokio::sync::{Mutex, mpsc};
 // client's network bridge) can name a pose or a world without depending on
 // `proto` directly.
 pub use proto::{
-    BotState, Datagram, EatenCell, Gait, ModRef, PeerFrame, PeerState, Streams, VoiceFrame,
-    WeatherKind, WeatherState, WorldOutcome, WorldState,
+    BotState, Datagram, EatenCell, Gait, ModRef, ModsOutcome, ModsState, PeerFrame, PeerState,
+    Streams, VoiceFrame, WeatherKind, WeatherState, WorldOutcome, WorldState,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a
@@ -62,9 +62,9 @@ pub enum Event {
     /// A remote goat moved. `name` is the server's canonical name, not whatever
     /// the datagram claimed.
     Peer { name: String, state: PeerState },
-    /// The server's world -- its bots, its sky, its streams, its meadow and
-    /// whatever world mods publish -- for a client to mirror instead of
-    /// simulating.
+    /// The server's world -- its bots, its sky, its streams and its meadow -- for
+    /// a client to mirror instead of simulating. World-mod state arrives
+    /// separately, as [`Event::Mods`].
     World {
         bots: Vec<BotState>,
         weather: WeatherState,
@@ -73,8 +73,10 @@ pub enum Event {
         /// over the datagram budget). A client keeps the meadow it has: an empty
         /// list would put back every tuft the host has eaten.
         eaten: Option<Vec<EatenCell>>,
-        mods: serde_json::Value,
     },
+    /// Every world mod's state, on its own datagram: `{ streams, data }`, opaque
+    /// to this layer. A client keeps the last one it got and eases on.
+    Mods { mods: ModsState },
     /// A client ate a grass cell, for the host's scene to record. Only the host
     /// sees this; the next world snapshot carries the result to everyone.
     Consume { key: i64 },
@@ -558,9 +560,9 @@ impl Host {
         self.broadcast(datagram).await;
     }
 
-    /// Broadcasts the server's world, shedding the optional parts if it does not
-    /// fit one datagram. Only the host may send a world, which is what makes it
-    /// authoritative: a client mirrors what it is told and does not simulate.
+    /// Broadcasts the server's world, shedding the meadow if the snapshot does
+    /// not fit one datagram. Only the host may send a world, which is what makes
+    /// it authoritative: a client mirrors what it is told and does not simulate.
     ///
     /// The outcome comes back rather than being logged here -- a library does not
     /// own the log -- so the caller can report what happened when it *changes*,
@@ -575,6 +577,20 @@ impl Host {
             return outcome;
         }
         self.broadcast(Datagram::World(fitted)).await;
+        outcome
+    }
+
+    /// Broadcasts every world mod's state, on a datagram of its own.
+    ///
+    /// Its own because a mod may publish far more than the world's budget can
+    /// carry, and because a lost one costs a mod's state rather than everyone's
+    /// world. Only the host may send it, for the same reason it owns the world.
+    pub async fn publish_mods(&self, mods: &ModsState) -> ModsOutcome {
+        let outcome = proto::fit_mods(mods);
+        if matches!(outcome, ModsOutcome::TooLarge { .. }) {
+            return outcome;
+        }
+        self.broadcast(Datagram::Mods(mods.clone())).await;
         outcome
     }
 
@@ -776,7 +792,9 @@ async fn handle_connection(
                     });
                     (tagged, event)
                 }
-                Datagram::World(_) => continue,
+                // The world and the world mods are the server's to send. A
+                // client that sends either has it dropped rather than relayed.
+                Datagram::World(_) | Datagram::Mods(_) => continue,
             };
             // The host is a player too, so its own scene hears the peer and its
             // own audio module plays the voice, even though there is no
@@ -977,9 +995,9 @@ impl Client {
                             weather: world.weather,
                             streams: world.streams,
                             eaten: world.eaten,
-                            mods: world.mods,
                         }
                     }
+                    Datagram::Mods(mods) => Event::Mods { mods },
                     Datagram::Voice(frame) => {
                         if !frame.is_within_limit() {
                             continue;
@@ -1399,6 +1417,15 @@ mod tests {
         }
     }
 
+    /// The next world-mod state, skipping seed, roster, peer and world noise.
+    async fn client_mods(client: &mut Client) -> Event {
+        loop {
+            if let event @ Event::Mods { .. } = client.next_event().await.expect("an event") {
+                return event;
+            }
+        }
+    }
+
     /// The next voice packet, skipping seed, roster, peer and world noise.
     async fn client_voice(client: &mut Client) -> Event {
         loop {
@@ -1492,19 +1519,29 @@ mod tests {
     async fn an_over_budget_world_reaches_its_clients_without_the_meadow() {
         // The failure this exists to prevent: a snapshot over the cap was dropped
         // whole, so every client silently froze at the last good world. The
-        // optional parts go instead, and the world keeps arriving.
+        // meadow goes instead, and the world keeps arriving.
         //
-        // Under the binary wire a herd at the clamp and a meadow well along now
-        // fit on their own -- that is what M16b bought -- so forcing this takes a
-        // greedy world mod, which is exactly the case M16d takes off the world's
-        // budget altogether.
+        // It takes a meadow this far along to reach it. Under the binary wire a
+        // herd at the clamp and a normal meadow fit with room to spare, which is
+        // what M16b bought; a long session with several players eating is what
+        // fills one of these.
         within(async {
             let host = Host::start("host").await.expect("host");
             let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
 
-            // A herd at the clamp and a meadow well along. On its own this is
-            // under the cap now, which the assertion at the end of the test
-            // proves; the mod is what pushes it over.
+            let meadow = |cells: i64| {
+                Some(
+                    (0..cells)
+                        .map(|i| EatenCell {
+                            key: 33_570_816 + i,
+                            left: 61.234,
+                        })
+                        .collect(),
+                )
+            };
+            // A herd at the clamp and a meadow nobody could eat through in a
+            // session, which is the point: it is the safety net under test, not
+            // the normal case.
             let base = WorldState {
                 bots: (0..10)
                     .map(|index| BotState {
@@ -1532,26 +1569,16 @@ mod tests {
                     food: 9,
                     audio: 10,
                 },
-                eaten: Some(
-                    (0..40)
-                        .map(|i| EatenCell {
-                            key: 33_570_816 + i,
-                            left: 61.234,
-                        })
-                        .collect(),
-                ),
-                mods: serde_json::Value::Null,
+                eaten: meadow(40),
             };
-            let world = WorldState {
-                mods: serde_json::json!({
-                    "data": { "com.example.big": { "blob": "x".repeat(1000) } },
-                }),
+            let greedy = WorldState {
+                eaten: meadow(400),
                 ..base.clone()
             };
 
             let mut outcome = WorldOutcome::Whole;
             for _ in 0..10 {
-                outcome = host.publish_world(&world).await;
+                outcome = host.publish_world(&greedy).await;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             assert_eq!(outcome, WorldOutcome::MeadowShed);
@@ -1569,9 +1596,77 @@ mod tests {
                 other => panic!("expected a world, got {other:?}"),
             }
 
-            // The same world without the mod fits whole and says so -- the point
-            // of the binary wire, stated where it matters.
+            // The ordinary meadow fits whole and says so -- the point of the
+            // binary wire, stated where it matters.
             assert_eq!(host.publish_world(&base).await, WorldOutcome::Whole);
+
+            alice.close().await;
+            host.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_world_mods_state_too_big_for_the_world_still_arrives() {
+        // The mods are on their own datagram, so a payload the world could never
+        // afford is not a problem for either of them: the world goes out whole and
+        // the mods go out whole beside it.
+        within(async {
+            let host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+
+            // Comfortably more than the world has left over with a herd at the
+            // clamp, and comfortably less than a datagram of its own.
+            let mods = ModsState(serde_json::json!({
+                "streams": { "com.example.big:sprint": 99 },
+                "data": { "com.example.big": { "blob": "x".repeat(600) } },
+            }));
+            // The world it arrives with, for comparison: same shape, no mods.
+            let world = WorldState {
+                bots: (0..10)
+                    .map(|index| BotState {
+                        index,
+                        x: 1.0,
+                        z: -2.0,
+                        yaw: 0.5,
+                        phase: 0.25,
+                        gait: proto::Gait::Walk,
+                        variant: 0,
+                    })
+                    .collect(),
+                weather: WeatherState {
+                    kind: WeatherKind::Clear,
+                    cloudiness: 0.1,
+                    rain_amount: 0.0,
+                    wind_x: 0.5,
+                    wind_z: 0.0,
+                    wind_sway: 0.4,
+                    world_time: 6.0,
+                },
+                streams: Streams {
+                    weather: 1,
+                    bots: 2,
+                    food: 3,
+                    audio: 4,
+                },
+                eaten: Some(vec![EatenCell {
+                    key: 4242,
+                    left: 12.5,
+                }]),
+            };
+
+            let mut outcome = ModsOutcome::Sent;
+            for _ in 0..10 {
+                assert_eq!(host.publish_world(&world).await, WorldOutcome::Whole);
+                outcome = host.publish_mods(&mods).await;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(outcome, ModsOutcome::Sent);
+
+            match client_mods(&mut alice).await {
+                Event::Mods { mods: got } => assert_eq!(got, mods),
+                other => panic!("expected the mods, got {other:?}"),
+            }
 
             alice.close().await;
             host.close().await;
@@ -1625,7 +1720,6 @@ mod tests {
                     key: 4242,
                     left: 12.5,
                 }]),
-                mods: serde_json::json!({ "data": { "com.example.a": { "n": 1 } } }),
             };
             for _ in 0..10 {
                 host.publish_world(&world).await;
@@ -1637,7 +1731,6 @@ mod tests {
                     weather,
                     streams,
                     eaten,
-                    mods,
                 } => {
                     assert_eq!(bots.len(), world.bots.len());
                     for (got, want) in bots.iter().zip(&world.bots) {
@@ -1666,7 +1759,6 @@ mod tests {
                         assert_eq!(got.key, want.key);
                         assert!((got.left - want.left).abs() <= 0.25);
                     }
-                    assert_eq!(mods, world.mods);
                 }
                 other => panic!("expected a world, got {other:?}"),
             }

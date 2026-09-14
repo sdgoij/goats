@@ -14,15 +14,19 @@
 
 use slag::{Context, HostCallbacks, JsValue};
 
-/// Appended to the scene: the one seam the server needs, a JSON view of the
-/// world the session broadcasts. It can be a one-liner because the scene already
-/// has `sceneWorldBots`, `sceneWeatherState`, `sceneStreams`, `sceneEaten`,
-/// `sceneWorldMods` and `JSON`.
+/// Appended to the scene: the seam the server needs, JSON views of what the
+/// session broadcasts. They can be one-liners because the scene already has
+/// `sceneWorldBots`, `sceneWeatherState`, `sceneStreams`, `sceneEaten`,
+/// `sceneWorldMods`, `modWorldActive` and `JSON`.
+///
+/// Two views, because they travel on two datagrams: the world has a budget the
+/// herd and the meadow share, and the world mods have one of their own.
 const GLUE: &str = concat!(
     "\nfunction sceneWorldJson() { return JSON.stringify({",
     " bots: sceneWorldBots(), weather: sceneWeatherState(),",
-    " streams: sceneStreams(), eaten: sceneEaten(),",
-    " mods: sceneWorldMods() }); }\n",
+    " streams: sceneStreams(), eaten: sceneEaten() }); }\n",
+    "\nfunction sceneModsJson() {",
+    " return modWorldActive() ? JSON.stringify(sceneWorldMods()) : \"\"; }\n",
 );
 
 /// A running headless scene.
@@ -30,6 +34,7 @@ pub struct Sim {
     context: Context,
     frame: JsValue,
     world: JsValue,
+    mods: JsValue,
     consume: JsValue,
 }
 
@@ -61,6 +66,7 @@ impl Sim {
         let init = scene_function(&context, "sceneInit")?;
         let frame = scene_function(&context, "sceneFrame")?;
         let world = scene_function(&context, "sceneWorldJson")?;
+        let mods = scene_function(&context, "sceneModsJson")?;
         let consume = scene_function(&context, "sceneConsume")?;
 
         context
@@ -78,6 +84,7 @@ impl Sim {
             context,
             frame,
             world,
+            mods,
             consume,
         })
     }
@@ -112,6 +119,19 @@ impl Sim {
         value
             .as_string()
             .ok_or_else(|| "sceneWorldJson did not return a string".to_string())
+    }
+
+    /// Every world mod's state, or `None` when none is loaded: there is nothing
+    /// to send then, and an empty datagram ten times a second is waste.
+    pub fn mods_json(&mut self) -> Result<Option<String>, String> {
+        let value = self
+            .context
+            .call(&self.mods, &JsValue::undefined(), &[])
+            .map_err(|error| error.to_string())?;
+        let text = value
+            .as_string()
+            .ok_or_else(|| "sceneModsJson did not return a string".to_string())?;
+        Ok(if text.is_empty() { None } else { Some(text) })
     }
 }
 
@@ -219,20 +239,29 @@ mod tests {
             sim.step().expect("step");
         }
         let json = sim.world_json().expect("world json");
-        assert!(json.contains("\"active\":true"), "{json}");
         assert!(
-            json.contains("\"com.example.dash:dash\":"),
-            "the stream state must travel: {json}"
+            !json.contains("com.example.dash"),
+            "the world must not carry a mod: {json}"
+        );
+        let mods = sim
+            .mods_json()
+            .expect("mods json")
+            .expect("a mod is loaded");
+        assert!(mods.contains("\"active\":true"), "{mods}");
+        assert!(
+            mods.contains("\"com.example.dash:dash\":"),
+            "the stream state must travel: {mods}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn the_birds_fixture_loads_and_its_flock_fits_the_datagram() {
+    fn the_birds_fixture_loads_and_both_datagrams_fit() {
         // The checked-in `mods/birds` mod is the "complex mod" example: it builds
         // its own meshes and textures in JS and publishes its flock through the
         // world extension. This loads the real fixture through the real loader on
-        // the headless scene and checks the whole world still fits one datagram.
+        // the headless scene and checks both datagrams fit -- the world without
+        // the flock in it, and the flock on its own.
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -250,13 +279,28 @@ mod tests {
         }
         let json = sim.world_json().expect("world json");
         assert!(
-            json.contains("com.github.sdgoij.goats.birds"),
-            "the flock must publish into the world: {json}"
+            !json.contains("com.github.sdgoij.goats.birds"),
+            "the flock travels on its own datagram, not the world's: {json}"
         );
         assert!(
             json.len() < proto::MAX_DATAGRAM_BYTES,
             "the world snapshot is {} bytes, over the {} cap",
             json.len(),
+            proto::MAX_DATAGRAM_BYTES
+        );
+
+        let mods = sim
+            .mods_json()
+            .expect("mods json")
+            .expect("a mod is loaded");
+        assert!(
+            mods.contains("com.github.sdgoij.goats.birds"),
+            "the flock must publish: {mods}"
+        );
+        assert!(
+            mods.len() < proto::MAX_DATAGRAM_BYTES,
+            "the mod state is {} bytes, over the {} cap",
+            mods.len(),
             proto::MAX_DATAGRAM_BYTES
         );
     }
@@ -321,22 +365,35 @@ mod tests {
         let loader = mods::Loader::discover_with(&dir, mods::AssetMode::HashOnly);
         assert!(loader.errors().is_empty(), "{:?}", loader.errors());
 
+        // The published state is what has to be reproducible, and it is now on
+        // its own the datagram: the world snapshot no longer carries it.
         let run = |seed: u32| {
             let mut sim = Sim::start(seed, &loader).expect("start");
             for _ in 0..40 {
                 sim.step().expect("step");
             }
-            sim.world_json().expect("world json")
+            (
+                sim.world_json().expect("world json"),
+                sim.mods_json()
+                    .expect("mods json")
+                    .expect("a mod is loaded"),
+            )
         };
-        let a = run(0x1234_5678);
-        let b = run(0x1234_5678);
+        let (a, a_mods) = run(0x1234_5678);
+        let (b, b_mods) = run(0x1234_5678);
         assert_eq!(a, b, "the same seed must run the same modded world");
+        assert_eq!(a_mods, b_mods, "...including what the mod publishes");
         assert!(
-            a.contains("\"com.example.dash\""),
-            "the mod must publish: {a}"
+            a_mods.contains("\"com.example.dash\""),
+            "the mod must publish: {a_mods}"
         );
-        let c = run(0x0fed_cba9);
+        assert!(
+            !a.contains("com.example.dash"),
+            "and not on the world's datagram: {a}"
+        );
+        let (c, c_mods) = run(0x0fed_cba9);
         assert_ne!(a, c, "a different seed must run a different modded world");
+        assert_ne!(a_mods, c_mods, "...including what the mod publishes");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

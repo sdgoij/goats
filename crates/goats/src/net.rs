@@ -46,9 +46,11 @@ enum Command {
         weather: session::WeatherState,
         streams: session::Streams,
         eaten: Vec<session::EatenCell>,
-        #[serde(default)]
-        mods: serde_json::Value,
     },
+    /// Every world mod's state, queued beside the world and only when one is
+    /// loaded. It travels on a datagram of its own, so a mod may publish more
+    /// than the world's budget can carry.
+    Mods { mods: serde_json::Value },
     /// A grass cell this client just ate, for the host's scene to record.
     Consume { key: i64 },
     /// A captured voice frame, queued by the audio module rather than by the
@@ -106,17 +108,19 @@ enum Event {
         name: String,
         state: session::PeerState,
     },
-    /// The server's world -- bots, sky, streams, meadow and world-mod state --
-    /// for a client to mirror instead of simulating. `eaten` is `null` when the
-    /// host's snapshot could not carry the meadow (it was over the datagram
-    /// budget), which the scene reads as "keep the one you have".
+    /// The server's world -- bots, sky, streams and meadow -- for a client to
+    /// mirror instead of simulating. `eaten` is `null` when the host's snapshot
+    /// could not carry the meadow (it was over the datagram budget), which the
+    /// scene reads as "keep the one you have".
     World {
         bots: Vec<session::BotState>,
         weather: session::WeatherState,
         streams: session::Streams,
         eaten: Option<Vec<session::EatenCell>>,
-        mods: serde_json::Value,
     },
+    /// Every world mod's state, on its own datagram: `{ streams, data }`, opaque
+    /// here and to the transport. A client keeps the last one it got.
+    Mods { mods: serde_json::Value },
     /// A client's bite, for the host's scene (host side only).
     Consume { key: i64 },
     /// A voice packet. The audio module consumes it; the scene never sees one,
@@ -272,7 +276,6 @@ impl Live {
         weather: &session::WeatherState,
         streams: session::Streams,
         eaten: &[session::EatenCell],
-        mods: serde_json::Value,
     ) -> Option<session::WorldOutcome> {
         match self {
             Live::Host(host) => Some(
@@ -284,10 +287,17 @@ impl Live {
                     // it always has a meadow to send: a `None` here is Rust's,
                     // not the scene's.
                     eaten: Some(eaten.to_vec()),
-                    mods,
                 })
                 .await,
             ),
+            Live::Client(_) => None,
+        }
+    }
+
+    /// Sends every world mod's state, on its own datagram. Only a host has any.
+    async fn publish_mods(&self, mods: serde_json::Value) -> Option<session::ModsOutcome> {
+        match self {
+            Live::Host(host) => Some(host.publish_mods(&session::ModsState(mods)).await),
             Live::Client(_) => None,
         }
     }
@@ -324,9 +334,10 @@ async fn run(
     world_mods: Vec<session::ModRef>,
 ) {
     let mut live: Option<Live> = None;
-    // The last thing said about the world snapshot. The host sends ten a second,
-    // so a report belongs on the change, not on every send.
+    // The last thing said about each high-rate datagram. The host sends them ten
+    // times a second, so a report belongs on the change, not on every send.
     let mut last_world = session::WorldOutcome::Whole;
+    let mut last_mods = session::ModsOutcome::Sent;
     loop {
         /// What one turn of the loop produced.
         enum Outcome {
@@ -406,11 +417,10 @@ async fn run(
                     weather,
                     streams,
                     eaten,
-                    mods,
                 } => {
                     if let Some(session) = live.as_ref()
                         && let Some(outcome) = session
-                            .publish_world(&bots, &weather, streams, &eaten, mods)
+                            .publish_world(&bots, &weather, streams, &eaten)
                             .await
                         && outcome != last_world
                     {
@@ -418,6 +428,19 @@ async fn run(
                             eprintln!("[net] {text}");
                         }
                         last_world = outcome;
+                    }
+                }
+                // Every world mod's state, beside the world and on its own
+                // datagram.
+                Command::Mods { mods } => {
+                    if let Some(session) = live.as_ref()
+                        && let Some(outcome) = session.publish_mods(mods).await
+                        && outcome != last_mods
+                    {
+                        if let Some(text) = outcome.describe() {
+                            eprintln!("[net] {text}");
+                        }
+                        last_mods = outcome;
                     }
                 }
                 // A bite this player took, reported to the host so its scene can
@@ -463,6 +486,7 @@ async fn start(
         Command::Say { .. }
         | Command::Pose { .. }
         | Command::World { .. }
+        | Command::Mods { .. }
         | Command::Consume { .. }
         | Command::Voice { .. } => None,
         Command::Host { name } => {
@@ -537,14 +561,15 @@ fn bridge(event: session::Event) -> Event {
             weather,
             streams,
             eaten,
-            mods,
         } => Event::World {
             bots,
             weather,
             streams,
             eaten,
-            mods,
         },
+        // The transport carries a mod's state opaquely; the scene is what has a
+        // schema for it.
+        session::Event::Mods { mods } => Event::Mods { mods: mods.0 },
         session::Event::Consume { key } => Event::Consume { key },
         session::Event::Voice { from, seq, payload } => Event::Voice { from, seq, payload },
         session::Event::Roster { names } => Event::Roster { names },
@@ -663,7 +688,6 @@ mod tests {
                 weather,
                 streams,
                 eaten,
-                mods,
             } => {
                 assert_eq!(bots.len(), 1);
                 assert_eq!(bots[0].index, 0);
@@ -674,7 +698,17 @@ mod tests {
                 assert_eq!(streams.food, 3);
                 assert_eq!(eaten.len(), 1);
                 assert_eq!(eaten[0].key, 99);
-                assert!(mods.is_null(), "a world without mods defaults to null");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match serde_json::from_str::<Command>(
+            r#"{"type":"mods","mods":{"streams":{"com.example.a:sprint":9},"data":{"com.example.a":{"n":1}}}}"#,
+        )
+        .expect("mods")
+        {
+            Command::Mods { mods } => {
+                assert_eq!(mods["streams"]["com.example.a:sprint"], 9);
+                assert_eq!(mods["data"]["com.example.a"]["n"], 1);
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -786,7 +820,6 @@ mod tests {
                 audio: 4,
             },
             eaten,
-            mods: serde_json::json!({ "data": { "com.example.a": { "n": 1 } } }),
         };
         let line = serde_json::to_string(&bridge(world_event(Some(vec![session::EatenCell {
             key: 5,
@@ -798,13 +831,23 @@ mod tests {
         assert!(line.contains(r#""kind":"cloudy""#), "{line}");
         assert!(line.contains(r#""food":3"#), "{line}");
         assert!(line.contains(r#""key":5"#), "{line}");
-        assert!(line.contains(r#""com.example.a""#), "{line}");
 
         // A meadow the host could not send reaches the scene as `null`, which is
         // what tells it to keep the one it has rather than clearing it -- see
         // `applyEaten` in `food.js`.
         let line = serde_json::to_string(&bridge(world_event(None))).expect("encode");
         assert!(line.contains(r#""eaten":null"#), "{line}");
+
+        // The mods are an event of their own, carrying the scene's own JSON
+        // through untouched.
+        let line = serde_json::to_string(&bridge(session::Event::Mods {
+            mods: session::ModsState(
+                serde_json::json!({ "data": { "com.example.a": { "n": 1 } } }),
+            ),
+        }))
+        .expect("encode");
+        assert!(line.contains(r#""type":"mods""#), "{line}");
+        assert!(line.contains(r#""com.example.a""#), "{line}");
 
         let line =
             serde_json::to_string(&bridge(session::Event::Consume { key: 7 })).expect("encode");
