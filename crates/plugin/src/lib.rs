@@ -29,6 +29,7 @@ const MOD_WASM_PUBLISH_MAX: usize = 1024;
 const TOKEN_LOG: u64 = 0;
 const TOKEN_RNG: u64 = 1;
 const TOKEN_PUBLISH: u64 = 2;
+const TOKEN_BELLY: u64 = 3;
 
 /// Which side of the world a mod runs on — the same distinction the manifest's
 /// `side` carries. A world mod re-derives its streams from the session seed and
@@ -62,6 +63,8 @@ pub struct Plugin {
     fn_init: usize,
     fn_update: usize,
     fn_apply: Option<usize>,
+    fn_hud: Option<usize>,
+    belly: f64,
 }
 
 /// FNV-1a over a string, as a `u32` — the same hash the JS driver uses to
@@ -107,6 +110,13 @@ fn publish_type() -> FuncType {
     }
 }
 
+fn belly_type() -> FuncType {
+    FuncType {
+        params: vec![],
+        results: vec![ValType::F64],
+    }
+}
+
 fn i32_of(args: &[Value], index: usize) -> i32 {
     match args.get(index) {
         Some(Value::I32(value)) => *value,
@@ -134,6 +144,14 @@ impl Plugin {
         let log_id = store.external_host(log_type(), TOKEN_LOG);
         let rng_id = store.external_host(rng_type(), TOKEN_RNG);
         let publish_id = store.external_host(publish_type(), TOKEN_PUBLISH);
+        // `goats.belly` is a client-local reading; a world plugin must not be
+        // able to import it, so the host registers (and therefore grants) it
+        // only here. A world module that asks for it fails to link.
+        let belly_id = if side == Side::Client {
+            Some(store.external_host(belly_type(), TOKEN_BELLY))
+        } else {
+            None
+        };
 
         let mut resolve = |module_name: &str, field: &str| -> Option<ExternVal> {
             if module_name != "goats" {
@@ -143,6 +161,7 @@ impl Plugin {
                 "log" => log_id,
                 "rng" => rng_id,
                 "publish" => publish_id,
+                "belly" => belly_id?,
                 _ => return None,
             };
             Some(ExternVal::HostFunc(id))
@@ -168,6 +187,7 @@ impl Plugin {
             .exported_func(instance, "goats_update")
             .ok_or("missing export goats_update")?;
         let fn_apply = store.exported_func(instance, "goats_apply");
+        let fn_hud = store.exported_func(instance, "goats_hud");
 
         // The per-mod, per-stream base seed, the same as the JS driver's
         // `sceneWasmModule` computes.
@@ -199,6 +219,8 @@ impl Plugin {
             fn_init,
             fn_update,
             fn_apply,
+            fn_hud,
+            belly: 0.0,
         };
 
         // Negotiate the ABI, then allocate and seed the record buffer exactly as
@@ -289,6 +311,33 @@ impl Plugin {
             &[Value::I32(self.record_ptr), Value::I32(count as i32)],
         )?;
         Ok(())
+    }
+
+    /// The host's reading of the player's belly fullness (0..1), delivered to the
+    /// module through the `goats.belly` import on the next [`tick`]. A world
+    /// plugin cannot import `goats.belly`, so the value is inert there.
+    pub fn set_belly(&mut self, value: f32) {
+        self.belly = f64::from(value);
+    }
+
+    /// The module's per-frame HUD bar fill (0..1), if it exports `goats_hud`.
+    /// A module without the export (or one that has already trapped) contributes
+    /// nothing.
+    pub fn hud(&mut self) -> Option<f32> {
+        let fn_hud = self.fn_hud?;
+        if self.error.is_some() {
+            return None;
+        }
+        match self.call(fn_hud, &[]) {
+            Ok(results) => match results.first() {
+                Some(Value::F64(bits)) => Some(f64::from_bits(*bits) as f32),
+                _ => None,
+            },
+            Err(error) => {
+                self.error = Some(error);
+                None
+            }
+        }
     }
 
     /// The records the module is working on, read back out of its memory.
@@ -392,6 +441,9 @@ impl Plugin {
                 let len = i32_of(&args, 1);
                 self.published = Some(self.read_bytes(ptr, len, MOD_WASM_PUBLISH_MAX));
                 vec![Value::I32(0)]
+            }
+            TOKEN_BELLY => {
+                vec![Value::F64(self.belly.to_bits())]
             }
             _ => vec![],
         }
@@ -574,6 +626,31 @@ impl PluginSet {
         serde_json::Value::Object(map).to_string()
     }
 
+    /// Push the player's belly reading into every plugin, so a client plugin's
+    /// `goats.belly` import returns it on the next [`tick`]. A world plugin
+    /// cannot import `goats.belly`, so the value is inert there.
+    pub fn set_belly(&mut self, value: f32) {
+        for plugin in self.plugins.values_mut() {
+            plugin.set_belly(value);
+        }
+    }
+
+    /// Every client plugin's HUD bar fill, as `{ id: fill }` — the shape the
+    /// scene folds into its HUD. A plugin without `goats_hud` contributes
+    /// nothing.
+    pub fn hud_json(&mut self) -> String {
+        let mut map = serde_json::Map::new();
+        for (id, plugin) in self.plugins.iter_mut() {
+            if plugin.side() != Side::Client {
+                continue;
+            }
+            if let Some(fill) = plugin.hud() {
+                map.insert(id.clone(), serde_json::json!(fill));
+            }
+        }
+        serde_json::Value::Object(map).to_string()
+    }
+
     /// The console's `mod info` view of one plugin, or `None` when this set does
     /// not own it.
     pub fn describe_json(&self, id: &str) -> Option<String> {
@@ -586,6 +663,10 @@ mod tests {
     use super::*;
 
     const MODULE: &[u8] = include_bytes!("../../../mods/wasm/plugin.wasm");
+    /// The same source built without the client-side visual surface
+    /// (`goats.belly` / `goats_hud`), so a world module links against a host that
+    /// does not grant the client-only `belly` import.
+    const WORLD_MODULE: &[u8] = include_bytes!("../../../fixtures/wasm/world.wasm");
 
     #[test]
     fn the_rust_host_drives_the_compiled_mod() {
@@ -625,8 +706,8 @@ mod tests {
 
     #[test]
     fn a_world_module_seeds_and_replays() {
-        let mut first = Plugin::new("com.example.worldwasm", MODULE, Side::World).unwrap();
-        let mut same = Plugin::new("com.example.worldwasm", MODULE, Side::World).unwrap();
+        let mut first = Plugin::new("com.example.worldwasm", WORLD_MODULE, Side::World).unwrap();
+        let mut same = Plugin::new("com.example.worldwasm", WORLD_MODULE, Side::World).unwrap();
         first.seed(1001);
         same.seed(1001);
         for _ in 0..80 {
@@ -635,7 +716,7 @@ mod tests {
         }
         assert_eq!(first.records(), same.records());
 
-        let mut other = Plugin::new("com.example.worldwasm", MODULE, Side::World).unwrap();
+        let mut other = Plugin::new("com.example.worldwasm", WORLD_MODULE, Side::World).unwrap();
         other.seed(1002);
         for _ in 0..80 {
             other.tick(1.0 / 60.0).unwrap();
@@ -644,8 +725,22 @@ mod tests {
     }
 
     #[test]
+    fn a_world_module_cannot_import_the_client_only_belly_capability() {
+        // The import list is the API: `goats.belly` is client-local, so a world
+        // module that asks for it must fail to link rather than read a value it
+        // has no business reading.
+        let error = Plugin::new("com.example.worldwasm", MODULE, Side::World)
+            .err()
+            .expect("a world module importing belly must not link");
+        assert!(
+            !error.is_empty(),
+            "a world module must fail to link: {error}"
+        );
+    }
+
+    #[test]
     fn a_mirroring_module_applies_peer_state() {
-        let mut host = Plugin::new("com.example.worldwasm", MODULE, Side::World).unwrap();
+        let mut host = Plugin::new("com.example.worldwasm", WORLD_MODULE, Side::World).unwrap();
         host.seed(1001);
         for _ in 0..80 {
             host.tick(1.0 / 60.0).unwrap();
@@ -653,7 +748,7 @@ mod tests {
         let host_records = host.records();
         let published = host.published().expect("published").to_vec();
 
-        let mut client = Plugin::new("com.example.worldwasm", MODULE, Side::World).unwrap();
+        let mut client = Plugin::new("com.example.worldwasm", WORLD_MODULE, Side::World).unwrap();
         client.seed(1001);
         let before = client.records();
         client.apply(&published).expect("apply");
@@ -674,8 +769,40 @@ mod tests {
         assert_eq!(info["log"], "wasm mod: ready");
         assert_eq!(
             info["imports"],
-            serde_json::json!(["goats.log", "goats.rng", "goats.publish"])
+            serde_json::json!(["goats.log", "goats.rng", "goats.belly", "goats.publish"])
         );
+    }
+
+    #[test]
+    fn a_client_module_reads_belly_and_reports_a_hud_bar() {
+        let mut plugin =
+            Plugin::new("com.github.sdgoij.goats.wasm", MODULE, Side::Client).expect("instantiate");
+
+        // Before the host feeds a belly reading, the module starts empty.
+        plugin.tick(1.0 / 60.0).expect("tick");
+        let empty = plugin.hud().expect("a hud bar");
+        assert!((0.0..=0.2).contains(&empty), "starts near empty: {empty}");
+
+        // Feed a belly and let the module's own model chase it for a moment.
+        plugin.set_belly(0.8);
+        for _ in 0..120 {
+            plugin.tick(1.0 / 60.0).expect("tick");
+        }
+        let full = plugin.hud().expect("a hud bar");
+        assert!(
+            (0.5..=1.0).contains(&full),
+            "the module's hud chases the fed belly: {full}"
+        );
+        assert!(full > empty, "the bar rose: {empty} -> {full}");
+
+        // And the set-level bridge reports exactly this client plugin.
+        let mut set = PluginSet::new();
+        set.add("com.github.sdgoij.goats.wasm", MODULE, Side::Client)
+            .unwrap();
+        set.set_belly(0.8);
+        set.tick_all(1.0 / 60.0, true);
+        let hud: serde_json::Value = serde_json::from_str(&set.hud_json()).unwrap();
+        assert!(hud["com.github.sdgoij.goats.wasm"].is_number(), "{hud}");
     }
 
     #[test]

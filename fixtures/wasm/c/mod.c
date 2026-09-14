@@ -27,6 +27,13 @@
 #define ABI_VERSION 1
 #endif
 
+// The client-side visual surface is optional and compiled in by default; a
+// `world.wasm` build turns it off, because `goats.belly` is a client-local
+// reading a world mod must not be able to import (see ABIv1.md 3.3).
+#ifndef WANT_HUD
+#define WANT_HUD 1
+#endif
+
 typedef signed int i32;
 typedef unsigned char u8;
 
@@ -44,6 +51,29 @@ extern double goats_rng(i32 stream);
 // them -- the same rule that already governs the records.
 __attribute__((import_module("goats"), import_name("publish")))
 extern i32 goats_publish(const char *ptr, i32 len);
+
+#if WANT_HUD
+// The client-side visual surface: the host provides the player's belly fullness
+// (0..1) and this module keeps its own "digesting" model of it, which the host
+// reads back through `goats_hud` and draws on the HUD. The import is granted to
+// `side: "client"` mods only, so a world mod that asks for it fails to link.
+__attribute__((import_module("goats"), import_name("belly")))
+extern double goats_belly(void);
+
+static double hud_fill = 0.0;
+static double hud_phase = 0.0;
+
+// One-pole chase toward `target`; `rate` is per-second. Core wasm has no
+// `sin`/`cos`, so the visible "digestion" ripple below is a triangle wave from
+// this module's own phase rather than a trig import.
+static double approach(double current, double target, double rate, double dt) {
+    const double k = 1.0 - rate * dt;
+    if (k < 0.0) {
+        return target;
+    }
+    return target + (current - target) * k;
+}
+#endif
 
 // A bump arena, so the host can be handed a buffer without either side owning an
 // allocator protocol. 4 KiB covers this fixture; a real mod brings its own.
@@ -114,6 +144,27 @@ i32 goats_update(Record *records, i32 count, float dt) {
         records[i].yaw = (float)((double)records[i].yaw + d);
         records[i].z = (float)((double)records[i].z + (double)records[i].yaw * d * 0.25);
     }
+#if WANT_HUD
+    // The host's reading this frame, then this module's own "digestion" model:
+    // chase the belly with a slow, deterministic ripple layered onto the target,
+    // so the bar visibly breathes rather than echoing the host. The ripple sits
+    // on the target (not the clamped output), so the one-pole chase filters it
+    // instead of fighting the clamp. Client-side only, so the phase never needs
+    // to be reproducible across peers.
+    hud_phase += d * 0.5;
+    if (hud_phase >= 1.0) {
+        hud_phase -= 1.0;
+    }
+    const double tri = hud_phase < 0.5 ? hud_phase * 2.0 : 2.0 - hud_phase * 2.0;
+    const double target = goats_belly() + (tri * 2.0 - 1.0) * 0.08;
+    hud_fill = approach(hud_fill, target, 3.0, d);
+    if (hud_fill < 0.0) {
+        hud_fill = 0.0;
+    }
+    if (hud_fill > 1.0) {
+        hud_fill = 1.0;
+    }
+#endif
     // A world mod publishes what it computed, so a peer can mirror it. The
     // host copies these bytes rather than reading them back itself: what ships
     // is exactly what the mod asked to ship, not what the host happened to read.
@@ -139,3 +190,12 @@ __attribute__((export_name("goats_applies")))
 i32 goats_applies(void) {
     return applied;
 }
+
+#if WANT_HUD
+// The per-frame HUD contribution: the bar fill (0..1) this module computed in
+// `goats_update`. Optional -- a module without it contributes nothing to the HUD.
+__attribute__((export_name("goats_hud")))
+double goats_hud(void) {
+    return hud_fill;
+}
+#endif

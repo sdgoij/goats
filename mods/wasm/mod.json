@@ -4,6 +4,6 @@
   "version": "1.0.0",
   "api": 1,
   "side": "client",
-  "description": "A mod with no JavaScript: a WebAssembly module the host instantiates and drives. See ABIv1.md.",
+  "description": "A mod with no JavaScript: a WebAssembly module the host instantiates and drives. It reads the player's belly and draws a HUD bar through goats_hud. See ABIv1.md.",
   "wasm": { "module": "plugin.wasm" }
 }

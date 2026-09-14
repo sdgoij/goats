@@ -30,6 +30,10 @@ let foodRngState = 0x1f2e3d4c;
 let satiety = 0;                // 0..1
 let eatenCount = 0;
 
+// The Rust plugin host's belly seam: it pushes the player's fullness to a
+// compiled client mod through `goats.belly` (ABIv1.md). One number a frame.
+function sceneBelly() { return satiety; }
+
 // A cell's identity as one number, unique for the cell range the field spans.
 function tuftKey(cx, cz) {
     return (cx + 4096) * 8192 + (cz + 4096);

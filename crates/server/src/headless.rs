@@ -379,9 +379,9 @@ mod tests {
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("..")
                     .join("..")
-                    .join("mods")
+                    .join("fixtures")
                     .join("wasm")
-                    .join("plugin.wasm"),
+                    .join("world.wasm"),
             )
             .unwrap(),
         )

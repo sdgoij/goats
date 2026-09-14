@@ -706,6 +706,29 @@ function sceneSetWasmPublished(json) {
     return "ok";
 }
 
+// The Rust host's HUD contribution: a client compiled mod pushes its `goats_hud`
+// bar fill here each frame, as `{ id: fill }`. The built-in HUD reads it back;
+// nothing else in the JS driver owns it.
+let rustModHud = {};
+function sceneSetWasmHud(json) {
+    try {
+        rustModHud = JSON.parse(String(json));
+    } catch (error) {
+        console.log("mods: sceneSetWasmHud: " + String(error));
+    }
+    return "ok";
+}
+
+// The first client compiled mod's HUD bar fill (0..1), or null when none is
+// running. The built-in HUD uses this so a compiled mod can contribute a bar.
+function modWasmHudFill() {
+    for (const key in rustModHud) {
+        const value = Number(rustModHud[key]);
+        if (isFinite(value)) return value;
+    }
+    return null;
+}
+
 // The host's contribution to the world mods' datagram: every world mod's stream
 // states and whatever it publishes. Only the host builds this.
 function sceneWorldMods() {
@@ -1143,62 +1166,66 @@ function modWasmDescribe(id) {
 // The host's side of the ABI, closed over the live state so that `log` can read
 // the module's own memory -- the bytes are there, and this side holds the memory.
 function modWasmImports(live) {
-    return {
-        goats: {
-            log: function (ptr, len) {
-                const memory = live.instance === null ? null : live.instance.exports.memory;
-                if (memory === null || memory === undefined) return;
-                const bytes = new Uint8Array(memory.buffer);
-                const at = Number(ptr) | 0;
-                const count = Math.min(Number(len) | 0, 200);
-                let text = "";
-                for (let i = 0; i < count; i++) {
-                    const code = bytes[at + i];
-                    if (code === undefined) break;
-                    text += String.fromCharCode(code);
-                }
-                live.lastLog = text;
-                console.log("mods: '" + live.id + "' wasm: " + text);
-            },
-            // Host-owned randomness: the module has no clock to read and no
-            // entropy of its own, so every draw comes from here. The order of the
-            // draws is what a mod has to keep stable; the generator is the host's.
-            rng: function (stream) {
-                const at = (Number(stream) | 0) % MOD_WASM_STREAMS;
-                let s = live.rng[at < 0 ? at + MOD_WASM_STREAMS : at];
-                s ^= s << 13;
-                s >>>= 0;
-                s ^= s >>> 17;
-                s ^= s << 5;
-                s >>>= 0;
-                live.rng[at] = s;
-                return s / 4294967296;
-            },
-            // The module pushes its state: the host copies the bytes out of the
-            // module's memory and remembers them for the world-mod datagram. The
-            // bytes are opaque; this side only moves them.
-            publish: function (ptr, len) {
-                const memory = live.instance === null ? null : live.instance.exports.memory;
-                if (memory === null || memory === undefined) return -1;
-                const at = Number(ptr) | 0;
-                const count = Math.min(Math.max(Number(len) | 0, 0), MOD_WASM_PUBLISH_MAX);
-                const view = new Uint8Array(memory.buffer);
-                const out = new Uint8Array(count);
-                for (let i = 0; i < count; i++) {
-                    const code = view[at + i];
-                    if (code === undefined) break;
-                    out[i] = code;
-                }
-                live.published = out;
-                if (count > PUBLISH_WARN_BYTES) {
-                    console.log("mods: '" + live.id + "' publishes " + count +
-                        " bytes of state; keep a world mod under " + PUBLISH_WARN_BYTES +
-                        " so it fits the datagram");
-                }
-                return 0;
-            },
+    const goats = {
+        log: function (ptr, len) {
+            const memory = live.instance === null ? null : live.instance.exports.memory;
+            if (memory === null || memory === undefined) return;
+            const bytes = new Uint8Array(memory.buffer);
+            const at = Number(ptr) | 0;
+            const count = Math.min(Number(len) | 0, 200);
+            let text = "";
+            for (let i = 0; i < count; i++) {
+                const code = bytes[at + i];
+                if (code === undefined) break;
+                text += String.fromCharCode(code);
+            }
+            live.lastLog = text;
+            console.log("mods: '" + live.id + "' wasm: " + text);
+        },
+        // Host-owned randomness: the module has no clock to read and no
+        // entropy of its own, so every draw comes from here. The order of the
+        // draws is what a mod has to keep stable; the generator is the host's.
+        rng: function (stream) {
+            const at = (Number(stream) | 0) % MOD_WASM_STREAMS;
+            let s = live.rng[at < 0 ? at + MOD_WASM_STREAMS : at];
+            s ^= s << 13;
+            s >>>= 0;
+            s ^= s >>> 17;
+            s ^= s << 5;
+            s >>>= 0;
+            live.rng[at] = s;
+            return s / 4294967296;
+        },
+        // The module pushes its state: the host copies the bytes out of the
+        // module's memory and remembers them for the world-mod datagram. The
+        // bytes are opaque; this side only moves them.
+        publish: function (ptr, len) {
+            const memory = live.instance === null ? null : live.instance.exports.memory;
+            if (memory === null || memory === undefined) return -1;
+            const at = Number(ptr) | 0;
+            const count = Math.min(Math.max(Number(len) | 0, 0), MOD_WASM_PUBLISH_MAX);
+            const view = new Uint8Array(memory.buffer);
+            const out = new Uint8Array(count);
+            for (let i = 0; i < count; i++) {
+                const code = view[at + i];
+                if (code === undefined) break;
+                out[i] = code;
+            }
+            live.published = out;
+            if (count > PUBLISH_WARN_BYTES) {
+                console.log("mods: '" + live.id + "' publishes " + count +
+                    " bytes of state; keep a world mod under " + PUBLISH_WARN_BYTES +
+                    " so it fits the datagram");
+            }
+            return 0;
         },
     };
+    // `goats.belly` is a client-local reading (ABIv1.md): granted only to a
+    // `side: "client"` module, so a world module that asks for it fails to link.
+    if (live.side === "client") {
+        goats.belly = function () { return satiety; };
+    }
+    return { goats: goats };
 }
 
 // The host delivers a compiled mod: bytes, never a path. Called once per mod,

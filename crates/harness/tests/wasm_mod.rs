@@ -30,6 +30,11 @@ const MODULE: &[u8] = include_bytes!("../../../mods/wasm/plugin.wasm");
 /// refusal has something real to refuse.
 const MODULE_ABI2: &[u8] = include_bytes!("../../../fixtures/wasm/mod-abi2.wasm");
 
+/// The same source built without the client-side visual surface
+/// (`goats.belly` / `goats_hud`), so a world module links against a host that
+/// does not grant the client-only `belly` import.
+const WORLD_MODULE: &[u8] = include_bytes!("../../../fixtures/wasm/world.wasm");
+
 /// Enough frames for the scene to load and settle before the mod is delivered.
 const SHORT: u32 = 60;
 
@@ -116,7 +121,7 @@ fn the_host_instantiates_drives_and_reads_a_compiled_mod() {
     assert_eq!(live["abi"], 1, "{live}");
     assert_eq!(
         live["imports"],
-        json!(["goats.log", "goats.rng", "goats.publish"]),
+        json!(["goats.log", "goats.rng", "goats.belly", "goats.publish"]),
         "{live}"
     );
     assert_eq!(live["log"], "wasm mod: ready", "{live}");
@@ -142,6 +147,26 @@ fn the_host_instantiates_drives_and_reads_a_compiled_mod() {
         moved.iter().any(|row| row[2] != 0.0),
         "and nudged their velocities: {moved:?}"
     );
+}
+
+#[test]
+fn a_client_module_exports_a_hud_bar() {
+    // The client-side visual surface: `goats_hud` returns the bar fill the module
+    // computed from `goats.belly` (here zero, since the harness never eats), and
+    // it stays a number in 0..1 the host can draw.
+    let mut harness = staged();
+    harness.wasm_module(ID, MODULE).expect("deliver");
+    harness
+        .call("harnessStep", &[json!(60), json!(1.0 / 60.0)])
+        .expect("step");
+
+    let fill = harness
+        .eval(&format!(
+            "modWasmLive.get('{ID}').instance.exports.goats_hud()"
+        ))
+        .expect("read goats_hud");
+    let n = fill.as_f64().expect("a number");
+    assert!((0.0..=1.0).contains(&n), "a bar fill in 0..1: {n}");
 }
 
 #[test]
@@ -229,7 +254,7 @@ fn staged_world(seed: i64) -> Harness {
         .call("sceneMods", &[json!(table.to_string())])
         .expect("install the table");
     harness
-        .wasm_module(WORLD_ID, MODULE)
+        .wasm_module(WORLD_ID, WORLD_MODULE)
         .expect("deliver the module");
     // The same module serves either side: what makes it a world mod is the
     // manifest, and this is where its streams re-derive from the session seed.

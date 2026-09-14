@@ -29,8 +29,11 @@ numbers.
 
 `mods/wasm/plugin.wasm` (`c/mod.c`) is the M17a fixture mod: a module with the
 same ABI, compiled into the real `mods/` tree so the game, the server and the
-harness all load it. `mod-abi2.wasm` is the same source built against an ABI the
-build does not know, so the host's version refusal has something real to refuse.
+harness all load it. `world.wasm` is the same source with the client-side visual
+surface (`goats.belly` / `goats_hud`) compiled out (`-DWANT_HUD=0`), so a world
+module links against a host that does not grant the client-only `belly` import.
+`mod-abi2.wasm` is the same source built against an ABI the build does not know,
+so the host's version refusal has something real to refuse.
 
 `build.sh` rebuilds all of them. It needs:
 

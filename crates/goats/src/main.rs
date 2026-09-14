@@ -510,6 +510,8 @@ fn main() {
     let scene_dt = scene_function(&context, "sceneDt");
     let net_world_local = scene_function(&context, "netWorldLocal");
     let set_wasm_published = scene_function(&context, "sceneSetWasmPublished");
+    let scene_belly = scene_function(&context, "sceneBelly");
+    let set_wasm_hud = scene_function(&context, "sceneSetWasmHud");
 
     // The apply seam: a mirroring client's JS scene hands a peer's published
     // state back to the Rust host through this native function.
@@ -648,12 +650,27 @@ fn main() {
             .ok()
             .and_then(|value| value.as_boolean())
             .unwrap_or(true);
+        // The player's belly fullness is a client-local reading the compiled
+        // mods reach through `goats.belly`; it is pushed in before the tick so
+        // the module's own `goats_hud` model is one frame old at most.
+        let belly = context
+            .call(&scene_belly, &JsValue::undefined(), &[])
+            .ok()
+            .and_then(|value| value.as_number())
+            .unwrap_or(0.0);
+        plugins.borrow_mut().set_belly(belly as f32);
         plugins.borrow_mut().tick_all(dt as f32, world_local);
         let published = plugins.borrow().published_json();
         let _ = context.call(
             &set_wasm_published,
             &JsValue::undefined(),
             &[JsValue::string(published)],
+        );
+        let hud = plugins.borrow_mut().hud_json();
+        let _ = context.call(
+            &set_wasm_hud,
+            &JsValue::undefined(),
+            &[JsValue::string(hud)],
         );
 
         // Mod enable/disable/reload intents the console queued. The host

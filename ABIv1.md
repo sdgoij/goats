@@ -119,13 +119,15 @@ the memory since it took the view.
 
 ### 3.3 Imports (namespace `goats`)
 
-v1 is exactly three, and the fixtures implement exactly these:
+v1 is the three deterministic, world-mod capabilities below, plus one
+client-only reading. The fixtures implement exactly the world three:
 
 | Import | Signature | Meaning |
 | --- | --- | --- |
 | `log` | `(ptr: i32, len: i32)` | The host reads `len` UTF-8 bytes at `ptr` and logs them under the mod's id. |
 | `rng` | `(stream: i32) -> f64` | One draw from a host-owned, seeded stream. The host decides what the stream is; the *ordering* of draws is part of the ABI. |
 | `publish` | `(ptr: i32, len: i32) -> i32` | A world mod pushes `len` bytes of state at `ptr`; the host copies them and folds them into the mods datagram (`APIv1.md` section 4.13). The bytes are opaque. M17c2. |
+| `belly` | `() -> f64` | The player's current belly fullness (0..1). **Client-side only**: granted to a `side: "client"` mod, so a world mod that imports it fails to link -- the same structural wall that keeps the clock out. |
 
 The memory-bearing signatures (`log` and `publish`) are shaped by *where the
 memory is*, not by privileges: they carry a pointer into the module's linear
@@ -152,6 +154,7 @@ each is a policy decision rather than a function:
 | `goats_init` | `(seed: i32) -> i32` | Called once after instantiation. `0` is success, anything else is a failure the host reports. |
 | `goats_update` | `(ptr: i32, count: i32, dt: f32) -> i32` | The frame call. The return is the mod's own status: this host reports it and does not interpret it. |
 | `goats_apply` | `(ptr: i32, len: i32) -> i32` | Optional. The host has written a peer's published state into the module's memory at `ptr` and calls this so the mod adopts it (M17c2). A mirroring client never runs `goats_update`, so this is how its state moves. |
+| `goats_hud` | `() -> f64` | Optional, client-side. The mod's per-frame HUD bar fill (0..1), read by the host and drawn on the HUD. A module without it contributes nothing; a world module's is never read. |
 
 ### 3.5 The record
 
@@ -225,6 +228,12 @@ proof: both fixtures publish the same bytes for the same host-provided
 randomness. The driver path (`mods/wasm/plugin.wasm` through
 `crates/harness/tests/wasm_mod.rs`) exercises the full loop -- publish reaches
 the datagram, a peer applies it, and the same seed replays the same bytes.
+
+The client-side visual surface (`belly` and `goats_hud`) is deliberately *not*
+part of the two-language fixtures: it is local, non-deterministic and outside the
+compatibility set, so it has nothing to prove across toolchains. It is exercised
+by the real client mod (`mods/wasm/plugin.wasm`) through both hosts -- the Rust
+`crates/plugin` tests and `wasm_mod.rs` -- and the ABI-2 refusal is unchanged.
 
 ## 5. Who drives the plugin
 

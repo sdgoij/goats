@@ -40,6 +40,20 @@ clang \
   -o ../../mods/wasm/plugin.wasm \
   c/mod.c
 
+# The same source with the client-side visual surface (goats.belly / goats_hud)
+# compiled out, so the world-mod tests have a module that links under a host that
+# does not grant the client-only `belly` import.
+echo "== world.wasm (no client HUD) =="
+clang \
+  --target=wasm32 \
+  -nostdlib \
+  -O2 \
+  -DWANT_HUD=0 \
+  -Wl,--no-entry \
+  -Wl,--export-memory \
+  -o world.wasm \
+  c/mod.c
+
 # The same module built against a future ABI, so the host's version refusal has
 # something real to refuse.
 echo "== mod-abi2.wasm =="
@@ -59,4 +73,4 @@ cargo build --release --target wasm32-unknown-unknown
 cd ..
 cp rust/target/wasm32-unknown-unknown/release/plugin_rust.wasm plugin-rust.wasm
 
-ls -l plugin-c.wasm plugin-rust.wasm bench.wasm mod-abi2.wasm ../../mods/wasm/plugin.wasm
+ls -l plugin-c.wasm plugin-rust.wasm bench.wasm mod-abi2.wasm world.wasm ../../mods/wasm/plugin.wasm

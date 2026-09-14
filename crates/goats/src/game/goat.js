@@ -284,7 +284,7 @@ function drawHud(move) {
         "   audio " + (audioReady ? (muted ? "muted" : "on") : "off") +
         "   herd " + BOTS.length;
 
-    // Health and energy bars, top-right.
+    // Health and energy bars, top-right, plus the built-in read-out line.
     const bw = 160;
     const bx = rl.getScreenWidth() - bw - 12;
     rl.drawRectangle(bx, 10, bw, 14, rl.color(28, 28, 34, 220));
@@ -295,7 +295,20 @@ function drawHud(move) {
         rl.color(222, 190, 62, 255));
     rl.drawText("health " + Math.round(stats.health) + "   energy " + Math.round(stats.energy) +
         "   belly " + Math.round(satiety * 100) + "%", bx, 50, 14, rl.RAYWHITE);
-    if (mode === "sleep") rl.drawText("Z z z", bx, 70, 20, rl.RAYWHITE);
+
+    // A compiled client mod's HUD contribution: a belly bar the mod owns through
+    // `goats_hud`. It exists only while a wasm mod reports a value, so disabling
+    // the mod removes the bar rather than leaving a built-in fallback behind.
+    const wasmBelly = modWasmHudFill();
+    let sleepY = 70;
+    if (wasmBelly !== null) {
+        rl.drawRectangle(bx, 70, bw, 14, rl.color(28, 28, 34, 220));
+        rl.drawRectangle(bx + 1, 71, Math.round((bw - 2) * Math.max(0, Math.min(1, wasmBelly))), 12,
+            rl.color(96, 186, 96, 255));
+        rl.drawText("belly (wasm) " + Math.round(wasmBelly * 100) + "%", bx, 90, 14, rl.RAYWHITE);
+        sleepY = 110;
+    }
+    if (mode === "sleep") rl.drawText("Z z z", bx, sleepY, 20, rl.RAYWHITE);
 
     // Action menu: a grass tuft is within reach, so offer the Eat action.
     if (foodReady) {
