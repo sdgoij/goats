@@ -3,9 +3,10 @@
 // The point of the fixture is the shape of the boundary, not what it computes.
 // `APIv1.md` section 0 says a mod gets no filesystem, no path and no socket; a
 // wasm module has no ambient authority at all, so the only things it can reach
-// are the imports the host handed it at instantiation -- here `goats.log` and
-// `goats.rng`, nothing else. The host instantiates it, hands it a buffer of
-// records once a frame, and reads the results back out of its memory.
+// are the imports the host handed it at instantiation -- `goats.log`, `goats.rng`
+// and (for a world mod) `goats.publish`, nothing else. The host instantiates it,
+// hands it a buffer of records once a frame, and reads the results back out of
+// its memory.
 //
 // Two things are deliberately *not* in this file, and both are the ABI's doing:
 //
@@ -37,10 +38,20 @@ extern void goats_log(const char *ptr, i32 len);
 __attribute__((import_module("goats"), import_name("rng")))
 extern double goats_rng(i32 stream);
 
+// The world-mod state surface (M17c2): a world module pushes its state to the
+// host once a frame, and a mirroring module receives a peer's state through the
+// `goats_apply` export below. The bytes are opaque to the host, which only moves
+// them -- the same rule that already governs the records.
+__attribute__((import_module("goats"), import_name("publish")))
+extern i32 goats_publish(const char *ptr, i32 len);
+
 // A bump arena, so the host can be handed a buffer without either side owning an
 // allocator protocol. 4 KiB covers this fixture; a real mod brings its own.
 static u8 arena[4096];
 static i32 used = 0;
+
+// How many times the host has delivered a peer's state through `goats_apply`.
+static i32 applied = 0;
 
 // One record, 16 bytes: `x | z | yaw | vx`. This mod reads all four and writes
 // all four, and the host only moves the bytes.
@@ -103,5 +114,28 @@ i32 goats_update(Record *records, i32 count, float dt) {
         records[i].yaw = (float)((double)records[i].yaw + d);
         records[i].z = (float)((double)records[i].z + (double)records[i].yaw * d * 0.25);
     }
+    // A world mod publishes what it computed, so a peer can mirror it. The
+    // host copies these bytes rather than reading them back itself: what ships
+    // is exactly what the mod asked to ship, not what the host happened to read.
+    (void)goats_publish((const char *)records, count * (i32)sizeof(Record));
     return count;
+}
+
+// The host has written a peer's records into this module's record buffer and
+// calls here to say so. The state is already in place; a real mod would rebuild
+// anything derived from it (a mesh, a sound) before the next draw. `len` is the
+// byte length, so the record count is `len / 16`. A mirroring client never runs
+// `goats_update`, so this is the whole of how its state changes.
+__attribute__((export_name("goats_apply")))
+i32 goats_apply(const Record *records, i32 len) {
+    (void)records;
+    applied += 1;
+    return len;
+}
+
+// How many times `goats_apply` has run, so the host and the test can observe
+// that a delivery happened rather than infer it.
+__attribute__((export_name("goats_applies")))
+i32 goats_applies(void) {
+    return applied;
 }

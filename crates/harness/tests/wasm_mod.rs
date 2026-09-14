@@ -58,6 +58,18 @@ fn records(harness: &mut Harness, id: &str) -> Vec<Vec<f64>> {
     serde_json::from_str(text).expect("rows of f64")
 }
 
+/// The published state of a world compiled mod, as the host ships it: the
+/// base64 the mod pushed through `goats.publish` and `sceneWorldMods` folded
+/// into the datagram.
+fn published(harness: &mut Harness) -> String {
+    harness
+        .eval(&format!("sceneWorldMods().data['{WORLD_ID}']"))
+        .expect("read the published state")
+        .as_str()
+        .expect("a base64 string")
+        .to_string()
+}
+
 /// A scene with the compiled mod's metadata installed, before delivery.
 fn staged() -> Harness {
     let mut harness = Harness::start().expect("evaluate the scene");
@@ -102,7 +114,11 @@ fn the_host_instantiates_drives_and_reads_a_compiled_mod() {
     // through the `goats.log` capability.
     let live = plugin(&mut harness);
     assert_eq!(live["abi"], 1, "{live}");
-    assert_eq!(live["imports"], json!(["goats.log", "goats.rng"]), "{live}");
+    assert_eq!(
+        live["imports"],
+        json!(["goats.log", "goats.rng", "goats.publish"]),
+        "{live}"
+    );
     assert_eq!(live["log"], "wasm mod: ready", "{live}");
     assert_eq!(live["frames"], 0, "{live}");
 
@@ -278,4 +294,76 @@ fn a_mirroring_client_does_not_drive_a_world_compiled_mod() {
         info["wasm"]["frames"], 10,
         "a mirroring client must not simulate: {info}"
     );
+}
+
+#[test]
+fn a_world_compiled_mod_publishes_and_replays() {
+    // A world mod's state is the bytes it pushes through `publish`, folded into
+    // the host's mods datagram. The bytes are opaque; the host only moves them.
+    // Because the module draws from `goats.rng` (seeded) and never a clock, the
+    // same seed replays the same published bytes and a different seed does not.
+    let mut first = staged_world(1001);
+    first
+        .call("harnessStep", &[json!(80), json!(1.0 / 60.0)])
+        .expect("step");
+    let a = published(&mut first);
+    assert!(!a.is_empty(), "a world mod must publish");
+
+    let mut same = staged_world(1001);
+    same.call("harnessStep", &[json!(80), json!(1.0 / 60.0)])
+        .expect("step");
+    assert_eq!(a, published(&mut same), "same seed -> same bytes");
+
+    let mut other = staged_world(1002);
+    other
+        .call("harnessStep", &[json!(80), json!(1.0 / 60.0)])
+        .expect("step");
+    assert_ne!(
+        a,
+        published(&mut other),
+        "different seed -> different bytes"
+    );
+}
+
+#[test]
+fn a_mirroring_client_applies_a_peers_published_state() {
+    // The other half of the crossing: the host's published bytes reach a peer,
+    // and the peer's module adopts them through `goats_apply`. A mirroring
+    // client never runs `goats_update`, so this is the whole of how its state
+    // moves.
+    let mut host = staged_world(1001);
+    host.call("harnessStep", &[json!(80), json!(1.0 / 60.0)])
+        .expect("step");
+    let encoded = published(&mut host);
+
+    let mut client = staged_world(1001);
+    client
+        .eval("netMode = 'client'; 0")
+        .expect("flip to client");
+    let before = records(&mut client, WORLD_ID);
+    client
+        .call(
+            "sceneApplyWorldMods",
+            &[json!({ "data": { WORLD_ID: encoded } })],
+        )
+        .expect("apply");
+
+    assert_eq!(
+        records(&mut client, WORLD_ID),
+        records(&mut host, WORLD_ID),
+        "the client mirrors the host's published state"
+    );
+    assert_ne!(
+        before,
+        records(&mut client, WORLD_ID),
+        "applying moved the records"
+    );
+
+    // The export was really called, once: the host did not just write memory.
+    let applies = client
+        .eval(&format!(
+            "modWasmLive.get('{WORLD_ID}').instance.exports.goats_applies()"
+        ))
+        .expect("read the apply counter");
+    assert_eq!(applies, json!(1), "goats_apply ran once");
 }

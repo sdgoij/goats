@@ -119,25 +119,26 @@ the memory since it took the view.
 
 ### 3.3 Imports (namespace `goats`)
 
-v1 is exactly two, and the fixtures implement exactly these:
+v1 is exactly three, and the fixtures implement exactly these:
 
 | Import | Signature | Meaning |
 | --- | --- | --- |
 | `log` | `(ptr: i32, len: i32)` | The host reads `len` UTF-8 bytes at `ptr` and logs them under the mod's id. |
 | `rng` | `(stream: i32) -> f64` | One draw from a host-owned, seeded stream. The host decides what the stream is; the *ordering* of draws is part of the ABI. |
+| `publish` | `(ptr: i32, len: i32) -> i32` | A world mod pushes `len` bytes of state at `ptr`; the host copies them and folds them into the mods datagram (`APIv1.md` section 4.13). The bytes are opaque. M17c2. |
 
-Both signatures are shaped by *where the memory is*, not by privileges. `rng`
-carries values, so it can be a native host function anywhere. `log` carries a
-pointer into the module's linear memory, so whoever implements it has to be able
-to read that memory -- the driver, in the shape where the JS API instantiates the
-module; the Rust host, in the shape where `Store` does. Section 5.
+The memory-bearing signatures (`log` and `publish`) are shaped by *where the
+memory is*, not by privileges: they carry a pointer into the module's linear
+memory, so whoever implements them has to be able to read that memory -- the
+driver, in the shape where the JS API instantiates the module; the Rust host, in
+the shape where `Store` does. Section 5. `rng` carries values, so it can be a
+native host function anywhere.
 
 Reserved for the version that follows, and deliberately **not** in v1, because
 each is a policy decision rather than a function:
 
 | Reserved | Why it is not v1 |
 | --- | --- |
-| `publish(ptr, len)` / `apply(ptr, len)` | The world-mod state surface (`APIv1.md` section 4.13). M17c landed the digest and the determinism rule; what is left is this -- a plugin's records reaching a peer -- and it is M17c2's job. |
 | `assets` | A plugin should reach an asset by the same opaque-name route as the scene, not by a path. Needs the asset-slot work first. |
 | `now_ms()` | A clock is a divergence hazard. If it exists at all it is client-side only, and the absence of the import is what stops a world mod from using it. |
 | `scene` | Any callback into the scene's own state. That re-enters JavaScript and its reentrancy rules; see section 5. |
@@ -150,6 +151,7 @@ each is a policy decision rather than a function:
 | `goats_alloc` | `(len: i32) -> i32` | A buffer of `len` bytes in this module's memory. v1 does not specify an allocator; a real plugin brings its own, a fixture can bump-allocate. |
 | `goats_init` | `(seed: i32) -> i32` | Called once after instantiation. `0` is success, anything else is a failure the host reports. |
 | `goats_update` | `(ptr: i32, count: i32, dt: f32) -> i32` | The frame call. The return is the mod's own status: this host reports it and does not interpret it. |
+| `goats_apply` | `(ptr: i32, len: i32) -> i32` | Optional. The host has written a peer's published state into the module's memory at `ptr` and calls this so the mod adopts it (M17c2). A mirroring client never runs `goats_update`, so this is how its state moves. |
 
 ### 3.5 The record
 
@@ -205,8 +207,8 @@ bytes each -- so the test and CI need no wasm toolchain; `build.sh` rebuilds the
 global with a JS host stub standing in for the Rust host, then requires:
 
 - both negotiate `goats_abi() == 1`;
-- both declare exactly `goats.log` and `goats.rng` -- the capability list, read
-  off the module rather than assumed;
+- both declare exactly `goats.log` and `goats.rng` -- the two capabilities the
+  arithmetic crossing needs, read off the module rather than assumed;
 - both log the string the host reads out of *their* memory, each its own;
 - both return the same record count;
 - and, the point of the exercise, **the same `vx` values, byte for byte**, given
@@ -216,6 +218,14 @@ That last assertion is the one that matters. Two independent toolchains agreeing
 on a computed result means the ABI is fully specified at the level a mod author
 in a *third* language would need. If only one language could target it
 conveniently, the whole idea would have failed at its single job.
+
+The world-mod surface -- `publish` and `goats_apply`, M17c2 -- is exercised by
+the `mods/wasm/plugin.wasm` fixture (C) through
+`crates/harness/tests/wasm_mod.rs`: it publishes its records, a peer applies
+them, and the same seed replays the same published bytes. `publish` and
+`goats_apply` carry no arithmetic of their own -- they move the opaque bytes the
+record crossing above already proved language-agnostic -- so the cross-language
+property is inherited rather than re-proven.
 
 ## 5. The fork in the road: who drives the plugin
 

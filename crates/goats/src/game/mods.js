@@ -704,6 +704,11 @@ function sceneWorldMods() {
             console.log("mods: '" + id + "' publish threw: " + String(error));
         }
     }
+    // A compiled world mod's state is the bytes it pushed through `publish`.
+    for (const [id, live] of modWasmLive) {
+        if (live.side !== "world" || live.published === null) continue;
+        data[id] = modWasmB64Encode(live.published);
+    }
     return { streams: modStreamStates(), data: data };
 }
 
@@ -712,7 +717,11 @@ function sceneWorldMods() {
 // is what keeps a vanilla session from sending an empty datagram ten times a
 // second.
 function modWorldActive() {
-    return modWorldExts.size > 0 || modStreams.size > 0;
+    if (modWorldExts.size > 0 || modStreams.size > 0) return true;
+    for (const live of modWasmLive.values()) {
+        if (live.side === "world" && live.published !== null) return true;
+    }
+    return false;
 }
 
 // How many rows and how many numbers a row a mod may publish through
@@ -775,13 +784,18 @@ function sceneApplyWorldMods(mods) {
     if (data === null || typeof data !== "object") return;
     const ids = Object.keys(data);
     for (let i = 0; i < ids.length; i++) {
-        const ext = modWorldExts.get(ids[i]);
-        if (ext === undefined || ext.apply === null) continue;
-        try {
-            ext.apply(data[ids[i]]);
-        } catch (error) {
-            console.log("mods: '" + ids[i] + "' apply threw: " + String(error));
+        const key = ids[i];
+        const ext = modWorldExts.get(key);
+        if (ext !== undefined) {
+            if (ext.apply === null) continue;
+            try {
+                ext.apply(data[key]);
+            } catch (error) {
+                console.log("mods: '" + key + "' apply threw: " + String(error));
+            }
+            continue;
         }
+        modWasmApply(key, data[key]);
     }
 }
 
@@ -1014,6 +1028,53 @@ const MOD_WASM_RECORDS = 6;
 const MOD_WASM_RECORD_BYTES = 16;
 const MOD_WASM_STREAMS = 8;
 
+// The largest state a compiled mod may publish in one frame. A structural guard,
+// not the budget: the datagram holds ~1200 bytes and the transport refuses
+// anything larger, so this only stops a runaway `publish` from building a
+// megabyte before anyone notices.
+const MOD_WASM_PUBLISH_MAX = 1024;
+
+// A compiled mod's state is opaque bytes and the mods datagram is JSON, so the
+// bytes need a compact, deterministic, JSON-safe spelling. Base64 is that: 4/3
+// the size, and it round-trips exactly.
+const MOD_WASM_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function modWasmB64Encode(bytes) {
+    let out = "";
+    const len = bytes.length;
+    for (let i = 0; i < len; i += 3) {
+        const a = bytes[i];
+        const b = i + 1 < len ? bytes[i + 1] : 0;
+        const c = i + 2 < len ? bytes[i + 2] : 0;
+        out += MOD_WASM_B64[a >> 2];
+        out += MOD_WASM_B64[((a & 3) << 4) | (b >> 4)];
+        out += i + 1 < len ? MOD_WASM_B64[((b & 15) << 2) | (c >> 6)] : "=";
+        out += i + 2 < len ? MOD_WASM_B64[c & 63] : "=";
+    }
+    return out;
+}
+function modWasmB64Decode(text) {
+    const rev = {};
+    for (let i = 0; i < MOD_WASM_B64.length; i++) rev[MOD_WASM_B64[i]] = i;
+    const clean = String(text).replace(/=+$/, "");
+    const count = clean.length;
+    const out = new Uint8Array((count * 3) >> 2);
+    let acc = 0;
+    let bits = 0;
+    let j = 0;
+    for (let i = 0; i < count; i++) {
+        const v = rev[clean[i]];
+        if (v === undefined) return null;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[j] = (acc >> bits) & 255;
+            j += 1;
+        }
+    }
+    return out;
+}
+
 // id -> the live module: { instance, ptr, abi, imports, frames, error, rng }.
 const modWasmLive = new Map();
 
@@ -1066,6 +1127,29 @@ function modWasmImports(live) {
                 live.rng[at] = s;
                 return s / 4294967296;
             },
+            // The module pushes its state: the host copies the bytes out of the
+            // module's memory and remembers them for the world-mod datagram. The
+            // bytes are opaque; this side only moves them.
+            publish: function (ptr, len) {
+                const memory = live.instance === null ? null : live.instance.exports.memory;
+                if (memory === null || memory === undefined) return -1;
+                const at = Number(ptr) | 0;
+                const count = Math.min(Math.max(Number(len) | 0, 0), MOD_WASM_PUBLISH_MAX);
+                const view = new Uint8Array(memory.buffer);
+                const out = new Uint8Array(count);
+                for (let i = 0; i < count; i++) {
+                    const code = view[at + i];
+                    if (code === undefined) break;
+                    out[i] = code;
+                }
+                live.published = out;
+                if (count > PUBLISH_WARN_BYTES) {
+                    console.log("mods: '" + live.id + "' publishes " + count +
+                        " bytes of state; keep a world mod under " + PUBLISH_WARN_BYTES +
+                        " so it fits the datagram");
+                }
+                return 0;
+            },
         },
     };
 }
@@ -1103,6 +1187,7 @@ function sceneWasmModule(id, bytes) {
         frames: 0,
         error: "",
         lastLog: "",
+        published: null,
         rngSeed: rngSeed,
         rng: rngSeed.slice(),
     };
@@ -1178,6 +1263,30 @@ function modWasmTick(dt) {
             live.error = String(error);
             console.log("mods: '" + live.id + "' compiled update failed: " + live.error);
         }
+    }
+}
+
+// The host's side of the world-mod apply for a compiled mod: decode a peer's
+// published bytes, write them into the module's record buffer, and hand the
+// module a call so it can react. A mirroring client never runs `goats_update`,
+// so this is how its state moves; a module without `goats_apply` (a client mod,
+// or an older world mod) simply has nothing to call.
+function modWasmApply(id, encoded) {
+    const live = modWasmLive.get(id);
+    if (live === undefined || live.error !== "" || live.instance === null) return;
+    const exports = live.instance.exports;
+    if (typeof exports.goats_apply !== "function") return;
+    const bytes = modWasmB64Decode(encoded);
+    if (bytes === null) return;
+    const view = new Uint8Array(exports.memory.buffer);
+    const at = live.ptr;
+    const count = Math.min(bytes.length, MOD_WASM_RECORDS * MOD_WASM_RECORD_BYTES);
+    for (let i = 0; i < count; i++) view[at + i] = bytes[i];
+    try {
+        exports.goats_apply(at, count);
+    } catch (error) {
+        live.error = String(error);
+        console.log("mods: '" + id + "' compiled apply failed: " + live.error);
     }
 }
 

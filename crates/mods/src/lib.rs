@@ -91,6 +91,9 @@ pub enum AssetMode {
     /// Hash the bytes and drop them; the headless server only needs the digest,
     /// and a mod's model should not sit in a server's memory for nothing.
     HashOnly,
+    /// The headless server: hash and drop assets, but keep a mod's wasm module,
+    /// because that is code the server must run rather than data to register.
+    KeepWasm,
 }
 
 /// Where a mod's files live. A directory is the editable form; a `.zip` is the
@@ -490,7 +493,7 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
     for (slot, files) in &raw.assets {
         let files = files.to_vec();
         for (index, file) in files.iter().enumerate() {
-            let (bytes, content_hash) = read_asset_source(source, file, mode)
+            let (bytes, content_hash) = read_asset_source(source, file, mode == AssetMode::Keep)
                 .map_err(|message| fail(format!("asset '{slot}': {message}")))?;
             // One file fills the slot on its own; several are addressed by
             // index, so a mod can replace a whole sound list.
@@ -511,14 +514,13 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
 
     let wasm = match &raw.wasm {
         Some(declared) => {
+            // A server keeps the module it must run but drops assets; a client
+            // keeps both. The magic-number check only runs when the bytes were
+            // kept, because a `HashOnly` read deliberately returns none.
+            let keep_wasm = mode != AssetMode::HashOnly;
             let (bytes, content_hash) =
-                read_asset_source(source, &declared.module, mode).map_err(fail)?;
-            // The one check worth making here: something that is not a module at
-            // all should fail at load with a name, not at instantiation with a
-            // decoder error nobody can place. Only when the bytes were kept -- a
-            // `HashOnly` read deliberately returns none, because the headless
-            // server wants the digest and not a mod's code in its memory.
-            if mode == AssetMode::Keep && !bytes.starts_with(b"\0asm") {
+                read_asset_source(source, &declared.module, keep_wasm).map_err(fail)?;
+            if keep_wasm && !bytes.starts_with(b"\0asm") {
                 return Err(fail(format!(
                     "wasm module '{}' is not a WebAssembly module (no magic number)",
                     declared.module
@@ -594,8 +596,8 @@ fn read_capped(path: &Path, max: u64, what: &str) -> Result<Vec<u8>, String> {
 /// Read an asset, returning its bytes (empty in hash-only mode) and the FNV-1a
 /// hash the manifest folds in. Both modes hash the same bytes, so a client and
 /// a server agree on the digest.
-fn read_asset(path: &Path, mode: AssetMode) -> Result<(Vec<u8>, u64), String> {
-    if mode == AssetMode::Keep {
+fn read_asset(path: &Path, keep: bool) -> Result<(Vec<u8>, u64), String> {
+    if keep {
         let bytes = read_capped(path, MAX_ASSET_BYTES, "asset")?;
         let mut hash = FNV_OFFSET;
         fnv1a(&mut hash, &bytes);
@@ -684,22 +686,18 @@ fn read_source_text(
 /// Read an asset from either source, returning its bytes (empty in hash-only
 /// mode) and the FNV-1a hash the manifest folds in. Both sources hash the same
 /// bytes, so a directory mod and its zipped twin have the same digest.
-fn read_asset_source(
-    source: &ModSource,
-    file: &str,
-    mode: AssetMode,
-) -> Result<(Vec<u8>, u64), String> {
+fn read_asset_source(source: &ModSource, file: &str, keep: bool) -> Result<(Vec<u8>, u64), String> {
     match source {
         ModSource::Dir(dir) => {
             let path = safe_join(dir, file)?;
-            read_asset(&path, mode)
+            read_asset(&path, keep)
         }
         ModSource::Zip(_) => {
             // A zip entry cannot be streamed without decompressing it first.
             let bytes = source.read(file, MAX_ASSET_BYTES, "asset")?;
             let mut hash = FNV_OFFSET;
             fnv1a(&mut hash, &bytes);
-            Ok(if mode == AssetMode::Keep {
+            Ok(if keep {
                 (bytes, hash)
             } else {
                 (Vec::new(), hash)
@@ -1379,6 +1377,60 @@ mod tests {
             hash,
             after.get("com.example.w").expect("the mod").hash,
             "the module's bytes are content"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keep_wasm_keeps_a_module_but_hashes_assets() {
+        // The server's mode: it needs the wasm bytes to run the world, but it
+        // must not carry a mod's model. The digest must still agree with a full
+        // `Keep` read, so the two ends recognise each other by the same hash.
+        let root = workspace("keepwasm");
+        write_mod(
+            &root,
+            "w",
+            r#"{ "id": "com.example.w", "name": "W", "version": "1", "api": 1,
+                "side": "world", "wasm": { "module": "plugin.wasm" },
+                "assets": { "model.goat": "m.bin" } }"#,
+        );
+        let dir = root.join("w");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        std::fs::write(dir.join("m.bin"), "a model, hashed and dropped").unwrap();
+
+        let keep = Loader::discover_with(&root, AssetMode::Keep);
+        let keep_wasm = Loader::discover_with(&root, AssetMode::KeepWasm);
+        assert!(keep_wasm.errors().is_empty(), "{:?}", keep_wasm.errors());
+
+        let manifest = keep_wasm.get("com.example.w").expect("the mod");
+        assert_eq!(
+            manifest.hash,
+            keep.get("com.example.w").unwrap().hash,
+            "the digest must not depend on which bytes were kept"
+        );
+        assert_eq!(
+            manifest.wasm.as_ref().unwrap().bytes,
+            b"\0asm\x01\0\0\0",
+            "the module is kept so the server can run it"
+        );
+        assert!(
+            manifest.assets[0].bytes.is_empty(),
+            "assets are hashed, not kept"
+        );
+
+        // The hash-only twin still drops the module too.
+        let hash_only = Loader::discover_with(&root, AssetMode::HashOnly);
+        assert!(
+            hash_only
+                .get("com.example.w")
+                .unwrap()
+                .wasm
+                .as_ref()
+                .unwrap()
+                .bytes
+                .is_empty(),
+            "HashOnly drops the module"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

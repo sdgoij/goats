@@ -174,6 +174,26 @@ fn load_mods(context: &mut Context, loader: &mods::Loader) -> Result<(), String>
             )?,
         }
     }
+    // A world-side compiled mod ships a module rather than an entry; the
+    // headless server runs it the same way the client does, so a `goatsd --mods`
+    // world actually simulates its wasm mods. A client-side module is local to a
+    // client and is not run here.
+    for manifest in loader.mods() {
+        if manifest.side != mods::Side::World {
+            continue;
+        }
+        let Some(wasm) = manifest.wasm.as_ref() else {
+            continue;
+        };
+        let buffer = context
+            .array_buffer_from_bytes(&wasm.bytes)
+            .map_err(|error| error.to_string())?;
+        call_scene(
+            context,
+            "sceneWasmModule",
+            &[JsValue::string(manifest.id.clone()), buffer],
+        )?;
+    }
     call_scene(context, "sceneModFreeze", &[])
 }
 
@@ -303,6 +323,65 @@ mod tests {
             mods.len(),
             proto::MAX_DATAGRAM_BYTES
         );
+    }
+
+    #[test]
+    fn a_world_compiled_mod_runs_headless_and_publishes() {
+        // The server runs a world-side wasm mod with no window: `KeepWasm` keeps
+        // the module bytes, the headless scene instantiates and drives them once
+        // a frame, and the mod's published state lands on the mods datagram
+        // exactly as a client host's would. This is what makes a `goatsd --mods`
+        // world actually simulate its compiled mods for every joiner.
+        let dir = std::env::temp_dir().join(format!("goats-server-wasm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("w")).unwrap();
+        std::fs::write(
+            dir.join("w").join("mod.json"),
+            r#"{ "id": "com.example.worldwasm", "name": "World Wasm", "version": "1",
+                 "api": 1, "side": "world", "wasm": { "module": "plugin.wasm" } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("w").join("plugin.wasm"),
+            std::fs::read(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+                    .join("mods")
+                    .join("wasm")
+                    .join("plugin.wasm"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let loader = mods::Loader::discover_with(&dir, mods::AssetMode::KeepWasm);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        let manifest = loader.get("com.example.worldwasm").expect("the mod");
+        assert!(
+            !manifest.wasm.as_ref().unwrap().bytes.is_empty(),
+            "KeepWasm keeps the module the server must run"
+        );
+
+        let mut sim = Sim::start(0x1234_5678, &loader).expect("start");
+        for _ in 0..120 {
+            sim.step().expect("step");
+        }
+        let mods = sim
+            .mods_json()
+            .expect("mods json")
+            .expect("a mod is loaded");
+        assert!(
+            mods.contains("com.example.worldwasm"),
+            "the compiled world mod must publish: {mods}"
+        );
+        assert!(
+            mods.len() < proto::MAX_DATAGRAM_BYTES,
+            "the mod state is {} bytes, over the {} cap",
+            mods.len(),
+            proto::MAX_DATAGRAM_BYTES
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -161,10 +161,10 @@ async fn main() {
     let loader = match resolve_mods_dir(&options) {
         Some(dir) => {
             eprintln!("goatsd: scanning {}", dir.display());
-            // Hash the assets for the digest but do not keep them: a server has
-            // no engine to register them with, and a mod's model should not sit
-            // in its memory for nothing.
-            mods::Loader::discover_with(&dir, mods::AssetMode::HashOnly)
+            // Hash the assets for the digest but do not keep them (a server has
+            // no engine to register them with), while keeping a mod's wasm
+            // module: that is code the headless world runs, not data to register.
+            mods::Loader::discover_with(&dir, mods::AssetMode::KeepWasm)
         }
         None => mods::Loader::empty(),
     };

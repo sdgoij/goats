@@ -93,7 +93,7 @@ uses.
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
 | **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ✅ **Done** — binary and quantized, shed in a defined order, the mods on their own datagram, and a guard so the budget cannot erode again (M16c deferred on the numbers) |
-| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | **In progress** — M17a (the ABI + the `mods/wasm` fixture) and M17c (the digest + determinism) are done; M17b and the state surface (M17c2) are open |
+| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | **In progress** — M17a (the ABI), M17c (the digest + determinism) and M17c2 (the state surface) are done; M17b (the Rust-side host) is open |
 
 ---
 
@@ -1712,10 +1712,23 @@ dependency on the same git revision. Same shape as M9's upstream prerequisite.
   per stream, as the JS world mods), and it ticks only where the world is
   authoritative (`netWorldLocal()`), so a mirroring client instantiates it but
   does not simulate it. The harness covers it (`wasm_mod`: seed dependence, and a
-  mirroring client's frame count standing still). What is left is the *state
-  surface* -- `publish`/`apply`, and the server keeping the module's bytes to run
-  it headlessly -- which is **M17c2**: today a world-side plugin runs on a solo or
-  player host and contributes nothing a peer can see yet.
+  mirroring client's frame count standing still).
+- **M17c2 — The world-mod state surface for compiled plugins. ✅ Done.** A
+  `side: "world"` module now ships its state to peers the way a JS world mod
+  does. The ABI gains `goats.publish(ptr, len)` -- an import: the module pushes
+  `len` bytes of state the host copies -- and `goats_apply(ptr, len)` -- an
+  export: the host writes a peer's bytes into the module's memory and calls it,
+  so a mirroring client's module adopts the state without running `goats_update`.
+  `mods.js` folds a world module's published bytes into `sceneWorldMods().data`
+  as base64 (the mods datagram is JSON and the bytes are opaque) and
+  `sceneApplyWorldMods` hands them back through `goats_apply`; `modWorldActive`
+  counts a compiled world mod with published state. The dedicated server now
+  runs world modules headlessly: `AssetMode::KeepWasm` hashes and drops assets
+  but keeps a mod's module, and `headless::load_mods` delivers it through
+  `sceneWasmModule` exactly as the client does. The harness covers the crossing
+  (`wasm_mod`: publish reaches the datagram, the same seed replays the same
+  published bytes, a mirroring client applies a peer's state), the loader covers
+  `KeepWasm`, and the server covers a world wasm mod publishing on `goatsd`.
 - **M17d — The performance debt. Paid upstream.** `wasm --features compile` is
   the default for native targets now, so the compiled path *is* the shipped path,
   and the wasm arm of the benchmark is 12-19x past the JavaScript JIT on the
