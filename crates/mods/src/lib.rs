@@ -147,6 +147,8 @@ pub struct Manifest {
     /// The tuning file's name and text, if the mod ships one.
     pub tuning: Option<String>,
     pub tuning_json: Option<String>,
+    /// A compiled module this mod ships instead of (or beside) an entry.
+    pub wasm: Option<WasmModule>,
     pub load_after: Vec<String>,
     /// Where the files were read from (for diagnostics and reloading).
     pub source: ModSource,
@@ -210,6 +212,11 @@ impl Manifest {
             if let Ok(tuning) = serde_json::from_str::<serde_json::Value>(text) {
                 value["tuning"] = tuning;
             }
+        }
+        // A compiled mod has no entry to run; the name is here so the console
+        // and the Mods screen can say what kind of mod it is.
+        if let Some(wasm) = &self.wasm {
+            value["wasm"] = serde_json::json!(wasm.module);
         }
         value
     }
@@ -365,6 +372,29 @@ impl Loader {
 
 // ---- manifest -------------------------------------------------------------
 
+/// A compiled mod: the module's bytes, and the file they came from.
+///
+/// The bytes are handed to the scene as an `ArrayBuffer` -- the host never gives
+/// a mod a path, and a module is content like any other asset (`APIv1.md`
+/// section 0). The ABI version is not here: the module reports its own through
+/// `goats_abi()`, which is the number its code was actually built against, so
+/// the manifest does not get to claim one.
+#[derive(Debug, Clone)]
+pub struct WasmModule {
+    /// The declared file name, for diagnostics and reload.
+    pub module: String,
+    pub bytes: Vec<u8>,
+    /// FNV-1a over the bytes, so the digest is the same whether they were kept
+    /// or streamed.
+    pub content_hash: u64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWasm {
+    module: String,
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawManifest {
@@ -382,6 +412,8 @@ struct RawManifest {
     assets: BTreeMap<String, OneOrMany>,
     #[serde(default)]
     tuning: Option<String>,
+    #[serde(default)]
+    wasm: Option<RawWasm>,
     #[serde(default)]
     load_after: Vec<String>,
 }
@@ -477,6 +509,41 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
         }
     }
 
+    let wasm = match &raw.wasm {
+        Some(declared) => {
+            // A compiled module has no hash in the join handshake yet, so a world
+            // mod could ship one and two hosts could disagree without being told.
+            // Refusing loudly is the whole of the safety here until M17c prices
+            // the artifact into the digest.
+            if side == Side::World {
+                return Err(fail(
+                    "a compiled `wasm` module on a `side: \"world\"` mod is not supported yet \
+                     (the compatibility digest does not cover the artifact)"
+                        .to_string(),
+                ));
+            }
+            let (bytes, content_hash) =
+                read_asset_source(source, &declared.module, mode).map_err(fail)?;
+            // The one check worth making here: something that is not a module at
+            // all should fail at load with a name, not at instantiation with a
+            // decoder error nobody can place. Only when the bytes were kept -- a
+            // `HashOnly` read deliberately returns none, because the headless
+            // server wants the digest and not a mod's code in its memory.
+            if mode == AssetMode::Keep && !bytes.starts_with(b"\0asm") {
+                return Err(fail(format!(
+                    "wasm module '{}' is not a WebAssembly module (no magic number)",
+                    declared.module
+                )));
+            }
+            Some(WasmModule {
+                module: declared.module.clone(),
+                bytes,
+                content_hash,
+            })
+        }
+        None => None,
+    };
+
     let hash = hash_manifest(
         &raw.id,
         &raw.version,
@@ -496,6 +563,7 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
         assets,
         tuning: raw.tuning,
         tuning_json,
+        wasm,
         load_after: raw.load_after,
         source: source.clone(),
         hash,
@@ -1257,6 +1325,96 @@ mod tests {
             "the birds digest changed: {}@{}",
             birds.id, birds.version
         );
+    }
+
+    #[test]
+    fn a_compiled_mod_loads_its_module() {
+        // A mod with no JavaScript at all: the module is the whole mod, and the
+        // host hands the scene bytes rather than a path.
+        let root = workspace("wasm-mod");
+        write_mod(
+            &root,
+            "w",
+            r#"{ "id": "com.example.w", "name": "W", "version": "1", "api": 1,
+                "wasm": { "module": "plugin.wasm" } }"#,
+        );
+        let dir = root.join("w");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.wasm"), b"\0asm\x01\0\0\0").unwrap();
+
+        let loader = Loader::discover(&root);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        let manifest = loader.get("com.example.w").expect("the mod");
+        let wasm = manifest.wasm.as_ref().expect("a wasm module");
+        assert_eq!(wasm.module, "plugin.wasm");
+        assert_eq!(wasm.bytes, b"\0asm\x01\0\0\0");
+        assert!(manifest.entry.is_none(), "a compiled mod needs no entry");
+        // The scene is told what kind of mod it is.
+        assert_eq!(manifest.json()["wasm"], "plugin.wasm");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_compiled_world_mod_is_refused_until_the_digest_covers_it() {
+        // Allowing this quietly would let two hosts disagree about a world mod
+        // without either being told, which is the one thing the join handshake
+        // exists to prevent.
+        let root = workspace("wasm-world");
+        write_mod(
+            &root,
+            "w",
+            r#"{ "id": "com.example.w", "name": "W", "version": "1", "api": 1,
+                "side": "world", "wasm": { "module": "plugin.wasm" } }"#,
+        );
+        let dir = root.join("w");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.wasm"), b"\0asm\x01\0\0\0").unwrap();
+
+        let loader = Loader::discover(&root);
+        assert!(loader.get("com.example.w").is_none(), "it must not load");
+        let text = format!("{:?}", loader.errors());
+        assert!(text.contains("digest"), "{text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn something_that_is_not_a_module_is_refused_by_name() {
+        let root = workspace("wasm-bogus");
+        write_mod(
+            &root,
+            "w",
+            r#"{ "id": "com.example.w", "name": "W", "version": "1", "api": 1,
+                "wasm": { "module": "plugin.wasm" } }"#,
+        );
+        let dir = root.join("w");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.wasm"), b"not a module").unwrap();
+
+        let loader = Loader::discover(&root);
+        assert!(loader.get("com.example.w").is_none(), "it must not load");
+        let text = format!("{:?}", loader.errors());
+        assert!(text.contains("magic"), "{text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_wasm_fixture_mod_loads() {
+        // The shipped fixture, through the real loader: it is the mod the hosts
+        // and the game itself instantiate, so an edit that breaks it should be a
+        // red test rather than a surprise on the next run.
+        let mods_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("mods");
+        let loader = Loader::discover(&mods_dir);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        let manifest = loader
+            .get("com.github.sdgoij.goats.wasm")
+            .expect("the wasm fixture mod");
+        let wasm = manifest.wasm.as_ref().expect("its module");
+        assert!(wasm.bytes.starts_with(b"\0asm"), "a real module");
+        assert!(wasm.bytes.len() > 100, "and not an empty stub");
+        assert!(manifest.entry.is_none(), "it ships no JavaScript");
     }
 
     #[test]
