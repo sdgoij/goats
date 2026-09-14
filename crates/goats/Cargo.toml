@@ -12,6 +12,8 @@ mods = { workspace = true }
 # source, shared with the headless server and the test harness, so they cannot
 # disagree about the running order.
 scene = { workspace = true }
+# The compiled-mod host (M17b): the client drives compiled mods from Rust.
+plugin = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }

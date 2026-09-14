@@ -814,7 +814,18 @@ function sceneApplyWorldMods(mods) {
             }
             continue;
         }
-        modWasmApply(key, data[key]);
+        if (modWasmLive.has(key)) {
+            modWasmApply(key, data[key]);
+            continue;
+        }
+        // A Rust-hosted compiled world mod (M17b): the host owns the instance.
+        if (typeof sceneWasmApply === "function") {
+            try {
+                sceneWasmApply(key, data[key]);
+            } catch (error) {
+                console.log("mods: '" + key + "' wasm apply threw: " + String(error));
+            }
+        }
     }
 }
 

@@ -461,6 +461,28 @@ pub fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// The inverse of [`base64_encode`], for the apply bridge. Returns `None` on a
+/// character outside the alphabet.
+pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+    for byte in text.bytes() {
+        if byte == b'=' || byte.is_ascii_whitespace() {
+            continue;
+        }
+        let value = ALPHABET.iter().position(|b| *b == byte)? as u32;
+        acc = (acc << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// A set of running compiled mods, keyed by id, ticked together and readable for
 /// the world-mod datagram bridge.
 #[derive(Default)]

@@ -397,6 +397,12 @@ function sceneInit() {
     sceneFrames = 0;
 }
 
+// The `dt` the scene last stepped with, so the Rust host (M17b) can drive
+// compiled mods at the same clock the JS simulation uses. A menu freeze shows up
+// here as 0, exactly as it does for the JS `update` event.
+let sceneLastDt = 0;
+function sceneDt() { return sceneLastDt; }
+
 // One frame: advance the world and draw it. Returns false once the window is
 // closing or `quit` was received, so the host stops calling it.
 function sceneFrame() {
@@ -427,6 +433,7 @@ function sceneFrame() {
     // A menu freezes time: every world update is dt-driven, so a zero dt is the
     // whole pause (input is gated separately).
     const dt = uiIsOpen() ? 0 : Math.min(rl.getFrameTime(), 0.05);
+    sceneLastDt = dt;
     sceneFrames += 1;
     // Full-screen can change the drawable size; keep the cached size current.
     screenW = rl.getScreenWidth();

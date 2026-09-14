@@ -28,13 +28,16 @@
 mod audio;
 mod net;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use mods::watch::ModWatcher;
 use mods::{AssetMode, Loader};
+use plugin::{PluginSet, Side as PluginSide};
 use slag::{Context, HostCallbacks, JsValue};
 
 /// Every asset the scene loads, embedded so the binary is self-contained. The
@@ -426,22 +429,29 @@ fn main() {
     for id in loader.ids() {
         eval_entry(&mut context, &loader, &id);
     }
-    // A compiled mod ships a module rather than an entry: the scene's driver
-    // instantiates it with the capabilities the host grants (`ABIv1.md`, M17a).
-    // The bytes cross as an `ArrayBuffer`, never as a path, and a module that
-    // cannot be instantiated is reported through `sceneModResult` like any other
-    // load failure -- the driver decides that, so both hosts agree on it.
+    // A compiled mod ships a module rather than an entry. The Rust host (M17b)
+    // instantiates and drives it, so the bytes never cross into JavaScript as a
+    // path or an ArrayBuffer: the host owns the module's `Store` and memory.
+    let plugins = Rc::new(RefCell::new(PluginSet::new()));
     for manifest in loader.mods() {
         let Some(wasm) = manifest.wasm.as_ref() else {
             continue;
         };
-        match context.array_buffer_from_bytes(&wasm.bytes) {
-            Ok(buffer) => call_scene(
+        let side = match manifest.side {
+            mods::Side::Client => PluginSide::Client,
+            mods::Side::World => PluginSide::World,
+        };
+        if let Err(error) = plugins.borrow_mut().add(&manifest.id, &wasm.bytes, side) {
+            eprintln!("[mods] {} failed: {error}", manifest.id);
+            call_scene(
                 &mut context,
-                "sceneWasmModule",
-                &[JsValue::string(manifest.id.clone()), buffer],
-            ),
-            Err(error) => eprintln!("[mods] {}: module bytes: {error}", manifest.id),
+                "sceneModResult",
+                &[
+                    JsValue::string(manifest.id.clone()),
+                    JsValue::boolean(false),
+                    JsValue::string(error),
+                ],
+            );
         }
     }
     call_scene(&mut context, "sceneModFreeze", &[]);
@@ -456,6 +466,37 @@ fn main() {
     let frame = scene_function(&context, "sceneFrame");
     let shutdown = scene_function(&context, "sceneShutdown");
     let command = scene_function(&context, "sceneCommand");
+    // The seams the Rust plugin host uses each frame.
+    let scene_dt = scene_function(&context, "sceneDt");
+    let net_world_local = scene_function(&context, "netWorldLocal");
+    let set_wasm_published = scene_function(&context, "sceneSetWasmPublished");
+
+    // The apply seam: a mirroring client's JS scene hands a peer's published
+    // state back to the Rust host through this native function.
+    {
+        let plugins_for_apply = Rc::clone(&plugins);
+        context
+            .register_fn(
+                "sceneWasmApply",
+                2,
+                Box::new(move |call| {
+                    let id = call
+                        .arg(0)
+                        .and_then(|value| value.as_string())
+                        .unwrap_or_default();
+                    let data = call
+                        .arg(1)
+                        .and_then(|value| value.as_string())
+                        .unwrap_or_default();
+                    if let Some(bytes) = plugin::base64_decode(&data) {
+                        let _ = plugins_for_apply.borrow_mut().apply(&id, &bytes);
+                    }
+                    Ok(JsValue::undefined())
+                }),
+            )
+            .map_err(|error| error.to_string())
+            .unwrap();
+    }
 
     // Draining stdin on a reader thread keeps both sides non-blocking: the loop
     // never stalls on input, and a command never waits for a frame.
@@ -529,6 +570,27 @@ fn main() {
         if !running {
             break;
         }
+
+        // The Rust host drives its compiled mods after the world has moved, at
+        // the scene's own `dt` (which a menu freeze holds at 0). A mirroring
+        // client does not tick world mods.
+        let dt = context
+            .call(&scene_dt, &JsValue::undefined(), &[])
+            .ok()
+            .and_then(|value| value.as_number())
+            .unwrap_or(0.0);
+        let world_local = context
+            .call(&net_world_local, &JsValue::undefined(), &[])
+            .ok()
+            .and_then(|value| value.as_boolean())
+            .unwrap_or(true);
+        plugins.borrow_mut().tick_all(dt as f32, world_local);
+        let published = plugins.borrow().published_json();
+        let _ = context.call(
+            &set_wasm_published,
+            &JsValue::undefined(),
+            &[JsValue::string(published)],
+        );
 
         // Mod enable/disable/reload intents the console queued. The host
         // re-reads and evaluates the entry, exactly as it did at startup.
