@@ -91,8 +91,9 @@ The host reads the file, refuses one that does not start with the wasm magic, an
 hands the bytes to the scene as an `ArrayBuffer` through a single scene entry
 point (`sceneWasmModule(id, bytes)`) -- never a path, and never as JSON, because
 a module is content (`APIv1.md` section 0). The scene instantiates it with the
-capabilities below and drives it. `side: "world"` is refused until the
-compatibility digest covers the artifact (section 7).
+capabilities below and drives it. A `side: "world"` module's bytes are part of
+the compatibility digest, so two hosts with a different module refuse each other
+(section 7).
 
 ### 3.1 Scalars
 
@@ -136,7 +137,7 @@ each is a policy decision rather than a function:
 
 | Reserved | Why it is not v1 |
 | --- | --- |
-| `publish(ptr, len)` / `apply(ptr, len)` | The world-mod state surface (`APIv1.md` section 4.13). It drags in the digest, the datagram budget and the determinism rules, which is M17c's job. |
+| `publish(ptr, len)` / `apply(ptr, len)` | The world-mod state surface (`APIv1.md` section 4.13). M17c landed the digest and the determinism rule; what is left is this -- a plugin's records reaching a peer -- and it is M17c2's job. |
 | `assets` | A plugin should reach an asset by the same opaque-name route as the scene, not by a path. Needs the asset-slot work first. |
 | `now_ms()` | A clock is a divergence hazard. If it exists at all it is client-side only, and the absence of the import is what stops a world mod from using it. |
 | `scene` | Any callback into the scene's own state. That re-enters JavaScript and its reentrancy rules; see section 5. |
@@ -288,11 +289,10 @@ either.
    **Settled for v1:** the scene's driver is the boundary (M17a), and its
    capabilities are host closures. The Rust-hosted shape (M17b) is the remaining
    fork, for the memory and the cheaper call, not for the capabilities.
-4. **Digest and distribution.** A client-side plugin is unhashed like any
-   `side: "client"` mod, and ships one portable artifact for all three release
-   targets. A world-side one would join the compatibility set, so until M17c
-   prices the artifact into the digest the loader refuses `wasm` on a
-   `side: "world"` mod rather than let two hosts disagree silently.
+4. ~~**Digest and distribution.**~~ **Settled** (M17c): a world-side module's bytes
+   are part of the digest, so two hosts with a different module refuse each other;
+   a client-side module stays unhashed, and either way one portable artifact
+   serves all three release targets.
 5. ~~**Reload.**~~ **Settled:** `sceneModEnd` drops a compiled mod's instance, so
    `--watch` (M14g) already re-instantiates it the same way it re-reads an entry.
 6. ~~**The performance debt, as a number.**~~ **Measured, and paid** (M17): the

@@ -93,7 +93,7 @@ uses.
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
 | **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ✅ **Done** — binary and quantized, shed in a defined order, the mods on their own datagram, and a guard so the budget cannot erode again (M16c deferred on the numbers) |
-| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | **In progress** — M17a is done (the ABI, the two-language proof, the `mods/wasm` fixture); the Rust host and the digest (M17b/c) are open |
+| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | **In progress** — M17a (the ABI + the `mods/wasm` fixture) and M17c (the digest + determinism) are done; M17b and the state surface (M17c2) are open |
 
 ---
 
@@ -1703,13 +1703,19 @@ dependency on the same git revision. Same shape as M9's upstream prerequisite.
   with nothing interpreted in front of the plugin. It is the one sub-step that
   needs the prerequisite above. Reload becomes "drop the instance, instantiate
   again", extending M14g's `--watch` to compiled mods.
-- **M17c — World-side plugins in the compatibility set.** The digest covers the
-  artifact's bytes **and** the ABI version, and section 6.4's determinism rules
-  gain the corresponding line. The open question is host-provided math: core wasm
-  has no `sin`/`cos`, so either the host supplies them (and its platform `libm`
-  becomes a divergence hazard) or plugins bring their own -- and the scene's JS
-  world mods have the same hazard through `Math.*` today, so it should be decided
-  once for both.
+- **M17c — World-side plugins in the compatibility set. ✅ Done.** The loader no
+  longer refuses a `side: "world"` module, and its bytes are folded into the
+  compatibility digest (`hash_manifest`), so two hosts that agree on the id and
+  version but ship a different module refuse each other in the join handshake.
+  Determinism gets its line in the driver rather than in the spec: a world-side
+  module's streams re-derive from the session seed (the same generator, one draw
+  per stream, as the JS world mods), and it ticks only where the world is
+  authoritative (`netWorldLocal()`), so a mirroring client instantiates it but
+  does not simulate it. The harness covers it (`wasm_mod`: seed dependence, and a
+  mirroring client's frame count standing still). What is left is the *state
+  surface* -- `publish`/`apply`, and the server keeping the module's bytes to run
+  it headlessly -- which is **M17c2**: today a world-side plugin runs on a solo or
+  player host and contributes nothing a peer can see yet.
 - **M17d — The performance debt. Paid upstream.** `wasm --features compile` is
   the default for native targets now, so the compiled path *is* the shipped path,
   and the wasm arm of the benchmark is 12-19x past the JavaScript JIT on the
