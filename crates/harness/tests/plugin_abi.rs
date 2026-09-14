@@ -11,15 +11,19 @@
 //!
 //! It uses Slag's `Context` directly rather than the scene harness: this is an
 //! engine-level boundary, and it will move to the plugin host crate when M17a
-//! lands. The host side here is a JS stub standing in for the Rust host, which
-//! is exactly the shape a plugin sees either way -- the import list is the API.
+//! lands. The `goats` namespace is built twice -- once as JavaScript closures in
+//! a driver stub, once as Rust native functions registered through the embedding
+//! API -- because a capability's implementation language is not part of the ABI
+//! either. In both, the import list is the API.
 //!
 //! The fixtures are checked in (they are a few hundred bytes) so neither this
 //! test nor CI needs a wasm toolchain; `fixtures/wasm/build.sh` rebuilds them.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-use slag::Context;
+use slag::{Context, JsValue};
 
 /// The host stub, in JS, standing in for the eventual Rust host.
 ///
@@ -84,6 +88,42 @@ JSON.stringify({
   updated: updated,
   imports: WebAssembly.Module.imports(mod).map(function (i) { return i.module + '.' + i.name; }),
   log: logs,
+  vx: vx,
+});
+"#;
+
+/// The same driver, with the `goats` namespace supplied by the *host* as Rust
+/// native functions (`GOATS_IMPORTS`) instead of by JavaScript closures. The
+/// module cannot tell the difference, which is the point: the capability's
+/// implementation language is not part of the ABI.
+const NATIVE_HOST_STUB: &str = r#"
+var MOD = new WebAssembly.Module(new Uint8Array(PLUGIN_BYTES));
+var WB = new WebAssembly.Instance(MOD, { goats: GOATS_IMPORTS });
+var e = WB.exports;
+
+var abi = e.goats_abi();
+var init = e.goats_init(42);
+
+// The same records the JS-hosted stub writes, so the two runs are comparable.
+const COUNT = 4;
+var ptr = e.goats_alloc(COUNT * 16);
+var f32 = new Float32Array(e.memory.buffer);
+var base = ptr / 4;
+for (var i = 0; i < COUNT; i++) {
+  f32[base + i * 4 + 0] = 1.5 + i;
+  f32[base + i * 4 + 1] = -2.0 - i;
+  f32[base + i * 4 + 2] = 0.25;
+  f32[base + i * 4 + 3] = 0;
+}
+var updated = e.goats_update(ptr, COUNT, 0.5);
+var vx = [];
+for (var i = 0; i < COUNT; i++) { vx.push(f32[base + i * 4 + 3]); }
+
+JSON.stringify({
+  abi: abi,
+  init: init,
+  updated: updated,
+  imports: WebAssembly.Module.imports(MOD).map(function (i) { return i.module + '.' + i.name; }),
   vx: vx,
 });
 "#;
@@ -165,5 +205,116 @@ fn a_c_plugin_and_a_rust_plugin_satisfy_the_same_abi() {
     assert!(
         vx.iter().all(|v| v.as_f64().is_some_and(|n| n > 0.0)),
         "the host's rng reached the module: {vx:?}"
+    );
+}
+
+/// The other side of the same claim: the *host's* implementation language is not
+/// part of the ABI either. The `goats` namespace here is built in Rust --
+/// `Context::create_function` closures over host state -- and the fixture must
+/// behave exactly as it does when the namespace is JavaScript closures.
+///
+/// It also pins down the one rule that follows, which is about where the memory
+/// is rather than about privileges: a capability that has to *read the plugin's
+/// own memory* cannot be a plain native function, because the bytes are in the
+/// module's linear memory and the host function only receives numbers. The
+/// native `log` here therefore sees `(ptr, len)` and not the text, and the test
+/// asserts exactly that. Decoding those bytes is the driver's job -- in this
+/// path the driver holds the `memory.buffer`; in the Rust-hosted path (`Store`)
+/// the host does.
+#[test]
+fn the_host_can_supply_the_capabilities_as_native_functions() {
+    let reference = run_fixture("plugin-c");
+
+    let path = fixture("plugin-c");
+    let bytes =
+        std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let mut context = Context::new().expect("a Slag context");
+    let buffer = context
+        .array_buffer_from_bytes(&bytes)
+        .expect("an ArrayBuffer for the module");
+    context
+        .set_global("PLUGIN_BYTES", buffer)
+        .expect("set PLUGIN_BYTES");
+
+    // What the native `log` was handed: pointers and lengths, never the bytes.
+    let seen = Rc::new(RefCell::new(Vec::<(f64, f64)>::new()));
+    // The rng's state, owned by the host closure -- the same streams, in the same
+    // order, that the JavaScript stub keeps in its own object.
+    let streams = Rc::new(RefCell::new([0i64; 8]));
+
+    let namespace = context.create_object().expect("the goats namespace");
+
+    let rng = {
+        let streams = Rc::clone(&streams);
+        context
+            .create_function(
+                "rng",
+                1,
+                Box::new(move |call| {
+                    let stream = call.arg(0).and_then(|v| v.as_number()).unwrap_or(0.0) as usize;
+                    let mut state = streams.borrow_mut();
+                    let slot = &mut state[stream % 8];
+                    if *slot == 0 {
+                        *slot = (12345 + stream as i64 * 7919) % 2147483647;
+                    }
+                    *slot = (*slot * 48271) % 2147483647;
+                    Ok(JsValue::number(*slot as f64 / 2147483647.0))
+                }),
+            )
+            .expect("the rng capability")
+    };
+    namespace.set("rng", rng).expect("set rng");
+
+    let log = {
+        let seen = Rc::clone(&seen);
+        context
+            .create_function(
+                "log",
+                2,
+                Box::new(move |call| {
+                    let ptr = call.arg(0).and_then(|v| v.as_number()).unwrap_or(0.0);
+                    let len = call.arg(1).and_then(|v| v.as_number()).unwrap_or(0.0);
+                    seen.borrow_mut().push((ptr, len));
+                    Ok(JsValue::undefined())
+                }),
+            )
+            .expect("the log capability")
+    };
+    namespace.set("log", log).expect("set log");
+
+    context
+        .set_global("GOATS_IMPORTS", namespace.as_value())
+        .expect("set GOATS_IMPORTS");
+
+    let value = context
+        .eval(NATIVE_HOST_STUB)
+        .unwrap_or_else(|error| panic!("the native-hosted driver failed: {error}"));
+    let text = context
+        .to_string(&value)
+        .expect("the driver returned a string");
+    let native: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("the driver returned invalid JSON: {error}\n{text}"));
+
+    // The module cannot tell a Rust capability from a JavaScript one.
+    assert_eq!(native["abi"], ABI_VERSION, "{native}");
+    assert_eq!(
+        native["imports"], reference["imports"],
+        "the same capability set"
+    );
+    assert_eq!(
+        native["vx"], reference["vx"],
+        "a natively-implemented capability changed the plugin's behaviour"
+    );
+
+    // The rule: the native capability saw the message's address and length, not
+    // its bytes. "plugin-c: ready" is the string the fixture logs at init.
+    let seen = seen.borrow();
+    assert_eq!(seen.len(), 1, "the fixture logs once at init");
+    let (ptr, len) = seen[0];
+    assert!(ptr > 0.0, "the pointer is into the module's memory: {ptr}");
+    assert_eq!(
+        len,
+        "plugin-c: ready".len() as f64,
+        "the native capability saw the message's length"
     );
 }
