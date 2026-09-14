@@ -11,22 +11,21 @@ name = "goatsd"
 path = "src/main.rs"
 
 [dependencies]
-session = { path = "../session" }
+session = { workspace = true }
 # The scene bundle: the ordered parts, the joined script and the null `rl` the
 # headless world is evaluated against. Shared with the client and the harness.
-scene = { path = "../scene" }
+scene = { workspace = true }
 # The server discovers and hashes mods so it can require the world-mod set the
 # client must match; it reuses the same pure loader the client does.
-mods = { path = "../mods" }
+mods = { workspace = true }
 # The scene is shared with the client, so the headless world moves by the same
 # rules. No `raylib` feature: the server has no window, and `src/headless_rl.js`
 # supplies the null `rl` the scene is evaluated against instead.
-slag = { git = "https://github.com/sdgoij/slag", features = ["jit"] }
-# slag = { path = "../../slag/crates/slag", features = ["jit"] }
-serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+slag = { workspace = true, features = ["jit"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
 
 [dev-dependencies]
 # The birds fixture test checks the whole world still fits one datagram, which
 # is `proto`'s cap.
-proto = { path = "../proto" }
+proto = { workspace = true }

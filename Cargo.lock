@@ -2840,6 +2840,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin"
+version = "0.1.0"
+dependencies = [
+ "slag",
+]
+
+[[package]]
 name = "polyval"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

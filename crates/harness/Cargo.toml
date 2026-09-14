@@ -9,9 +9,9 @@ license = "MIT"
 # the `jit` feature is on, exactly as `crates/server` does, so building the tests
 # does not build raylib.
 [dependencies]
-scene = { path = "../scene" }
-serde = { version = "1", features = ["derive"] }
+scene = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 # The observations cross the Rust/JS boundary as one JSON string, the shape
 # `sceneWorldJson` already uses.
-serde_json = "1"
-slag = { git = "https://github.com/sdgoij/slag", features = ["jit"] }
+serde_json = { workspace = true }
+slag = { workspace = true, features = ["jit"] }

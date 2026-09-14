@@ -1,0 +1,11 @@
+[package]
+name = "plugin"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+# The compiled-mod host: drives a `.wasm` module from Rust through the engine's
+# `Store`, so a mod's frame path has no JavaScript in front of it (M17b). Only
+# the `wasm` feature is needed; `jit`/`raylib` stay out.
+slag = { workspace = true, features = ["wasm"] }

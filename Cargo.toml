@@ -3,7 +3,45 @@
 # the repository root; the client reaches them with a relative `include_bytes!`.
 [workspace]
 resolver = "3"
-members = ["crates/goats", "crates/harness", "crates/mods", "crates/proto", "crates/scene", "crates/server", "crates/session"]
+members = ["crates/goats", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/scene", "crates/server", "crates/session"]
 # `cargo run` and a bare `cargo build` mean the client, so the README's
 # `cargo run --release` keeps working. Use `--workspace` to build or test all.
 default-members = ["crates/goats"]
+
+# Every external dependency is declared here once — source and version only —
+# so a version bump or a fork swap is a single line. Each crate depends on
+# `workspace = true` and adds only the features it needs.
+[workspace.dependencies]
+# Internal crates, addressed by path.
+session = { path = "crates/session" }
+mods = { path = "crates/mods" }
+scene = { path = "crates/scene" }
+proto = { path = "crates/proto" }
+
+# The engine. Flip between the published revision and a local checkout here.
+slag = { git = "https://github.com/sdgoij/slag" }
+# slag = { path = "slag/crates/slag" }
+
+# Serialisation / framing.
+serde = { version = "1" }
+serde_json = "1"
+
+# Async runtime (features are per-crate).
+tokio = { version = "1" }
+
+# Client-only audio (M13b).
+cpal = "0.18"
+libopus_sys = { version = "0.4" }
+raylib-sys = { version = "6.0.0", default-features = false }
+
+# Mod loader.
+notify = "8"
+zip = { version = "0.6", default-features = false }
+
+# Wire format.
+postcard = { version = "1", default-features = false }
+
+# Networking (session only).
+iroh = "1.2.0"
+iroh-tickets = "1.0"
+bytes = "1"

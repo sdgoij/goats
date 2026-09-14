@@ -8,12 +8,12 @@ license = "MIT"
 # does not depend on the engine, so it is unit-testable without a window and the
 # headless server can share it (M14d) without pulling raylib in.
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 # The optional file watcher: the platform's native notification API (inotify,
 # kqueue, ReadDirectoryChangesW) rather than polling.
-notify = "8"
+notify = { workspace = true }
 # Mods may ship as a `.zip`; only the deflate feature is needed, which keeps the
 # dependency tree to `flate2`/`miniz_oxide` rather than the archive crate's full
 # set of optional codecs.
-zip = { version = "0.6", default-features = false, features = ["deflate"] }
+zip = { workspace = true, features = ["deflate"] }
