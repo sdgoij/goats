@@ -511,17 +511,6 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
 
     let wasm = match &raw.wasm {
         Some(declared) => {
-            // A compiled module has no hash in the join handshake yet, so a world
-            // mod could ship one and two hosts could disagree without being told.
-            // Refusing loudly is the whole of the safety here until M17c prices
-            // the artifact into the digest.
-            if side == Side::World {
-                return Err(fail(
-                    "a compiled `wasm` module on a `side: \"world\"` mod is not supported yet \
-                     (the compatibility digest does not cover the artifact)"
-                        .to_string(),
-                ));
-            }
             let (bytes, content_hash) =
                 read_asset_source(source, &declared.module, mode).map_err(fail)?;
             // The one check worth making here: something that is not a module at
@@ -549,6 +538,7 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
         &raw.version,
         entry_source.as_deref(),
         tuning_json.as_deref(),
+        wasm.as_ref().map(|module| module.content_hash),
         &assets,
     );
     Ok(Manifest {
@@ -873,14 +863,17 @@ fn fnv1a(hash: &mut u64, bytes: &[u8]) {
 /// security.
 ///
 /// The content is the entry's text and the tuning tree (both normalised to `\n`
-/// by `read_source_text`) plus every asset's name and bytes. The tuning belongs
-/// here: a world mod whose `tuning.json` differs but whose code does not is
-/// exactly the silent divergence this digest exists to catch.
+/// by `read_source_text`), every asset's name and bytes, and a compiled module's
+/// bytes. The tuning belongs here because a world mod whose `tuning.json` differs
+/// but whose code does not is exactly the silent divergence this digest exists to
+/// catch -- and so does a compiled module, whose bytes are what its `goats_abi()`
+/// reports.
 fn hash_manifest(
     id: &str,
     version: &str,
     entry: Option<&str>,
     tuning: Option<&str>,
+    wasm: Option<u64>,
     assets: &[Asset],
 ) -> u64 {
     let mut hash = FNV_OFFSET;
@@ -894,6 +887,10 @@ fn hash_manifest(
     if let Some(tuning) = tuning {
         fnv1a(&mut hash, &[0]);
         fnv1a(&mut hash, tuning.as_bytes());
+    }
+    if let Some(wasm) = wasm {
+        fnv1a(&mut hash, &[0]);
+        fnv1a(&mut hash, &wasm.to_le_bytes());
     }
     for asset in assets {
         fnv1a(&mut hash, &[0]);
@@ -1355,10 +1352,11 @@ mod tests {
     }
 
     #[test]
-    fn a_compiled_world_mod_is_refused_until_the_digest_covers_it() {
-        // Allowing this quietly would let two hosts disagree about a world mod
-        // without either being told, which is the one thing the join handshake
-        // exists to prevent.
+    fn a_compiled_world_mod_joins_the_digest() {
+        // A `side: "world"` mod with a module is legal now, and the module is part
+        // of its identity: two hosts that agree on the id and version but differ on
+        // the module's bytes refuse each other in the join handshake, which is the
+        // whole point of the digest.
         let root = workspace("wasm-world");
         write_mod(
             &root,
@@ -1370,10 +1368,18 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("plugin.wasm"), b"\0asm\x01\0\0\0").unwrap();
 
-        let loader = Loader::discover(&root);
-        assert!(loader.get("com.example.w").is_none(), "it must not load");
-        let text = format!("{:?}", loader.errors());
-        assert!(text.contains("digest"), "{text}");
+        let before = Loader::discover(&root);
+        assert!(before.errors().is_empty(), "{:?}", before.errors());
+        let hash = before.get("com.example.w").expect("the mod").hash;
+
+        std::fs::write(dir.join("plugin.wasm"), b"\0asm\x01\0\0\0\x01").unwrap();
+        let after = Loader::discover(&root);
+        assert!(after.errors().is_empty(), "{:?}", after.errors());
+        assert_ne!(
+            hash,
+            after.get("com.example.w").expect("the mod").hash,
+            "the module's bytes are content"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
