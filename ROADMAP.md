@@ -1728,7 +1728,9 @@ dependency on the same git revision. Same shape as M9's upstream prerequisite.
   `sceneWasmModule` exactly as the client does. The harness covers the crossing
   (`wasm_mod`: publish reaches the datagram, the same seed replays the same
   published bytes, a mirroring client applies a peer's state), the loader covers
-  `KeepWasm`, and the server covers a world wasm mod publishing on `goatsd`.
+  `KeepWasm`, and the server covers a world wasm mod publishing on `goatsd`. The
+  two-language `plugin_abi` proof now covers `publish`/`goats_apply` too: the C
+  and Rust fixtures publish the same bytes.
 - **M17d — The performance debt. Paid upstream.** `wasm --features compile` is
   the default for native targets now, so the compiled path *is* the shipped path,
   and the wasm arm of the benchmark is 12-19x past the JavaScript JIT on the

@@ -38,6 +38,7 @@ const bytes = new Uint8Array(PLUGIN_BYTES);
 const mod = new WebAssembly.Module(bytes);
 
 const logs = [];
+const published = [];
 const state = {};
 function rng(stream) {
   let s = state[stream];
@@ -54,11 +55,18 @@ function readString(ptr, len) {
   for (let i = 0; i < len; i++) { out += String.fromCharCode(mem[ptr + i]); }
   return out;
 }
+function readBytes(ptr, len) {
+  const mem = new Uint8Array(instance.exports.memory.buffer);
+  const out = [];
+  for (let i = 0; i < len; i++) { out.push(mem[ptr + i]); }
+  return out;
+}
 
 instance = new WebAssembly.Instance(mod, {
   goats: {
     log: function (ptr, len) { logs.push(readString(ptr, len)); },
     rng: rng,
+    publish: function (ptr, len) { published.push(readBytes(ptr, len)); },
   },
 });
 
@@ -82,6 +90,10 @@ const updated = e.goats_update(ptr, COUNT, 0.5);
 const vx = [];
 for (let i = 0; i < COUNT; i++) { vx.push(f32[base + i * 4 + 3]); }
 
+// The host hands the module a peer's state and calls goats_apply; the fixture
+// returns the byte count it adopted.
+const applied = e.goats_apply(ptr, COUNT * 16);
+
 JSON.stringify({
   abi: abi,
   init: init,
@@ -89,6 +101,8 @@ JSON.stringify({
   imports: WebAssembly.Module.imports(mod).map(function (i) { return i.module + '.' + i.name; }),
   log: logs,
   vx: vx,
+  published: published[0],
+  applied: applied,
 });
 "#;
 
@@ -118,6 +132,7 @@ for (var i = 0; i < COUNT; i++) {
 var updated = e.goats_update(ptr, COUNT, 0.5);
 var vx = [];
 for (var i = 0; i < COUNT; i++) { vx.push(f32[base + i * 4 + 3]); }
+var applied = e.goats_apply(ptr, COUNT * 16);
 
 JSON.stringify({
   abi: abi,
@@ -125,6 +140,7 @@ JSON.stringify({
   updated: updated,
   imports: WebAssembly.Module.imports(MOD).map(function (i) { return i.module + '.' + i.name; }),
   vx: vx,
+  applied: applied,
 });
 "#;
 
@@ -177,8 +193,8 @@ fn a_c_plugin_and_a_rust_plugin_satisfy_the_same_abi() {
     assert_eq!(rust["abi"], ABI_VERSION, "the Rust fixture: {rust}");
 
     // The capability list is inspectable, which is what the Mods screen would
-    // show and what a host grants from: two imports, nothing ambient.
-    let expected = serde_json::json!(["goats.log", "goats.rng"]);
+    // show and what a host grants from: three imports, nothing ambient.
+    let expected = serde_json::json!(["goats.log", "goats.rng", "goats.publish"]);
     assert_eq!(c["imports"], expected, "the C fixture's imports");
     assert_eq!(rust["imports"], expected, "the Rust fixture's imports");
 
@@ -205,6 +221,31 @@ fn a_c_plugin_and_a_rust_plugin_satisfy_the_same_abi() {
     assert!(
         vx.iter().all(|v| v.as_f64().is_some_and(|n| n > 0.0)),
         "the host's rng reached the module: {vx:?}"
+    );
+
+    // The world-mod state surface: both fixtures publish the same bytes for the
+    // same host-provided randomness, which is what a peer actually receives --
+    // the record layout and endianness are part of the ABI, not of the language.
+    assert_eq!(
+        c["published"], rust["published"],
+        "the two languages publish different state"
+    );
+    let published = c["published"]
+        .as_array()
+        .expect("an array of bytes")
+        .clone();
+    assert_eq!(published.len(), 4 * 16, "4 records of 16 bytes");
+
+    // And goats_apply accepts a peer's state the same way in both languages.
+    assert_eq!(
+        c["applied"],
+        serde_json::json!(64),
+        "the C fixture adopted the state"
+    );
+    assert_eq!(
+        rust["applied"],
+        serde_json::json!(64),
+        "the Rust fixture adopted the state"
     );
 }
 
@@ -238,6 +279,10 @@ fn the_host_can_supply_the_capabilities_as_native_functions() {
 
     // What the native `log` was handed: pointers and lengths, never the bytes.
     let seen = Rc::new(RefCell::new(Vec::<(f64, f64)>::new()));
+    // What the native `publish` was handed: the same shape -- a pointer into the
+    // module's memory and a length, never the bytes -- because a native host
+    // cannot read that memory without owning the `Store`.
+    let published = Rc::new(RefCell::new(Vec::<(f64, f64)>::new()));
     // The rng's state, owned by the host closure -- the same streams, in the same
     // order, that the JavaScript stub keeps in its own object.
     let streams = Rc::new(RefCell::new([0i64; 8]));
@@ -282,6 +327,23 @@ fn the_host_can_supply_the_capabilities_as_native_functions() {
     };
     namespace.set("log", log).expect("set log");
 
+    let publish = {
+        let published = Rc::clone(&published);
+        context
+            .create_function(
+                "publish",
+                2,
+                Box::new(move |call| {
+                    let ptr = call.arg(0).and_then(|v| v.as_number()).unwrap_or(0.0);
+                    let len = call.arg(1).and_then(|v| v.as_number()).unwrap_or(0.0);
+                    published.borrow_mut().push((ptr, len));
+                    Ok(JsValue::number(0.0))
+                }),
+            )
+            .expect("the publish capability")
+    };
+    namespace.set("publish", publish).expect("set publish");
+
     context
         .set_global("GOATS_IMPORTS", namespace.as_value())
         .expect("set GOATS_IMPORTS");
@@ -316,5 +378,26 @@ fn the_host_can_supply_the_capabilities_as_native_functions() {
         len,
         "plugin-c: ready".len() as f64,
         "the native capability saw the message's length"
+    );
+
+    // The same rule for `publish`: the native capability saw the state's address
+    // and length, never the bytes -- 4 records of 16 bytes.
+    let published = published.borrow();
+    assert_eq!(published.len(), 1, "the fixture publishes once per update");
+    let (ptr, len) = published[0];
+    assert!(
+        ptr > 0.0,
+        "the publish pointer is into the module's memory: {ptr}"
+    );
+    assert_eq!(
+        len,
+        4.0 * 16.0,
+        "the native publish capability saw the state's byte length"
+    );
+
+    // The export behaves the same whichever host supplied the capabilities.
+    assert_eq!(
+        native["applied"], reference["applied"],
+        "goats_apply is host-language-agnostic too"
     );
 }

@@ -34,6 +34,9 @@ extern void goats_log(const char *ptr, i32 len);
 __attribute__((import_module("goats"), import_name("rng")))
 extern double goats_rng(i32 stream);
 
+__attribute__((import_module("goats"), import_name("publish")))
+extern i32 goats_publish(const char *ptr, i32 len);
+
 // --- module state ----------------------------------------------------------
 
 // A bump arena, so the host can hand the plugin a buffer to work in without
@@ -90,5 +93,17 @@ i32 goats_update(Entity *entities, i32 count, float dt) {
         double r = goats_rng(i);
         entities[i].vx = (float)((double)entities[i].vx + r * (double)dt);
     }
+    // Publish what it computed, so a peer receives the same bytes a host read
+    // back. The bytes are opaque to the host; it only moves them.
+    (void)goats_publish((const char *)entities, count * (i32)sizeof(Entity));
     return count;
+}
+
+// The host has written a peer's records into this module's memory and calls here
+// so the module adopts them. The reference fixture has no derived state to
+// rebuild, so it reports how many bytes it took and nothing else.
+__attribute__((export_name("goats_apply")))
+i32 goats_apply(const Entity *entities, i32 len) {
+    (void)entities;
+    return len;
 }

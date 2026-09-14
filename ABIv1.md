@@ -207,25 +207,24 @@ bytes each -- so the test and CI need no wasm toolchain; `build.sh` rebuilds the
 global with a JS host stub standing in for the Rust host, then requires:
 
 - both negotiate `goats_abi() == 1`;
-- both declare exactly `goats.log` and `goats.rng` -- the two capabilities the
-  arithmetic crossing needs, read off the module rather than assumed;
+- both declare exactly `goats.log`, `goats.rng` and `goats.publish` -- the
+  capability list, read off the module rather than assumed;
 - both log the string the host reads out of *their* memory, each its own;
 - both return the same record count;
-- and, the point of the exercise, **the same `vx` values, byte for byte**, given
-  the same host-provided randomness.
+- the same `vx` values, byte for byte, given the same host-provided randomness;
+- and the same `goats_apply` return, and **the same published bytes, byte for
+  byte** -- the state a peer actually receives.
 
 That last assertion is the one that matters. Two independent toolchains agreeing
 on a computed result means the ABI is fully specified at the level a mod author
 in a *third* language would need. If only one language could target it
 conveniently, the whole idea would have failed at its single job.
 
-The world-mod surface -- `publish` and `goats_apply`, M17c2 -- is exercised by
-the `mods/wasm/plugin.wasm` fixture (C) through
-`crates/harness/tests/wasm_mod.rs`: it publishes its records, a peer applies
-them, and the same seed replays the same published bytes. `publish` and
-`goats_apply` carry no arithmetic of their own -- they move the opaque bytes the
-record crossing above already proved language-agnostic -- so the cross-language
-property is inherited rather than re-proven.
+The world-mod surface (`publish` and `goats_apply`, M17c2) is part of that same
+proof: both fixtures publish the same bytes for the same host-provided
+randomness. The driver path (`mods/wasm/plugin.wasm` through
+`crates/harness/tests/wasm_mod.rs`) exercises the full loop -- publish reaches
+the datagram, a peer applies it, and the same seed replays the same bytes.
 
 ## 5. The fork in the road: who drives the plugin
 

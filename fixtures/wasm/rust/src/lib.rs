@@ -21,6 +21,7 @@ const ABI_VERSION: i32 = 1;
 extern "C" {
     fn log(ptr: *const u8, len: i32);
     fn rng(stream: i32) -> f64;
+    fn publish(ptr: *const u8, len: i32) -> i32;
 }
 
 /// A bump arena, so the host can hand the plugin a buffer without either side
@@ -83,5 +84,20 @@ pub unsafe extern "C" fn goats_update(entities: *mut Entity, count: i32, dt: f32
         let entity = &mut *entities.add(i as usize);
         entity.vx = (f64::from(entity.vx) + r * f64::from(dt)) as f32;
     }
+    // Publish what it computed, so a peer receives the same bytes a host read
+    // back. One Entity is 16 bytes; the bytes are opaque to the host.
+    let _ = publish(entities as *const u8, count * 16);
     count
+}
+
+/// The host has written a peer's records into this module's memory and calls
+/// here so the module adopts them. The reference fixture has no derived state to
+/// rebuild, so it reports how many bytes it took and nothing else.
+///
+/// # Safety
+/// `ptr` points at `len` valid bytes in this module's memory, written by the
+/// host through `goats_alloc` before the call.
+#[no_mangle]
+pub unsafe extern "C" fn goats_apply(_ptr: *const u8, len: i32) -> i32 {
+    len
 }
