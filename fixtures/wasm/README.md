@@ -11,7 +11,7 @@ at the only job the idea exists for -- letting a mod author write in whatever
 language they like. A mod author in a third language would hit the same
 ambiguities the two fixtures would disagree about.
 
-The specification is [`PLUGIN-ABI.md`](../../PLUGIN-ABI.md); the test is
+The specification is [`ABIv1.md`](../../ABIv1.md); the test is
 `crates/harness/tests/plugin_abi.rs`; the plan is M17 in
 [`ROADMAP.md`](../../ROADMAP.md).
 
@@ -21,7 +21,13 @@ The specification is [`PLUGIN-ABI.md`](../../PLUGIN-ABI.md); the test is
 committed, so neither the test nor CI needs a wasm toolchain. They are the only
 thing the test reads; the sources are here so the artifacts are reproducible.
 
-`build.sh` rebuilds them. It needs:
+`bench.wasm` (`c/bench.c`) is the same idea for the *performance* question: one
+O(n^2) neighbour pass per frame, the shape of the `birds` flock's `stepFly`, with
+no trigonometry and no imports so it measures compute rather than the host. It is
+what `crates/harness/tests/plugin_bench.rs` drives; M17 in `ROADMAP.md` has the
+numbers.
+
+`build.sh` rebuilds all three. It needs:
 
 - `clang` with a wasm32 target -- the `wasm-ld` linker ships with LLVM;
 - `rustup target add wasm32-unknown-unknown`.
@@ -37,6 +43,18 @@ anywhere; it also keeps the fixture honest about needing no runtime, no libc and
 no WASI. Rust is the language the host is written in, so it is the one case where
 a Rust-shaped ABI would go unnoticed. Two languages with nothing in common but
 the specification is the smallest set that can catch that.
+
+## The compiled measurement
+
+`bench.wasm` is also run against the `wasm` crate's Cranelift backend, which no
+Goat crate can reach today (no feature pass-through -- M17's upstream
+prerequisite). `kernel-bench-compiled.rs` is that throwaway test, kept here so
+the compiled figure in `ROADMAP.md` M17 is reproducible rather than folklore.
+It belongs to the slag workspace: copy it to
+`slag/crates/wasm/tests/kernel_bench.rs`, run
+`cargo test --release -p wasm --features compile --test kernel_bench --
+--nocapture` from `slag/`, then delete it. The Goat-side benchmark prints the
+same state checksum, which is how the two runs are shown to agree.
 
 ## Deliberate properties
 

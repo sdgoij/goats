@@ -1615,7 +1615,7 @@ exists but is off by default until its equivalence gate holds corpus-wide, while
 the JavaScript path has had years of optimization and the client already enables
 its JIT. If speed were the goal, the first move would be more JS optimization.
 The ABI is therefore designed so speed is not a premise: see the coarse crossing
-below. See `PLUGIN-ABI.md`.
+below. See `ABIv1.md`.
 
 **What already exists, and what that means.** Slag's `wasm` crate is a full
 WebAssembly core engine -- decoder, validator, interpreter, SIMD, GC,
@@ -1680,7 +1680,7 @@ prerequisite.
 - **M17a — The ABI and wasm as a primitive.** The host hands a mod's `.wasm`
   over as bytes, never a path, the way every other asset already crosses; the
   scene's `WebAssembly` does the rest, so a mod ships wasm plus JS glue and
-  receives the existing events. Deliverables: `PLUGIN-ABI.md`, the two-language
+  receives the existing events. Deliverables: `ABIv1.md`, the two-language
   fixture and its test (done), a fixture mod that uses them, and the Mods screen
   reporting what the module declares it wants.
 - **M17b — The Rust-side host.** Drive the module's exports from Rust, with the
@@ -1697,15 +1697,57 @@ prerequisite.
   world mods have the same hazard through `Math.*` today, so it should be decided
   once for both.
 - **M17d — The performance debt, paid or priced.** Enable `wasm --features
-  compile` in the client behind a flag, keep the equivalence gate, and record the
-  number (below). Until this lands, the honest claim is "another language", not
-  "faster".
+  compile` in the client behind a flag, keep the equivalence gate, and act on the
+  measurement below. The measurement now says the debt is worth paying -- the
+  compiled path is 8-18x past the JavaScript JIT on the kernel -- but until it
+  lands the shipped claim stays "another language", not "faster".
 
-**What to measure.** A benchmark kernel -- the boid inner loop at N entities, the
-shape `birds` already exercises -- run three ways: JavaScript under the JIT, wasm
-on the interpreter, wasm via `compile`. Three numbers in a test, so "wasm is slow"
-is falsifiable and the day it stops being true is visible. Until then the
-repository should not claim a compiled mod is cheaper than a JavaScript one.
+**What it costs (measured).** `crates/harness/tests/plugin_bench.rs` runs
+`fixtures/wasm/c/bench.c` -- the boid inner loop, one O(n^2) neighbour pass per
+frame, f64 with f32 storage -- four ways. Nanoseconds per agent-pair per frame,
+release, one machine, one kernel:
+
+| n | js (interpreted) | js + jit | wasm interpreter | wasm `compile` |
+| --- | --- | --- | --- | --- |
+| 6 | 297 | 109 | 3159 | 13 |
+| 64 | 253 | 77 | 2503 | 4.6 |
+| 256 | 363 | 123 | 2857 | 6.9 |
+| 1024 | 362 | 125 | 2897 | 6.9 |
+
+Three things fall out of it.
+
+- **The interpreter is the whole problem.** It is 23-33x slower than JavaScript
+  with the JIT installed, which is what the wasm engine's own authors said and
+  now has a number. Nothing about wasm is slow here; the bytecode loop is.
+- **The ceiling is high.** Cranelift closes the gap and passes JavaScript:
+  390-537x over the interpreter, and 8-18x faster than the JIT on the same
+  arithmetic. So "if we optimized wasm the way we optimized JS" is not a hope --
+  the compiled path already exists and already wins. It is off by default because
+  its equivalence gate is unfinished, not because it is slow.
+- **JavaScript's own JIT leaves something on the table.** On this kernel the JIT
+  buys 2.5-3.3x over interpreted JavaScript, where native codegen is 8-18x past
+  it. That is a signal for the "keep optimizing Slag" thread, not for M17.
+
+Both benchmarks print a checksum of the arena when they finish, and the four
+execution paths agree on it to the digit: the C kernel driven by a JS host
+(`WebAssembly`), driven by a Rust host (`Store`), interpreted, and compiled all
+leave the same f32 state. That is the determinism property M17c needs, already
+signed by four implementations.
+
+**Provenance and caveats.** The JavaScript and interpreter rows come from
+`cargo test --release --offline -p harness --test plugin_bench -- --ignored
+--nocapture`, which is `#[ignore]`d because it is a timing. The `compile` row
+cannot come from this workspace -- no Goat crate can reach the `wasm` crate's
+`compile` feature, which is the upstream prerequisite above -- so it was measured
+by a throwaway test in the slag workspace, kept as
+`fixtures/wasm/kernel-bench-compiled.rs` with the two commands to run it. The
+interpreter row appears in both runs and is the bridge: the two hosts agree on it
+within ~10% and on the checksum exactly. One machine, one run per cell, so the
+ratios are the claim and the absolute nanoseconds are not. The JavaScript arm is
+given its best case -- contiguous `Float32Array`, no objects, no allocation --
+and the wasm arm pays one JS-to-wasm crossing per frame. And it is one kernel: an
+O(n^2) float pass prices the *interpreter*, not the design, so M17a does not
+become urgent on these numbers alone.
 
 **Constraints to respect.** The ABI is frozen by version negotiation, not by
 convention: `goats_abi()` is called first and a version the host does not know is
@@ -1719,7 +1761,7 @@ exactly as a `while (true)` does; that is a known gap, not a solved problem.
 
 | Piece | Path |
 | --- | --- |
-| The ABI specification | `PLUGIN-ABI.md` |
+| The ABI specification | `ABIv1.md` |
 | The two-language proof, sources and artifacts | `fixtures/wasm/` |
 | The ABI test | `crates/harness/tests/plugin_abi.rs` |
 | The plugin host (M17b) and the digest input (M17c) | `crates/plugin/` (new), `crates/mods/` |

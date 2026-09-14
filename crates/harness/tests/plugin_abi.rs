@@ -3,7 +3,7 @@
 //!
 //! This exists to answer one question before any of M17 is designed in earnest:
 //! can an ABI be written that is *not* shaped like Rust? `fixtures/wasm/c/` and
-//! `fixtures/wasm/rust/` implement the same plugin ABI (see `PLUGIN-ABI.md`),
+//! `fixtures/wasm/rust/` implement the same plugin ABI (see `ABIv1.md`),
 //! and this test loads both through the engine and requires the same numbers out
 //! of them. If only one language can conveniently target the surface, the ABI has
 //! failed at the job the whole idea exists for -- letting a mod author write in

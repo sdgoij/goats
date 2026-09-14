@@ -252,7 +252,8 @@ Given that, the two shapes are not exclusive and not equally urgent:
    the property `dlopen` can never have.
 5. **Reload.** An instance drops and re-instantiates cleanly, so `--watch`
    (M14g) should extend to compiled mods -- unlike a loaded dynamic library.
-6. **The performance debt, as a number.** A benchmark kernel (the boid inner
-   loop at N entities) measured three ways -- JS under JIT, wasm interpreter,
-   wasm `compile` -- belongs in the repository, so "wasm is slow" is falsifiable
-   and the day it stops being true is visible.
+6. ~~**The performance debt, as a number.**~~ **Measured** (M17): on the flock's
+   kernel shape the interpreter is 23-33x slower than JavaScript with the JIT,
+   and the Cranelift path is 8-18x *faster* than that JIT. The interpreter, not
+   wasm, is the cost -- and the ceiling is worth paying for. `ROADMAP.md` M17 has
+   the table, the provenance and the caveats.
