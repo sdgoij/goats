@@ -1232,6 +1232,34 @@ mod tests {
     }
 
     #[test]
+    fn the_birds_fixture_digest_is_pinned() {
+        // A release ships this mod, and a client refuses a server whose `birds`
+        // differs -- by design. So its digest is a compatibility surface, not an
+        // implementation detail: editing the fixture, or the inputs
+        // `hash_manifest` folds in, decides who can play with whom, and it
+        // should be a deliberate act rather than a surprise on the next release.
+        // If this fails and the change is intended, update the constant and say
+        // so in the release notes.
+        let mods_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("mods");
+        let loader = Loader::discover(&mods_dir);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        let birds = loader
+            .mods()
+            .iter()
+            .find(|manifest| manifest.path().ends_with("birds"))
+            .expect("the birds fixture");
+
+        assert_eq!(
+            birds.hash, 0xbf1f_98a7_4046_0a01,
+            "the birds digest changed: {}@{}",
+            birds.id, birds.version
+        );
+    }
+
+    #[test]
     fn a_zip_mod_is_discovered_and_read() {
         let root = workspace("zip");
         write_zip(
