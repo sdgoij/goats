@@ -20,10 +20,20 @@ clang \
   -o plugin-c.wasm \
   c/plugin.c
 
+echo "== bench.wasm =="
+clang \
+  --target=wasm32 \
+  -nostdlib \
+  -O2 \
+  -Wl,--no-entry \
+  -Wl,--export-memory \
+  -o bench.wasm \
+  c/bench.c
+
 echo "== plugin-rust.wasm =="
 cd rust
 cargo build --release --target wasm32-unknown-unknown
 cd ..
 cp rust/target/wasm32-unknown-unknown/release/plugin_rust.wasm plugin-rust.wasm
 
-ls -l plugin-c.wasm plugin-rust.wasm
+ls -l plugin-c.wasm plugin-rust.wasm bench.wasm
