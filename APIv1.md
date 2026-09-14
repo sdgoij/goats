@@ -974,7 +974,9 @@ Landed with the implementation, and Rust on the engine since M15:
 - Hot-reloading assets without a reload of the mod that owns them.
 - Replacing the procedural textures (sky, terrain detail, fleeces) via file
   slots; use `makeTexture` or wait for a later API.
-- Native plugins / dynamic libraries.
+- Native dynamic libraries loaded into the game process, from a mod or
+  otherwise. Compiled mod code is WebAssembly, not `dlopen`: see `PLUGIN-ABI.md`
+  and M17 in `ROADMAP.md`.
 - Per-mod save data.
 - ES-module mod syntax (a possible v2, built on the same `goats` API).
 
