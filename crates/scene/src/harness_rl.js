@@ -13,7 +13,7 @@
 //     the real frame loop rather than a re-implementation of it. Loading frames
 //     are not counted -- the scene takes one startup step per frame and draws the
 //     splash -- so a recorded `i` counts frames *after* the scene is ready, the
-//     same way `tools/goat_logic_test.js` counted them.
+//     way the Node harness counted them before M15.
 //   * **Observe.** Everything the assertions need, recorded as it happens: the
 //     per-frame timeline, the console probes, model/shader/audio call tables, the
 //     terrain mesh, the drawn positions and the scene's own `console.log` lines.
@@ -67,6 +67,7 @@
         loadingFrames: 0, modelLoads: 0, botPoses: 0, botJumps: 0,
         cubeDraws: 0, shadowCubeDraws: 0, menuDraws: 0, progressBarCalls: 0,
         musicUpdates: 0, terrainMeshesBuilt: 0,
+        texturesMade: 0, textureBinds: 0, modelsDrawn: 0, modelsUnloaded: 0,
     };
     const modelPaths = [];
     const botClipNames = {};
@@ -212,6 +213,7 @@
             if (tint !== undefined && typeof tint !== 'number') {
                 throw new TypeError('rl.drawModelEx: tint must be a packed colour, not ' + typeof tint);
             }
+            counters.modelsDrawn += 1;
             // The goat is handle 0 and the terrain meshes are 1000+; everything
             // else is a bot. The bots are drawn at the ground under them, so the
             // recorded y must equal `terrainHeight` there -- which is what the
@@ -221,7 +223,14 @@
             else if (model < 1000) drawnRows[model] = { x: x, y: y, z: z };
         },
         setModelShader: (_model, shader) => { modelShaderCalls.push(shader); },
-        setModelTexture: (_model, index, texture) => { modelTextureCalls.push([index, texture]); },
+        setModelTexture: (_model, index, texture) => {
+            counters.textureBinds += 1;
+            modelTextureCalls.push([index, texture]);
+        },
+        // A mod that builds its own geometry has nothing else to check: the meshes
+        // it makes, the texture it bakes, the binds it does and the unload.
+        makeTexture: () => { counters.texturesMade += 1; return 900 + counters.texturesMade; },
+        unloadModel: () => { counters.modelsUnloaded += 1; },
 
         // ---- shaders and render targets ------------------------------------
         // The handle identifies which shader the scene compiled, so the checks
@@ -409,6 +418,10 @@
                 menuDraws: counters.menuDraws,
                 progressBarCalls: counters.progressBarCalls,
                 terrainMeshesBuilt: counters.terrainMeshesBuilt,
+                texturesMade: counters.texturesMade,
+                textureBinds: counters.textureBinds,
+                modelsDrawn: counters.modelsDrawn,
+                modelsUnloaded: counters.modelsUnloaded,
             },
             modelShaderCalls: modelShaderCalls,
             modelTextureCalls: modelTextureCalls,

@@ -30,6 +30,15 @@ function harnessReady() {
     return sceneReady();
 }
 
+// Steps the scene's `update` hooks `frames` times inside the engine.
+//
+// A case that simulates minutes of a mod's behaviour would otherwise be thousands
+// of Rust/JS crossings; this makes it one.
+function harnessStep(frames, dt) {
+    for (let i = 0; i < frames; i++) modEmit("update", dt);
+    return null;
+}
+
 // Call any scene function by name, with JSON-encoded arguments. This is how a
 // test drives the seams no command covers: `terrainHeight`, `nearestTuft`,
 // `updateFood`, `rainSlowFactor`, and the mod wiring (`sceneMods`,

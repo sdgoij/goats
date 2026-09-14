@@ -1,8 +1,13 @@
-//! The ported mod cases: `goat_logic_test.js`'s five `mod*Test` blocks.
+//! The ported mod cases: `goat_logic_test.js`'s five `mod*Test` blocks, plus the
+//! `mods/example` fixture that `tools/mod_smoke_test.js` loaded from disk.
 //!
 //! These stage their own mod tables and entry wrappers on top of a short run --
 //! they need the scene loaded and ready, not the long scripted timeline -- so
 //! they are their own test and stay cheap.
+//!
+//! The fixture block runs last on purpose: `goats.freeze()` is one-way in the
+//! scene, and the table block is the one that asserts it was open before it
+//! froze, so an entry earlier in the file would turn that case into a lie.
 //!
 //! The `goats` handle is a top-level `const` rather than a property of any object,
 //! which is why the Node harness probed the lifecycle through `vm.runInContext`.
@@ -119,6 +124,70 @@ fn the_mod_surface_works() {
         &menu,
     );
     checks.check("a reload re-merges the mod tuning", menu.retune, &menu);
+
+    let fixture = staged("the example-fixture block", fixture_block(&mut harness));
+    checks.check(
+        "the fixture's manifest is well-formed",
+        fixture.manifest,
+        &fixture,
+    );
+    checks.check(
+        "the fixture's declared asset is a real wav",
+        fixture.asset,
+        &fixture,
+    );
+    checks.check("the fixture's table installs", fixture.installed, &fixture);
+    checks.check(
+        "the fixture is listed and enabled",
+        fixture.listed,
+        &fixture,
+    );
+    checks.check(
+        "the fixture's declared asset re-points its slot",
+        fixture.slot,
+        &fixture,
+    );
+    checks.check(
+        "the fixture's tuning.json merges a known leaf",
+        fixture.tuning,
+        &fixture,
+    );
+    checks.check(
+        "an unknown tuning path warns, not fails",
+        fixture.typo,
+        &fixture,
+    );
+    checks.check(
+        "the fixture's command dispatches",
+        fixture.command,
+        &fixture,
+    );
+    checks.check(
+        "a built-in still wins over the fixture",
+        fixture.builtin,
+        &fixture,
+    );
+    checks.check("the fixture's hud hook runs", fixture.hud, &fixture);
+    checks.check(
+        "a throwing handler does not abort the frame",
+        fixture.isolated,
+        &fixture,
+    );
+    checks.check(
+        "the throwing handler is reported",
+        fixture.reported,
+        &fixture,
+    );
+    checks.check(
+        "a reload leaves exactly one hud handler",
+        fixture.reload_hud,
+        &fixture,
+    );
+    checks.check(
+        "a reload leaves the command registered once",
+        fixture.reload_command,
+        &fixture,
+    );
 
     checks.finish();
 }
@@ -541,4 +610,165 @@ fn menu_block(harness: &mut Harness) -> Result<ModMenu, String> {
         &[json!("com.e.client"), json!(r#"{"camera":{"dist":5.2}}"#)],
     )?;
     Ok(menu)
+}
+
+// ---- the checked-in fixture ------------------------------------------------
+
+/// The checked-in `mods/example` fixture, compiled in: a renamed or broken file
+/// then fails the build as well as the case, and the test cannot drift from it.
+///
+/// `tools/mod_smoke_test.js` loaded this directory from disk and asserted both
+/// halves of the seam. The host-side half -- the manifest is well-formed, the
+/// declared asset exists and is a real RIFF wav -- is what `crates/mods` and the
+/// release packaging own; what is left here is the scene side: the table
+/// installs, the slot re-points, the tuning tree merges (and its deliberate typo
+/// warns), the command dispatches, the HUD hook draws, a throwing handler is
+/// isolated, and a reload leaves no duplicate.
+const EXAMPLE_MANIFEST: &str = include_str!("../../../mods/example/mod.json");
+const EXAMPLE_ENTRY: &str = include_str!("../../../mods/example/mod.js");
+const EXAMPLE_TUNING: &str = include_str!("../../../mods/example/tuning.json");
+const EXAMPLE_BLEAT: &[u8] = include_bytes!("../../../mods/example/assets/bleat.wav");
+
+/// One `hud` emit with `rl.drawText` stood in for, returning the lines drawn.
+/// `modEmit` reaches mod handlers only, so every line is the hook's -- which is
+/// what `drawTexts.length` measured in the Node harness.
+const HUD_PROBE: &str = r#"(function () {
+    const real = rl.drawText;
+    const texts = [];
+    rl.drawText = function (text) { texts.push(String(text)); };
+    try {
+        modEmit("hud", { width: 1280, height: 720 });
+    } finally {
+        rl.drawText = real;
+    }
+    return texts;
+})()"#;
+
+/// One `hud` emit, as the lines it drew.
+fn hud_lines(harness: &mut Harness) -> Result<Vec<String>, String> {
+    let value = harness.eval(HUD_PROBE)?;
+    Ok(value
+        .as_array()
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(|line| line.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// The host's wrapper around an entry: a scoped IIFE handed the per-mod handle.
+fn wrapper(id: &str, body: &str) -> String {
+    format!("(function (goats) {{\n\"use strict\";\n{body}\n}})(goats.begin({id:?}));")
+}
+
+/// The unload-then-load pair a reload performs, which is how the host re-reads a
+/// mod: `sceneModEnd` drops the instance, then the fresh wrapper re-registers.
+fn reload(harness: &mut Harness, id: &str, body: &str) -> Result<(), String> {
+    harness.call("sceneModEnd", &[json!(id)])?;
+    harness.eval(&wrapper(id, body))?;
+    harness
+        .call("sceneModResult", &[json!(id), json!(true), json!("")])
+        .map(|_| ())
+}
+
+/// What the fixture cases found.
+#[derive(Debug, Default)]
+struct ModFixture {
+    manifest: bool,
+    asset: bool,
+    installed: bool,
+    listed: bool,
+    slot: bool,
+    tuning: bool,
+    typo: bool,
+    command: bool,
+    builtin: bool,
+    hud: bool,
+    isolated: bool,
+    reported: bool,
+    reload_hud: bool,
+    reload_command: bool,
+}
+
+/// The example fixture, loaded the way the host loads one: the metadata table,
+/// the entry inside its wrapper, the result, then the freeze. It leaves the mod
+/// unloaded again, so nothing after this block runs against it.
+fn fixture_block(harness: &mut Harness) -> Result<ModFixture, String> {
+    let mut fixture = ModFixture::default();
+    let manifest: serde_json::Value =
+        serde_json::from_str(EXAMPLE_MANIFEST).map_err(|error| format!("mod.json: {error}"))?;
+    let id = manifest["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or("mod.json declares no id")?
+        .to_string();
+    fixture.manifest = manifest["api"] == json!(1)
+        && manifest["side"] == json!("client")
+        && manifest["entry"].is_string();
+    fixture.asset = manifest["assets"]["sfx.bleat"] == json!("assets/bleat.wav")
+        && EXAMPLE_BLEAT.starts_with(b"RIFF");
+
+    let tuning: serde_json::Value =
+        serde_json::from_str(EXAMPLE_TUNING).map_err(|error| format!("tuning.json: {error}"))?;
+    let table = json!([{
+        "id": id,
+        "name": manifest["name"],
+        "version": manifest["version"],
+        "api": manifest["api"],
+        "side": manifest["side"],
+        "description": manifest["description"],
+        "enabled": true,
+        "hash": "0",
+        "assets": { "sfx.bleat": format!("mod:{id}:sfx.bleat") },
+        "tuning": tuning,
+    }]);
+    let table = serde_json::to_string(&table).map_err(|error| error.to_string())?;
+    fixture.installed = harness.call("sceneMods", &[json!(table)])? == json!("ok");
+    fixture.listed = bool_of(harness.eval(&format!(
+        "goats.mods().some(function (m) {{ return m.id === {id:?} && m.enabled; }})"
+    ))?);
+    fixture.slot =
+        harness.eval("goats.assets.get(\"sfx.bleat\")")? == json!(format!("mod:{id}:sfx.bleat"));
+    fixture.tuning = f64_of(harness.eval("goats.tuning.get(\"camera.dist\")")?) == 6.5;
+    fixture.typo = harness
+        .observe()?
+        .logs
+        .iter()
+        .any(|line| line.contains("typo.notAThing") && line.contains("unknown path"));
+
+    harness.eval(&wrapper(&id, EXAMPLE_ENTRY))?;
+    harness.call("sceneModResult", &[json!(id), json!(true), json!("")])?;
+    harness.call("sceneModFreeze", &[])?;
+
+    fixture.command = harness.command("hello")? == "ok hello world"
+        && harness.command("hello goat")? == "ok hello goat";
+    fixture.builtin = harness.command("ping")? == "ok pong";
+    let lines = hud_lines(harness)?;
+    fixture.hud = lines.len() == 1 && lines[0].contains("example mod");
+
+    // The fixture with one extra handler that throws, the way a mod with a bug
+    // behaves: the frame must survive and the fixture's own hook must still run.
+    let seen = harness.observe()?.logs.len();
+    reload(
+        harness,
+        &id,
+        &format!(
+            "{EXAMPLE_ENTRY}\ngoats.on(\"hud\", function () {{ throw new Error(\"boom\"); }});\n"
+        ),
+    )?;
+    fixture.isolated = hud_lines(harness)?.len() == 1;
+    fixture.reported = harness.observe()?.logs.get(seen..).is_some_and(|lines| {
+        lines
+            .iter()
+            .any(|line| line.contains("handler threw") && line.contains("boom"))
+    });
+
+    // ...and reloading the clean entry leaves exactly one of each.
+    reload(harness, &id, EXAMPLE_ENTRY)?;
+    fixture.reload_hud = hud_lines(harness)?.len() == 1;
+    fixture.reload_command = harness.command("hello goat")? == "ok hello goat";
+    harness.call("sceneModEnd", &[json!(id)])?;
+    Ok(fixture)
 }

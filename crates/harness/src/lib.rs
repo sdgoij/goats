@@ -113,6 +113,10 @@ pub struct Counters {
     pub menu_draws: u32,
     pub progress_bar_calls: u32,
     pub terrain_meshes_built: u32,
+    pub textures_made: u32,
+    pub texture_binds: u32,
+    pub models_drawn: u32,
+    pub models_unloaded: u32,
 }
 
 /// Everything the stub recorded, read back as one JSON object.
