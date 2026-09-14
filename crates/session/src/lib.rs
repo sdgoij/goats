@@ -174,7 +174,7 @@ async fn write_message<T: serde::Serialize>(
     send: &mut SendStream,
     message: &T,
 ) -> Result<(), Error> {
-    let payload = proto::encode(message)?;
+    let payload = proto::encode_frame(message)?;
     let framed = proto::frame(&payload)?;
     send.write_all(&framed)
         .await
@@ -196,7 +196,7 @@ async fn read_message<T: serde::de::DeserializeOwned>(recv: &mut RecvStream) -> 
     recv.read_exact(&mut payload)
         .await
         .map_err(|error| Error::Stream(error.to_string()))?;
-    Ok(proto::decode(&payload)?)
+    Ok(proto::decode_frame(&payload)?)
 }
 
 /// Sends a server message on its own stream.
@@ -595,7 +595,7 @@ impl Host {
     /// Sends one datagram to every connected player. Fire-and-forget, and
     /// silently dropped when it exceeds the datagram budget.
     async fn broadcast(&self, datagram: Datagram) {
-        let Ok(payload) = proto::encode(&datagram) else {
+        let Ok(payload) = proto::encode_datagram(&datagram) else {
             return;
         };
         if payload.len() > proto::MAX_DATAGRAM_BYTES {
@@ -732,7 +732,7 @@ async fn handle_connection(
             if bytes.len() > proto::MAX_DATAGRAM_BYTES {
                 continue;
             }
-            let Ok(datagram) = proto::decode::<Datagram>(&bytes) else {
+            let Ok(datagram) = proto::decode_datagram(&bytes) else {
                 continue;
             };
             // Only a player's own goat and their own voice may come up from a
@@ -786,7 +786,7 @@ async fn handle_connection(
             }
             // Re-tag with the name this connection was assigned; the name in the
             // client's frame is ignored.
-            let Ok(payload) = proto::encode(&payload) else {
+            let Ok(payload) = proto::encode_datagram(&payload) else {
                 continue;
             };
             let datagram = Bytes::from(payload);
@@ -955,7 +955,7 @@ impl Client {
                 if bytes.len() > proto::MAX_DATAGRAM_BYTES {
                     continue;
                 }
-                let Ok(datagram) = proto::decode::<Datagram>(&bytes) else {
+                let Ok(datagram) = proto::decode_datagram(&bytes) else {
                     continue;
                 };
                 let event = match datagram {
@@ -1087,7 +1087,7 @@ impl Client {
             name: String::new(),
             state: state.clone(),
         });
-        let Ok(payload) = proto::encode(&datagram) else {
+        let Ok(payload) = proto::encode_datagram(&datagram) else {
             return;
         };
         if payload.len() > proto::MAX_DATAGRAM_BYTES {
@@ -1118,7 +1118,7 @@ impl Client {
         if !frame.is_within_limit() {
             return;
         }
-        let Ok(payload) = proto::encode(&Datagram::Voice(frame)) else {
+        let Ok(payload) = proto::encode_datagram(&Datagram::Voice(frame)) else {
             return;
         };
         if payload.len() > proto::MAX_DATAGRAM_BYTES {
@@ -1351,6 +1351,28 @@ mod tests {
         }
     }
 
+    /// Whether a goat came through the wire intact, to the wire's resolution:
+    /// positions to 1 cm, yaw to 1/10000 of a turn, the animation clock to 255
+    /// steps, speed to 1/256 m/s. The gait is an enum and the name is text, so
+    /// those are exact, and so are the sky, the streams and a mod's own bytes.
+    fn assert_state(got: &PeerState, want: &PeerState) {
+        assert_eq!(got.gait, want.gait, "{got:?}");
+        assert!((got.x - want.x).abs() <= 0.01, "{got:?} against {want:?}");
+        assert!((got.z - want.z).abs() <= 0.01, "{got:?} against {want:?}");
+        assert!(
+            (got.yaw - want.yaw).abs() <= 0.0001,
+            "{got:?} against {want:?}"
+        );
+        assert!(
+            (got.phase - want.phase).abs() <= 1.0 / 255.0,
+            "{got:?} against {want:?}"
+        );
+        assert!(
+            (got.speed - want.speed).abs() <= 1.0 / 256.0,
+            "{got:?} against {want:?}"
+        );
+    }
+
     /// The next relayed goat snapshot, skipping the seed and roster noise.
     async fn host_peer(host: &mut Host) -> Event {
         loop {
@@ -1471,13 +1493,19 @@ mod tests {
         // The failure this exists to prevent: a snapshot over the cap was dropped
         // whole, so every client silently froze at the last good world. The
         // optional parts go instead, and the world keeps arriving.
+        //
+        // Under the binary wire a herd at the clamp and a meadow well along now
+        // fit on their own -- that is what M16b bought -- so forcing this takes a
+        // greedy world mod, which is exactly the case M16d takes off the world's
+        // budget altogether.
         within(async {
             let host = Host::start("host").await.expect("host");
             let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
 
-            // A herd at the clamp and a meadow well along: measured, this is over
-            // the 1200-byte cap as JSON, with no mod involved.
-            let world = WorldState {
+            // A herd at the clamp and a meadow well along. On its own this is
+            // under the cap now, which the assertion at the end of the test
+            // proves; the mod is what pushes it over.
+            let base = WorldState {
                 bots: (0..10)
                     .map(|index| BotState {
                         index,
@@ -1505,7 +1533,7 @@ mod tests {
                     audio: 10,
                 },
                 eaten: Some(
-                    (0..24)
+                    (0..40)
                         .map(|i| EatenCell {
                             key: 33_570_816 + i,
                             left: 61.234,
@@ -1513,6 +1541,12 @@ mod tests {
                         .collect(),
                 ),
                 mods: serde_json::Value::Null,
+            };
+            let world = WorldState {
+                mods: serde_json::json!({
+                    "data": { "com.example.big": { "blob": "x".repeat(1000) } },
+                }),
+                ..base.clone()
             };
 
             let mut outcome = WorldOutcome::Whole;
@@ -1535,15 +1569,9 @@ mod tests {
                 other => panic!("expected a world, got {other:?}"),
             }
 
-            // A world that fits is untouched, and says so.
-            let small = WorldState {
-                eaten: Some(vec![EatenCell {
-                    key: 4242,
-                    left: 12.5,
-                }]),
-                ..world
-            };
-            assert_eq!(host.publish_world(&small).await, WorldOutcome::Whole);
+            // The same world without the mod fits whole and says so -- the point
+            // of the binary wire, stated where it matters.
+            assert_eq!(host.publish_world(&base).await, WorldOutcome::Whole);
 
             alice.close().await;
             host.close().await;
@@ -1611,10 +1639,33 @@ mod tests {
                     eaten,
                     mods,
                 } => {
-                    assert_eq!(bots, world.bots);
+                    assert_eq!(bots.len(), world.bots.len());
+                    for (got, want) in bots.iter().zip(&world.bots) {
+                        // The index picks the coat and scale, so it is exact; the
+                        // numbers come back to the wire's resolution.
+                        assert_eq!(got.index, want.index);
+                        assert_eq!(got.gait, want.gait);
+                        assert_eq!(got.variant, want.variant);
+                        assert!((got.x - want.x).abs() <= 0.01, "{got:?} against {want:?}");
+                        assert!((got.z - want.z).abs() <= 0.01, "{got:?} against {want:?}");
+                        assert!(
+                            (got.yaw - want.yaw).abs() <= 0.0001,
+                            "{got:?} against {want:?}"
+                        );
+                        assert!(
+                            (got.phase - want.phase).abs() <= 1.0 / 255.0,
+                            "{got:?} against {want:?}"
+                        );
+                    }
                     assert_eq!(weather, world.weather);
                     assert_eq!(streams, world.streams);
-                    assert_eq!(eaten, world.eaten);
+                    let got = eaten.expect("a meadow");
+                    let want = world.eaten.clone().expect("a meadow");
+                    assert_eq!(got.len(), want.len());
+                    for (got, want) in got.iter().zip(&want) {
+                        assert_eq!(got.key, want.key);
+                        assert!((got.left - want.left).abs() <= 0.25);
+                    }
                     assert_eq!(mods, world.mods);
                 }
                 other => panic!("expected a world, got {other:?}"),
@@ -1653,14 +1704,14 @@ mod tests {
             match host_peer(&mut host).await {
                 Event::Peer { name, state } => {
                     assert_eq!(name, "alice");
-                    assert_eq!(state, alice_state);
+                    assert_state(&state, &alice_state);
                 }
                 other => panic!("expected a peer, got {other:?}"),
             }
             match client_peer(&mut bob).await {
                 Event::Peer { name, state } => {
                     assert_eq!(name, "alice");
-                    assert_eq!(state, alice_state);
+                    assert_state(&state, &alice_state);
                 }
                 other => panic!("expected a peer, got {other:?}"),
             }

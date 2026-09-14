@@ -9,7 +9,9 @@ license = "MIT"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# The voice payload is carried base64 in the JSON datagram: 20 ms of Opus is
-# ~60 bytes, so the encoding overhead beats serde's array-of-numbers and keeps
-# the whole datagram channel JSON until a binary envelope earns its keep.
-base64 = "0.22"
+# The datagram channel is binary (`crate::wire`): the world snapshot is sent ten
+# times a second and voice fifty, so the JSON schema's key names and decimal
+# digits were the budget. `alloc` is what `to_allocvec`/`from_bytes` need; the
+# framing channel stays `serde_json`, because those frames ride the JS bridge and
+# are read by humans when a session misbehaves.
+postcard = { version = "1", default-features = false, features = ["alloc"] }

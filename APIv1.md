@@ -564,11 +564,14 @@ Rules:
 - The scene calls `extend` contributions in registration order, so ordering is
   part of the compatibility digest's guarantee.
 - The `mods` section rides the unreliable world datagram, so it is bounded by
-  `MAX_DATAGRAM_BYTES`; an oversized snapshot is dropped like any other. That
-  budget is shared with the herd and the weather, and with the default herd the
-  room left for mods is only a few hundred bytes -- a world mod should publish a
-  handful of rounded numbers per entity, not a full object each. See the `birds`
-  example (§5.4) for the shape of a compact `publish`.
+  `MAX_DATAGRAM_BYTES` (1200, binary since M16b). The world is compact enough
+  that a few hundred bytes of mod state fit alongside the herd, the weather, the
+  streams and the meadow -- but the budget is shared, so a snapshot that does not
+  fit sheds the meadow first and then the mod state, and says so in the host's
+  log. A world mod should still publish a handful of rounded numbers per entity
+  rather than a full object each: see the `birds` example (§5.4) for the shape of
+  a compact `publish`, and M16d in `ROADMAP.md` for giving mods a datagram of
+  their own.
 
 ### 4.14 Utility
 
@@ -741,10 +744,11 @@ so the flap function is shared and nothing cosmetic is sent over the wire.
 
 > **Watch the datagram.** A world mod's `publish` output shares the single
 > `MAX_DATAGRAM_BYTES` (1200) world datagram with the herd, the weather, the
-> streams and the meadow. The flock publishes five rounded numbers per bird and
-> leaves ~144 bytes of headroom with the default herd; a mod that publishes more
-> should expect to be dropped. A dedicated per-mod datagram is a candidate for a
-> later protocol revision (see `ROADMAP.md`).
+> streams and the meadow. Since M16b that datagram is binary and quantized, so
+> the room is real: the flock's five numbers per bird cost ~40 bytes against
+> ~290 for the herd, weather, streams and a full meadow, and a snapshot that
+> does not fit sheds the meadow (and then the mod state) rather than being
+> dropped. M16d in `ROADMAP.md` is where mods get a datagram of their own.
 
 ---
 

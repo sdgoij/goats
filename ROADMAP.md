@@ -92,7 +92,7 @@ uses.
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; the birds fixture test |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
-| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | M16a **Done** — the snapshot sheds in a defined order and says so; M16b–M16e remain |
+| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | M16a–M16b **Done** — the snapshot is binary, quantized and sheds in a defined order; M16c–M16e remain |
 
 ---
 
@@ -1426,18 +1426,31 @@ handled whichever way it goes:
 ride the JS bridge (which is JSON by construction), and are read by humans when a
 session misbehaves. Their bytes are not the problem; the 10 Hz datagram is.
 
-**What it is worth (estimated from the field widths above, not yet measured).**
+**What it is worth (measured).** The "before" column is what the same fixture
+encoded to as JSON when M16a landed; these are read off `datagram_size` and
+`encode_datagram` in a test, not estimated.
 
-| Configuration | Today | postcard | + quantized | with M16d |
-| --- | --- | --- | --- | --- |
-| herd 7, meadow ~10, no mods | **1202** | ~265 | ~155 | ~155 |
-| herd 10, meadow ~20, no mods | ~1600 | ~395 | ~255 | ~255 |
-| herd 7, meadow ~10, + `birds` | ~1415 | ~500 | ~400 | ~155 + a ~240-byte mods datagram |
+| Configuration | JSON | binary + quantized |
+| --- | --- | --- |
+| herd 7 (the default), empty meadow, no mod | 886 | **145** |
+| herd 7, empty meadow, the `birds` flock | 1097 | **274** |
+| herd 10 (the clamp), empty meadow, no mod | 1150 | **175** |
+| herd 10, meadow at 20 cells, no mod | ~1470 | **295** |
+| herd 7, meadow at 20 cells, the `birds` flock | ~1600 | **394** |
+| one bot, inside a world | 86 | **10** |
+| one peer pose (~120 by hand) | 120 | **17** |
+| one voice frame, 60-byte Opus payload | ~104 | **69** |
 
-A bot is 86 bytes of JSON today (`{"index":0,"x":1.234,"z":-12.345,"yaw":0.5,
-"phase":0.123,"gait":"walk","variant":0}`) and ~19 as a binary record, ~10 as a
-quantized one. A peer pose, the highest-rate datagram of the three, goes from
-~120 bytes to ~30.
+The rows marked `~` are extrapolated from the measured ones (six bytes a meadow
+cell, 211 for the flock); everything else was read off `datagram_size` and
+`encode_datagram`. The headline is the herd-10 pair: at 1150 bytes that shape
+used to fit only with an empty meadow, and at 295 it now fits with a full one and
+room to spare.
+
+A bot was 86 bytes of JSON (`{"index":0,"x":1.234,"z":-12.345,"yaw":0.5,
+"phase":0.123,"gait":"walk","variant":0}`) and is 10 as a quantized record: an
+`i16` of centimetres each for `x`/`z`/`yaw`, a `u8` for the animation clock, the
+gait's variant byte, and the rest varint.
 
 **Phases.**
 
@@ -1469,17 +1482,35 @@ quantized one. A peer pose, the highest-rate datagram of the three, goes from
   refusal, and the round trip of a meadow that is missing rather than empty) and
   a `session` test that an over-budget world still reaches a client without its
   meadow.
-- **M16b — A binary datagram channel. ⬜** `postcard` (or bincode 2) for
-  `Datagram` only, with a one-byte tag and the mod payload as length-prefixed raw
-  JSON; the frames keep `serde_json`. Two codecs in `proto`, so `encode`/`decode`
-  split into frame and datagram pairs; the eight call sites in `crates/session`
-  are the whole blast radius. `PROTOCOL_VERSION` bumps, which the release model
-  already handles (both ends ship together, and an older relay refuses the join
-  rather than mis-decoding it). The quantized fields ride along: `x`/`z` at 1 cm
-  as `i16` (which spans ±327 m, well past the field), `yaw` at 1/10000 turn,
-  `phase` at 1/255, `EatenCell::left` in quarter-seconds as `u16`, the gait as the
-  enum it already is. `is_finite` becomes structural for the quantized fields and
-  stays for the rest; the round-trip tests already in `proto` cover the change.
+- **M16b — A binary datagram channel. ✅ Done.** `crates/proto/src/wire.rs` is
+  the packed form, and postcard is the codec: a variant byte where
+  `#[serde(tag = "kind")]` cost twenty, and the entity fields quantized -- `x`/`z`
+  at 1 cm as `i16`, `yaw` at 1/10000 of a turn, `phase` at 1/255, `speed` at
+  1/256 m/s, `EatenCell::left` in quarter-seconds as `u16`. `WeatherState` and
+  `Streams` ride as they are: neither carries an entity count, so postcard's
+  fixed-width fields are already the right size. `WorldState::mods` travels as
+  opaque JSON bytes, which is what it always was -- the transport has no schema
+  for a mod's payload -- and it is also why M16d is the natural next step. The
+  two codecs are named for their channels (`encode_frame`/`decode_frame` for the
+  JSON control stream, `encode_datagram`/`decode_datagram` for this one), and
+  `PROTOCOL_VERSION` is 8: a version-7 peer would fail to decode every datagram,
+  so the two would agree on a session and then see nothing move. `base64` is gone
+  from the crate, because the voice payload is the bytes now, and
+  `Error::NotFinite` is what an encoder returns when a datagram carries a NaN --
+  quantization would otherwise turn one into an unrelated number, which for a
+  position is a peer teleporting across the field.
+
+  Two properties the tests pin, because both are easy to lose in a later edit:
+  **a quantized field saturates rather than wraps** (`1e30` and `NaN` land on the
+  edge of the range, not somewhere else in it) and **the encoding is idempotent**
+  (a relay decodes a peer's frame and re-encodes it with the name stamped on, so
+  `decode`-then-`encode` has to return the same bytes or a value drifts every
+  hop). The `session` tests now assert the wire's resolution at the integration
+  level -- positions to 1 cm, the clock to 1/255 -- with everything the wire does
+  not touch (the gait, the variant, the sky, the streams, a mod's bytes) still
+  exact. The M16e guard was restated at the same time: the worst case a player can
+  reach without a mod fits **whole**, with room for a greedy mod, and it takes a
+  deliberately greedy one to force a shed at all.
 - **M16c — The meadow at its own cadence. ⬜** It is the one field with no need
   for 10 Hz: a tuft that returns in 40-90 s does not need 100 ms resolution, and
   the client counts its own copy down between snapshots. Send `eaten` on its own,

@@ -324,8 +324,12 @@ the scene's queued intents back with `sceneNetDrain()`, without ever awaiting in
 the frame loop. `net.js` is the scene end of that channel; the console commands
 are `host`, `connect <ticket>`, `who`, `leave`, `say` and `msg` (with bare text
 and a leading `@name` both routed to chat). Chat and roster travel on reliable
-streams, one message per stream; goat snapshots and the server's bots travel as
-unreliable datagrams, which `net.js` turns into a remote goat per peer and a
+streams, one message per stream, as JSON: a frame is small and infrequent, and
+worth being able to read in a log. Goat snapshots, the server's world and voice
+travel as unreliable binary datagrams, because those are what has a 1200-byte
+budget -- `proto`'s `wire` module is the packed, quantized form (a bot is 10
+bytes there against 86 as JSON). `net.js` turns a snapshot into
+a remote goat per peer and a
 mirrored herd, and eases toward the latest of each. Voice rides the same datagram
 channel, but it never reaches the scene: `net.rs` forwards captured and received
 frames to `audio.rs` on a side channel, because Opus bytes are not a line.

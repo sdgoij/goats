@@ -5,29 +5,36 @@
 //! isolation and both ends agree on it by construction. The transport lives in
 //! `session`; this crate is only the words and the bytes.
 //!
-//! Payloads are JSON. The control messages are small and infrequent, and a
-//! readable frame is worth more here than the bytes it saves. The high-rate
-//! transform channel also rides JSON, but as unreliable datagrams and without
-//! the length prefix of a stream frame.
+//! Two codecs, for two channels. The **frames** -- a hello, a chat line, a
+//! roster, a ticket -- are JSON: they are small, infrequent, ride the JS bridge
+//! (which is JSON by construction) and are what a human reads when a session
+//! misbehaves. The **datagrams** are the high-rate channel, ten a second for the
+//! world snapshot and fifty for voice, and they are binary and quantized
+//! (`[encode_datagram]`, `[decode_datagram]`, and [`wire`] for the encoding
+//! itself), because they have a 1200-byte budget to fit in.
 
 use std::collections::BTreeMap;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+mod wire;
+
 /// The wire version, bumped whenever a message changes shape. It is also the
 /// ALPN suffix, so a peer with a different major version fails the QUIC
 /// handshake before it reaches any of this.
 ///
-/// 5 added the server-owned world; 6 added the voice datagram; 7 adds the
-/// world-mod set to the handshake. Bumping for voice mattered because a relay
-/// built at 5 does not know the variant: it decodes the datagram as an error and
-/// drops it, so without the bump a stale server accepts the join and then
-/// silently swallows every packet. The mod set rides the control stream, but it
-/// still needs the bump: a version-6 server would ignore the field and accept a
-/// client whose world mods differ, which is exactly the silent divergence the
-/// set exists to prevent.
-pub const PROTOCOL_VERSION: u16 = 7;
+/// 5 added the server-owned world; 6 added the voice datagram; 7 added the
+/// world-mod set to the handshake; 8 makes the datagram channel binary and
+/// quantized. Bumping for voice mattered because a relay built at 5 does not
+/// know the variant: it decodes the datagram as an error and drops it, so
+/// without the bump a stale server accepts the join and then silently swallows
+/// every packet. The mod set rides the control stream, but it still needs the
+/// bump: a version-6 server would ignore the field and accept a client whose
+/// world mods differ, which is exactly the silent divergence the set exists to
+/// prevent. Version 8 is a stronger case still: a 7 peer would fail to decode
+/// every datagram, so the two would agree on a session and see nothing move.
+pub const PROTOCOL_VERSION: u16 = 8;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -489,7 +496,7 @@ pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
 /// What `world` comes to as one encoded datagram, or `usize::MAX` when it cannot
 /// be encoded at all -- which is a size nothing fits rather than a size of zero.
 fn datagram_size(world: &WorldState) -> usize {
-    match encode(&Datagram::World(world.clone())) {
+    match encode_datagram(&Datagram::World(world.clone())) {
         Ok(bytes) => bytes.len(),
         Err(_) => usize::MAX,
     }
@@ -498,12 +505,10 @@ fn datagram_size(world: &WorldState) -> usize {
 /// One Opus packet on the media channel. `from` is stamped by the relay, like a
 /// pose's name; a client leaves it blank. `seq` is the sender's own frame
 /// counter, which a receiver uses to notice loss and order a jitter buffer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceFrame {
-    #[serde(default)]
     pub from: String,
     pub seq: u32,
-    #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
 }
 
@@ -513,33 +518,31 @@ impl VoiceFrame {
     }
 }
 
-/// The voice payload travels base64 rather than as a JSON array of numbers,
-/// which would roughly quadruple every frame on the wire.
-mod base64_bytes {
-    use base64::Engine as _;
-    use base64::engine::general_purpose::STANDARD;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        STANDARD.encode(bytes).serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        STANDARD.decode(text).map_err(serde::de::Error::custom)
-    }
-}
-
 /// One datagram. The transform channel carries three kinds of traffic -- a
 /// player's own goat, relayed between peers; the server's world; and voice -- so
 /// the payload is tagged. Only the server may send [`Datagram::World`]; a client
 /// that sends one has it dropped rather than forwarded.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+///
+/// The tag is one byte on the wire ([`encode_datagram`]); this enum is the
+/// vocabulary, not the encoding.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Datagram {
     Peer(PeerFrame),
     World(WorldState),
     Voice(VoiceFrame),
+}
+
+impl Datagram {
+    /// Whether every number in it is finite. A NaN or an infinity would poison
+    /// every peer's interpolation, so the encoder refuses one outright and the
+    /// receivers refuse to relay one.
+    pub fn is_finite(&self) -> bool {
+        match self {
+            Datagram::Peer(frame) => frame.state.is_finite(),
+            Datagram::World(world) => world.is_finite(),
+            Datagram::Voice(_) => true,
+        }
+    }
 }
 
 /// What can go wrong encoding, framing or decoding a message.
@@ -547,7 +550,14 @@ pub enum Datagram {
 pub enum Error {
     Encode(String),
     Decode(String),
-    FrameTooLarge { size: usize, max: usize },
+    /// A datagram carried a number that is not finite, and was not sent. A NaN
+    /// would poison every peer's interpolation, and quantization would turn it
+    /// into an unrelated number.
+    NotFinite,
+    FrameTooLarge {
+        size: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -555,6 +565,9 @@ impl std::fmt::Display for Error {
         match self {
             Error::Encode(message) => write!(formatter, "encode: {message}"),
             Error::Decode(message) => write!(formatter, "decode: {message}"),
+            Error::NotFinite => {
+                write!(formatter, "a number in the message is not finite")
+            }
             Error::FrameTooLarge { size, max } => {
                 write!(
                     formatter,
@@ -567,14 +580,43 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Encodes a message to JSON bytes.
-pub fn encode<T: Serialize>(message: &T) -> Result<Vec<u8>, Error> {
+/// Encodes a control message to JSON bytes.
+///
+/// This is the framing channel -- hello, welcome, chat, roster, notices, errors
+/// -- which asks for readable bytes over compact ones. A datagram is
+/// [`encode_datagram`].
+pub fn encode_frame<T: Serialize>(message: &T) -> Result<Vec<u8>, Error> {
     serde_json::to_vec(message).map_err(|error| Error::Encode(error.to_string()))
 }
 
-/// Decodes a message from JSON bytes.
-pub fn decode<T: DeserializeOwned>(payload: &[u8]) -> Result<T, Error> {
+/// Decodes a control message from JSON bytes.
+pub fn decode_frame<T: DeserializeOwned>(payload: &[u8]) -> Result<T, Error> {
     serde_json::from_slice(payload).map_err(|error| Error::Decode(error.to_string()))
+}
+
+/// Encodes a datagram to its packed binary form.
+///
+/// A datagram whose numbers are not finite is refused rather than sent: it would
+/// poison every peer's interpolation, and quantization would turn a NaN into a
+/// number that means something else. The receivers check too -- a peer's bytes
+/// are not trusted -- but a value that cannot be true should not leave here.
+pub fn encode_datagram(datagram: &Datagram) -> Result<Vec<u8>, Error> {
+    if !datagram.is_finite() {
+        return Err(Error::NotFinite);
+    }
+    let packed = wire::WireDatagram::pack(datagram)?;
+    postcard::to_allocvec(&packed).map_err(|error| Error::Encode(error.to_string()))
+}
+
+/// Decodes a datagram from its packed binary form.
+///
+/// Everything this can produce is finite: the wire cannot carry a NaN (see
+/// `wire`), so the checks that remain are about the bridge, where the scene
+/// hands Rust JSON.
+pub fn decode_datagram(payload: &[u8]) -> Result<Datagram, Error> {
+    let packed: wire::WireDatagram =
+        postcard::from_bytes(payload).map_err(|error| Error::Decode(error.to_string()))?;
+    packed.unpack()
 }
 
 /// Wraps a payload in a wire frame: a big-endian `u32` length, then the payload.
@@ -732,8 +774,11 @@ mod tests {
             },
         ];
         for message in &messages {
-            let payload = encode(message).expect("encode");
-            assert_eq!(&decode::<ClientMessage>(&payload).expect("decode"), message);
+            let payload = encode_frame(message).expect("encode");
+            assert_eq!(
+                &decode_frame::<ClientMessage>(&payload).expect("decode"),
+                message
+            );
         }
 
         let replies = [
@@ -766,8 +811,11 @@ mod tests {
             },
         ];
         for reply in &replies {
-            let payload = encode(reply).expect("encode");
-            assert_eq!(&decode::<ServerMessage>(&payload).expect("decode"), reply);
+            let payload = encode_frame(reply).expect("encode");
+            assert_eq!(
+                &decode_frame::<ServerMessage>(&payload).expect("decode"),
+                reply
+            );
         }
     }
 
@@ -834,13 +882,13 @@ mod tests {
                 gait: Gait::Trot,
             },
         };
-        let payload = encode(&frame).expect("encode");
-        assert_eq!(decode::<PeerFrame>(&payload).expect("decode"), frame);
+        let payload = encode_frame(&frame).expect("encode");
+        assert_eq!(decode_frame::<PeerFrame>(&payload).expect("decode"), frame);
 
         // The enum is the lowercase scene spelling, so the wire form is readable
         // and a bad gait is a decode error rather than an unknown mode.
-        assert_eq!(encode(&Gait::Jump).expect("encode"), b"\"jump\"");
-        assert!(decode::<Gait>(b"\"gallop\"").is_err());
+        assert_eq!(encode_frame(&Gait::Jump).expect("encode"), b"\"jump\"");
+        assert!(decode_frame::<Gait>(b"\"gallop\"").is_err());
     }
 
     #[test]
@@ -861,8 +909,19 @@ mod tests {
         assert!(!state.is_finite());
     }
 
+    /// A value on the animation clock's grid. The wire is lossy (255 steps
+    /// through a clip), so a fixture that is meant to come back identical has to
+    /// start on the grid; `wire`'s own tests are where the loss is measured.
+    fn on_the_phase_grid(value: f32) -> f32 {
+        (value * 255.0).round() / 255.0
+    }
+
     #[test]
     fn world_and_datagrams_round_trip() {
+        // Every number here is on the quantization grid, so this is an exact
+        // round trip of the *envelope*: the variant, the field set, the sky, the
+        // streams and a mod's bytes. Positions land on 1 cm, yaw on 1/10000 of a
+        // turn, `left` on a quarter second, so any two-decimal value is exact.
         let world = WorldState {
             bots: vec![
                 BotState {
@@ -870,16 +929,16 @@ mod tests {
                     x: 1.0,
                     z: -1.0,
                     yaw: 0.0,
-                    phase: 0.5,
+                    phase: on_the_phase_grid(0.5),
                     gait: Gait::Idle,
                     variant: 2,
                 },
                 BotState {
                     index: 1,
-                    x: 2.0,
-                    z: 3.0,
+                    x: 2.75,
+                    z: 3.25,
                     yaw: 1.0,
-                    phase: 0.25,
+                    phase: on_the_phase_grid(0.25),
                     gait: Gait::Eat,
                     variant: 1,
                 },
@@ -912,31 +971,31 @@ mod tests {
             }),
         };
         let datagram = Datagram::World(world.clone());
-        let bytes = encode(&datagram).expect("encode");
-        assert_eq!(decode::<Datagram>(&bytes).expect("decode"), datagram);
+        let bytes = encode_datagram(&datagram).expect("encode");
+        assert_eq!(decode_datagram(&bytes).expect("decode"), datagram);
         assert!(world.is_finite());
 
-        // The weather kind is the scene's own spelling, so nothing has to map
-        // it at the bridge.
+        // The weather kind is the scene's own spelling in the *frames*, so
+        // nothing has to map it at the bridge.
         assert_eq!(
-            encode(&WeatherKind::Clearing).expect("encode"),
+            encode_frame(&WeatherKind::Clearing).expect("encode"),
             b"\"clearing\""
         );
-        assert!(decode::<WeatherKind>(b"\"hail\"").is_err());
+        assert!(decode_frame::<WeatherKind>(b"\"hail\"").is_err());
 
         let peer = Datagram::Peer(PeerFrame {
             name: "alice".to_string(),
             state: PeerState {
                 x: 0.0,
-                z: 0.0,
-                yaw: 0.0,
-                phase: 0.0,
-                speed: 0.0,
+                z: -12.5,
+                yaw: -1.0,
+                phase: on_the_phase_grid(0.75),
+                speed: 1.25,
                 gait: Gait::Walk,
             },
         });
-        let bytes = encode(&peer).expect("encode");
-        assert_eq!(decode::<Datagram>(&bytes).expect("decode"), peer);
+        let bytes = encode_datagram(&peer).expect("encode");
+        assert_eq!(decode_datagram(&bytes).expect("decode"), peer);
 
         // A hostile bot position or weather value is caught rather than relayed
         // into every client's renderer.
@@ -1008,22 +1067,6 @@ mod tests {
     /// nothing is loaded (and not `null`, which is what a shed one carries).
     fn without_mods(world: &mut WorldState) {
         world.mods = serde_json::json!({ "streams": {}, "data": {} });
-    }
-
-    #[test]
-    fn the_measured_vanilla_world_is_over_the_datagram_budget() {
-        // The numbers M16 was planned from: at ten eaten cells the JSON world no
-        // longer fits a datagram, with no mod involved. If this starts passing,
-        // the meadow's encoding changed and the budget deserves re-measuring.
-        let full = a_running_world(10);
-        assert!(
-            datagram_size(&full) > MAX_DATAGRAM_BYTES,
-            "the fixture should be over the cap, not {} bytes",
-            datagram_size(&full)
-        );
-        // With the meadow empty it comfortably fits, which is why this was never
-        // noticed: a fresh session has no eaten cells.
-        assert!(datagram_size(&a_running_world(0)) < MAX_DATAGRAM_BYTES);
     }
 
     #[test]
@@ -1100,24 +1143,24 @@ mod tests {
         // (because the snapshot was over budget) must not decode into an empty
         // meadow, which would put every eaten tuft back and leave the client
         // unable to eat. An empty meadow is a different, real state and travels.
-        let mut world = a_running_world(3);
-        world.eaten = None;
-        let bytes = encode(&Datagram::World(world.clone())).expect("encode");
-        let text = String::from_utf8(bytes.clone()).expect("utf8");
-        assert!(
-            !text.contains("eaten"),
-            "the field should be left out: {text}"
-        );
-        match decode::<Datagram>(&bytes).expect("decode") {
+        let mut shed = a_running_world(3);
+        shed.eaten = None;
+        let shed_bytes = encode_datagram(&Datagram::World(shed)).expect("encode");
+        match decode_datagram(&shed_bytes).expect("decode") {
             Datagram::World(decoded) => assert_eq!(decoded.eaten, None),
             other => panic!("expected a world, got {other:?}"),
         }
 
-        let mut empty = a_running_world(0);
+        let mut empty = a_running_world(3);
         empty.eaten = Some(Vec::new());
-        let text =
-            String::from_utf8(encode(&Datagram::World(empty)).expect("encode")).expect("utf8");
-        assert!(text.contains(r#""eaten":[]"#), "{text}");
+        let empty_bytes = encode_datagram(&Datagram::World(empty)).expect("encode");
+        match decode_datagram(&empty_bytes).expect("decode") {
+            Datagram::World(decoded) => assert_eq!(decoded.eaten, Some(Vec::new())),
+            other => panic!("expected a world, got {other:?}"),
+        }
+
+        // The two are distinguishable on the wire, which is the whole point.
+        assert_ne!(shed_bytes, empty_bytes);
     }
 
     #[test]
@@ -1132,35 +1175,82 @@ mod tests {
     }
 
     #[test]
-    fn the_worst_reachable_vanilla_world_fits_once_the_meadow_is_shed() {
-        // Herd 10 is the clamp a player or a mod can reach, and the meadow is as
-        // far along as the bots' own grazing takes it (measured: 10 cells after
-        // two minutes, and still creeping up). This is the invariant M16a leans
-        // on: what can never be shed has to fit on its own.
+    fn the_vanilla_world_now_fits_with_room_for_a_mod() {
+        // What M16 was planned from, re-stated for the binary wire. Under JSON the
+        // worst case a player can reach without any mod was 1600 bytes and
+        // climbing against a 1200-byte cap; binary and quantized it fits whole,
+        // with most of the budget still free. This is the guard against the
+        // budget eroding again: the next field added to `WorldState` has to
+        // argue for its bytes.
         let mut world = a_running_world(20);
         world.bots = (0..10).map(bot).collect();
         without_mods(&mut world);
-        let outcome = fit_world(&mut world, MAX_DATAGRAM_BYTES);
-        assert_eq!(outcome, WorldOutcome::MeadowShed, "{world:?}");
-        assert_eq!(world.bots.len(), 10);
+        let size = datagram_size(&world);
+        assert_eq!(
+            fit_world(&mut world, MAX_DATAGRAM_BYTES),
+            WorldOutcome::Whole,
+            "{size} bytes"
+        );
+        assert!(world.eaten.is_some(), "nothing had to be shed");
+        assert!(
+            size < MAX_DATAGRAM_BYTES / 3,
+            "{size} bytes of a {MAX_DATAGRAM_BYTES}-byte budget leaves no room for a mod"
+        );
+    }
+
+    #[test]
+    fn a_greedy_world_mod_is_what_makes_the_snapshot_shed() {
+        // The shed path is still the safety net -- a mod may publish far more than
+        // it should -- and the meadow is still what goes first, so the world
+        // itself keeps arriving and the mod keeps its state.
+        let mut world = a_running_world(20);
+        world.bots = (0..10).map(bot).collect();
+        without_mods(&mut world);
+        // Sized from the measurement rather than by hand, so the test says what
+        // it means: the blob is big enough to push the snapshot over the cap, and
+        // the meadow is worth more than the overshoot, so the meadow alone is
+        // what has to go.
+        let base = datagram_size(&world);
+        let room = MAX_DATAGRAM_BYTES.saturating_sub(base);
+        world.mods = serde_json::json!({
+            "data": { "com.example.big": { "blob": "x".repeat(room + 40) } },
+        });
+        let full = datagram_size(&world);
+        assert!(
+            full > MAX_DATAGRAM_BYTES,
+            "{full} bytes against {base} before the mod"
+        );
+
+        assert_eq!(
+            fit_world(&mut world, MAX_DATAGRAM_BYTES),
+            WorldOutcome::MeadowShed
+        );
+        assert!(world.eaten.is_none(), "the meadow goes first");
+        assert_eq!(world.bots.len(), 10, "the bots are never shed");
+        assert!(world.mods.is_object(), "the mod keeps its state");
         assert!(datagram_size(&world) <= MAX_DATAGRAM_BYTES);
     }
 
     #[test]
-    fn voice_frames_round_trip_and_are_base64() {
+    fn voice_frames_round_trip_as_bytes() {
         let frame = VoiceFrame {
             from: "alice".to_string(),
             seq: 7,
             payload: vec![0u8, 1, 2, 253, 254, 255],
         };
         let datagram = Datagram::Voice(frame.clone());
-        let bytes = encode(&datagram).expect("encode");
-        assert_eq!(decode::<Datagram>(&bytes).expect("decode"), datagram);
+        let bytes = encode_datagram(&datagram).expect("encode");
+        assert_eq!(decode_datagram(&bytes).expect("decode"), datagram);
 
-        // The payload is a base64 string on the wire, not an array of numbers.
-        let text = String::from_utf8(bytes).expect("utf8");
-        assert!(text.contains(r#""payload":"AAEC/f7/""#), "{text}");
-        assert!(!text.contains(r#""payload":["#), "{text}");
+        // The payload is raw bytes on the wire -- not base64, which cost a third
+        // more than it saved, and not an array of numbers. 20 ms of Opus is ~60
+        // bytes here, fifty times a second.
+        assert!(
+            bytes.len() <= frame.payload.len() + 16,
+            "{} bytes for a {} byte payload",
+            bytes.len(),
+            frame.payload.len()
+        );
 
         assert!(frame.is_within_limit());
         let too_big = VoiceFrame {
@@ -1172,18 +1262,48 @@ mod tests {
     }
 
     #[test]
+    fn a_non_finite_datagram_is_refused_at_the_encoder() {
+        // Quantization cannot represent a NaN, so without this it would become an
+        // unrelated number -- for a position, a peer teleporting across the
+        // field. The encoder refuses it instead, as well as the receivers.
+        let peer = |x: f32, z: f32| {
+            Datagram::Peer(PeerFrame {
+                name: "alice".to_string(),
+                state: PeerState {
+                    x,
+                    z,
+                    yaw: 0.0,
+                    phase: 0.0,
+                    speed: 0.0,
+                    gait: Gait::Idle,
+                },
+            })
+        };
+        assert!(matches!(
+            encode_datagram(&peer(f32::NAN, 0.0)),
+            Err(Error::NotFinite)
+        ));
+        assert!(matches!(
+            encode_datagram(&peer(0.0, f32::INFINITY)),
+            Err(Error::NotFinite)
+        ));
+        // A finite one goes out, so this is a check and not a blanket refusal.
+        assert!(encode_datagram(&peer(1.0, 2.0)).is_ok());
+    }
+
+    #[test]
     fn a_consume_report_round_trips() {
         let message = ClientMessage::Consume { key: 8189_0001 };
-        let payload = encode(&message).expect("encode");
+        let payload = encode_frame(&message).expect("encode");
         assert_eq!(
-            &decode::<ClientMessage>(&payload).expect("decode"),
+            &decode_frame::<ClientMessage>(&payload).expect("decode"),
             &message
         );
     }
 
     #[test]
     fn a_frame_carries_its_length() {
-        let payload = encode(&ClientMessage::Hello {
+        let payload = encode_frame(&ClientMessage::Hello {
             version: 1,
             name: "bob".to_string(),
             mods: vec![],
@@ -1200,7 +1320,7 @@ mod tests {
         // and the payload that follows round-trips.
         let body = &framed[LENGTH_PREFIX_BYTES..];
         assert_eq!(body.len(), payload.len());
-        assert!(decode::<ClientMessage>(body).is_ok());
+        assert!(decode_frame::<ClientMessage>(body).is_ok());
     }
 
     #[test]
@@ -1220,7 +1340,7 @@ mod tests {
 
     #[test]
     fn garbage_payloads_are_refused() {
-        let error = decode::<ServerMessage>(b"not json").expect_err("must fail");
+        let error = decode_frame::<ServerMessage>(b"not json").expect_err("must fail");
         assert!(matches!(error, Error::Decode(_)));
         assert!(error.to_string().contains("decode"));
     }
