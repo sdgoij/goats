@@ -430,6 +430,9 @@ fn main() {
     if !loader.mods().is_empty() {
         eprintln!("[mods] {} discovered", loader.mods().len());
     }
+    // The set a joiner has to match, hashes included: a refusal names both ends,
+    // and this is the line it is read against.
+    eprintln!("[mods] world set: {}", session::describe_mods(&world_mods));
 
     let init = scene_function(&context, "sceneInit");
     let frame = scene_function(&context, "sceneFrame");

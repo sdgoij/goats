@@ -32,7 +32,7 @@ use tokio::sync::{Mutex, mpsc};
 // `proto` directly.
 pub use proto::{
     BotState, Datagram, EatenCell, Gait, ModRef, ModsOutcome, ModsState, PeerFrame, PeerState,
-    Streams, VoiceFrame, WeatherKind, WeatherState, WorldOutcome, WorldState,
+    Streams, VoiceFrame, WeatherKind, WeatherState, WorldOutcome, WorldState, describe_mods,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a

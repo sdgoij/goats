@@ -83,7 +83,30 @@ pub struct ModRef {
 pub struct ModMismatch {
     pub missing: Vec<String>,
     pub extra: Vec<String>,
-    pub differing: Vec<String>,
+    pub differing: Vec<DifferingMod>,
+}
+
+/// A shared id whose version or content hash disagrees.
+///
+/// Both sides are kept, not just the id, because "differing" on its own is the
+/// hardest refusal to act on: it says nothing about *which* two things differ,
+/// and the usual cause -- the same mod content hashed on two platforms -- looks
+/// identical from the id alone. The line names both hashes so a mismatch is one
+/// look rather than a guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DifferingMod {
+    pub id: String,
+    pub host: ModRef,
+    pub client: ModRef,
+}
+
+impl DifferingMod {
+    fn describe(&self) -> String {
+        format!(
+            "{} (host {}#{:016x}, you {}#{:016x})",
+            self.id, self.host.version, self.host.hash, self.client.version, self.client.hash
+        )
+    }
 }
 
 impl ModMismatch {
@@ -101,10 +124,28 @@ impl ModMismatch {
             parts.push(format!("extra {}", self.extra.join(", ")));
         }
         if !self.differing.is_empty() {
-            parts.push(format!("differing {}", self.differing.join(", ")));
+            let list: Vec<String> = self.differing.iter().map(DifferingMod::describe).collect();
+            parts.push(format!("differing {}", list.join("; ")));
         }
         format!("world mods do not match ({})", parts.join("; "))
     }
+}
+
+/// A world-mod set as one line, for the startup log: both ends print this, so a
+/// refusal can be read against what each side actually had.
+///
+/// ```text
+/// none
+/// com.github.sdgoij.goats.birds@1.0.0#9f3a1b2c4d5e6f70
+/// ```
+pub fn describe_mods(mods: &[ModRef]) -> String {
+    if mods.is_empty() {
+        return "none".to_string();
+    }
+    mods.iter()
+        .map(|m| format!("{}@{}#{:016x}", m.id, m.version, m.hash))
+        .collect::<Vec<String>>()
+        .join(" ")
 }
 
 /// Compare the host's world-mod set with a client's. The comparison is exact;
@@ -124,7 +165,11 @@ pub fn compare_world_mods(host: &[ModRef], client: &[ModRef]) -> ModMismatch {
             None => mismatch.missing.push(clean_mod_id(id)),
             Some(client_ref) => {
                 if host_ref.version != client_ref.version || host_ref.hash != client_ref.hash {
-                    mismatch.differing.push(clean_mod_id(id));
+                    mismatch.differing.push(DifferingMod {
+                        id: clean_mod_id(id),
+                        host: (*host_ref).clone(),
+                        client: (*client_ref).clone(),
+                    });
                 }
             }
         }
@@ -136,7 +181,7 @@ pub fn compare_world_mods(host: &[ModRef], client: &[ModRef]) -> ModMismatch {
     }
     mismatch.missing.sort();
     mismatch.extra.sort();
-    mismatch.differing.sort();
+    mismatch.differing.sort_by(|a, b| a.id.cmp(&b.id));
     mismatch
 }
 
@@ -880,7 +925,28 @@ mod tests {
             hash: 1,
         };
         let differing = compare_world_mods(&[a.clone()], &[changed]);
-        assert_eq!(differing.differing, vec!["com.a".to_string()]);
+        assert_eq!(differing.differing.len(), 1);
+        assert_eq!(differing.differing[0].id, "com.a");
+        // Both sides are in the line, because "differing" alone is the refusal
+        // nobody can act on -- the usual cause is the same content hashed on two
+        // platforms, which the id cannot show.
+        let text = differing.describe();
+        assert!(
+            text.contains("differing com.a (host 1#0000000000000001"),
+            "{text}"
+        );
+        assert!(text.contains("you 2#0000000000000001"), "{text}");
+
+        // The same set renders as one line, for a startup log.
+        assert_eq!(describe_mods(&[]), "none");
+        assert_eq!(
+            describe_mods(std::slice::from_ref(&a)),
+            "com.a@1#0000000000000001"
+        );
+        assert_eq!(
+            describe_mods(&[a, b]),
+            "com.a@1#0000000000000001 com.b@1#0000000000000002"
+        );
 
         // A hostile id is cleaned for the message, not for the comparison.
         let hostile = ModRef {

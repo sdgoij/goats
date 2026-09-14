@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use session::{Event, Host, ModsOutcome, WorldOutcome, WorldState};
+use session::{Event, Host, ModsOutcome, WorldOutcome, WorldState, describe_mods};
 
 /// The world snapshot cadence, in sim frames (the sim runs at a fixed 60 Hz).
 const WORLD_EVERY: u64 = 6;
@@ -178,6 +178,9 @@ async fn main() {
             world_mods.len()
         );
     }
+    // The hashes, not just the count: a refused joiner is told what this end
+    // had, and this is the line to read that against.
+    eprintln!("goatsd: world set: {}", describe_mods(&world_mods));
 
     let mut host = match Host::start_with_mods(&options.name, world_mods).await {
         Ok(host) => host,
