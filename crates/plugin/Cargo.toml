@@ -9,3 +9,5 @@ license = "MIT"
 # `Store`, so a mod's frame path has no JavaScript in front of it (M17b). Only
 # the `wasm` feature is needed; `jit`/`raylib` stay out.
 slag = { workspace = true, features = ["wasm"] }
+# `published_json` builds the `{ id: base64 }` shape the mods datagram carries.
+serde_json = { workspace = true }

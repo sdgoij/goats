@@ -17,6 +17,7 @@ session = { path = "crates/session" }
 mods = { path = "crates/mods" }
 scene = { path = "crates/scene" }
 proto = { path = "crates/proto" }
+plugin = { path = "crates/plugin" }
 
 # The engine. Flip between the published revision and a local checkout here.
 slag = { git = "https://github.com/sdgoij/slag" }

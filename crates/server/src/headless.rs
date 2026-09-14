@@ -12,6 +12,10 @@
 //! same way for the client, this server and the test harness, so no two of them
 //! can simulate a different game.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use plugin::{PluginSet, Side as PluginSide};
 use slag::{Context, HostCallbacks, JsValue};
 
 /// Appended to the scene: the seam the server needs, JSON views of what the
@@ -36,6 +40,8 @@ pub struct Sim {
     world: JsValue,
     mods: JsValue,
     consume: JsValue,
+    plugins: Rc<RefCell<PluginSet>>,
+    set_published: JsValue,
 }
 
 impl Sim {
@@ -59,8 +65,8 @@ impl Sim {
         // The same mod wiring the client host uses: push the table, evaluate
         // each entry, close registration. It runs before `sceneUseSeed`, so a
         // mod's registered streams are seeded rather than left at their initial
-        // value.
-        load_mods(&mut context, loader)?;
+        // value. World compiled mods come back as a Rust-hosted plugin set.
+        let plugins = Rc::new(RefCell::new(load_mods(&mut context, loader)?));
 
         let seed_fn = scene_function(&context, "sceneUseSeed")?;
         let init = scene_function(&context, "sceneInit")?;
@@ -68,6 +74,7 @@ impl Sim {
         let world = scene_function(&context, "sceneWorldJson")?;
         let mods = scene_function(&context, "sceneModsJson")?;
         let consume = scene_function(&context, "sceneConsume")?;
+        let set_published = scene_function(&context, "sceneSetWasmPublished")?;
 
         context
             .call(
@@ -76,6 +83,9 @@ impl Sim {
                 &[JsValue::number(seed as f64)],
             )
             .map_err(|error| error.to_string())?;
+        // A world plugin's streams re-derive from the same session seed the
+        // scene's own streams use.
+        plugins.borrow_mut().seed_all(seed as i32);
         context
             .call(&init, &JsValue::undefined(), &[])
             .map_err(|error| error.to_string())?;
@@ -86,6 +96,8 @@ impl Sim {
             world,
             mods,
             consume,
+            plugins,
+            set_published,
         })
     }
 
@@ -93,6 +105,18 @@ impl Sim {
     pub fn step(&mut self) -> Result<(), String> {
         self.context
             .call(&self.frame, &JsValue::undefined(), &[])
+            .map_err(|error| error.to_string())?;
+        // The Rust host drives its compiled mods after the world has moved, at
+        // the scene's fixed step, then pushes their published state into the
+        // scene for the next mods datagram.
+        self.plugins.borrow_mut().tick_all(1.0 / 60.0, true);
+        let published = self.plugins.borrow().published_json();
+        self.context
+            .call(
+                &self.set_published,
+                &JsValue::undefined(),
+                &[JsValue::string(published)],
+            )
             .map_err(|error| error.to_string())?;
         Ok(())
     }
@@ -138,7 +162,7 @@ impl Sim {
 /// Wires the loader's mods into a scene context, exactly as the client host
 /// does: the metadata table, then each entry inside its wrapper, then the freeze.
 /// A mod that throws is reported, never fatal.
-fn load_mods(context: &mut Context, loader: &mods::Loader) -> Result<(), String> {
+fn load_mods(context: &mut Context, loader: &mods::Loader) -> Result<PluginSet, String> {
     let table = loader.table_json();
     call_scene(context, "sceneMods", &[JsValue::string(table)])?;
     for id in loader.ids() {
@@ -175,9 +199,9 @@ fn load_mods(context: &mut Context, loader: &mods::Loader) -> Result<(), String>
         }
     }
     // A world-side compiled mod ships a module rather than an entry; the
-    // headless server runs it the same way the client does, so a `goatsd --mods`
-    // world actually simulates its wasm mods. A client-side module is local to a
-    // client and is not run here.
+    // headless server drives it from Rust (M17b). A client-side module is local
+    // to a client and is not run here.
+    let mut plugins = PluginSet::new();
     for manifest in loader.mods() {
         if manifest.side != mods::Side::World {
             continue;
@@ -185,16 +209,24 @@ fn load_mods(context: &mut Context, loader: &mods::Loader) -> Result<(), String>
         let Some(wasm) = manifest.wasm.as_ref() else {
             continue;
         };
-        let buffer = context
-            .array_buffer_from_bytes(&wasm.bytes)
-            .map_err(|error| error.to_string())?;
-        call_scene(
-            context,
-            "sceneWasmModule",
-            &[JsValue::string(manifest.id.clone()), buffer],
-        )?;
+        match plugins.add(&manifest.id, &wasm.bytes, PluginSide::World) {
+            Ok(()) => {}
+            Err(error) => {
+                eprintln!("[mods] {} failed: {error}", manifest.id);
+                call_scene(
+                    context,
+                    "sceneModResult",
+                    &[
+                        JsValue::string(manifest.id.clone()),
+                        JsValue::boolean(false),
+                        JsValue::string(error),
+                    ],
+                )?;
+            }
+        }
     }
-    call_scene(context, "sceneModFreeze", &[])
+    call_scene(context, "sceneModFreeze", &[])?;
+    Ok(plugins)
 }
 
 /// Calls one of the scene's host-facing functions, requiring it to exist.

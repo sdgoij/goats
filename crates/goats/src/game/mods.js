@@ -692,6 +692,20 @@ function modDropWorld(id) {
     }
 }
 
+// The Rust host's contribution (M17b): the server and a solo client host drive
+// compiled world mods from Rust and push their published state here each frame,
+// as `{ id: base64 }`. `sceneWorldMods` folds it in below; nothing in the JS
+// driver owns it.
+let rustModPublished = {};
+function sceneSetWasmPublished(json) {
+    try {
+        rustModPublished = JSON.parse(String(json));
+    } catch (error) {
+        console.log("mods: sceneSetWasmPublished: " + String(error));
+    }
+    return "ok";
+}
+
 // The host's contribution to the world mods' datagram: every world mod's stream
 // states and whatever it publishes. Only the host builds this.
 function sceneWorldMods() {
@@ -709,6 +723,11 @@ function sceneWorldMods() {
         if (live.side !== "world" || live.published === null) continue;
         data[id] = modWasmB64Encode(live.published);
     }
+    // A Rust-hosted compiled world mod's state (M17b), pushed in by the host.
+    const wasmIds = Object.keys(rustModPublished);
+    for (let i = 0; i < wasmIds.length; i++) {
+        data[wasmIds[i]] = rustModPublished[wasmIds[i]];
+    }
     return { streams: modStreamStates(), data: data };
 }
 
@@ -721,7 +740,7 @@ function modWorldActive() {
     for (const live of modWasmLive.values()) {
         if (live.side === "world" && live.published !== null) return true;
     }
-    return false;
+    return Object.keys(rustModPublished).length > 0;
 }
 
 // How many rows and how many numbers a row a mod may publish through

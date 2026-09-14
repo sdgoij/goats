@@ -18,6 +18,8 @@ scene = { workspace = true }
 # The server discovers and hashes mods so it can require the world-mod set the
 # client must match; it reuses the same pure loader the client does.
 mods = { workspace = true }
+# The compiled-mod host (M17b): the server drives world `.wasm` mods from Rust.
+plugin = { workspace = true }
 # The scene is shared with the client, so the headless world moves by the same
 # rules. No `raylib` feature: the server has no window, and `src/headless_rl.js`
 # supplies the null `rl` the scene is evaluated against instead.

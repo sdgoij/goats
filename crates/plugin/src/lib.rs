@@ -435,6 +435,101 @@ impl Plugin {
     }
 }
 
+/// Standard base64 with padding — the same alphabet and padding the JS driver's
+/// `modWasmB64Encode` uses, so a published payload round-trips through the mods
+/// datagram unchanged.
+pub fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(ALPHABET[(b0 >> 2) as usize] as char);
+        out.push(ALPHABET[(((b0 & 0x3) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(((b1 & 0xf) << 2) | (b2 >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(b2 & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// A set of running compiled mods, keyed by id, ticked together and readable for
+/// the world-mod datagram bridge.
+#[derive(Default)]
+pub struct PluginSet {
+    plugins: std::collections::BTreeMap<String, Plugin>,
+}
+
+impl PluginSet {
+    pub fn new() -> PluginSet {
+        PluginSet {
+            plugins: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, id: &str, bytes: &[u8], side: Side) -> Result<(), String> {
+        self.plugins
+            .insert(id.to_string(), Plugin::new(id, bytes, side)?);
+        Ok(())
+    }
+
+    pub fn remove(&mut self, id: &str) {
+        self.plugins.remove(id);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty()
+    }
+
+    /// Re-derive the streams of every world plugin from the session seed.
+    pub fn seed_all(&mut self, seed: i32) {
+        for plugin in self.plugins.values_mut() {
+            plugin.seed(seed);
+        }
+    }
+
+    /// One frame for every plugin. `tick_world` gates world plugins: a mirroring
+    /// client passes `false`, the server and a solo host pass `true`.
+    pub fn tick_all(&mut self, dt: f32, tick_world: bool) {
+        for plugin in self.plugins.values_mut() {
+            if plugin.side() == Side::World && !tick_world {
+                continue;
+            }
+            let _ = plugin.tick(dt);
+        }
+    }
+
+    pub fn apply(&mut self, id: &str, bytes: &[u8]) -> Result<(), String> {
+        match self.plugins.get_mut(id) {
+            Some(plugin) => plugin.apply(bytes),
+            None => Err(format!("unknown plugin '{id}'")),
+        }
+    }
+
+    /// The published state of every world plugin, as `{ id: base64 }` — the
+    /// shape `sceneWorldMods().data` carries.
+    pub fn published_json(&self) -> String {
+        let mut map = serde_json::Map::new();
+        for (id, plugin) in &self.plugins {
+            if plugin.side() != Side::World {
+                continue;
+            }
+            if let Some(bytes) = plugin.published() {
+                map.insert(id.clone(), serde_json::Value::String(base64_encode(bytes)));
+            }
+        }
+        serde_json::Value::Object(map).to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

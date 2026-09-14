@@ -2849,6 +2849,7 @@ dependencies = [
 name = "plugin"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "slag",
 ]
 
@@ -3416,6 +3417,7 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "mods",
+ "plugin",
  "proto",
  "scene",
  "serde_json",
