@@ -24,4 +24,5 @@
 *.ogg binary
 *.png binary
 *.wav binary
+*.wasm binary
 *.zip binary

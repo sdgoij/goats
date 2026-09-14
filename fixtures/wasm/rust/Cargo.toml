@@ -1,0 +1,19 @@
+[package]
+name = "plugin-rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Detached from the goats workspace: this fixture targets wasm32, and the
+# workspace builds for the host, so it must not be a member. It is compiled by
+# `fixtures/wasm/build.sh`, not by `cargo build --workspace`.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true
