@@ -44,8 +44,8 @@ use slag::{Context, HostCallbacks, JsValue};
 /// Vorbis: 71 MB of PCM would dwarf the rest of the binary, while the Ogg loops
 /// are 3.6 MB for the same 60 s at the same sample rate.
 ///
-/// The headless harness (`tools/goat_logic_test.js`) parses this table and
-/// checks every path the scene requests against it, so the two cannot drift
+/// The headless harness (`crates/harness/tests/scene_logic.rs`) parses this table
+/// and checks every path the scene requests against it, so the two cannot drift
 /// apart -- a path missed here would silently load from disk instead.
 static ASSETS: &[(&str, &[u8])] = &[
     // The animated goat (walk / trot / run / jump / idle / sleep / eat / death).

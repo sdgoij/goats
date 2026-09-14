@@ -5,8 +5,8 @@ name: CI
 #
 # The action majors below are the first of each action that run on Node 24: Node
 # 20 is removed from the runners on 2026-09-23. See github.blog/changelog,
-# "Deprecation of Node 20 on GitHub Actions runners". (checkout v5, setup-node
-# v5, upload-artifact v7, download-artifact v8, action-gh-release v3.)
+# "Deprecation of Node 20 on GitHub Actions runners". (checkout v5,
+# upload-artifact v7, download-artifact v8, action-gh-release v3.)
 on:
   push:
     branches: [main]
@@ -23,33 +23,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # The headless harness is the project's test suite: it stubs the `rl` surface
-  # and drives the whole scene (gait states, stats, sleep, death, weather, the
-  # bot herd, eating, the menu and asset embedding) through a scripted timeline.
-  # It needs only Node -- no raylib, no display.
+  # The scene tests are Rust (M15): `crates/harness` evaluates the client's exact
+  # scene on Slag against a recording `rl` stub, so the suite needs no Node, no
+  # raylib and no display. Slag is slow unoptimized, so the long runs are
+  # `#[ignore]`d and driven in release -- which is also what makes the engine's own
+  # speed visible as a number.
   test:
-    name: Logic tests (${{ matrix.os }})
+    name: Scene tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-      - name: Syntax-check every scene part and mod
-        shell: bash
-        run: |
-          shopt -s globstar nullglob
-          for f in crates/goats/src/game/*.js tools/*.js mods/**/*.js; do node --check "$f"; done
-      - name: Run the goat logic harness
-        run: node tools/goat_logic_test.js
-      - name: Run the mod smoke test
-        run: node tools/mod_smoke_test.js
-      - name: Run the birds mod test
-        run: node tools/birds_mod_test.js
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The client crate is left out: it links raylib, and the build job below is
+      # the one that installs the build dependencies for it.
+      - name: Test the workspace
+        run: cargo test --workspace --exclude goats
+      # The scene's own suite: the 4050-frame scripted timeline, the 38 mod cases
+      # (the synthetic tables plus the checked-in example fixture) and the birds
+      # flock.
+      - name: Test the scene on the engine
+        run: cargo test --release -p harness -- --ignored --nocapture
 
   # The game embeds every asset it needs, so each release is a single binary.
   build:
@@ -100,8 +99,8 @@ jobs:
       - name: Build
         run: cargo build --release --workspace
 
-      # The networking crates carry their own tests (the transport's loopback
-      # session); the scene is covered by the harness above.
+      # The rest of the workspace's debug tests -- the scene suite itself is the
+      # `test` job's `--ignored` run, which needs the release profile.
       - name: Test the workspace
         run: cargo test --workspace
 

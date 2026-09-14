@@ -1,10 +1,10 @@
-//! The ported scene suite: `tools/goat_logic_test.js`, in Rust, on Slag.
+//! The ported scene suite: the Node harness `goat_logic_test.js`, in Rust, on
+//! Slag.
 //!
 //! One full 4050-frame run, then the cases the Node harness asserted, reported
-//! through [`Checks`] so a failure names itself and the rest still run. This file
-//! is the port target for the whole of `goat_logic_test.js`; it grows slice by
-//! slice, and until the last slice lands the Node harness stays as the authority
-//! for the expected values.
+//! through [`Checks`] so a failure names itself and the rest still run. The
+//! expected values are transcribed from that harness, never re-derived, so a
+//! mismatch is a finding to investigate rather than a number to re-baseline.
 //!
 //! The run is long (~35s in a release build) and the frame indices are absolute,
 //! so the test is `#[ignore]`d and driven explicitly:

@@ -319,7 +319,7 @@ function drawHud(move) {
 // commands from stdin between frames: it calls `sceneInit()` once, then
 // `sceneFrame()` until it returns false, then `sceneShutdown()`. `run()` is the
 // standalone driver
-// kept for the headless harness (`tools/goat_logic_test.js`).
+// kept for the headless harness (`crates/harness`).
 
 // ---- loading -------------------------------------------------------------
 //

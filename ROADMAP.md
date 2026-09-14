@@ -12,8 +12,8 @@ Guiding principles:
 - **Blender is the source of truth for the goat.** New poses are authored as
   clips in `goat.blend` and re-exported, exactly like walk / trot / run / jump.
 - **Verify numerically.** Every animation is checked for ground contact, IK
-  soundness and loop closure, and every state machine change gets a case in
-  `tools/goat_logic_test.js`.
+  soundness and loop closure, and every state machine change gets a case in the
+  scene harness (`crates/harness/tests/`, `tools/goat_logic_test.js` before M15).
 
 Effort is a rough size: **S** ≈ an afternoon, **M** ≈ a few days, **L** ≈ a week
 or more.
@@ -88,10 +88,10 @@ uses.
 | **M14c2** | Content registries + mutable asset slots: `bots.register`, `clips.register`, `assets.override` | M14c | M | ✅ **Done** — declared assets apply automatically; clips are gait-only |
 | **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | ✅ **Done (handshake)** — the digest and refusal; the snapshot extension is M14d2 |
 | **M14d2** | World-mod simulation: `goats.rng`, `world.extend`, snapshot merging, `goatsd` evaluates mods | M14d | M | ✅ **Done** — streams + extension state travel in the snapshot's `mods` field |
-| **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, `tools/mod_smoke_test.js`, CI syntax-check, a world-mod determinism test |
-| **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; `tools/birds_mod_test.js` |
+| **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, the mod smoke test, CI syntax-check, a world-mod determinism test |
+| **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; the birds fixture test |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
-| **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | M15a–M15c **Done** — 141 cases on the engine; M15d (mods) and M15e (cut Node) remain |
+| **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
 
 ---
 
@@ -297,8 +297,8 @@ Shipped in the scene (`crates/goats/src/game/`):
 
 Acceptance met: weather transitions blend rather than pop; rain falls at the
 wind angle; grass sways with gusts; audio tracks the intensity (M3b). Verified
-code-side via `tools/goat_logic_test.js` (clock, weather text and `C` are
-covered); visual look is **not** machine-verified.
+code-side via the scene harness (`crates/harness/tests/scene_logic.rs`; the
+clock, weather text and `C` are covered); visual look is **not** machine-verified.
 
 ### M3b — Weather and goat audio ✅ Done
 
@@ -773,7 +773,8 @@ path. Host quitting ends the session (no migration).
 
 **The headless server runs the same JS.** `goatsd` will evaluate the identical
 scene against a **null `rl` host module** — no window, no GL — the trick
-`tools/goat_logic_test.js` already proves works: terrain, weather, bots and food
+the scene harness (`crates/harness`, `tools/goat_logic_test.js` before M15)
+already proves works: terrain, weather, bots and food
 simulate with every draw/audio call no-op'd, while `rl.color` and the
 model/texture builders return usable handles. That keeps one world model instead
 of a Rust re-implementation, and means the server needs no GPU. Watch the one
@@ -815,8 +816,9 @@ are canonical on the server, chat is sanitised and capped at 512 bytes, and a
 burst of 5 lines per 3s per player is the rate limit.
 
 **Verified.** `cargo test --workspace` (the loopback bridge test now carries a
-global line and a whisper end to end), `node tools/goat_logic_test.js` (113
-checks, including the console's chat and command routing) and clippy. The live
+global line and a whisper end to end), the scene suite (then the Node harness,
+113 checks -- the console's chat and command routing among them; now
+`crates/harness/tests/scene_logic.rs`) and clippy. The live
 two-window check also passed: two clients, one hosting, and global chat and a
 whisper both arrived in the other window.
 
@@ -873,8 +875,9 @@ every client, so once two players interacted with a bot the goats drifted. That
 is what M12b addresses for the bots.
 
 **Verified.** `cargo test --workspace` (proto 12, session 7 — the new relay test
-sends real datagrams through a real host — goats 4), `node tools/goat_logic_test.js`
-at ALL PASS (120, including the seed, pose-cadence and peer checks), `cargo fmt
+sends real datagrams through a real host — goats 4), the scene suite (then the
+Node harness at ALL PASS, 120 checks -- the seed, pose-cadence and peer checks;
+now `crates/harness/tests/scene_logic.rs`), `cargo fmt
 --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`
 clean. The visual check — two windows, each seeing the other's goat move — still
 needs a display.
@@ -1065,7 +1068,7 @@ decisions behind it and the constraints that shape it.
 | The same loader on the server | `crates/server/src/` (`goatsd --mods`) |
 | `ModRef` and the join handshake | `crates/proto/src/lib.rs`, `crates/session/`, `net.js` |
 | Mod console verbs + Mods screen | `crates/goats/src/game/ctl.js`, `menu.js` |
-| Fixture and tests | `mods/example/`, `tools/mod_smoke_test.js` |
+| Fixture and tests | `mods/example/`, `crates/harness/tests/mods.rs` |
 
 **Phases.**
 
@@ -1141,17 +1144,19 @@ decisions behind it and the constraints that shape it.
   Disable toggle each, writing the same flags `mod enable|disable` do, and a
   `side: "world"` mod cannot be toggled while in a session because the set was
   fixed at join. The `ui` console verb accepts `mods`. A checked-in
-  `mods/example/` fixture documents the manifest and backs
-  `tools/mod_smoke_test.js`: it registers a command, draws a HUD clock, declares
+  `mods/example/` fixture documents the manifest and backs the fixture block of
+  `crates/harness/tests/mods.rs` (`tools/mod_smoke_test.js` when this landed): it
+  registers a command, draws a HUD clock, declares
   an `sfx.bleat` override (a tiny committed WAV) and ships a `tuning.json` with
-  one valid leaf and one deliberate typo. The smoke test evaluates the real
+  one valid leaf and one deliberate typo. That test evaluates the real
   scene plus that fixture the way the host does and asserts the command
   dispatches, the asset slot re-points, the known tuning leaf merges while the
   unknown path only warns, the `hud` hook runs, a throwing handler is isolated,
   and a reload leaves no duplicate handler or command. That last path exposed a
   gap: `tuning.json` was read by the loader but never applied -- `Manifest::json`
-  now carries the tree and `sceneMods` merges it. CI syntax-checks
-  `mods/**/*.js` and runs the smoke test, and a world-mod determinism test
+  now carries the tree and `sceneMods` merges it. CI ran a `node --check`
+  syntax check over `mods/**/*.js` and the smoke test (both M15e's to remove),
+  and a world-mod determinism test
   mirrors `the_same_seed_runs_the_same_world`. The harness gained the Mods
   screen and `modSetEnabled` cases (158 total) but still uses synthetic tables
   only, so the vanilla assertions are unchanged.
@@ -1168,7 +1173,8 @@ decisions behind it and the constraints that shape it.
   `update`/`draw3d` (an entry runs before the window exists, and `makeTexture`
   needs the GL context), and `drawModelEx`'s one axis-angle means yaw, pitch,
   roll and wing flap are composed into a quaternion per part.
-  `tools/birds_mod_test.js` drives the mod with a stub `rl` and asserts the
+  `crates/harness/tests/birds.rs` (`tools/birds_mod_test.js` when this landed)
+  drives the mod with a stub `rl` and asserts the
   meshes build, every state is reached, separation holds, a bird perches, a
   client mirrors instead of simulating, and two fresh worlds agree; a `server`
   test loads the real fixture through the real loader and checks the whole world
@@ -1193,7 +1199,7 @@ decisions behind it and the constraints that shape it.
 sane. Embedded assets win over disk (`AssetFile::open` checks the registry
 first), so replacement goes through slots rather than same-named files. The
 client and the server evaluate the same parts, so a world mod has to work
-against the null `rl` in `crates/server/src/headless_rl.js` and guard on
+against the null `rl` in `crates/scene/src/null_rl.js` and guard on
 capability as the scene already does. Direct `rl.load*` with a path is allowed
 -- a mod may point raylib at a file the slots do not cover -- but `goats.assets`
 slots are the portable route, since the host owns resolution.
@@ -1240,17 +1246,42 @@ the tests run on the engine that actually ships.
 
 **What it costs (measured).**
 
-| | JIT/eval | 4050 frames |
-| --- | --- | --- |
-| Node/V8 (today, the whole 164-check run) | — | 1.9 s |
-| Slag, release | 0.10 s | **26.6 s** |
-| Slag, debug | 0.70 s | **113.4 s** |
+| Suite | Cases | Node/V8 | Slag, release | Slag, debug |
+| --- | --- | --- | --- | --- |
+| `scene_logic.rs` (4050 frames) | 141 | 1.9 s | **31 s** | 113 s |
+| `mods.rs` (60 frames) | 38 | — | 1.9 s | ~6 s |
+| `birds.rs` (driven by hand, no timeline) | 26 | — | 11 s | does not fit the stack |
 
-The engine's own Rust is what is slow unoptimized, so the harness runs in
-`--release`; in debug it is a two-minute test. That is the price of dropping
-Node, and it is also the first time the engine's speed is visible as a number:
-the same workload is what Slag's own `--jit-bench` measures, so engine work now
-shows up here.
+The engine's own Rust is what is slow unoptimized, so the long runs are
+`#[ignore]`d and driven in `--release`, while the short ones are part of a plain
+`cargo test`. That is the price of dropping Node, and it is also the first time
+the engine's speed is visible as a number: the same workload is what Slag's own
+`--jit-bench` measures, so engine work now shows up here.
+
+**What the port taught us about the engine.** Three findings, all of them
+engine characteristics rather than harness bugs:
+
+- **Naming a hot function's parameters costs ~25%.** The recording stub's
+  `drawCube` is deliberately written parameterless (`drawCube: function () { … }`):
+  30.6 s for the run against 38 s for the same 1.4M calls with its six parameters
+  named. `arguments` inside a `function` is worse still (107 s in one experiment),
+  so the natural way to write a recording stub is the slow way. The strictness the
+  parameters would have bought lives on `drawModelEx` instead, which is called a
+  few thousand times rather than a million.
+- **A debug build cannot take the flock.** `birds.rs` passes in release and fails
+  exactly one case in debug with `RangeError: Maximum call stack size exceeded`,
+  thrown inside the mod's `update`: unoptimized builds spend far more stack per
+  activation (`README.md` §Troubleshooting), and the deepest script in the suite
+  runs out of it. So the file is `#[ignore]`d for a reason that is not just
+  speed.
+- **Two stepped engine contexts abort the process.** Two `Context`s with one of
+  them being stepped dies with `STATUS_ACCESS_VIOLATION`, reproducible from a
+  fresh process in ten lines; creating and dropping twelve *serially* is fine, as
+  is 24k updates across them. The harness therefore holds **one live context at a
+  time** -- which is why `birds.rs` scopes each world rather than keeping two, and
+  why a new case in an existing binary has to reuse the harness instead of
+  starting a second one. Tests inside one binary share a process, so parallel
+  `#[test]`s each wanting a scene would hit this.
 
 **Where it lives.**
 
@@ -1302,19 +1333,30 @@ shows up here.
   formatting. The expected values are transcribed, never re-derived, and a
   name-by-name comparison against the Node harness's case list is what confirmed
   the coverage -- it caught three bot cases that had been missed.
-- **M15d — The mod tests.** Port the 24 mod cases in `goat_logic_test.js` (the
+- **M15d — The mod tests. ✅ Done.** The 24 mod cases in `goat_logic_test.js` (the
   `goats` lifecycle, commands and observers, events, the tuning hook, the
-  accessors, the registries, the world extension and the Mods screen), plus
-  `birds_mod_test.js` and `mod_smoke_test.js`. Much of the last two is covered in
-  Rust already -- `crates/mods` has 18 tests over discovery, manifests, ordering,
-  zips, reload and the watcher, and a `server` test loads the real birds fixture
-  through the real loader -- so that part is consolidation, and the redundant
-  cases are dropped rather than duplicated. The mod cases stage their own tables,
-  so they are their own test file with their own short run.
-- **M15e — Cut Node.** Drop `setup-node`, the `node --check` glob and the three
-  `node` steps from `.github/workflows/ci.yml`; delete the three `tools/*_test.js`
-  files; update `README.md` (§Releases, §Layout, §Tests), `APIv1.md` (§10) and the
-  cross-cutting notes here.
+  accessors, the registries, the world extension and the Mods screen) are
+  `crates/harness/tests/mods.rs`, joined there by the 14 cases of
+  `mod_smoke_test.js` in its `fixture_block`, which loads the checked-in
+  `mods/example/` fixture the way the host does -- compiled in with `include_str!`,
+  so a broken fixture fails the build as well as the case. The host-side half of
+  the smoke test is consolidated rather than duplicated: the loader's own 18 tests
+  already cover manifests, ordering, zips, reload and the watcher, and the
+  fixture-specific half (manifest well-formed, declared asset a real RIFF wav) is
+  two lines. `birds_mod_test.js`'s 26 cases are `crates/harness/tests/birds.rs`.
+  Two things the port settled: the fixture block runs **last**, because
+  `goats.freeze()` is one-way and the table block is the case that asserts it was
+  open before it froze; and the HUD-hook cases stand in for `rl.drawText` with an
+  `eval` probe, the way the Mods-screen cases already stand in for the raygui
+  calls, so `modEmit("hud", …)` reaches only the mod's handler and the count is
+  the same fact the Node harness measured.
+- **M15e — Node is gone. ✅ Done.** `setup-node`, the `node --check` glob and the
+  three `node` steps are out of `.github/workflows/ci.yml`. The `test` job is now
+  two Rust steps: `cargo test --workspace --exclude goats` (the client crate
+  links raylib, and the build job is the one that installs the toolchain that
+  needs) and `cargo test --release -p harness -- --ignored --nocapture` for the
+  scene suite. The three `tools/*_test.js` files are deleted, and `README.md`,
+  `APIv1.md` §10 and the cross-cutting notes here no longer mention them.
 
 The Python tools stay: `tools/inspect_glb.py`, `goat_states.py` and
 `goat_variants.py` are Blender and model-authoring scripts, not tests, and have
@@ -1373,7 +1415,8 @@ change as the port.
 - **Repo hygiene.** The Blender `*.blend1` auto-backup is git-ignored and
   untracked (`goat.blend1` stays on disk for Blender but is not in the repo).
 - **Validation.**
-  - Extend `tools/goat_logic_test.js` with a simulated clock: assert energy
+  - Extend the scene harness (`crates/harness/tests/scene_logic.rs`) with a
+    simulated clock: assert energy
     drains at the right rates, sleep recovers, starvation damages health, and
     health 0 enters `dead`.
   - Reuse the animation checks (FK error, ground contact, loop closure) for the
@@ -1456,9 +1499,10 @@ change as the port.
     the last world. The clean fix is a per-mod datagram (or a smaller herd
     encoding); until then, world mods must keep `publish` to a handful of
     rounded numbers per entity.
-21. **Slag performance.** Once the harness runs on Slag (M15), the scene costs
-    ~6.6 ms/frame there against ~0.47 ms on Node, so the suite goes from ~2 s to
-    ~27 s. That is affordable, but it makes the engine's speed measurable for the
-    first time: profiling the frame loop, and comparing the JIT against the
-    interpreter on a realistic workload, becomes a self-contained task instead of
-    a guess.
+21. **Slag performance.** Now measurable instead of guessed: the harness runs on
+    the engine (M15), where the 4050-frame scene costs ~7.6 ms/frame against
+    ~0.47 ms on Node, so CI's test step goes from ~2 s of Node to ~45 s of
+    release Rust. Profiling the frame loop, and comparing the JIT against the
+    interpreter on a realistic workload, is a self-contained task -- and it has
+    already paid for itself once: naming a hot function's parameters costs ~25%
+    (M15, "What the port taught us about the engine").

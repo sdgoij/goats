@@ -235,9 +235,11 @@ cargo run             # debug builds work too; see "Troubleshooting"
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 
-- **Logic tests** on `ubuntu-latest` and `windows-latest`: `node --check` over
-  the scene parts and the tool scripts, then the headless harness
-  (`node tools/goat_logic_test.js`).
+- **Scene tests** on `ubuntu-latest` and `windows-latest`: `cargo test
+  --workspace --exclude goats` (the mod loader, the protocol, the session and the
+  harness's fast cases), then `cargo test --release -p harness -- --ignored`,
+  which runs the whole scene on Slag -- the scripted timeline, the mod cases and
+  both checked-in fixtures. No Node, no raylib, no display.
 - **Builds** for the three supported targets, each uploaded as a workflow
   artifact:
 
@@ -280,7 +282,6 @@ gets on the free plan.
 | `goats.mp4` | The demo clip for the README (22 s, 1280×720, H.264) |
 | `tex/` | Knitted-fleece textures (diffuse / normal / roughness / displacement / AO) |
 | `tools/inspect_glb.py` | Dump a GLB's images, textures, materials and animations |
-| `tools/goat_logic_test.js` | Headless Node harness for the scene (stubs `rl`) |
 | `.github/workflows/ci.yml` | Tests, release builds and tag publishing |
 | `slag/` | Optional local Slag checkout (git-ignored) |
 
@@ -355,8 +356,8 @@ HUD clock, a generated `sfx.bleat` override and a `tuning.json`. `birds/` is the
 large one: a `side: "world"` flock with a procedural body and wings, a generated
 feather texture, five animation states (idle, walk, take-off, fly, land), boids
 flocking while flying, and multiplayer sync through `world.extend`. Both are
-exercised without a window -- `tools/mod_smoke_test.js` and
-`tools/birds_mod_test.js`.
+exercised without a window by the scene suite (`crates/harness/tests/mods.rs`
+and `birds.rs`).
 
 `APIv1.md` is the reference for the manifest, the `goats` surface, the
 compatibility handshake and the non-goals.
@@ -512,8 +513,13 @@ small — run from the repository root (as `cargo run` does).
 ## Tests and tools
 
 ```sh
-# Drive the scene headlessly through every state, stats and death
-node tools/goat_logic_test.js
+# The whole scene suite on the engine: gaits, stats, death, weather, the bot
+# herd, the menu, the console, the mods and both fixtures (205 cases)
+cargo test --release -p harness -- --ignored --nocapture
+
+# The fast tests: the mod loader, the protocol, the session, and the harness's
+# spike and observation cases
+cargo test --workspace --exclude goats
 
 # Inspect the model's clips, textures and materials
 python tools/inspect_glb.py goat_animated.glb

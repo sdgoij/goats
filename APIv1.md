@@ -45,8 +45,7 @@ beyond the documented global.
    exists so a bad mod produces a clear console error and leaves vanilla
    behaviour intact, not so a hostile mod is contained.
 4. **Vanilla is untouched.** With no `mods/` directory, the scene behaves
-   exactly as it does today. The headless harness
-   (`tools/goat_logic_test.js`) and the server's client/server drift test keep
+   exactly as it does today. The scene suite (`crates/harness/tests/`) keeps
    running against the unmodified scene.
 5. **World mods are a compatibility set.** Anything that changes simulation is
    part of a set that the host and every client must share (§6).
@@ -893,24 +892,26 @@ with a note to leave the session first, because the set was fixed at join.
 
 ## 10. Testing
 
-Landed with the implementation:
+Landed with the implementation, and Rust on the engine since M15:
 
 - `mods/example/` — a small checked-in fixture (one command, one HUD hook, one
   declared asset override, a `tuning.json` with a valid leaf and a deliberate
-  typo) used by the smoke test and as documentation.
-- `tools/mod_smoke_test.js` — stubs `rl`, loads the scene plus the fixture the
-  way the host does, and asserts: the command is dispatchable, the `"hud"` hook
-  runs, the asset slot returns the override name, the known tuning leaf merges
-  while an unknown distinct path warns, a throwing handler is isolated, and
-  reload leaves no duplicate handlers or commands.
-- `node --check` over `mods/**/*.js` in CI, alongside the scene parts.
-- `tools/birds_mod_test.js` — drives the `birds` fixture (§5.4) with a stub
-  `rl` and asserts its meshes build lazily, every animation state is reached,
-  boid separation holds, a client mirrors rather than simulates, and two fresh
-  worlds with the same seed agree. A `server` test loads the same fixture
-  through the real loader and checks the world still fits one datagram.
-- `tools/goat_logic_test.js` gained the Mods screen and `modSetEnabled` cases
-  but still uses synthetic tables only, so the vanilla assertions are unchanged.
+  typo) used by the scene suite and as documentation.
+- `crates/harness/tests/mods.rs` — its `fixture_block` loads the scene plus that
+  fixture the way the host does (the files are compiled in, so a broken fixture
+  fails the build as well as the case) and asserts: the command is dispatchable,
+  the `"hud"` hook runs, the asset slot returns the override name, the known
+  tuning leaf merges while an unknown distinct path warns, a throwing handler is
+  isolated, and a reload leaves no duplicate handler or command. The same file
+  holds the synthetic-table cases for the Mods screen and `modSetEnabled`.
+- `crates/harness/tests/birds.rs` — drives the `birds` fixture (§5.4) with a
+  recording `rl` and asserts its meshes build lazily, every animation state is
+  reached, boid separation holds, a client mirrors rather than simulates, and two
+  fresh worlds with the same seed agree. It is `#[ignore]`d for a release build:
+  in debug the flock's `update` runs the interpreter out of stack.
+- `crates/mods` — discovery, manifest validation, ordering, zips, reload and the
+  watcher (18 tests, pure Rust). A `server` test loads the real birds fixture
+  through the real loader and checks the whole world still fits one datagram.
 - `crates/proto` tests for the `ModRef` round-trip; a `session` test for a
   world-mod mismatch rejection; a `server` test that `goatsd --mods` loads the
   same table the client does.
