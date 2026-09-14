@@ -92,7 +92,7 @@ uses.
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; the birds fixture test |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
-| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | M16a–M16d **Done** — binary, quantized, shed in a defined order, and the mods have their own datagram; M16e remains |
+| **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ✅ **Done** — binary and quantized, shed in a defined order, the mods on their own datagram, and a guard so the budget cannot erode again (M16c deferred on the numbers) |
 
 ---
 
@@ -1514,13 +1514,15 @@ gait's variant byte, and the rest varint.
   exact. The M16e guard was restated at the same time: the worst case a player can
   reach without a mod fits **whole**, with room for a greedy mod, and it takes a
   deliberately greedy one to force a shed at all.
-- **M16c — The meadow at its own cadence. ⬜** It is the one field with no need
-  for 10 Hz: a tuft that returns in 40-90 s does not need 100 ms resolution, and
-  the client counts its own copy down between snapshots. Send `eaten` on its own,
-  slower tick (or as a delta with a periodic full resync), which also stops the
-  meadow's size from being coupled to the world's rate. It is the smallest
-  remaining win -- a meadow is ~6 bytes a cell and only a pathological one forces
-  a shed -- so it is the most foldable into M16e or into a later pass.
+- **M16c — The meadow at its own cadence. Deferred, deliberately.** A tuft that
+  returns in 40-90 s does not need 100 ms resolution, so `eaten` could travel on
+  a slower tick and stop its size being coupled to the world's rate. The
+  measurement says it is not worth a protocol field: a meadow cell is six bytes,
+  and the map is bounded by the regrow window rather than by session length --
+  the steady state is however many bites the herd takes in a minute, eight to ten
+  cells with the default seven bots. The real version of this is a delta with a
+  periodic full resync, which is a protocol of its own, and nothing today
+  justifies it. M16e's guard is what would say when something does.
 - **M16d — World mods get their own datagram. ✅ Done.** `Datagram::Mods`
   carries `{ streams, data }` -- exactly what `sceneWorldMods()` returns, opaque
   as ever -- and the scene queues it beside the world snapshot, only while a
@@ -1536,12 +1538,24 @@ gait's variant byte, and the rest varint.
   table passes ~600 bytes. The `birds` fixture publishes through it now. The
   callback dropped its `name` argument from the plan: `rows` alone says it, and
   the diagnostics already carry the mod's id.
-- **M16e — A guard so the budget cannot silently erode again. ⬜** A test that
-  builds the worst case that is reachable without mods -- herd 10, a full meadow,
-  the `birds` fixture -- and asserts the snapshot fits with headroom, so the next
-  field added to `WorldState` has to argue for its bytes. Plus the stale comment
-  in `food.js` ("does not regrow within a session", which the 40-90 s regrow
-  contradicts).
+- **M16e — A guard so the budget cannot silently erode again. ✅ Done.** The
+  guard is three tests, and they are the ones to read before adding a field to
+  `WorldState`:
+  - `proto::the_vanilla_world_fits_with_room_to_spare` builds the worst case a
+    player can reach without a mod -- the herd at its clamp and a meadow well
+    along -- and requires it to fit *whole* in under a third of the budget, so
+    the next field has to argue for its bytes.
+  - `proto::an_over_budget_mods_state_is_reported_rather_than_dropped_in_silence`
+    and its neighbour hold the mods' side: the flock's shape fits its own
+    datagram, and a state over the cap is refused with the size named.
+  - `server::the_birds_fixture_loads_and_both_datagrams_fit` runs the real
+    fixture through the real loader on the headless scene and checks both, plus
+    that the flock is **not** in the world: the separation M16d bought cannot be
+    undone by a later edit without a red test.
+
+  The stale comment in `food.js` -- "does not regrow within a session", which the
+  40-90 s regrow contradicts -- is fixed, and the map's bound is written down
+  where the map is.
 
 **Where it lives.**
 

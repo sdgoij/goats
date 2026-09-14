@@ -5,7 +5,8 @@
 // existence and position come from a hash of its 2-unit cell, so the nearest one
 // is recomputed from the same maths rather than stored. Eating records the cell
 // in `EATEN`, which the draw skips, so the meadow visibly thins as the goat
-// grazes (and does not regrow within a session).
+// grazes -- and thickens again as the cells come back, over the regrow window in
+// `TUNING.food` (40-90 s, jittered per cell).
 //
 // A meal tops up energy and fills the belly (`satiety`); a full belly eases the
 // rain slowdown (see `rainSlowFactor` in weather.js), and satiety decays, so the
@@ -18,6 +19,12 @@ const EAT_FALLBACK_TIME = 2.4;  // cube-fallback meal length
 // Eaten cells map to the seconds left before they return. A private PRNG keeps
 // the regrow jitter off the weather's and the bots' streams (the harness asserts
 // exact weather values).
+//
+// The map is bounded in practice by the regrow window: a cell comes back after
+// 40-90 s, so the steady state is however many bites the herd takes in about a
+// minute -- eight to ten cells with the default seven bots, measured, and a few
+// hundred in the pathological case the network tests use to exercise the shed
+// path. Each cell costs six bytes on the wire.
 const EATEN = new Map();
 let foodRngState = 0x1f2e3d4c;
 let satiety = 0;                // 0..1
