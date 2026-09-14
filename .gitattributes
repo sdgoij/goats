@@ -1,0 +1,27 @@
+# Every text file is checked out with LF, on every platform.
+#
+# This is not tidiness. A mod's compatibility digest is taken over its entry's
+# text and its tuning tree (see `crates/mods`), so a `\r\n` checkout of the same
+# commit on Windows and an `\n` one on Linux produced different hashes for the
+# same mod, and the two ends refused each other's sessions -- and the `birds.zip`
+# in the Windows and Linux release archives differed for the same reason. With
+# `eol=lf` a checkout is the same bytes everywhere, so a session and a release do
+# not depend on who built them.
+#
+# The loader normalises line endings when it reads a mod's text, so a mod that
+# was zipped on Windows still joins a Linux host; this is what keeps the checked-in
+# fixtures themselves reproducible.
+* text=auto eol=lf
+
+# Binaries are left exactly as they are: `text=auto` would usually detect them,
+# but the ones this repository carries are worth naming so a future heuristic
+# change cannot start rewriting a model or a sound.
+*.blend binary
+*.blend1 binary
+*.fbx binary
+*.glb binary
+*.mp4 binary
+*.ogg binary
+*.png binary
+*.wav binary
+*.zip binary
