@@ -291,7 +291,12 @@ fn eval_entry(context: &mut Context, loader: &Loader, id: &str) {
 }
 
 /// One enable/disable/reload the console asked for.
-fn handle_mod_intent(context: &mut Context, loader: &mut Loader, line: &str) {
+fn handle_mod_intent(
+    context: &mut Context,
+    loader: &mut Loader,
+    plugins: &Rc<RefCell<PluginSet>>,
+    line: &str,
+) {
     let intent: serde_json::Value = match serde_json::from_str(line) {
         Ok(intent) => intent,
         Err(error) => {
@@ -312,8 +317,11 @@ fn handle_mod_intent(context: &mut Context, loader: &mut Loader, line: &str) {
         return;
     }
     match kind {
-        "disable" => call_scene(context, "sceneModEnd", &[JsValue::string(id)]),
-        "enable" | "reload" => reload_and_eval(context, loader, id),
+        "disable" => {
+            call_scene(context, "sceneModEnd", &[JsValue::string(id)]);
+            plugins.borrow_mut().remove(id);
+        }
+        "enable" | "reload" => reload_and_eval(context, loader, plugins, id),
         other => eprintln!("[mods] unknown intent '{other}'"),
     }
 }
@@ -321,7 +329,12 @@ fn handle_mod_intent(context: &mut Context, loader: &mut Loader, line: &str) {
 /// Re-read a mod from its source (a directory or a zip) and evaluate it, so an
 /// edit takes effect without a restart. A read failure falls back to the cached
 /// copy rather than leaving the mod unloadable.
-fn reload_and_eval(context: &mut Context, loader: &mut Loader, id: &str) {
+fn reload_and_eval(
+    context: &mut Context,
+    loader: &mut Loader,
+    plugins: &Rc<RefCell<PluginSet>>,
+    id: &str,
+) {
     if let Err(error) = loader.reload(id, AssetMode::Keep) {
         eprintln!("[mods] {error}");
     }
@@ -339,6 +352,33 @@ fn reload_and_eval(context: &mut Context, loader: &mut Loader, id: &str) {
         );
     }
     eval_entry(context, loader, id);
+    // A compiled mod re-instantiates from the re-read bytes; its old instance is
+    // dropped first. It has no entry, so this is the whole of the reload.
+    let compiled = loader.get(id).and_then(|manifest| {
+        manifest
+            .wasm
+            .as_ref()
+            .map(|wasm| (manifest.side, wasm.bytes.clone()))
+    });
+    if let Some((side, bytes)) = compiled {
+        plugins.borrow_mut().remove(id);
+        let side = match side {
+            mods::Side::Client => PluginSide::Client,
+            mods::Side::World => PluginSide::World,
+        };
+        if let Err(error) = plugins.borrow_mut().add(id, &bytes, side) {
+            eprintln!("[mods] {id} failed: {error}");
+            call_scene(
+                context,
+                "sceneModResult",
+                &[
+                    JsValue::string(id),
+                    JsValue::boolean(false),
+                    JsValue::string(error),
+                ],
+            );
+        }
+    }
 }
 
 fn main() {
@@ -498,6 +538,30 @@ fn main() {
             .unwrap();
     }
 
+    // The describe seam: `mod info` asks the Rust host for a plugin's ABI,
+    // imports, frame count and log through this native function.
+    {
+        let plugins_for_describe = Rc::clone(&plugins);
+        context
+            .register_fn(
+                "sceneWasmDescribe",
+                1,
+                Box::new(move |call| {
+                    let id = call
+                        .arg(0)
+                        .and_then(|value| value.as_string())
+                        .unwrap_or_default();
+                    let json = plugins_for_describe
+                        .borrow()
+                        .describe_json(&id)
+                        .unwrap_or_else(|| "null".to_string());
+                    Ok(JsValue::string(json))
+                }),
+            )
+            .map_err(|error| error.to_string())
+            .unwrap();
+    }
+
     // Draining stdin on a reader thread keeps both sides non-blocking: the loop
     // never stalls on input, and a command never waits for a frame.
     let (lines, pending) = std::sync::mpsc::channel::<String>();
@@ -601,7 +665,7 @@ fn main() {
                         for line in text.lines() {
                             let line = line.trim();
                             if !line.is_empty() {
-                                handle_mod_intent(&mut context, &mut loader, line);
+                                handle_mod_intent(&mut context, &mut loader, &plugins, line);
                             }
                         }
                     }
@@ -629,7 +693,7 @@ fn main() {
             for id in ready {
                 settling.remove(&id);
                 eprintln!("[mods] {id} changed on disk; reloading");
-                reload_and_eval(&mut context, &mut loader, &id);
+                reload_and_eval(&mut context, &mut loader, &plugins, &id);
             }
         }
 

@@ -981,6 +981,23 @@ function modSetEnabled(id, enabled) {
     return "ok mod disable " + id;
 }
 
+// The compiled-mod view for `mod info`: the JS driver's instance if it owns one,
+// else the Rust host's (M17b).
+function modWasmInfo(id) {
+    const live = modWasmDescribe(id);
+    if (live !== null) return live;
+    if (typeof sceneWasmDescribe === "function") {
+        try {
+            const value = sceneWasmDescribe(id);
+            return value === "null" || value === "" ? null : JSON.parse(value);
+        } catch (error) {
+            console.log("mods: sceneWasmDescribe: " + String(error));
+            return null;
+        }
+    }
+    return null;
+}
+
 function modCommand(parts) {
     const verb = parts[1] === undefined ? "list" : parts[1];
     if (verb === "" || verb === "list") {
@@ -1011,7 +1028,7 @@ function modCommand(parts) {
             hash: meta.hash,
             assets: Object.keys(meta.assets),
             commands: modCommandsOf(meta.id),
-            wasm: modWasmDescribe(meta.id),
+            wasm: modWasmInfo(meta.id),
         });
     }
     if (verb === "enable") return modSetEnabled(parts[2], true);

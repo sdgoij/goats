@@ -54,6 +54,7 @@ pub struct Plugin {
     error: Option<String>,
     last_log: String,
     published: Option<Vec<u8>>,
+    imports: Vec<String>,
     rng_seed: [u32; MOD_WASM_STREAMS],
     rng: [u32; MOD_WASM_STREAMS],
     fn_abi: usize,
@@ -121,6 +122,13 @@ impl Plugin {
     pub fn new(id: &str, bytes: &[u8], side: Side) -> Result<Plugin, String> {
         let module = decode(bytes).map_err(|error| format!("decode: {error}"))?;
         validate(&module).map_err(|error| format!("validate: {error}"))?;
+        // The capability list, read off the module rather than assumed -- what
+        // `mod info` reports.
+        let imports: Vec<String> = module
+            .imports
+            .iter()
+            .map(|import| format!("{}.{}", import.module, import.name))
+            .collect();
 
         let mut store = Store::new();
         let log_id = store.external_host(log_type(), TOKEN_LOG);
@@ -183,6 +191,7 @@ impl Plugin {
             error: None,
             last_log: String::new(),
             published: None,
+            imports,
             rng_seed,
             rng: rng_seed,
             fn_abi,
@@ -315,6 +324,20 @@ impl Plugin {
 
     pub fn published(&self) -> Option<&[u8]> {
         self.published.as_deref()
+    }
+
+    /// The console's `mod info` view of this plugin, as JSON: the ABI, the
+    /// capability list, the frame count, the error state and the last log line.
+    pub fn describe_json(&self) -> String {
+        serde_json::json!({
+            "abi": self.abi,
+            "imports": self.imports,
+            "frames": self.frames,
+            "ok": self.error.is_none(),
+            "error": self.error.clone().unwrap_or_default(),
+            "log": self.last_log,
+        })
+        .to_string()
     }
 
     /// A resumable call: run `func` to completion, servicing any external host
@@ -550,6 +573,12 @@ impl PluginSet {
         }
         serde_json::Value::Object(map).to_string()
     }
+
+    /// The console's `mod info` view of one plugin, or `None` when this set does
+    /// not own it.
+    pub fn describe_json(&self, id: &str) -> Option<String> {
+        self.plugins.get(id).map(Plugin::describe_json)
+    }
 }
 
 #[cfg(test)]
@@ -630,5 +659,34 @@ mod tests {
         client.apply(&published).expect("apply");
         assert_eq!(client.records(), host_records);
         assert_ne!(before, client.records());
+    }
+
+    #[test]
+    fn describe_reports_the_plugins_live_state() {
+        let mut plugin =
+            Plugin::new("com.github.sdgoij.goats.wasm", MODULE, Side::Client).expect("instantiate");
+        plugin.tick(1.0 / 60.0).expect("tick");
+
+        let info: serde_json::Value = serde_json::from_str(&plugin.describe_json()).unwrap();
+        assert_eq!(info["abi"], 1);
+        assert_eq!(info["frames"], 1);
+        assert_eq!(info["ok"], true);
+        assert_eq!(info["log"], "wasm mod: ready");
+        assert_eq!(
+            info["imports"],
+            serde_json::json!(["goats.log", "goats.rng", "goats.publish"])
+        );
+    }
+
+    #[test]
+    fn a_plugin_can_be_dropped_and_reinstated() {
+        let mut set = PluginSet::new();
+        set.add("com.github.sdgoij.goats.wasm", MODULE, Side::Client)
+            .unwrap();
+        set.remove("com.github.sdgoij.goats.wasm");
+        assert!(set.describe_json("com.github.sdgoij.goats.wasm").is_none());
+        set.add("com.github.sdgoij.goats.wasm", MODULE, Side::Client)
+            .unwrap();
+        assert!(set.describe_json("com.github.sdgoij.goats.wasm").is_some());
     }
 }

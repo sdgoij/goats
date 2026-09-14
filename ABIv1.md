@@ -226,7 +226,7 @@ randomness. The driver path (`mods/wasm/plugin.wasm` through
 `crates/harness/tests/wasm_mod.rs`) exercises the full loop -- publish reaches
 the datagram, a peer applies it, and the same seed replays the same bytes.
 
-## 5. The fork in the road: who drives the plugin
+## 5. Who drives the plugin
 
 Both shapes build the `goats` namespace in the host, and the capabilities can be
 Rust. The embedding API registers native functions (`Context::create_object`,
@@ -240,33 +240,28 @@ language of a plugin.
 So the fork is narrower than it first looks -- it is about **who instantiates the
 module**, not about who implements the capabilities.
 
-1. **The JS API instantiates it** (shipped in M17a). The host owns the driver --
+1. **The JS API instantiates it** (shipped in M17a; now the harness's reference).
+   The host owns the driver --
    in the game it is `mods.js`, whose `sceneWasmModule` builds the import object
    and calls `WebAssembly.Instance`, then `modWasmTick` drives the module once a
    frame. The mod ships only `.wasm`. Capabilities can be host-native, and one
    that needs the scene can reach it through the re-entrant
    `FunctionCall::call`/`eval`.
-2. **Rust instantiates it** (needs one thing that does not exist yet). Driving a
-   module's exports from Rust, and owning its memory, means the `wasm` crate's
-   `Store` -- and from `goats` that crate is not reachable: `slag`'s dependencies
-   are `crux`/`runtime`/`jit`, the `wasm` crate hangs off `runtime` behind a
-   feature, and `Context` exposes no instantiation API. Either `goats` takes a
-   second dependency on the same git revision (Cargo unifies it, but the two
-   declarations then move in lockstep forever) or Slag re-exports the engine
-   surface. That is an **engine prerequisite (upstream Slag)**, the same shape
-   `ROADMAP.md` already has under M9.
+2. **Rust instantiates it** (shipped in M17b, and now the live path). Driving a
+   module's exports from Rust, and owning its memory, is the `wasm` crate's
+   `Store`, reachable from a goat crate as `slag::wasm` after Slag re-exported
+   it (`runtime` re-exports `wasm`, `slag` re-exports `runtime::wasm`). The live
+   hosts use it: `crates/plugin` decodes, instantiates and ticks compiled mods,
+   and the client and `goatsd` both drive a `PluginSet` per frame with no
+   JavaScript in front of the plugin.
 
-**What shape 2 buys, and what shape 1 costs.** Both run the same compiled code
--- the Cranelift path is the engine's default on native targets -- so the
-difference is the boundary and the memory. Shape 1 pays one JS-to-wasm call per
-frame: 2.2 us in isolation, and about 8 us in the benchmark's own rows, a gap
-that is host-side rather than kernel and is written down there rather than
-explained. It also needs a decode step in the driver for any capability that
-reads the module's memory. Shape 2 owns that memory, which is what a
-pointer-and-length capability needs (section 3.3), and calls into the module from
-Rust, which the same 6-record call costs about 0.4 us to do. Neither is a
-privilege difference: both drivers are the host's code, and the mod never sees
-either.
+**What shape 2 bought.** Both run the same compiled code -- the Cranelift path
+is the engine's default on native targets -- so the difference was the boundary
+and the memory. Shape 1 paid one JS-to-wasm call per frame and a decode step in
+the driver for any capability that reads the module's memory; shape 2 owns that
+memory, which is what a pointer-and-length capability needs (section 3.3), and
+calls into the module from Rust. Neither is a privilege difference: both drivers
+are the host's code, and the mod never sees either.
 
 ## 6. Not in v1
 
@@ -295,9 +290,9 @@ either.
    engine has a depth limit and memory can be capped at instantiation; fuel is
    the missing piece.
 3. ~~**Who owns the boundary, and how far the deterministic subset reaches.**~~
-   **Settled for v1:** the scene's driver is the boundary (M17a), and its
-   capabilities are host closures. The Rust-hosted shape (M17b) is the remaining
-   fork, for the memory and the cheaper call, not for the capabilities.
+   **Settled for v1:** the Rust host (M17b) drives compiled mods in the live
+   client and server; the JS driver remains only as the harness's reference for
+   the same ABI.
 4. ~~**Digest and distribution.**~~ **Settled** (M17c): a world-side module's bytes
    are part of the digest, so two hosts with a different module refuse each other;
    a client-side module stays unhashed, and either way one portable artifact

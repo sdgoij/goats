@@ -93,7 +93,7 @@ uses.
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
 | **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ✅ **Done** — binary and quantized, shed in a defined order, the mods on their own datagram, and a guard so the budget cannot erode again (M16c deferred on the numbers) |
-| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | **In progress** — M17a (the ABI), M17c (the digest + determinism) and M17c2 (the state surface) are done; M17b (the Rust-side host) is open |
+| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | ✅ **Done** — M17a (the ABI), M17b (the Rust host), M17c (the digest + determinism), M17c2 (the state surface) and M17d (the performance debt) all landed |
 
 ---
 
@@ -1695,14 +1695,18 @@ dependency on the same git revision. Same shape as M9's upstream prerequisite.
   the console's `mod info` reports the declared imports, the ABI, the frame count
   and the last log. What the Mods screen renders of that is not wired yet, and a
   world-side module stays refused until M17c prices it into the digest.
-- **M17b — The Rust-side host.** Move the driver itself into Rust: instantiate
-  the module with the `wasm` crate's `Store`, own its memory, and call its exports
-  per frame with no JavaScript in between. The capabilities are already
-  host-native (M17a); what this buys is the memory -- a capability that reads the
-  plugin's memory has to be implemented where the memory is -- and a frame path
-  with nothing interpreted in front of the plugin. It is the one sub-step that
-  needs the prerequisite above. Reload becomes "drop the instance, instantiate
-  again", extending M14g's `--watch` to compiled mods.
+- **M17b — The Rust-side host. ✅ Done.** The driver now
+  lives in Rust: `crates/plugin/` decodes, instantiates through `Store`, owns
+  the module's memory, and calls `goats_update`/`goats_apply` per frame with no
+  JavaScript in front of the plugin. `slag` re-exports the `wasm` crate
+  (`slag::wasm::{Store, Module, Value, …}`) as the engine prerequisite. Both
+  hosts drive compiled mods from Rust: the client ticks a `PluginSet` each frame
+  at `sceneDt` (gating world mods on `netWorldLocal`) and bridges publish/apply
+  through `sceneSetWasmPublished` and a native `sceneWasmApply`; `goatsd` does
+  the same for world mods. Reload is "drop the instance, instantiate again":
+  `--watch`, `mod reload` and `mod enable`/`disable` all re-instantiate the
+  plugin, and `mod info` reports the ABI, imports, frames and log from the Rust
+  host. The JS driver remains only as the harness's reference for the ABI.
 - **M17c — World-side plugins in the compatibility set. ✅ Done.** The loader no
   longer refuses a `side: "world"` module, and its bytes are folded into the
   compatibility digest (`hash_manifest`), so two hosts that agree on the id and
