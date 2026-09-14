@@ -93,6 +93,7 @@ uses.
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
 | **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ✅ **Done** — binary and quantized, shed in a defined order, the mods on their own datagram, and a guard so the budget cannot erode again (M16c deferred on the numbers) |
+| **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | **Planned** — the engine already has the wasm core and the JS API; the work is the ABI, the host and the policy (M17a–d), plus one upstream re-export |
 
 ---
 
@@ -1596,6 +1597,132 @@ a bug for an MTU-dependent one. Quantization must not lose anything observable t
 a player -- the fields chosen are all below the resolution the sim reads back at
 -- and a quantized field that saturates has to clamp rather than wrap. The mods
 datagram must stay optional: a vanilla session should pay nothing for it.
+
+---
+
+## M17 — Compiled mods: WebAssembly
+
+**Why.** M14 gave the game a mod API, but mods are JavaScript: an entry is
+evaluated into the scene and that is the only way in. That excludes anyone whose
+work lives in Rust, C, Zig, Go or AssemblyScript, and it excludes the libraries
+they would bring. Wasm is the one way to lift that without giving up the property
+`APIv1.md` section 0 is built on -- that a mod gets no filesystem, no path, no
+socket and no engine internals.
+
+**Why not speed.** The honest answer is that this is not (yet) a performance
+feature. Slag runs wasm on an interpreter; the Cranelift wasm-to-native path
+exists but is off by default until its equivalence gate holds corpus-wide, while
+the JavaScript path has had years of optimization and the client already enables
+its JIT. If speed were the goal, the first move would be more JS optimization.
+The ABI is therefore designed so speed is not a premise: see the coarse crossing
+below. See `PLUGIN-ABI.md`.
+
+**What already exists, and what that means.** Slag's `wasm` crate is a full
+WebAssembly core engine -- decoder, validator, interpreter, SIMD, GC,
+exceptions, tail calls -- built cut-by-cut against the pinned official `waspec`
+submodule, with the embedding API (`Store`, `Instance`, `Memory`, `Value`) already
+shaped for a host: `external_host` + `start`/`resume`/`abandon` exist precisely
+to suspend a run around a host call. The WebAssembly **JS API is a default-on
+runtime feature** (`runtime/wasm`, installed as the `WebAssembly` global) and
+`goats` does not turn defaults off, so **the shipped client and the headless
+harness already have it**. `crates/slag/examples/wasm_smoke.rs` instantiates a
+module and calls an export from JS today. So the engine is not the work; the ABI,
+the host and the policy are.
+
+**The proof that the ABI is not Rust-shaped.** `fixtures/wasm/` holds one ABI
+implemented twice -- `c/plugin.c` (clang, `wasm32`, `-nostdlib`, no WASI) and
+`rust/src/lib.rs` (`wasm32-unknown-unknown`) -- as checked-in artifacts of 733 and
+335 bytes, so the test and CI need no wasm toolchain.
+`harness::plugin_abi` loads both through the `WebAssembly` global with a JS host
+stub and requires that both negotiate the same ABI version, declare exactly the
+imports `goats.log` and `goats.rng` (read off the module, not assumed), log the
+string the host reads out of *their* memory, and return **the same `vx` values,
+byte for byte**, given the same host-provided randomness. Two toolchains agreeing
+on a computed result is what says a mod author in a third language would not hit
+an ambiguity.
+
+It also found one thing by failing: an `i64` parameter is a `BigInt` across the
+JS boundary, so the ABI is `i32`/`f32`/`f64` only.
+
+**Decisions.**
+
+1. **The import list is the API.** A plugin's power is the length of its import
+   list, granted at instantiation. A missing import fails to *link*
+   (`unlinkable`), so default-deny is structural rather than a check someone can
+   forget. The list is inspectable without running the module.
+2. **No WASI.** A plugin that tries to open a file does not get policed, it does
+   not link. Section 0's I/O wall becomes a property of the linker.
+3. **One coarse crossing per frame.** The host writes a record array into the
+   module's linear memory, calls `goats_update(ptr, count, dt)` **once**, and
+   reads the results back out. This is what makes a slow interpreter tolerable:
+   the gap applies to the inner loop -- the part `compile` exists to fix -- not
+   to every entity. It also means buffer layout is part of the ABI.
+4. **No clock import**, so a world mod that cannot read wall time cannot desync.
+   Arithmetic is specified in the ABI, not implied: `vx' = f32(f64(vx) + rng(i) *
+   f64(dt))`, one draw per record, ascending.
+5. **No `dlopen`.** Not deferred -- out of scope for the mod system. No stable
+   Rust ABI, per-platform artifacts, a library that can never be unloaded safely
+   (so `--watch` dies), a segfault that takes the game with it, and native math
+   diverging per platform. Wasm is a stable ABI with an independent
+   specification, and one artifact serves all three release targets.
+6. **A world mod's wasm runs the interpreter**, and `compile` stays opt-in, per
+   the engine's own equivalence-gate rule: two hosts must agree on the world
+   whatever codegen path they built.
+
+**Engine prerequisite (upstream Slag).** From `goats`, the `wasm` crate is not
+reachable: `slag`'s own dependencies are `crux`/`runtime`/`jit`, the `wasm` crate
+hangs off `runtime` behind a feature, and `Context` exposes no instantiation API.
+The zero-JS shape therefore needs either a re-export of the engine surface from
+`slag`, or a second dependency on the same git revision (Cargo unifies it, but the
+two declarations then move in lockstep forever). Same shape as M9's upstream
+prerequisite.
+
+- **M17a — The ABI and wasm as a primitive.** The host hands a mod's `.wasm`
+  over as bytes, never a path, the way every other asset already crosses; the
+  scene's `WebAssembly` does the rest, so a mod ships wasm plus JS glue and
+  receives the existing events. Deliverables: `PLUGIN-ABI.md`, the two-language
+  fixture and its test (done), a fixture mod that uses them, and the Mods screen
+  reporting what the module declares it wants.
+- **M17b — The Rust-side host.** Drive the module's exports from Rust, with the
+  deterministic subset of `goats` (`rng`, `publish`/`apply`, world queries)
+  implemented in Rust, so a plugin needs no JavaScript at all. This is the shape
+  that delivers the promise, and it is the one that needs the prerequisite above.
+  Reload becomes "drop the instance, instantiate again", extending M14g's
+  `--watch` to compiled mods.
+- **M17c — World-side plugins in the compatibility set.** The digest covers the
+  artifact's bytes **and** the ABI version, and section 6.4's determinism rules
+  gain the corresponding line. The open question is host-provided math: core wasm
+  has no `sin`/`cos`, so either the host supplies them (and its platform `libm`
+  becomes a divergence hazard) or plugins bring their own -- and the scene's JS
+  world mods have the same hazard through `Math.*` today, so it should be decided
+  once for both.
+- **M17d — The performance debt, paid or priced.** Enable `wasm --features
+  compile` in the client behind a flag, keep the equivalence gate, and record the
+  number (below). Until this lands, the honest claim is "another language", not
+  "faster".
+
+**What to measure.** A benchmark kernel -- the boid inner loop at N entities, the
+shape `birds` already exercises -- run three ways: JavaScript under the JIT, wasm
+on the interpreter, wasm via `compile`. Three numbers in a test, so "wasm is slow"
+is falsifiable and the day it stops being true is visible. Until then the
+repository should not claim a compiled mod is cheaper than a JavaScript one.
+
+**Constraints to respect.** The ABI is frozen by version negotiation, not by
+convention: `goats_abi()` is called first and a version the host does not know is
+refused the way a wrong `api` major already is. Scalars stay `i32`/`f32`/`f64`. A
+plugin must not be able to reach the scene's state -- if a capability needs it,
+that is a decision about the API, not an implementation detail of the bridge. And
+with no instruction budget in the engine, a runaway plugin hangs the frame
+exactly as a `while (true)` does; that is a known gap, not a solved problem.
+
+**Where it will live.**
+
+| Piece | Path |
+| --- | --- |
+| The ABI specification | `PLUGIN-ABI.md` |
+| The two-language proof, sources and artifacts | `fixtures/wasm/` |
+| The ABI test | `crates/harness/tests/plugin_abi.rs` |
+| The plugin host (M17b) and the digest input (M17c) | `crates/plugin/` (new), `crates/mods/` |
 
 ---
 
