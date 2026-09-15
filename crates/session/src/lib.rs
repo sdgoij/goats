@@ -1513,7 +1513,7 @@ mod tests {
             let world = vec![ModRef {
                 id: "com.example.dash".to_string(),
                 version: "1.0.0".to_string(),
-                hash: 0xd15e_a5e,
+                hash: 0x0d15_ea5e,
             }];
             let host = Host::start_with_mods("host", world.clone())
                 .await
@@ -1549,7 +1549,7 @@ mod tests {
             let world = vec![ModRef {
                 id: "com.example.dash".to_string(),
                 version: "1.0.0".to_string(),
-                hash: 0xd15e_a5e,
+                hash: 0x0d15_ea5e,
             }];
             let host = Host::start_with_mods("host", world).await.expect("host");
             let refused = Client::join(host.ticket(), "alice")
@@ -1580,7 +1580,7 @@ mod tests {
             let dash = ModRef {
                 id: "com.example.dash".to_string(),
                 version: "1.0.0".to_string(),
-                hash: 0xd15e_a5e,
+                hash: 0x0d15_ea5e,
             };
             let absent = ModRef {
                 id: "com.example.absent".to_string(),

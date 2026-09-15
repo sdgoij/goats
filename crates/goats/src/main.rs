@@ -212,17 +212,17 @@ fn resolve_mods_dir(options: &Options) -> Option<PathBuf> {
     if let Some(dir) = &options.mods_dir {
         return Some(dir.clone());
     }
-    if let Some(dir) = std::env::var_os("GOATS_MODS") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir));
-        }
+    if let Some(dir) = std::env::var_os("GOATS_MODS")
+        && !dir.is_empty()
+    {
+        return Some(PathBuf::from(dir));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let candidate = parent.join("mods");
-            if candidate.is_dir() {
-                return Some(candidate);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let candidate = parent.join("mods");
+        if candidate.is_dir() {
+            return Some(candidate);
         }
     }
     let candidate = PathBuf::from("mods");

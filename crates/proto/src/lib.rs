@@ -977,9 +977,9 @@ mod tests {
             version: "1".to_string(),
             hash: 2,
         };
-        assert!(compare_world_mods(&[a.clone()], &[a.clone()]).is_empty());
+        assert!(compare_world_mods(std::slice::from_ref(&a), std::slice::from_ref(&a)).is_empty());
 
-        let missing = compare_world_mods(&[a.clone(), b.clone()], &[a.clone()]);
+        let missing = compare_world_mods(&[a.clone(), b.clone()], std::slice::from_ref(&a));
         assert_eq!(missing.missing, vec!["com.b".to_string()]);
         assert!(missing.extra.is_empty());
         assert!(missing.describe().contains("missing com.b"));
@@ -987,7 +987,7 @@ mod tests {
         // recognise one without the protocol carrying a kind (M18d).
         assert!(missing.describe().starts_with(MISMATCH_PREFIX));
 
-        let extra = compare_world_mods(&[a.clone()], &[a.clone(), b.clone()]);
+        let extra = compare_world_mods(std::slice::from_ref(&a), &[a.clone(), b.clone()]);
         assert_eq!(extra.extra, vec!["com.b".to_string()]);
 
         let changed = ModRef {
@@ -995,7 +995,7 @@ mod tests {
             version: "2".to_string(),
             hash: 1,
         };
-        let differing = compare_world_mods(&[a.clone()], &[changed]);
+        let differing = compare_world_mods(std::slice::from_ref(&a), &[changed]);
         assert_eq!(differing.differing.len(), 1);
         assert_eq!(differing.differing[0].id, "com.a");
         // Both sides are in the line, because "differing" alone is the refusal

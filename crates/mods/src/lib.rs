@@ -211,10 +211,10 @@ impl Manifest {
         // The scene merges this before the entry runs. A malformed tree is the
         // scene's to warn about; here it is passed through verbatim, since only
         // the scene knows which paths the tree has.
-        if let Some(text) = &self.tuning_json {
-            if let Ok(tuning) = serde_json::from_str::<serde_json::Value>(text) {
-                value["tuning"] = tuning;
-            }
+        if let Some(text) = &self.tuning_json
+            && let Ok(tuning) = serde_json::from_str::<serde_json::Value>(text)
+        {
+            value["tuning"] = tuning;
         }
         // A compiled mod has no entry to run; the name is here so the console
         // and the Mods screen can say what kind of mod it is.
