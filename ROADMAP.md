@@ -1739,7 +1739,7 @@ dependency on the same git revision. Same shape as M9's upstream prerequisite.
   and Rust fixtures publish the same bytes.
 - **M17d — The performance debt. Paid upstream.** `wasm --features compile` is
   the default for native targets now, so the compiled path *is* the shipped path,
-  and the wasm arm of the benchmark is 12-19x past the JavaScript JIT on the
+  and the wasm arm of the benchmark is 16-18x past the JavaScript JIT on the
   kernel. What is left here is not the flag but its consequence: two hosts agree
   on a world mod only if the compiled and interpreted paths agree, which makes the
   engine's equivalence gate part of M17c's determinism story rather than a
@@ -1748,34 +1748,52 @@ dependency on the same git revision. Same shape as M9's upstream prerequisite.
 **What it costs (measured).** `crates/harness/tests/plugin_bench.rs` runs
 `fixtures/wasm/c/bench.c` -- the boid inner loop, one O(n^2) neighbour pass per
 frame, f64 with f32 storage -- three ways. Nanoseconds per agent-pair per frame,
-release, one machine, one kernel:
+release, one machine, one kernel, at engine `2dba2c5e` (the revision `Cargo.lock`
+pins):
 
 | n | js interpreted | js + jit | wasm | wasm per frame | wasm / js+jit |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 843 | 484 | 7995 | 8.0 us | 16.5x |
-| 6 | 297 | 96 | 236 | 8.5 us | 2.5x |
-| 64 | 258 | 77 | 6.6 | 27.0 us | 0.09x |
-| 1024 | 351 | 123 | 6.8 | 7.1 ms | 0.06x |
+| 1 | 910 | 446 | 577 | 0.58 us | 1.30x |
+| 6 | 306 | 91 | 23.2 | 0.84 us | 0.25x |
+| 64 | 256 | 77 | 4.8 | 19.5 us | 0.06x |
+| 1024 | 378 | 133 | 7.6 | 8.0 ms | 0.06x |
 
 `n=1` is a floor probe: one record and no pair-iterations at all.
 
-- **The compiled path is the shipped path now, and it is 12-19x faster than
-  JavaScript.** `perf(wasm): run the compiled wasm path by default on native
-  targets` puts Cranelift behind every native embed, so the 6.6-6.8 ns a pair in
-the rows above is what a mod gets without anyone opting in. The interpreter is
-  reachable only through `Store::set_compile(false)`, which the JS API does not
-expose -- `fixtures/wasm/kernel-bench-compiled.rs` measures it, and it is what a
-  wasm32 host would run. It is 84-197x slower per pair than the compiled path.
-- **Small flocks pay for the call, not the kernel.** The flock is six birds, and
-  `n=1` and `n=6` cost the same ~8 us a frame while doing 36 times less work, so
-  that figure is a per-call cost rather than the kernel's. The same call measured
-  in isolation costs 2.2 us, and from Rust (`Store::invoke`) about 0.4 us.
-  **The ~6 us between those numbers is unexplained** -- it is host-side, it is not
-  the work, and it is printed by the benchmark rather than smoothed over, because
-  it is the next thing to chase. Even at its worst it is 0.05% of a 60 Hz frame,
-  so the ABI's one-crossing-per-frame rule is not the constraint.
-- **JavaScript's own JIT leaves the most on the table.** 2.5-3.3x over
-  interpreted JavaScript, where native codegen is 12-19x past it. That is a
+The table that stood here before was the same benchmark at the previous revision
+(`4e73db3b`), and one part of it is a different story now: **`n=1` and `n=6` cost
+8.0 and 8.5 us a frame then and 0.58 and 0.84 us now**, while the kernel itself
+barely moved (6.6 -> 4.8 ns a pair at `n=64`, 6.8 -> 7.6 at `n=1024`). So what
+changed is the host side of a call, not the compiled code -- which is the half of
+this section's bill that was still open, and it was settled upstream rather than
+here. The figures that moved are quoted in prose instead of being left
+deleted, so the delta survives a reader who only sees the current table.
+
+- **The compiled path is the shipped path now, and on the kernel it is 16-18x
+  faster than JavaScript.** `perf(wasm): run the compiled wasm path by default on
+  native targets` puts Cranelift behind every native embed, so the 4.8-7.6 ns a
+  pair in the rows above is what a mod gets without anyone opting in. The
+  interpreter is reachable only through `Store::set_compile(false)`, which the JS
+  API does not expose -- `fixtures/wasm/kernel-bench-compiled.rs` measures it, and
+  it is what a wasm32 host would run. It is 84-197x slower per pair than the
+  compiled path. The small-n ratio has flipped too: at `n=6` wasm was 2.5x
+  *behind* the JavaScript JIT and is now 0.25x of its time (~4x ahead of it), and
+  only the `n=1` floor probe is still behind (1.30x, against 16.5x).
+- **Small flocks pay for the call, and the call got cheap.** The flock is six
+  birds, and `n=1` and `n=6` cost the same ~0.6-0.8 us a frame while doing 36
+  times less work, so that figure is still a per-call cost rather than the
+  kernel's -- but it is a tenth of what it was. This bullet used to carry this
+  section's open leak: the rows were ~8 us a frame, the same call in isolation
+  2.2 us, and from Rust (`Store::invoke`) about 0.4 us, leaving **~6 us
+  unexplained** and named as the next thing to chase. At the current revision the
+  rows and the isolation probe meet within measurement noise -- 0.58 us a frame
+  against the probe's 0.97 us for a fresh flock -- so that gap is closed, and the
+  half of this section that is stale now is what the benchmark *prints* about it
+  rather than what it measures (Provenance, below). Even at its worst it was 0.05%
+  of a 60 Hz frame, so the ABI's one-crossing-per-frame rule was never the
+  constraint, and it is less of one now.
+- **JavaScript's own JIT leaves the most on the table.** 2.0-3.4x over
+  interpreted JavaScript, where native codegen is 16-18x past it. That is a
   "keep optimizing Slag" result, not an M17 one.
 
 Both benchmarks print a checksum of the arena, and the four execution paths agree
@@ -1792,7 +1810,11 @@ the Rust-hosted call come from `fixtures/wasm/kernel-bench-compiled.rs`, a
 throwaway test for the slag workspace, because no Goat crate can reach the `wasm`
 crate's `Store` or its feature pass-through (the upstream prerequisite above). One
 machine, one run per cell, so the ratios are the claim and the absolute
-nanoseconds are not. The JavaScript arm is given its best case -- contiguous
+nanoseconds are not. The table above is a re-measurement at engine `2dba2c5e`,
+taken when `Cargo.lock` moved there from `4e73db3b`. The paragraph at the end of
+the benchmark's own output still describes the previous measurement's gap, so
+what needs bringing up to date next is that text rather than these numbers. The
+JavaScript arm is given its best case -- contiguous
 `Float32Array`, no objects, no allocation -- and the wasm arm pays one JS-to-wasm
 crossing per frame. And it is one kernel: an O(n^2) float pass prices the
 interpreter, the crossing and the JIT, not the design.
@@ -2140,7 +2162,13 @@ when the client has a mod the host lacks or a shared id at another version, or
   client), `crates/proto` (the wire types, framing and name rules, with no iroh
   or tokio), `crates/session` (the iroh transport and session state machine) and
   `crates/server` (`goatsd`). The assets stay at the repo root and the client
-  reaches them with `include_bytes!("../../../…")`.
+  reaches them with `include_bytes!("../../../…")`. Every external dependency is
+  declared once, in the workspace manifest, and the engine is a **git**
+  dependency on `main` with no `rev`, so the revision in use is whatever
+  `Cargo.lock` says: `cargo update -p slag` moves it (and the ten other crates of
+  the engine's own workspace with it), and the lock is what makes a build
+  reproducible in between. `Cargo.toml` has the one-line local-checkout swap
+  commented out next to it, for working on the engine and the game together.
 - **Host bridge.** ✅ **Done.** The JS↔Rust boundary is line/JSON in both
   directions: `sceneCommand` in, `sceneNetEvent(line)` for networking events, and
   `sceneNetDrain()` out — the host calls it each frame and it returns and clears
@@ -2243,8 +2271,9 @@ when the client has a mod the host lacks or a shared id at another version, or
     cadence for the meadow, and a datagram of its own for world mods, so the
     world and a mod can no longer evict each other.
 21. **Slag performance.** Now measurable instead of guessed: the harness runs on
-    the engine (M15), where the 4050-frame scene costs ~7.6 ms/frame against
-    ~0.47 ms on Node, so CI's test step goes from ~2 s of Node to ~45 s of
+    the engine (M15), where the 4050-frame scene costs ~7.5 ms/frame against
+    ~0.47 ms on Node (29.995 s for the run, 1.49M cubes, at engine `2dba2c5e`), so
+    CI's test step goes from ~2 s of Node to ~45 s of
     release Rust. Profiling the frame loop, and comparing the JIT against the
     interpreter on a realistic workload, is a self-contained task -- and it has
     already paid for itself once: naming a hot function's parameters costs ~25%
