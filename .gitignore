@@ -3,3 +3,8 @@ target/
 *.png
 *.mp4
 *.blend1
+
+# A world mod a host fetched at join time (M18). Local to this checkout, and the
+# game writes it wherever `mods/` is.
+mods/pulled-*
+mods/pulled.json

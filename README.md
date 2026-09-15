@@ -146,12 +146,13 @@ ticket.
   compatibility set, so a client missing one is refused, and the error names the
   ids. The refusal is also where you ask for them -- `connect <ticket> --pull`
   fetches exactly what is missing, verifies each archive against the identity the
-  host announced, installs it beside your own mods as `mods/.pulled-<id>.zip`, and
+  host announced, installs it beside your own mods as `mods/pulled-<id>.zip`, and
   retries the join once. `goats --pull` makes that the default for every join, and
   a host with a mods directory serves its world mods over the same ticket, so a
   session hosted from a game window syncs a joiner the way `goatsd` does. Nothing
   is ever fetched without that flag or command: a mod is code, and installing one
-  is the player's decision. Deleting the `.pulled-*` files is the uninstall.
+  is the player's decision. Deleting the `pulled-*` files is the uninstall, and
+  `pulled.json` next to them says which host each came from.
 - **Paste, don't type**: the console reads the clipboard on Ctrl+V, so the ticket
   can be pasted. `copy` puts the ticket you were given back on the clipboard, and
   Ctrl+C copies the current line.

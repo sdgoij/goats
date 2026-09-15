@@ -1257,7 +1257,7 @@ mod tests {
         assert!(refusal.contains("world mods do not match"), "{refusal}");
         assert!(refusal.contains("`connect <ticket> --pull`"), "{refusal}");
         assert!(
-            !client_dir.join(".pulled-com.example.pulled.zip").exists(),
+            !client_dir.join("pulled-com.example.pulled.zip").exists(),
             "a refusal must install nothing"
         );
 
@@ -1284,9 +1284,10 @@ mod tests {
         assert!(welcome.contains("\"name\":\"alice\""), "{welcome}");
 
         // It landed beside the player's own mods, under a name that says what it
-        // is, and it hashes back to the identity the handshake compares -- which
-        // is the whole reason the retry can succeed.
-        assert!(client_dir.join(".pulled-com.example.pulled.zip").is_file());
+        // is and does not hide itself on Linux or macOS, and it hashes back to the
+        // identity the handshake compares -- which is the whole reason the retry
+        // can succeed.
+        assert!(client_dir.join("pulled-com.example.pulled.zip").is_file());
         let installed = Loader::discover(&client_dir);
         assert!(installed.errors().is_empty(), "{:?}", installed.errors());
         let found = installed.get("com.example.pulled").expect("installed");

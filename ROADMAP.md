@@ -1874,7 +1874,8 @@ client's to inherit.
 4. **Where the files land.** A mod never sees a path; the *host* writes on the
    user's behalf. It must write somewhere attributable and removable, and must not
    clobber a user's mod -- a recognisable name beside their own
-   (`mods/.pulled-<id>.zip`) with a provenance record (`mods/.pulled.json`:
+   (`mods/pulled-<id>.zip`, a name that is not hidden) with a provenance record
+   (`mods/pulled.json`:
    source, version, hash, when) covers all three.
 5. **Precedence.** If the client already has the id, the fetch does not touch it
    (refuse on conflict), and `differing` is left for the user. A fixed precedence
@@ -1944,11 +1945,11 @@ rather than pushed in the refusal, which is what keeps mod sync from being a
   reports and stops. With consent (`--pull`, or `connect <ticket> --pull`), it
   fetches each mod, stages the archive under a `.part` name the loader ignores,
   verifies it **with the loader** against the announced id, version and hash, and
-  only then renames it to `mods/.pulled-<id>.zip`. A mismatch, or an archive that
+  only then renames it to `mods/pulled-<id>.zip`. A mismatch, or an archive that
   will not load, leaves nothing behind. It then re-discovers, tells the frame loop
   to load what arrived, and retries the join exactly once.
 - *User.* The pulled set is recognisable beside the player's own mods, with a
-  record of where each came from in `mods/.pulled.json`; deleting the `.pulled-*`
+  record of where each came from in `mods/pulled.json`; deleting the `pulled-*`
   files is the uninstall. Nothing is fetched without an explicit `--pull` or
   `connect <ticket> --pull`.
 
@@ -1978,9 +1979,9 @@ in.
   to know the other. `pull(ticket, loader, mods_dir, want)` refuses an id the
   player already has, then stages each archive under a `.part` name the loader
   ignores, verifies it **with the loader** against the announced id, version and
-  hash, and only then renames it into `mods/.pulled-<id>.zip`. A mismatch, or an
+  hash, and only then renames it into `mods/pulled-<id>.zip`. A mismatch, or an
   archive that will not load, leaves nothing behind. The source of each install is
-  recorded in `mods/.pulled.json`.
+  recorded in `mods/pulled.json`.
 - Tests: `session::a_host_serves_the_mods_a_joiner_is_missing` (served, absent
   and forged-hash cases), `mods::a_mod_archives_from_either_source`,
   `goatsd::the_fetch_archives_hold_the_world_mods_as_zips`, and `pull`'s three --
@@ -2023,11 +2024,19 @@ when the client has a mod the host lacks or a shared id at another version, or
   - The scene end is `sceneModAdd` (`mods.js`) and the `pulled` case in `net.js`:
     `connect --pull` is parsed in `netJoin`, so the name is simply whatever is
     left.
+  - The pulled set is named to be *seen*: `mods/pulled-<id>.zip` and the record
+    beside it as `mods/pulled.json`, not dot-prefixed. A leading dot hides a file
+    on Linux and macOS, and the one thing a player has to be able to do with code
+    a host installed on their behalf is notice that it arrived and where from.
+    (Keeping a half-written archive out of discovery was never the prefix's job --
+    that is the `.part` suffix, which is not a `.zip`.) The loader keys off an
+    archive's manifest, not its filename, so a `pulled-*.zip` from an earlier
+    build stays a working mod; only its name stops being the one this writes.
   - Tests: `goats` has three new pure cases (the refusal's offer, every
     `cannot_join` wording, the `pulled` event's parse) and one end-to-end case
     over loopback -- a real host with a real world mod on disk, three clients
     (nowhere to install, not asked, and asked), a real fetch, a real install into
-    `mods/.pulled-<id>.zip`, and a join that succeeds on the retry. The harness
+    `mods/pulled-<id>.zip`, and a join that succeeds on the retry. The harness
     gained five cases in `mods.rs` for the post-freeze add: the row lands, its
     assets and tuning apply, its entry registers through the window it is given,
     the freeze still holds for everything else, and a duplicate id is refused.
@@ -2036,6 +2045,8 @@ when the client has a mod the host lacks or a shared id at another version, or
     the mod-case count was brought back in line with the suite.
   - `proto::MISMATCH_PREFIX` is the refusal's opening words, so the message and
     whoever recognises it cannot drift apart; `session` has the matching test.
+    `pull` gained a case for the archive name itself: visible, and contained (the
+    prefix is what makes a hostile id harmless, so there is one in the test).
 
 **Open questions.**
 

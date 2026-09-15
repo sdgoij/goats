@@ -206,14 +206,21 @@ player's own, as a single archive:
 
 ```
 mods/
-  .pulled-com.example.birds.zip   one archive per fetched mod
-  .pulled.json                    where each came from (id -> host, version, hash, when)
+  pulled-com.example.birds.zip   one archive per fetched mod
+  pulled.json                    where each came from (id -> host, version, hash, when)
 ```
 
-The `.pulled-` prefix is what makes the fetched set recognisable and removable as
+The `pulled-` prefix is what makes the fetched set recognisable and removable as
 a set: deleting those files is the uninstall, and nothing the player installed is
 ever touched by a fetch. The loader reads `*.zip` wherever a directory mod would
 sit, so an installed archive is an ordinary mod from then on.
+
+The names are **not** dot-prefixed, which would hide them on Linux and macOS. What
+a host installs is code the player did not choose, and the one thing they must be
+able to do is see that it arrived and where it came from -- `pulled.json` is that
+answer. Half-written archives are kept out of discovery by the *suffix* they carry
+while they are being fetched (`pulled-<id>.zip.part`, which is not a `.zip`), not
+by hiding the finished one.
 
 ### 3.2 `mod.json`
 

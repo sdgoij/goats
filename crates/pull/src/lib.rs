@@ -29,10 +29,20 @@ use session::{Fetched, ModRef};
 
 /// The prefix an installed archive gets, so a pulled mod is recognisable and
 /// removable as a set without touching anything the player installed.
-pub const PREFIX: &str = ".pulled-";
+///
+/// Deliberately not a dot-prefixed name. It looks tidier in a listing, but a
+/// leading dot hides the file on Linux and macOS, and the one thing a player has
+/// to be able to do with what a host installed on their behalf is *see* it: this
+/// is somebody else's code arriving in their mods directory, and "where did these
+/// files come from" is a worse question than "why are there extra files". The
+/// staging name in [`install`] is what keeps a half-written archive out of
+/// discovery, and that is a suffix, not a prefix.
+pub const PREFIX: &str = "pulled-";
 
 /// The provenance record, inside the mods directory: id -> where it came from.
-pub const RECORD: &str = ".pulled.json";
+/// Visible for the same reason as [`PREFIX`]: it is the answer to "what is this
+/// and who put it here".
+pub const RECORD: &str = "pulled.json";
 
 /// What one pull did, for the caller to report.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -226,9 +236,9 @@ fn install(mods_dir: &Path, reference: &ModRef, bytes: &[u8]) -> Result<(), Stri
 }
 
 /// Where a pulled mod lands: a name the loader reads as a `.zip` mod and the
-/// player can recognise. The id comes from the host, so only what cannot escape
-/// the directory survives -- the prefix alone makes a `..` harmless, but the rest
-/// is filtered too.
+/// player can recognise and see (see [`PREFIX`]). The id comes from the host, so
+/// only what cannot escape the directory survives -- the prefix alone makes a `..`
+/// harmless, but the rest is filtered too.
 fn archive_name(id: &str) -> String {
     let filtered: String = id
         .chars()
@@ -243,8 +253,10 @@ fn archive_name(id: &str) -> String {
     format!("{PREFIX}{stem}.zip")
 }
 
-/// Record where each installed mod came from, beside the archives. Read back by
-/// the console; the file is the inventory, so nothing has to guess from a name.
+/// Record where each installed mod came from, beside the archives. The file is
+/// the inventory a player reads when they want to know what a fetch added and
+/// which host it came from; nothing parses it, so deleting it costs only the
+/// answer.
 fn record(mods_dir: &Path, ticket: &str, installed: &[ModRef]) -> Result<(), String> {
     let path = mods_dir.join(RECORD);
     let mut inventory: BTreeMap<String, serde_json::Value> = match std::fs::read_to_string(&path) {
@@ -327,6 +339,30 @@ mod tests {
         };
         let bytes = mods::archive_source(&manifest.source).expect("archive it");
         (dir, reference, bytes)
+    }
+
+    /// What an installed archive is called, and why (M18d). The name is the one
+    /// thing a player has to be able to find, so it is neither hidden nor able to
+    /// climb out of the mods directory: the id arrives from a host.
+    #[test]
+    fn an_installed_archive_is_visible_and_contained() {
+        let name = archive_name("com.example.birds");
+        assert_eq!(name, "pulled-com.example.birds.zip");
+        // A leading dot would hide it on Linux and macOS, which is exactly what a
+        // file somebody else's host wrote into your mods directory must not do.
+        assert!(!name.starts_with('.'), "{name}");
+
+        // The prefix is what makes a hostile id harmless, so it is asserted with
+        // one rather than assumed: whatever survives the filter stays a file the
+        // directory reads as a mod and nothing else.
+        let hostile = archive_name("../../evil/../../x");
+        assert_eq!(hostile, "pulled-....evil....x.zip");
+        assert!(!hostile.contains('/'), "{hostile}");
+        assert!(!hostile.contains("..\\"), "{hostile}");
+
+        // An id with nothing usable in it still points at a real file rather than
+        // at the prefix itself.
+        assert_eq!(archive_name("///"), "pulled-mod.zip");
     }
 
     #[tokio::test]
