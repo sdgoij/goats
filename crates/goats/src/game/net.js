@@ -12,6 +12,9 @@
 // the `net` and `who` commands, and print into the console's network stream.
 
 const NET_OFF = "off";
+// The flag on `connect` that consents to fetching the host's world mods when the
+// join is refused for them (M18d).
+const NET_PULL_FLAG = "--pull";
 let netMode = NET_OFF;      // "off" | "host" | "client"
 let netName = "";           // this player's assigned name, once connected
 let netTicket = "";         // the ticket to hand out, once hosting
@@ -70,12 +73,33 @@ function netHost(parts) {
     return "ok host";
 }
 
+// `connect <ticket> [name] [--pull]`, taken apart. The consent flag may sit
+// anywhere after the verb, so `connect T --pull alice` reads as well as
+// `connect T alice --pull`; `name` is `undefined` when the player gave none, which
+// is what the console's username prompt keys off.
+function netJoinArgs(parts) {
+    const args = parts.slice(1).filter(function (part) { return part !== NET_PULL_FLAG; });
+    return {
+        ticket: args[0] === undefined ? "" : args[0],
+        name: args[1],
+        pull: args.length !== parts.length - 1
+    };
+}
+
+// `--pull` is the player's consent to fetch what the host runs and this client
+// lacks, install it and retry once -- a mod is code, so it is only ever fetched
+// because somebody said so.
 function netJoin(parts) {
     if (netInSession()) return "error already in a session (leave first)";
-    const ticket = parts[1];
-    if (ticket === undefined) return "error connect expects a ticket";
-    netQueue({ type: "join", ticket: ticket, name: netRequestedName(parts, 2) });
-    consoleSystem("net: connecting ...");
+    const args = netJoinArgs(parts);
+    if (args.ticket === "") return "error connect expects a ticket";
+    netQueue({
+        type: "join",
+        ticket: args.ticket,
+        name: args.name === undefined ? "" : args.name,
+        pull: args.pull
+    });
+    consoleSystem("net: connecting ..." + (args.pull ? " fetching the host's mods if they differ" : ""));
     return "ok connect";
 }
 
@@ -168,6 +192,13 @@ function sceneNetEvent(line) {
             consoleNet("net: roster " + netRoster.join(", "));
             break;
         case "notice":
+            consoleNet("net: " + event.text);
+            break;
+        case "pulled":
+            // The host has already loaded what arrived -- an entry is Rust's to
+            // evaluate -- and this arrives before the retried join's welcome, so
+            // by the time the world does, the mods it is built on are in the
+            // scene. All that is left here is to say what the join cost.
             consoleNet("net: " + event.text);
             break;
         case "disconnected":

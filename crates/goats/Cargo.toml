@@ -14,6 +14,9 @@ mods = { workspace = true }
 scene = { workspace = true }
 # The compiled-mod host (M17b): the client drives compiled mods from Rust.
 plugin = { workspace = true }
+# Fetching a host's world mods (M18d): the client's half of mod sync, which the
+# networking thread runs on a refused join.
+pull = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }

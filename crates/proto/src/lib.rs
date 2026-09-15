@@ -76,6 +76,22 @@ pub struct ModRef {
     pub hash: u64,
 }
 
+/// The first words of [`ModMismatch::describe`], and the only thing that marks a
+/// refusal as being about mods.
+///
+/// A server's refusal is a line rather than a typed field, because the handshake's
+/// reply is a fixed shape and adding a kind to it would be a `PROTOCOL_VERSION`
+/// change. Its text is therefore the marker, and it lives here so the two ends of
+/// it -- the refusal and whoever recognises one -- cannot drift apart. It is a
+/// *hint* for the client's UX, never a check: the authority on whether two sets
+/// match is [`compare_world_mods`], which the fetching client runs for itself
+/// (M18c).
+///
+/// ```text
+/// world mods do not match (missing com.github.sdgoij.goats.birds)
+/// ```
+pub const MISMATCH_PREFIX: &str = "world mods do not match";
+
 /// How a client's world-mod set differs from the host's. `missing` is what the
 /// host runs and the client lacks; `extra` is the reverse; `differing` is a
 /// shared id at a different version or hash.
@@ -127,7 +143,7 @@ impl ModMismatch {
             let list: Vec<String> = self.differing.iter().map(DifferingMod::describe).collect();
             parts.push(format!("differing {}", list.join("; ")));
         }
-        format!("world mods do not match ({})", parts.join("; "))
+        format!("{MISMATCH_PREFIX} ({})", parts.join("; "))
     }
 }
 
@@ -198,6 +214,58 @@ fn clean_mod_id(id: &str) -> String {
     } else {
         cleaned
     }
+}
+
+// ---- the mod-fetch protocol (M18) -------------------------------------------
+//
+// A joiner that is missing a world mod can fetch it from the host over the same
+// endpoint, on a connection of its own. This is a second protocol, with its own
+// ALPN and so its own version, because it has to keep working against a host
+// built for an older wire version, and because a fetch that fails must not look
+// like a session failure. The plan is `ROADMAP.md` M18.
+
+/// The mod-fetch protocol's version. It is the ALPN suffix, so a peer built
+/// against a different fetch protocol fails the QUIC handshake before it reaches
+/// any of this -- the same rule the session ALPN follows.
+pub const MOD_FETCH_VERSION: u8 = 1;
+
+/// The ALPN a fetch connection negotiates, beside the session's own.
+pub fn mod_fetch_alpn() -> Vec<u8> {
+    format!("goats-mods/{MOD_FETCH_VERSION}").into_bytes()
+}
+
+/// The largest archive either end will move in one reply. A mod carries assets
+/// (the loader caps a single one at 64 MiB), so this is the same order: a
+/// structural guard against a hostile length, not a budget.
+pub const MAX_MOD_BLOB_BYTES: u32 = 64 * 1024 * 1024;
+
+/// What a client asks a host for on a fetch connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModFetchRequest {
+    /// These mods, in order. The host answers one reply per entry, and only for
+    /// an id it holds at the `version` and `hash` asked for.
+    Wanted(Vec<ModRef>),
+    /// Everything this host can serve. This is how a client learns the host's
+    /// world-mod set without the refusal having to carry it -- which is what
+    /// keeps adding mod sync from being a `PROTOCOL_VERSION` bump.
+    Catalogue,
+}
+
+/// The host's answer to one entry of a [`ModFetchRequest::Wanted`]. A `Blob` is a
+/// framed head followed, on the same stream, by `length` raw bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModFetchReply {
+    /// The archive follows on this stream: `length` bytes, `mod.json` at the
+    /// root, the form the loader reads back.
+    Blob { reference: ModRef, length: u32 },
+    /// This id cannot be served -- the host does not hold it, holds it at a
+    /// different version or hash, or its archive is over [`MAX_MOD_BLOB_BYTES`].
+    Unavailable { id: String, reason: String },
+    /// The answer to a [`ModFetchRequest::Catalogue`]: every world mod the host
+    /// can serve, in id order.
+    Catalogue(Vec<ModRef>),
 }
 
 /// What a client sends.
@@ -915,6 +983,9 @@ mod tests {
         assert_eq!(missing.missing, vec!["com.b".to_string()]);
         assert!(missing.extra.is_empty());
         assert!(missing.describe().contains("missing com.b"));
+        // Every refusal opens with the marker, which is what lets a client
+        // recognise one without the protocol carrying a kind (M18d).
+        assert!(missing.describe().starts_with(MISMATCH_PREFIX));
 
         let extra = compare_world_mods(&[a.clone()], &[a.clone(), b.clone()]);
         assert_eq!(extra.extra, vec!["com.b".to_string()]);
@@ -956,6 +1027,7 @@ mod tests {
         };
         let cleaned = compare_world_mods(&[], &[hostile]);
         assert_eq!(cleaned.extra, vec!["31mEVIL".to_string()]);
+        assert!(cleaned.describe().starts_with(MISMATCH_PREFIX));
 
         // Over the cap is a mismatch, whatever the contents.
         let many: Vec<ModRef> = (0..=MAX_MODS)

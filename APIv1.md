@@ -162,6 +162,29 @@ editing a mod's source re-runs it without restarting the game.
 compatibility set fixed at join, so a server must not change it under its peers;
 `goatsd` takes no `--watch`.
 
+### 2.7 A mod that arrives during a session (mod sync)
+
+Registration closes at `goats.freeze()` once every boot entry has had its chance,
+which is the invariant the API leans on: an event, a command or an asset slot is
+claimed by exactly the mods that were loaded. One exception exists, and it is a
+narrow one: a `side: "world"` mod **pulled from the host of the session being
+joined** (M18) is added to the table mid-session, through `sceneModAdd(json)`.
+
+- It is added by the *host* of the client process, not by a mod: a mod cannot
+  call it. The row is the loader's, exactly as one row of the `sceneMods` table
+  is, so the manifest is validated before the scene ever sees it.
+- Everything is the boot path: the metadata lands, the declared asset slots
+  re-point, the `tuning.json` merges, and the entry is evaluated inside its own
+  `goats.begin(id)` window. Registration is open for that mod and no other -- the
+  same window a reload gets (§2.5) -- so its hooks and commands register, and
+  anything else that tries still fails.
+- The digest is why it exists: a client missing a world mod is refused; fetching
+  and loading the mod is what makes the retried join present the host's set.
+- Two things do not follow: a late mod cannot change an asset the scene already
+  loaded (§2.5's limit, unchanged), and it cannot bring a `loadAfter` ordering
+  with it -- it is appended, after everything already loaded. A mod that must
+  precede another belongs in `mods/` at startup, not in a fetch.
+
 ---
 
 ## 3. The mod directory and manifest
@@ -177,6 +200,20 @@ mods/
     models/goat_fast.glb
     audio/sprint.ogg
 ```
+
+A mod the host fetched (M18) is written into this same directory, beside the
+player's own, as a single archive:
+
+```
+mods/
+  .pulled-com.example.birds.zip   one archive per fetched mod
+  .pulled.json                    where each came from (id -> host, version, hash, when)
+```
+
+The `.pulled-` prefix is what makes the fetched set recognisable and removable as
+a set: deleting those files is the uninstall, and nothing the player installed is
+ever touched by a fetch. The loader reads `*.zip` wherever a directory mod would
+sit, so an installed archive is an ordinary mod from then on.
 
 ### 3.2 `mod.json`
 
@@ -847,6 +884,49 @@ and streams reach clients beside the world rather than inside it.
 `Goatsd` takes `--mods <dir>` and loads the same loader; a server with no
 `mods/` only accepts clients with no world mods.
 
+**Fetching what is missing (M18d).** A refusal is a dead end when the client
+simply lacks a world mod, so the client can ask the host for it. The exchange is
+the *fetch* protocol: a second ALPN (`goats-mods/<MOD_FETCH_VERSION>`) on the same
+endpoint and the same ticket, so the session handshake above -- and
+`PROTOCOL_VERSION` with it -- is untouched, and a host without the fetch surface
+fails the second connection's handshake rather than answering it.
+
+```rust
+ModFetchRequest::Catalogue                  // what do you run?
+ModFetchRequest::Wanted(Vec<ModRef>)        // give me these, at these identities
+ModFetchReply::Catalogue(Vec<ModRef>)
+ModFetchReply::Blob { reference, length }   // a framed head, then the .zip bytes
+ModFetchReply::Unavailable { id, reason }   // not held, refused for that entry only
+```
+
+The client asks for the *host's* set rather than the refusal carrying it, which is
+what keeps mod sync from being a `PROTOCOL_VERSION` change. It then compares that
+catalogue with what it has, using the very comparison the handshake uses
+(`proto::compare_world_mods`), and can act on exactly one outcome: the host runs a
+world mod this client lacks. `extra` and `differing` are the player's to settle,
+because only they know which copy they want.
+
+- **Verify, then install.** A fetched archive is loaded with the same loader the
+digest comes from, and its `id`, `version` and `hash` must equal the ones the
+host announced. Anything else is discarded, never installed: the install is
+staged under a name the loader ignores, and only a verified archive is renamed
+into place.
+- **Never replace what the player has.** An id that is already loaded is refused,
+not overwritten (see `differing` above).
+- **Consent, always.** A world mod is code, and the trust model above is built on
+  the player *choosing* a mod. So the default is to fetch nothing: the refusal
+  names the missing mods and says how to ask, `connect <ticket> --pull` is the
+  per-join ask, and `goats --pull` is the standing one. The host's status page's
+  `mods.zip` remains the manual path.
+- **A host serves too.** Hosting with a mods directory serves its own world mods
+  to a fetching joiner, so a session hosted from the game window syncs a joiner
+  the way `goatsd` does. A host with no mods directory (and no fetch surface of
+  its own) has nothing to hand over, which is a limitation of that host rather
+  than of the client.
+- **The retry is once.** After a successful install the client re-derives its
+  world-mod set from disk and joins again, once; if that fails, the refusal stands
+  and is reported as it always was.
+
 ### 6.4 Determinism rules for world mods
 
 A world mod **must**:
@@ -890,6 +970,10 @@ skip authoritative work when `localWorld()` is false, exactly as the scene's
 - **Failure isolation.** A mod that throws at load is marked failed and named;
   a handler that throws is logged per mod per event. `goats.fail` is the
   explicit version.
+- **A fetched mod is the player's decision, and the host's I/O.** The fetch, the
+  verification and the install are the Rust host's (`crates/pull/`); the mod
+  itself never gains a file capability, and nothing is fetched without the flag
+  or the console command that asks for it (§6.3).
 - **Resource limits.** The host caps entry size and asset size, and counts
   registered commands/hooks, so a runaway mod is reported rather than silently
   eating memory. Exact caps are host policy, not API.
@@ -908,6 +992,7 @@ New console vocabulary (all routed through the existing `sceneCommand`):
 | `mod disable <id>` | Unload and unsubscribe a mod (session only). |
 | `mod reload <id>` | Re-read and re-evaluate a mod (iteration loop). |
 | `mod key` | The sorted `id@version#hash` compatibility set this client would present. |
+| `connect <ticket> [name] [--pull]` | Join; `--pull` fetches the host's world mods if the join is refused for them, installs them and retries once (M18). |
 
 There is **no persistence in v1**: enablement lasts for the session, and a
 restart restores the `mods/` directory's default (every discovered mod
@@ -949,7 +1034,10 @@ Landed with the implementation, and Rust on the engine since M15:
   the `"hud"` hook runs, the asset slot returns the override name, the known
   tuning leaf merges while an unknown distinct path warns, a throwing handler is
   isolated, and a reload leaves no duplicate handler or command. The same file
-  holds the synthetic-table cases for the Mods screen and `modSetEnabled`.
+  holds the synthetic-table cases for the Mods screen and `modSetEnabled`, and
+  (since M18d) the post-freeze-add cases: `sceneModAdd` adds a row that behaves
+  like a boot-loaded mod -- assets, tuning and a registering entry -- while the
+  freeze still refuses everything else and a duplicate id is refused outright.
 - `crates/harness/tests/birds.rs` — drives the `birds` fixture (§5.4) with a
   recording `rl` and asserts its meshes build lazily, every animation state is
   reached, boid separation holds, a client mirrors rather than simulates, and two
@@ -970,7 +1058,10 @@ Landed with the implementation, and Rust on the engine since M15:
 ## 11. Non-goals for v1
 
 - Persistence of enabled mods or mod settings.
-- A mod repository, installer or signature scheme.
+- A mod repository, installer or signature scheme. The mod sync of §6.3 is not
+  one: it installs world mods a *host of the session you are joining* names, at
+  the identity the handshake compares, only on the player's say-so, and the
+  digest it verifies is a compatibility hash, not a signature.
 - Sandboxing untrusted mods; mods are trusted code with an I/O wall.
 - Hot-reloading assets without a reload of the mod that owns them.
 - Replacing the procedural textures (sky, terrain detail, fleeces) via file

@@ -733,6 +733,16 @@ fn the_scene_runs_the_scripted_timeline() {
     checks.check("connect queues a join", net.joined, &net);
     checks.check("host without a name asks for one", net.prompt_asked, &net);
     checks.check("the prompt answer is used", net.prompt_answered, &net);
+    checks.check(
+        "connect --pull consents to fetching the host's mods",
+        net.pull_flag,
+        &net,
+    );
+    checks.check(
+        "a flagged connect still asks for a username",
+        net.pull_prompt,
+        &net,
+    );
     checks.check("muting tells the host to silence voice", net.muted, &net);
 
     let (chat, chat_error) = match chat_block(&mut harness) {
@@ -1142,6 +1152,8 @@ struct Net {
     joined: bool,
     prompt_asked: bool,
     prompt_answered: bool,
+    pull_flag: bool,
+    pull_prompt: bool,
     muted: bool,
 }
 
@@ -1206,6 +1218,24 @@ fn net_block(harness: &mut Harness) -> Result<Net, String> {
         });
     harness.command("console say carol")?;
     net.prompt_answered = net_drain(harness)?.contains("\"name\":\"carol\"");
+
+    // `--pull` rides the join as its own field, wherever it sat among the
+    // arguments, so the host knows the fetch is consented to (M18d).
+    let flagged = harness.command("connect endpointDEF bob --pull")?;
+    let intent = net_drain(harness)?;
+    net.pull_flag = flagged == "ok connect"
+        && intent.contains("\"ticket\":\"endpointDEF\"")
+        && intent.contains("\"name\":\"bob\"")
+        && intent.contains("\"pull\":true");
+
+    // ...and a flagged connect with no name still asks for one, because the flag
+    // is not a name.
+    let prompt_reply = harness.command("connect endpointGHI --pull")?;
+    harness.command("console say dave")?;
+    let intent = net_drain(harness)?;
+    net.pull_prompt = prompt_reply == "ok name?"
+        && intent.contains("\"name\":\"dave\"")
+        && intent.contains("\"pull\":true");
 
     // Master mute has to reach the host: the voice mixer is Rust's, so the
     // scene's only lever is the gain intent.

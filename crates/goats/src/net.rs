@@ -8,9 +8,18 @@
 //!
 //! The runtime thread owns the tokio runtime and the session, so nothing that
 //! touches iroh is ever polled from the frame loop.
+//!
+//! The one place where the bridge does more than move lines is a refused join
+//! (M18d): when the host's world-mod set is what it objects to, this thread asks
+//! the host what it runs, fetches what is missing, installs it, re-derives the
+//! set it presents and retries the join once. The fetch and the install are
+//! `pull`'s; what lives here is the policy -- consent, the retry, and telling the
+//! frame loop to load what arrived.
 
+use std::path::PathBuf;
 use std::thread;
 
+use mods::{AssetMode, Loader};
 use serde::{Deserialize, Serialize};
 use tokio::runtime;
 use tokio::sync::mpsc;
@@ -24,8 +33,16 @@ enum Command {
         #[serde(default)]
         name: String,
     },
-    /// Join the session behind `ticket` as `name`.
-    Join { ticket: String, name: String },
+    /// Join the session behind `ticket` as `name`. `pull` asks this thread to
+    /// fetch the host's world mods and retry once when the join is refused
+    /// because they differ (M18d); the other half of the consent is
+    /// [`Pull::always`], which the command line sets.
+    Join {
+        ticket: String,
+        name: String,
+        #[serde(default)]
+        pull: bool,
+    },
     /// Say something. A leading `@name` whispers; the server routes it.
     Say { text: String },
     /// The local goat's pose, sent on the unreliable transform channel. Queued
@@ -138,6 +155,41 @@ enum Event {
     Disconnected,
     /// The session could not be started or joined.
     Error { text: String },
+    /// A refused join was fixed by fetching the host's world mods (M18d): `ids`
+    /// are the mods that were installed, and `text` is one line for the console.
+    ///
+    /// The frame loop has host work to do on this one -- the assets have to reach
+    /// the engine and the entries have to run -- and it is emitted *before* the
+    /// retried join's welcome, so the scene is whole by the time the world it
+    /// joins arrives.
+    Pulled { text: String, ids: Vec<String> },
+}
+
+/// What this client does about a join the host refused for mods (M18d).
+///
+/// Pulling installs code this player did not choose, so it is never silent: the
+/// default is that only an explicit `connect <ticket> --pull` fetches, and
+/// `--pull` on the command line is the standing "ask me no questions" for a
+/// script or a player who has decided to trust this. Without a mods directory
+/// there is nowhere to install, so nothing is ever fetched.
+pub struct Pull {
+    /// Where a fetched mod is installed; `None` with `--no-mods`, or when no
+    /// mods directory was found and `--pull` was not given.
+    pub mods_dir: Option<PathBuf>,
+    /// `--pull`: fetch on any refused join, without the flag on the command.
+    pub always: bool,
+}
+
+impl Pull {
+    /// May this join fetch? `asked` is the console's per-command consent.
+    fn allowed(&self, asked: bool) -> bool {
+        self.mods_dir.is_some() && (self.always || asked)
+    }
+
+    /// Is there anywhere to install if the player did ask?
+    fn possible(&self) -> bool {
+        self.mods_dir.is_some()
+    }
 }
 
 /// The frame loop's handle on the networking thread.
@@ -153,7 +205,7 @@ pub struct Net {
 impl Net {
     /// Starts the runtime thread. It runs until the handle is dropped, which
     /// closes the command channel and lets the thread finish.
-    pub fn start(world_mods: Vec<session::ModRef>) -> Net {
+    pub fn start(world_mods: Vec<session::ModRef>, pull: Pull) -> Net {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (voice_tx, voice_rx) = mpsc::channel(VOICE_BACKLOG);
@@ -167,7 +219,7 @@ impl Net {
                         return;
                     }
                 };
-                runtime.block_on(run(command_rx, event_tx, voice_tx, world_mods));
+                runtime.block_on(run(command_rx, event_tx, voice_tx, world_mods, pull));
             })
             .expect("spawn the networking thread");
         if session::internet_enabled() {
@@ -332,8 +384,13 @@ async fn run(
     events: mpsc::UnboundedSender<String>,
     voice: mpsc::Sender<VoiceIn>,
     world_mods: Vec<session::ModRef>,
+    pull: Pull,
 ) {
     let mut live: Option<Live> = None;
+    // What this client presents at its next join. A pull can change it, and the
+    // change has to outlive the join that caused it: the host command uses the
+    // same set (M18d).
+    let mut world_mods = world_mods;
     // The last thing said about each high-rate datagram. The host sends them ten
     // times a second, so a report belongs on the change, not on every send.
     let mut last_world = session::WorldOutcome::Whole;
@@ -460,7 +517,7 @@ async fn run(
                         session.publish_voice(seq, &payload).await;
                     }
                 }
-                other => live = start(other, live.take(), &events, &world_mods).await,
+                other => live = start(other, live.take(), &events, &mut world_mods, &pull).await,
             },
             Outcome::Command(None) => break,
         }
@@ -475,7 +532,8 @@ async fn start(
     command: Command,
     current: Option<Live>,
     events: &mpsc::UnboundedSender<String>,
-    world_mods: &[session::ModRef],
+    world_mods: &mut Vec<session::ModRef>,
+    pull: &Pull,
 ) -> Option<Live> {
     if let Some(session) = current {
         session.close().await;
@@ -490,7 +548,18 @@ async fn start(
         | Command::Consume { .. }
         | Command::Voice { .. } => None,
         Command::Host { name } => {
-            match session::Host::start_with_mods(&name, world_mods.to_vec()).await {
+            // A host serves what it runs, so a joiner missing a world mod can
+            // fetch it here rather than from a status page (M18d). The packaging
+            // is a one-off read of the mods directory at the moment the player
+            // hosts, and the session's set is fixed at that same moment, so the
+            // two cannot drift.
+            let archives = match pull.mods_dir.as_deref() {
+                Some(dir) => crate::mod_archives(&Loader::discover(dir)),
+                None => Vec::new(),
+            };
+            match session::Host::start_with_mods_and_archives(&name, world_mods.to_vec(), archives)
+                .await
+            {
                 Ok(host) => {
                     // The console shows the ticket, but it cannot be selected in a
                     // game window; stderr puts it where the player launched the
@@ -521,29 +590,141 @@ async fn start(
                 }
             }
         }
-        Command::Join { ticket, name } => {
-            match session::Client::join_with_mods(&ticket, &name, world_mods.to_vec()).await {
-                Ok(client) => {
-                    emit(
-                        events,
-                        Event::Welcome {
-                            name: client.name().to_string(),
-                        },
-                    );
-                    Some(Live::Client(client))
-                }
-                Err(error) => {
-                    emit(
-                        events,
-                        Event::Error {
-                            text: format!("could not join: {error}"),
-                        },
-                    );
-                    None
-                }
+        Command::Join {
+            ticket,
+            name,
+            pull: asked,
+        } => match join(&ticket, &name, asked, pull, world_mods, events).await {
+            Ok(client) => {
+                emit(
+                    events,
+                    Event::Welcome {
+                        name: client.name().to_string(),
+                    },
+                );
+                Some(Live::Client(client))
             }
-        }
+            Err(text) => {
+                emit(events, Event::Error { text });
+                None
+            }
+        },
     }
+}
+
+/// Join, and when the refusal was about the world-mod set, fetch what is missing
+/// and try exactly once more (M18d).
+///
+/// The retry is not a second guess. `pull::recover` asks the host what it runs,
+/// compares that with the set on disk, and installs only what is missing and
+/// verifies -- so a retry happens after something actually changed, and the digest
+/// it presents is the one the files now have.
+///
+/// Consent is settled before the host is asked anything: the default client
+/// fetches nothing, and the refusal is what tells the player which flag would
+/// change that. Pulling installs code the player did not choose, so the answer
+/// has to be theirs.
+async fn join(
+    ticket: &str,
+    name: &str,
+    asked: bool,
+    pull: &Pull,
+    world_mods: &mut Vec<session::ModRef>,
+    events: &mpsc::UnboundedSender<String>,
+) -> Result<session::Client, String> {
+    let refusal = match session::Client::join_with_mods(ticket, name, world_mods.clone()).await {
+        Ok(client) => return Ok(client),
+        Err(error) => error,
+    };
+    if !refusal.is_mod_mismatch() || !pull.allowed(asked) {
+        return Err(refusal_text(&refusal, pull.possible()));
+    }
+    // `allowed` implies a directory, so this is a guard rather than a case.
+    let Some(mods_dir) = pull.mods_dir.as_deref() else {
+        return Err(refusal_text(&refusal, false));
+    };
+
+    // What the player has, read straight off the disk: `pull` refuses an id that
+    // is already there rather than replacing it, and that verdict has to be about
+    // the directory as it is now, not as it was when this thread started.
+    let before = Loader::discover_with(mods_dir, AssetMode::HashOnly);
+    let fetched = match pull::recover(ticket, &before, mods_dir).await {
+        Ok(pull::Recovery::Pulled(report)) if !report.installed.is_empty() => report,
+        // Nothing was installed, so a retry would meet the same refusal: say what
+        // stopped it rather than dialing a second time for the same answer.
+        outcome => return Err(cannot_join(&refusal, outcome)),
+    };
+
+    let ids: Vec<String> = fetched
+        .installed
+        .iter()
+        .map(|reference| reference.id.clone())
+        .collect();
+    // The frame loop loads these before the retried join's welcome reaches the
+    // scene, so the mods and the world they describe arrive together.
+    emit(
+        events,
+        Event::Pulled {
+            text: fetched.describe(),
+            ids,
+        },
+    );
+    // The digest the retry presents is the set on disk, which is what a fresh walk
+    // reads: the loader above was taken before the installs.
+    *world_mods = crate::world_mod_refs(&Loader::discover_with(mods_dir, AssetMode::HashOnly));
+    session::Client::join_with_mods(ticket, name, world_mods.clone())
+        .await
+        .map_err(|error| format!("could not join after fetching: {error}"))
+}
+
+/// The console's line for a refusal this client will not act on. When fetching is
+/// possible but was not asked for, it says how to ask: the whole feature is one
+/// flag away, and the refusal is the one moment a player needs to hear about it.
+fn refusal_text(error: &session::Error, can_pull: bool) -> String {
+    let text = format!("could not join: {error}");
+    if can_pull && error.is_mod_mismatch() {
+        format!("{text}; `connect <ticket> --pull` fetches what is missing")
+    } else {
+        text
+    }
+}
+
+/// Why a fetch did not make a retried join worth attempting. The refusal stays in
+/// front -- it is the host's own line, and it names the ids -- and what follows is
+/// what this end found out when it looked at the two sets itself.
+fn cannot_join(refusal: &session::Error, outcome: Result<pull::Recovery, String>) -> String {
+    match outcome {
+        Ok(pull::Recovery::Pulled(report)) => {
+            format!("{refusal}; nothing was installed ({})", report.describe())
+        }
+        Ok(pull::Recovery::Matched) => {
+            format!("{refusal}; this client already runs the host's mods, so fetching cannot help")
+        }
+        Ok(pull::Recovery::Unfixable(mismatch)) => format!(
+            "could not join: {}; fetching cannot settle it: only you can add or drop a mod",
+            mismatch.describe()
+        ),
+        Ok(pull::Recovery::Unreachable(reason)) => {
+            format!("{refusal}; this host does not serve its mods ({reason})")
+        }
+        Err(error) => format!("{refusal}; the fetch failed ({error})"),
+    }
+}
+
+/// The ids a `pulled` event names, or `None` when this line is something else. The
+/// frame loop has host work to do before the scene sees a pull's mods, and this is
+/// how it finds out -- the same shape [`voice_gain`] uses for the one other event
+/// with a side channel.
+pub fn pulled_ids(line: &str) -> Option<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Event {
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(default)]
+        ids: Vec<String>,
+    }
+    let event: Event = serde_json::from_str(line).ok()?;
+    (event.kind == "pulled").then_some(event.ids)
 }
 
 /// Maps a session event onto the line the scene understands. Voice maps to an
@@ -610,6 +791,8 @@ fn emit(events: &mpsc::UnboundedSender<String>, event: Event) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -639,10 +822,21 @@ mod tests {
         )
         .expect("join")
         {
-            Command::Join { ticket, name } => {
+            Command::Join { ticket, name, pull } => {
                 assert_eq!(ticket, "endpointX");
                 assert_eq!(name, "alice");
+                // Absent means "do not fetch" (M18d): the old shape of the
+                // command must not start fetching mods by itself.
+                assert!(!pull, "a join without the flag must not fetch");
             }
+            other => panic!("unexpected {other:?}"),
+        }
+        match serde_json::from_str::<Command>(
+            r#"{"type":"join","ticket":"endpointX","name":"alice","pull":true}"#,
+        )
+        .expect("join with pull")
+        {
+            Command::Join { pull, .. } => assert!(pull),
             other => panic!("unexpected {other:?}"),
         }
         assert!(matches!(
@@ -869,24 +1063,249 @@ mod tests {
         panic!("no event containing {wanted:?}");
     }
 
+    /// A bridge that never fetches and has no mods directory: the default.
+    fn pull_off() -> Pull {
+        Pull {
+            mods_dir: None,
+            always: false,
+        }
+    }
+
+    /// The ticket a hosting bridge just announced, which is what a joiner needs.
+    fn ticket_of(host: &mut Net) -> String {
+        let line = wait_for(host, "\"type\":\"ticket\"");
+        let ticket =
+            serde_json::from_str::<serde_json::Value>(&line).expect("ticket json")["ticket"]
+                .as_str()
+                .expect("a ticket string")
+                .to_string();
+        assert!(ticket.starts_with("endpoint"), "{ticket}");
+        ticket
+    }
+
+    /// A scratch directory for the cases that write mods to disk. A counter keeps
+    /// parallel cases apart, and the directory is emptied first so a re-run does
+    /// not read the last run's mods.
+    fn scratch(name: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("goats-net-{name}-{n}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch directory");
+        dir
+    }
+
+    /// A world mod in `dir`, ready for the loader: the smallest thing that has an
+    /// id, a version and an entry. A host can only serve what it runs, so this is
+    /// what the fetch cases need on the far side.
+    fn write_world_mod(dir: &Path, id: &str) -> Vec<session::ModRef> {
+        let mod_dir = dir.join("a-mod");
+        std::fs::create_dir_all(&mod_dir).expect("mod directory");
+        std::fs::write(
+            mod_dir.join("mod.json"),
+            format!(
+                r#"{{"id":"{id}","name":"Pulled","version":"1.0.0","api":1,"side":"world","entry":"mod.js"}}"#
+            ),
+        )
+        .expect("manifest");
+        std::fs::write(mod_dir.join("mod.js"), "goats.log(\"hello\");\n").expect("entry");
+        let loader = Loader::discover(dir);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        let world = crate::world_mod_refs(&loader);
+        assert_eq!(world.len(), 1, "{world:?}");
+        world
+    }
+
+    /// The console line for a refusal this client is not going to act on (M18d).
+    /// The offer is the point: a player who is missing a mod should not have to
+    /// read the source to find out that one flag would fetch it.
+    #[test]
+    fn a_refusal_offers_the_fetch_when_there_is_somewhere_to_put_it() {
+        let mismatch = session::Error::Refused(
+            session::ModMismatch {
+                missing: vec!["com.example.birds".to_string()],
+                ..session::ModMismatch::default()
+            }
+            .describe(),
+        );
+        let offered = refusal_text(&mismatch, true);
+        assert!(offered.contains("world mods do not match"), "{offered}");
+        assert!(offered.contains("`connect <ticket> --pull`"), "{offered}");
+
+        // With nowhere to install the promise would be a lie, so it is not made.
+        let bare = refusal_text(&mismatch, false);
+        assert!(!bare.contains("--pull"), "{bare}");
+
+        // And no other refusal is answered with a fetch: a version skew is not a
+        // mod problem, whatever else it is.
+        let skew = session::Error::Refused("protocol version 9 is not supported".to_string());
+        let text = refusal_text(&skew, true);
+        assert!(text.contains("protocol version 9"), "{text}");
+        assert!(!text.contains("--pull"), "{text}");
+    }
+
+    /// Every way a fetch can fail to fix a refusal says so in its own words
+    /// (M18d). These are the sentences a player acts on, so they are pinned here
+    /// rather than discovered in the console.
+    #[test]
+    fn a_fetch_that_cannot_fix_it_says_why() {
+        let refusal = session::Error::Refused(
+            session::ModMismatch {
+                missing: vec!["com.example.birds".to_string()],
+                ..session::ModMismatch::default()
+            }
+            .describe(),
+        );
+
+        let matched = cannot_join(&refusal, Ok(pull::Recovery::Matched));
+        assert!(
+            matched.contains("already runs the host's mods"),
+            "{matched}"
+        );
+
+        let nothing = cannot_join(
+            &refusal,
+            Ok(pull::Recovery::Pulled(pull::Report::default())),
+        );
+        assert!(nothing.contains("nothing was installed"), "{nothing}");
+
+        let unfixable = cannot_join(
+            &refusal,
+            Ok(pull::Recovery::Unfixable(session::ModMismatch {
+                extra: vec!["com.example.mine".to_string()],
+                ..session::ModMismatch::default()
+            })),
+        );
+        // The fresher mismatch leads, because it is the one that is true now: the
+        // client may have changed since it was refused.
+        assert!(unfixable.contains("extra com.example.mine"), "{unfixable}");
+        assert!(unfixable.contains("only you can"), "{unfixable}");
+
+        let unreachable = cannot_join(
+            &refusal,
+            Ok(pull::Recovery::Unreachable("connect: timeout".to_string())),
+        );
+        assert!(
+            unreachable.contains("does not serve its mods"),
+            "{unreachable}"
+        );
+        assert!(unreachable.contains("connect: timeout"), "{unreachable}");
+
+        let failed = cannot_join(&refusal, Err("the host hung up".to_string()));
+        assert!(failed.contains("the fetch failed"), "{failed}");
+        assert!(failed.contains("the host hung up"), "{failed}");
+    }
+
+    /// The `pulled` event is the one the frame loop has to recognise before the
+    /// scene does, because the mods it names have to be loaded first (M18d).
+    #[test]
+    fn the_pulled_event_names_its_mods_and_nothing_else_does() {
+        let line = serde_json::to_string(&Event::Pulled {
+            text: "pulled com.example.birds".to_string(),
+            ids: vec!["com.example.birds".to_string()],
+        })
+        .expect("encode");
+        assert_eq!(
+            pulled_ids(&line),
+            Some(vec!["com.example.birds".to_string()])
+        );
+
+        // Every other event, and the lines that are not events at all.
+        assert_eq!(pulled_ids(r#"{"type":"welcome","name":"alice"}"#), None);
+        assert_eq!(pulled_ids(r#"{"type":"pulled"}"#), Some(Vec::new()));
+        assert_eq!(pulled_ids("not json"), None);
+        assert_eq!(pulled_ids(""), None);
+    }
+
+    /// The whole mod-sync path over loopback, with no window (M18d): a host whose
+    /// world mod this client lacks refuses the join, the client fetches what it is
+    /// missing, installs it and joins -- and the two ways it can decline, a client
+    /// that was not asked and one that has nowhere to install.
+    #[test]
+    fn a_refused_join_fetches_what_the_host_runs_and_the_client_lacks() {
+        let host_dir = scratch("host");
+        let world = write_world_mod(&host_dir, "com.example.pulled");
+        let mut host = Net::start(
+            world.clone(),
+            Pull {
+                mods_dir: Some(host_dir),
+                always: false,
+            },
+        );
+        host.send(r#"{"type":"host","name":"bob"}"#);
+        let ticket = ticket_of(&mut host);
+        let join = format!(r#"{{"type":"join","ticket":"{ticket}","name":"alice"}}"#);
+
+        // No mods directory: there is nowhere to install, so the offer is not made.
+        let mut bare = Net::start(Vec::new(), pull_off());
+        bare.send(&join);
+        let refusal = wait_for(&mut bare, "\"type\":\"error\"");
+        assert!(refusal.contains("world mods do not match"), "{refusal}");
+        assert!(!refusal.contains("--pull"), "{refusal}");
+
+        // A mods directory but no consent: refused, and told how to ask.
+        let client_dir = scratch("client");
+        let mut asked = Net::start(
+            Vec::new(),
+            Pull {
+                mods_dir: Some(client_dir.clone()),
+                always: false,
+            },
+        );
+        asked.send(&join);
+        let refusal = wait_for(&mut asked, "\"type\":\"error\"");
+        assert!(refusal.contains("world mods do not match"), "{refusal}");
+        assert!(refusal.contains("`connect <ticket> --pull`"), "{refusal}");
+        assert!(
+            !client_dir.join(".pulled-com.example.pulled.zip").exists(),
+            "a refusal must install nothing"
+        );
+
+        // The command's own consent: the same client, now asking to fetch.
+        let mut pulling = Net::start(
+            Vec::new(),
+            Pull {
+                mods_dir: Some(client_dir.clone()),
+                always: false,
+            },
+        );
+        pulling.send(&format!(
+            r#"{{"type":"join","ticket":"{ticket}","name":"alice","pull":true}}"#
+        ));
+
+        // The frame loop sees what to load before the world it belongs to.
+        let pulled = wait_for(&mut pulling, "\"type\":\"pulled\"");
+        assert!(pulled.contains("com.example.pulled"), "{pulled}");
+        assert_eq!(
+            pulled_ids(&pulled),
+            Some(vec!["com.example.pulled".to_string()])
+        );
+        let welcome = wait_for(&mut pulling, "\"type\":\"welcome\"");
+        assert!(welcome.contains("\"name\":\"alice\""), "{welcome}");
+
+        // It landed beside the player's own mods, under a name that says what it
+        // is, and it hashes back to the identity the handshake compares -- which
+        // is the whole reason the retry can succeed.
+        assert!(client_dir.join(".pulled-com.example.pulled.zip").is_file());
+        let installed = Loader::discover(&client_dir);
+        assert!(installed.errors().is_empty(), "{:?}", installed.errors());
+        let found = installed.get("com.example.pulled").expect("installed");
+        assert_eq!(found.hash, world[0].hash);
+        assert_eq!(found.version, world[0].version);
+    }
+
     /// The whole bridge, end to end and with no window: two `Net` handles, a
     /// real host, a real ticket, and a real joiner. This is the automation of
     /// the two-window check -- everything except the game window itself.
     #[test]
     fn two_bridges_meet_over_loopback() {
-        let mut host = Net::start(Vec::new());
+        let mut host = Net::start(Vec::new(), pull_off());
         host.send(r#"{"type":"host","name":"bob"}"#);
 
         // The ticket is what a joiner needs, and it has to be a real one.
-        let ticket_line = wait_for(&mut host, "\"type\":\"ticket\"");
-        let ticket = serde_json::from_str::<serde_json::Value>(&ticket_line).expect("ticket json")
-            ["ticket"]
-            .as_str()
-            .expect("a ticket string")
-            .to_string();
-        assert!(ticket.starts_with("endpoint"), "{ticket}");
+        let ticket = ticket_of(&mut host);
 
-        let mut client = Net::start(Vec::new());
+        let mut client = Net::start(Vec::new(), pull_off());
         client.send(&format!(
             r#"{{"type":"join","ticket":"{ticket}","name":"alice"}}"#
         ));

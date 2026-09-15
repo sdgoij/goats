@@ -44,9 +44,9 @@ jobs:
       # the one that installs the build dependencies for it.
       - name: Test the workspace
         run: cargo test --workspace --exclude goats
-      # The scene's own suite: the 4050-frame scripted timeline, the 38 mod cases
-      # (the synthetic tables plus the checked-in example fixture) and the birds
-      # flock.
+      # The scene's own suite: the 4050-frame scripted timeline, the 47 mod cases
+      # (the synthetic tables, the checked-in example fixture and the mod added
+      # after the freeze) and the birds flock.
       - name: Test the scene on the engine
         run: cargo test --release -p harness -- --ignored --nocapture
 

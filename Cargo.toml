@@ -3,7 +3,7 @@
 # the repository root; the client reaches them with a relative `include_bytes!`.
 [workspace]
 resolver = "3"
-members = ["crates/goats", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/scene", "crates/server", "crates/session"]
+members = ["crates/goats", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/server", "crates/session"]
 # `cargo run` and a bare `cargo build` mean the client, so the README's
 # `cargo run --release` keeps working. Use `--workspace` to build or test all.
 default-members = ["crates/goats"]
@@ -18,6 +18,7 @@ mods = { path = "crates/mods" }
 scene = { path = "crates/scene" }
 proto = { path = "crates/proto" }
 plugin = { path = "crates/plugin" }
+pull = { path = "crates/pull" }
 
 # The engine. Flip between the published revision and a local checkout here.
 slag = { git = "https://github.com/sdgoij/slag" }

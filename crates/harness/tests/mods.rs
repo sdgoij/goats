@@ -5,9 +5,13 @@
 //! they need the scene loaded and ready, not the long scripted timeline -- so
 //! they are their own test and stay cheap.
 //!
-//! The fixture block runs last on purpose: `goats.freeze()` is one-way in the
-//! scene, and the table block is the one that asserts it was open before it
-//! froze, so an entry earlier in the file would turn that case into a lie.
+//! The fixture block runs last of the ported blocks on purpose: `goats.freeze()`
+//! is one-way in the scene, and the table block is the one that asserts it was
+//! open before it froze, so an entry earlier in the file would turn that case
+//! into a lie.
+//!
+//! The post-freeze-add block (M18d) runs after even that, because a mod arriving
+//! after the freeze is exactly its subject.
 //!
 //! The `goats` handle is a top-level `const` rather than a property of any object,
 //! which is why the Node harness probed the lifecycle through `vm.runInContext`.
@@ -207,6 +211,33 @@ fn the_mod_surface_works() {
         "a reload leaves the command registered once",
         fixture.reload_command,
         &fixture,
+    );
+
+    let added = staged("the post-freeze-add block", added_block(&mut harness));
+    checks.check(
+        "a mod can be added after the freeze",
+        added.added && added.listed && added.key,
+        &added,
+    );
+    checks.check(
+        "a late mod's assets and tuning land as the boot table's did",
+        added.slot && added.tuning,
+        &added,
+    );
+    checks.check(
+        "a late mod's entry registers through the window it is given",
+        added.command,
+        &added,
+    );
+    checks.check(
+        "the freeze still holds for everything but the mod being added",
+        added.frozen && added.closed,
+        &added,
+    );
+    checks.check(
+        "a duplicate id is refused rather than doubled",
+        added.duplicate && added.unreadable,
+        &added,
     );
 
     checks.finish();
@@ -822,4 +853,94 @@ fn fixture_block(harness: &mut Harness) -> Result<ModFixture, String> {
     fixture.reload_command = harness.command("hello goat")? == "ok hello goat";
     harness.call("sceneModEnd", &[json!(id)])?;
     Ok(fixture)
+}
+
+// ---- a mod that arrives after the freeze ------------------------------------
+
+/// The row a pulled world mod arrives as: a mod the host fetched for us, with an
+/// asset slot and a tuning leaf, so the block can check that both land the way the
+/// boot table's did.
+const ADDED_ROW: &str = r#"{
+    "id":"com.pulled","name":"Pulled","version":"1.0.0","api":1,"side":"world",
+    "description":"arrived by fetch","enabled":true,"hash":"aaaaaaaaaaaaaaaa",
+    "assets":{"sfx.pulled":"mod:com.pulled:sfx.pulled"},
+    "tuning":{"camera":{"dist":9.25}}
+}"#;
+
+/// Its entry, evaluated by the host the same way any entry is. It registers a
+/// command, which is the test: registration closes at `goats.freeze()`, and the
+/// only reason this can work is that the host opens the window for the mod it is
+/// adding.
+const ADDED_ENTRY: &str = r#"(function (goats) {
+    goats.command("pulled", function (parts) { return "ok pulled " + (parts[1] || "once"); });
+})(goats.begin("com.pulled"))"#;
+
+/// What the post-freeze-add cases found.
+#[derive(Debug, Default)]
+struct ModAdded {
+    added: bool,
+    listed: bool,
+    key: bool,
+    slot: bool,
+    tuning: bool,
+    command: bool,
+    duplicate: bool,
+    unreadable: bool,
+    closed: bool,
+    frozen: bool,
+}
+
+/// A mod added after `goats.freeze()` (M18d): the scene sets its mod table up once
+/// at boot and closes registration, so a world mod pulled from a host mid-session
+/// goes in through `sceneModAdd` instead. Everything else about it is the boot
+/// path -- and everything the freeze closed stays closed.
+///
+/// Runs last, and after the fixture block, because the freeze is what it needs.
+fn added_block(harness: &mut Harness) -> Result<ModAdded, String> {
+    let mut added = ModAdded {
+        added: harness.call("sceneModAdd", &[json!(ADDED_ROW)])? == json!("ok"),
+        ..ModAdded::default()
+    };
+
+    // It is a mod like any other now: listed, described, and in the world set.
+    let list = try_command_json(harness, "mod list")?;
+    added.listed = list.as_array().is_some_and(|rows| {
+        rows.iter().any(|row| {
+            row["id"] == json!("com.pulled")
+                && row["side"] == json!("world")
+                && row["description"] == json!("arrived by fetch")
+        })
+    });
+    let key = try_command_json(harness, "mod key")?;
+    added.key = key
+        .as_array()
+        .is_some_and(|rows| rows.contains(&json!("com.pulled@1.0.0#aaaaaaaaaaaaaaaa")));
+
+    // Its declared asset re-points its slot, and its tuning tree merges -- the two
+    // halves of `sceneMods` that a late mod has to repeat.
+    added.slot =
+        harness.eval("goats.assets.get(\"sfx.pulled\")")? == json!("mod:com.pulled:sfx.pulled");
+    added.tuning = f64_of(harness.eval("goats.tuning.get(\"camera.dist\")")?) == 9.25;
+
+    // Its entry runs, and its command registers through the window the host holds
+    // open for it.
+    harness.eval(ADDED_ENTRY)?;
+    harness.call(
+        "sceneModResult",
+        &[json!("com.pulled"), json!(true), json!("")],
+    )?;
+    added.command = harness.command("pulled now")? == "ok pulled now";
+
+    // The window is for that mod and no further: registration is still closed, and
+    // a second copy of the same id is refused rather than doubled.
+    added.frozen = bool_of(harness.eval("goats.frozen()")?);
+    added.closed = throws(
+        harness,
+        "globalThis.__stashed.on(\"update\", function () {})",
+    );
+    let again = harness.call("sceneModAdd", &[json!(ADDED_ROW)])?;
+    added.duplicate = again == json!("error already loaded: com.pulled");
+    added.unreadable = harness.call("sceneModAdd", &[json!("not json")])?
+        == json!("error unreadable mod metadata");
+    Ok(added)
 }

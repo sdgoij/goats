@@ -94,7 +94,8 @@ uses.
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
 | **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ✅ **Done** — binary and quantized, shed in a defined order, the mods on their own datagram, and a guard so the budget cannot erode again (M16c deferred on the numbers) |
 | **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | ✅ **Done** — M17a (the ABI), M17b (the Rust host), M17c (the digest + determinism), M17c2 (the state surface) and M17d (the performance debt) all landed |
-| **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | **Proposal** — the fetch half of "the host's mods, in one command"; the status page's `mods.zip` is the manual half and has shipped |
+| **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | ✅ **Done** — the fetch ALPN, the client's fetch/verify/install, the catalogue and the client wiring (consent, `--pull`, the one retry, and loading a mod that arrives after the freeze) |
+| **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
 
 ---
 
@@ -1815,11 +1816,13 @@ exactly as a `while (true)` does; that is a known gap, not a solved problem.
 
 ---
 
-## M18 — Mod sync: pulling a host's mods before joining (proposal)
+## M18 — Mod sync: pulling a host's mods before joining ✅ Done
 
-**Status:** an early idea, written up so it can be argued about. No code. It is
-the fetch half of "the host's mods, in one command"; the other half is the status
-page's `mods.zip`, which has shipped.
+**Status:** landed, in four slices. M18a (the fetch transport and the host serving
+archives), M18b (the client's fetch, verify and install), M18c (the catalogue and
+the decision) and M18d (the client wiring: consent, the console, the retry, and
+loading a mod that arrives after the freeze) are all in. What is left is polish,
+and it is M18e.
 
 **Why.** A join against a modded host is a dead end when the client is missing a
 world mod. `session` compares the client's set with the host's using
@@ -1870,23 +1873,33 @@ client's to inherit.
    design choice (the options below).
 4. **Where the files land.** A mod never sees a path; the *host* writes on the
    user's behalf. It must write somewhere attributable and removable, and must not
-   clobber a user's mod -- a namespaced `mods/.pulled/<host>/<id>@<version>/` with
-   a provenance record (`source`, `hash`, `fetched-at`) covers all three.
+   clobber a user's mod -- a recognisable name beside their own
+   (`mods/.pulled-<id>.zip`) with a provenance record (`mods/.pulled.json`:
+   source, version, hash, when) covers all three.
 5. **Precedence.** If the client already has the id, the fetch does not touch it
    (refuse on conflict), and `differing` is left for the user. A fixed precedence
    -- own over pulled, or the reverse -- is a later option, not a v1 one.
-6. **Bounds.** Per-mod and total caps, chunking on the wire and a timeout; a
-   partial fetch is discarded, never half-installed. The loader already caps an
-   asset at 64 MiB.
+6. **Bounds.** ~~Per-mod and total caps, chunking on the wire and a timeout; a
+   partial fetch is discarded, never half-installed.~~ **As shipped:** a partial
+   fetch is genuinely never half-installed (the staging name the loader ignores,
+   then a rename), `MAX_MOD_BLOB_BYTES` bounds one archive on both ends, the
+   loader's own caps bound a mod's entry and each of its assets, and the loader's
+   `MAX_MODS` bounds how many a directory can hold. What is still open is a
+   *total* cap and a chunk size: an archive arrives whole, so a host's 64 MiB mod
+   is 64 MiB in the client's memory before it is written (M18e).
 7. **Client mods stay out of the protocol.** The page's `mods.zip` is the whole
    directory; the fetch should request specific **world** mods by `ModRef`, so a
    client never inherits the host's cosmetics.
 8. **Non-interactive clients.** A script or the harness cannot answer a prompt, so
-   `--fetch` means "fetch, don't ask" and the default is "never fetch", with the
-   page's link as the fallback.
+   `--pull` means "fetch, don't ask" and the default is "never fetch", with the
+   page's link as the fallback. **As shipped** (M18d), with one addition: the
+   refusal names the flag, so the prompt it replaces is not missed, and a client
+   with no mods directory never offers a fetch it could not complete.
 9. **Reload, not restart.** After installing, re-run discovery, re-derive the
    world-mod digest and then retry the join -- an ordering requirement, not new
-   machinery.
+   machinery. **Mostly:** the ordering was the easy half. The client's *scene*
+   had its mod table frozen at startup, so the digest matching was not enough on
+   its own; that is open question 4, and M18d settled it.
 10. **Version skew.** A fetch-capable client must degrade to today's refusal plus
     the page's link against a host with no fetch surface, so the fetch protocol
     needs its own version, independent of `PROTOCOL_VERSION` (8 today).
@@ -1909,47 +1922,170 @@ client's to inherit.
   client cannot find it without out-of-band configuration, and it grows the web
   server into a distribution surface.
 
-**Recommendation:** A, with C kept as the manual path the page already provides
-and the refusal `Error` carrying an optional hint (`over_endpoint`, or a `url`). B
-is rejected for v1 as the most invasive and the least necessary.
+**Recommendation, as shipped:** A, with C kept as the manual path the page already
+provides. B is rejected as the most invasive and the least necessary. The refusal
+`Error` in the end carried **no** hint at all: the client asks the fetch ALPN what
+the host runs instead (M18c), which is what made a `PROTOCOL_VERSION` bump
+unnecessary -- and the only thing read out of the refusal's text is its opening
+words, to decide whether fetching is even worth trying (M18d).
 
-**A proposed v1.**
+**The v1, as shipped.**
 
-- *Host.* Knows its world-mod set (`world_mod_refs`, already built at boot). The
-  refusal `Error` gains a machine-readable hint: the full `[ModRef]` and where to
-  get them. With the fetch surface, the endpoint accepts `goats-mods/1`: the
-  client sends `FetchRequest { protocol: 1, want: [ModRef] }`; the host checks
-  each against its own set and returns, per mod, the `ModRef` it is sending and
-  the mod as a `.zip` blob (chunked, capped) -- the distributable form the loader
-  already reads (`mods::archive_dir` for a directory mod, or the mod's own
-  `.zip`). An id the host lacks is an error for that entry only, not the fetch.
+- *Host.* Knows its world-mod set (`world_mod_refs`, already built at boot). With
+the fetch surface, the endpoint accepts `goats-mods/1` and answers two questions:
+`Catalogue` -- the world mods it can serve, so a client can work out what it is
+missing itself -- and `Wanted([ModRef])`, one `.zip` blob per mod in the
+distributable form the loader already reads (`mods::archive_source`). An id the
+host lacks is an error for that entry only, not the fetch. The set is *asked for*
+rather than pushed in the refusal, which is what keeps mod sync from being a
+`PROTOCOL_VERSION` bump. A session hosted from the game window serves this too
+(M18d), not just `goatsd`.
 - *Client.* Parses `missing`; if it is empty (only `extra` or `differing`), it
-  reports and stops. With a hint and consent (`--fetch`, or "fetch N mods from
-  \<host\>? [y/N]"), it streams each mod into `mods/.pulled/<host>/` with its
-  provenance. For each, it loads it as a `ModSource::Zip`, hashes it with the
-  loader and compares to the announced `ModRef.hash`; a mismatch discards that
-  mod. It then re-discovers and retries the join exactly once.
-- *User.* The pulled set is a visible directory; `mod list` can mark pulled mods;
-  deleting the directory is the uninstall. Nothing is fetched without a yes or an
-  explicit `--fetch`.
+  reports and stops. With consent (`--pull`, or `connect <ticket> --pull`), it
+  fetches each mod, stages the archive under a `.part` name the loader ignores,
+  verifies it **with the loader** against the announced id, version and hash, and
+  only then renames it to `mods/.pulled-<id>.zip`. A mismatch, or an archive that
+  will not load, leaves nothing behind. It then re-discovers, tells the frame loop
+  to load what arrived, and retries the join exactly once.
+- *User.* The pulled set is recognisable beside the player's own mods, with a
+  record of where each came from in `mods/.pulled.json`; deleting the `.pulled-*`
+  files is the uninstall. Nothing is fetched without an explicit `--pull` or
+  `connect <ticket> --pull`.
+
+**Landed (M18a, M18b, M18c, M18d).** The transport, the host serving archives, the
+client's fetch-verify-install, the decision to fetch, and the client wiring are all
+in.
+
+- `proto` has the fetch protocol, versioned on its own: `MOD_FETCH_VERSION` is
+  the `goats-mods/1` ALPN suffix, so a peer built against a different fetch
+  protocol fails the QUIC handshake before it reaches a message. A request is
+  `ModFetchRequest::Wanted([ModRef])`; an answer is `ModFetchReply::Blob {
+  reference, length }` -- a framed head followed by the raw bytes on the same
+  stream, so a file that is mostly assets does not pay base64 -- or `Unavailable
+  { id, reason }`. One stream per mod, so a big archive never queues behind a
+  small one; `MAX_MOD_BLOB_BYTES` bounds both ends.
+- `session` binds both ALPNs on one endpoint and dispatches on the negotiated
+  one. `Host::start_with_mods_and_archives` holds what it can serve, and serves an
+  id only at the `version` and `hash` it was asked for -- a forged hash is refused
+  for that entry, not the fetch. `session::fetch_mods(ticket, want)` is the client
+  half of the exchange and returns `Fetched`, deliberately stopping short of any
+  install.
+- `mods` gained `archive_source` (either storage form -- a directory or a `.zip`
+  -- into the one distributable form) and `load_zip`, which verifies one archive
+  back. `goatsd` packages its **world** mods at boot (`mod_archives`); a client
+  mod is local and never travels.
+- `crates/pull/` (new) is the client's half, composing those two so neither has
+  to know the other. `pull(ticket, loader, mods_dir, want)` refuses an id the
+  player already has, then stages each archive under a `.part` name the loader
+  ignores, verifies it **with the loader** against the announced id, version and
+  hash, and only then renames it into `mods/.pulled-<id>.zip`. A mismatch, or an
+  archive that will not load, leaves nothing behind. The source of each install is
+  recorded in `mods/.pulled.json`.
+- Tests: `session::a_host_serves_the_mods_a_joiner_is_missing` (served, absent
+  and forged-hash cases), `mods::a_mod_archives_from_either_source`,
+  `goatsd::the_fetch_archives_hold_the_world_mods_as_zips`, and `pull`'s three --
+  install-and-verify, refuse-what-the-player-has, and discard-what-does-not-verify.
+- **M18c.** `proto` gained `ModFetchRequest::Catalogue` and `ModFetchReply::Catalogue(Vec<ModRef>)`:
+the client asks the host what it runs over the *fetch* ALPN, rather than the
+refusal having to carry it -- which is what keeps mod sync from being a
+`PROTOCOL_VERSION` bump (and open question 1's "without a wasted round trip",
+since a host with no fetch surface fails the handshake immediately).
+`session::fetch_catalogue(ticket)` is the ask, and `session` now re-exports
+`compare_world_mods`/`ModMismatch` so a caller can diff without depending on
+`proto`. `pull::recover(ticket, loader, mods_dir)` is the decision, using the very
+comparison the handshake uses: `Matched`, `Pulled(report)`, `Unfixable(mismatch)`
+when the client has a mod the host lacks or a shared id at another version, or
+`Unreachable` when the host will not answer. Tests:
+`recover_pulls_what_the_host_runs_and_the_client_lacks`,
+`recover_refuses_when_the_client_has_a_world_mod_the_host_lacks`, and
+`recover_says_so_when_the_host_cannot_be_asked`.
+- **M18d.** The client wiring, and the slice that was not plumbing.
+  - `net.rs` owns the policy: a refused join whose text opens with
+    `proto::MISMATCH_PREFIX` (a *hint*, deliberately not a `PROTOCOL_VERSION`
+    field; `session::Error::is_mod_mismatch` is the check) is the one it can act
+    on. `join()` walks it: discover what is on disk, `pull::recover`, install,
+    re-derive the world-mod set, join again **once**. Every way that can fail to
+    fix the refusal says so in its own words (`cannot_join`), and a refusal that
+    was *not* asked about says which flag would fetch (`refusal_text`).
+  - Consent is `--pull` (standing) or `connect <ticket> --pull` (this join), and
+    `goats --pull` creates `mods/` when there is none, because a flag that
+    promises to install needs somewhere to install into.
+  - A host serves what it runs: the `host` command packages its world mods
+    (`mod_archives`, the same walk `goatsd` does) and starts with
+    `Host::start_with_mods_and_archives`. Without this, a player-hosted session
+    advertised a world-mod set it could not hand over, and a fetching joiner was
+    told the sets already matched -- a wrong answer rather than a refusal.
+  - The `pulled` event carries the ids, and `main.rs` loads them before the scene
+    sees the event: `add_pulled_mod` runs `sceneModAdd`, registers the assets with
+    the engine, evaluates the entry, then instantiates a compiled module -- the
+    boot path, in the boot order. `add_plugin` is now shared by the boot loop, a
+    reload and this path.
+  - The scene end is `sceneModAdd` (`mods.js`) and the `pulled` case in `net.js`:
+    `connect --pull` is parsed in `netJoin`, so the name is simply whatever is
+    left.
+  - Tests: `goats` has three new pure cases (the refusal's offer, every
+    `cannot_join` wording, the `pulled` event's parse) and one end-to-end case
+    over loopback -- a real host with a real world mod on disk, three clients
+    (nowhere to install, not asked, and asked), a real fetch, a real install into
+    `mods/.pulled-<id>.zip`, and a join that succeeds on the retry. The harness
+    gained five cases in `mods.rs` for the post-freeze add: the row lands, its
+    assets and tuning apply, its entry registers through the window it is given,
+    the freeze still holds for everything else, and a duplicate id is refused.
+    The scene suite gained two console cases (`connect --pull` consents to a
+    fetch, and a flagged connect still asks for a username), and CI's comment on
+    the mod-case count was brought back in line with the suite.
+  - `proto::MISMATCH_PREFIX` is the refusal's opening words, so the message and
+    whoever recognises it cannot drift apart; `session` has the matching test.
 
 **Open questions.**
 
-1. **Same connection or separate ALPN.** A is recommended, but a two-ALPN iroh
-   endpoint has to be proved before it is committed to.
-2. **`differing`.** Refuse, or install the host's copy into the pulled directory
-   and let it shadow the user's own (which needs precedence rules)? The crux, and
-   the one to decide first.
-3. **Integrity vs authenticity.** Is a transport checksum enough, or does a signed
+1. ~~**Same connection or separate ALPN.**~~ **Settled by M18a:** a separate ALPN
+   is what shipped -- one endpoint, two ALPNs, dispatched on the negotiated one.
+2. ~~**How a fetch-capable client detects a fetch-less host.**~~ **Settled by
+   M18c:** it asks, and the ask *is* the detection. A host with no fetch surface
+   fails the QUIC handshake, so there is no probe, no wasted round trip and no
+   flag to negotiate: `recover` just reports `Unreachable`, and the refusal plus
+   the status page's `mods.zip` are the fallback.
+3. **`differing`.** Refuse, or install the host's copy into the pulled directory
+   and let it shadow the user's own (which needs precedence rules)? **Partly
+   settled by M18b/M18c:** a pull refuses what the player already has, and
+   `recover` reports `Unfixable` rather than trying. What is still open is whether
+   the client should *offer* to replace, and where the old copy would go.
+4. ~~**Loading a mod that was just installed.**~~ **Settled by M18d:** the scene
+   learned to add a mod after the freeze, which is `sceneModAdd(row)` in
+   `mods.js`. The invariant survives because the door is *one row wide*: the host
+   is the only caller, the row is the loader's (so the manifest is already
+   validated), and the entry runs inside the same per-mod registration window a
+   reload gets -- `modOpenFor`, which is why `modRegistrationAllowed` was already
+   the shape it needed to be. Everything else stays closed: a stray `goats.on`
+   after the freeze still throws, and a second row with the same id is refused.
+   The alternative (install and ask for a restart) was rejected because a
+   half-join -- the world runs a mod the client's scene does not -- is worse than
+   the refusal it replaced.
+   What M18d does *not* fix: an asset the scene already loaded, and a late mod's
+   `loadAfter` (it is appended, since everything before it is already loaded).
+   Both are documented limits, not omissions (`APIv1.md` section 2.7).
+   The client half: `goats --pull` and `connect <ticket> --pull` are the consent,
+   `net.rs` runs the pull and retries the join exactly once, and the `pulled`
+   event tells the frame loop to load what arrived -- *before* the retried join's
+   welcome, so the world and the mods it is built on reach the scene in that
+   order. A host serves what it runs too, so a session hosted from a game window
+   syncs a joiner the way `goatsd` does.
+5. **Integrity vs authenticity.** Is a transport checksum enough, or does a signed
    `ModRef` belong here? 64-bit FNV-1a is right for "same mod?" and weak against
    a hostile host.
-4. **Consent granularity.** Per fetch, per host (remembered), or global? Where is
-   the record kept, and is it revocable?
-5. **Bounds.** Per-mod and total size caps, chunk size, concurrency, and what a
+6. ~~**Consent granularity.**~~ **Settled by M18d:** per join, plus a standing
+   `--pull` for the process. A per-host record was not built: it needs somewhere
+   to persist, and the game has no persistence yet (the cross-cutting item below).
+   What shipped is the honest minimum -- nothing is fetched unless the player said
+   so for *this* join (`connect <ticket> --pull`) or for the whole run (`--pull`),
+   and the refusal names the flag. An interactive `y/N` was considered and
+   dropped: it would put a prompt on the runtime thread while the scene waits for
+   an answer on the frame thread, which is a state machine with no other user.
+   `consoleAsk` exists if it is ever wanted.
+7. **Bounds.** Per-mod and total size caps, chunk size, concurrency, and what a
    partial fetch leaves behind (nothing, ideally).
-6. **Version skew.** How exactly a fetch-capable client detects a fetch-less host
-   and falls back to the refusal plus the page's link, without a wasted round trip.
-7. **Does a host ever pull from a client?** Client mods are local, so normally no
+8. **Does a host ever pull from a client?** Client mods are local, so normally no
    -- but a player re-hosting a session might want the world mods a client
    brought. Out of scope, but named so it is a decision rather than an oversight.
 
@@ -1958,10 +2094,12 @@ is rejected for v1 as the most invasive and the least necessary.
 | Piece | Path |
 | --- | --- |
 | The fetch surface on the endpoint (option A) | `crates/session/` (a second ALPN handler) |
-| The refusal hint (`over_endpoint` / `url`) | `crates/proto/`, `crates/session/` |
-| Packaging a mod for transfer | `crates/mods/` (`archive_dir`, plus a per-mod variant) |
-| The client's fetch, verify and install | `crates/goats/src/main.rs`, `crates/goats/src/game/ctl.js` |
+| The host's set, over the fetch ALPN (M18c) | `crates/proto/`, `crates/session/` |
+| Packaging a mod for transfer | `crates/mods/` (`archive_source`, `load_zip`) |
+| The client's fetch, verify and install | `crates/pull/` (new) |
+| The client's consent, console and mod reload | `crates/goats/src/main.rs`, `crates/goats/src/net.rs`, `crates/goats/src/game/ctl.js`, `mods.js`, `net.js` |
 | The page's manual path (already shipped) | `crates/server/src/web.rs`, `crates/mods/` |
+| Loading a mod that arrives late (M18d) | `sceneModAdd` in `crates/goats/src/game/mods.js`, `add_pulled_mod` in `crates/goats/src/main.rs` |
 
 ---
 

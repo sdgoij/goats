@@ -137,13 +137,16 @@ fn scene_function_if_present(context: &Context, name: &str) -> Option<JsValue> {
 }
 
 const USAGE: &str = "\
-goats [--mods DIRECTORY] [--no-mods] [--watch]
+goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull]
 
   --mods DIRECTORY   load mods from DIRECTORY instead of the default search
                      ($GOATS_MODS, then mods/ next to the executable, then
                      mods/ in the current directory)
   --no-mods          ignore every mod
   --watch            reload a mod when its files change on disk (development)
+  --pull             fetch the world mods a host runs and this client lacks when
+                     a join is refused for them, install them, and retry once;
+                     also serve this client's own world mods to a fetching joiner
   -h, --help         this text";
 
 /// How long to wait for an editor's burst of writes to settle before reloading.
@@ -154,6 +157,7 @@ struct Options {
     mods_dir: Option<PathBuf>,
     no_mods: bool,
     watch: bool,
+    pull: bool,
     help: bool,
 }
 
@@ -162,6 +166,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
         mods_dir: None,
         no_mods: false,
         watch: false,
+        pull: false,
         help: false,
     };
     let mut args = args;
@@ -170,6 +175,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "-h" | "--help" => options.help = true,
             "--no-mods" => options.no_mods = true,
             "--watch" => options.watch = true,
+            "--pull" => options.pull = true,
             "--mods" => {
                 options.mods_dir = Some(PathBuf::from(
                     args.next().ok_or("--mods needs a directory")?,
@@ -223,6 +229,13 @@ fn resolve_mods_dir(options: &Options) -> Option<PathBuf> {
     if candidate.is_dir() {
         return Some(candidate);
     }
+    // `--pull` promises to install what it fetches, so it needs somewhere to put
+    // it: a client with no mods directory gets the default one rather than a
+    // feature that cannot work. Nothing is written until a mod is actually
+    // fetched.
+    if options.pull {
+        return Some(candidate);
+    }
     None
 }
 
@@ -267,6 +280,57 @@ fn report_mod(context: &mut Context, id: &str, ok: bool, error: &str) {
             JsValue::string(error),
         ],
     );
+}
+
+/// Instantiate a compiled mod's module in the plugin host (M17b). The Rust host
+/// owns the module's `Store` and memory, so the bytes never cross into JavaScript
+/// as a path or an ArrayBuffer. An existing instance is dropped first: a mod's
+/// module goes with its mod, and that is what a reload does too.
+fn add_plugin(
+    context: &mut Context,
+    plugins: &Rc<RefCell<PluginSet>>,
+    id: &str,
+    side: mods::Side,
+    bytes: &[u8],
+) {
+    let side = match side {
+        mods::Side::Client => PluginSide::Client,
+        mods::Side::World => PluginSide::World,
+    };
+    plugins.borrow_mut().remove(id);
+    if let Err(error) = plugins.borrow_mut().add(id, bytes, side) {
+        eprintln!("[mods] {id} failed: {error}");
+        report_mod(context, id, false, &error);
+    }
+}
+
+/// The archives this client can serve a fetching joiner (M18d): every world mod in
+/// its distributable form, which is the shape the loader reads back. `goatsd` has
+/// the same walk over its own loader; a session hosted from this client is the same
+/// host to a joiner either way, so it serves the same thing.
+fn mod_archives(loader: &Loader) -> Vec<(session::ModRef, Vec<u8>)> {
+    loader
+        .mods()
+        .iter()
+        .filter(|manifest| manifest.side == mods::Side::World)
+        .filter_map(|manifest| match mods::archive_source(&manifest.source) {
+            Ok(bytes) => Some((
+                session::ModRef {
+                    id: manifest.id.clone(),
+                    version: manifest.version.clone(),
+                    hash: manifest.hash,
+                },
+                bytes,
+            )),
+            Err(error) => {
+                eprintln!(
+                    "[mods] could not package {} for a fetch: {error}",
+                    manifest.id
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 /// Load one mod's entry into the running scene. A missing entry is a success (a
@@ -361,23 +425,85 @@ fn reload_and_eval(
             .map(|wasm| (manifest.side, wasm.bytes.clone()))
     });
     if let Some((side, bytes)) = compiled {
-        plugins.borrow_mut().remove(id);
-        let side = match side {
-            mods::Side::Client => PluginSide::Client,
-            mods::Side::World => PluginSide::World,
-        };
-        if let Err(error) = plugins.borrow_mut().add(id, &bytes, side) {
-            eprintln!("[mods] {id} failed: {error}");
-            call_scene(
-                context,
-                "sceneModResult",
-                &[
-                    JsValue::string(id),
-                    JsValue::boolean(false),
-                    JsValue::string(error),
-                ],
-            );
-        }
+        add_plugin(context, plugins, id, side, &bytes);
+    }
+}
+
+/// Is this changed path a mod archive that arrived from a host (M18d)? The
+/// watcher's business is a mod the player is editing, and a pulled archive is
+/// neither editable in place nor theirs: without this, installing one under
+/// `--watch` would reload the mod a moment after it was loaded.
+fn pulled_archive(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(pull::PREFIX))
+}
+
+/// Load the mods a pull just installed (M18d).
+///
+/// The scene builds its mod table once and closes registration
+/// (`sceneModFreeze`), so a mod that arrives later goes in through
+/// `sceneModAdd` -- and the rest is the boot path, in the order that makes it
+/// work: the metadata first (so the entry resolves the asset names it declared
+/// and reads its tuning tree), then the bytes registered with the engine, then
+/// the entry itself, then a compiled mod's module.
+///
+/// The host's `loader` is replaced by a fresh walk, because a pulled mod is a file
+/// discovery has never seen: `Loader` has no way to add one.
+fn load_pulled(
+    context: &mut Context,
+    loader: &mut Loader,
+    plugins: &Rc<RefCell<PluginSet>>,
+    mods_dir: Option<&Path>,
+    ids: &[String],
+) {
+    let Some(dir) = mods_dir else {
+        eprintln!("[mods] a mod was pulled but there is no mods directory to load it from");
+        return;
+    };
+    *loader = Loader::discover(dir);
+    for error in loader.errors() {
+        eprintln!("[mods] {error}");
+    }
+    for id in ids {
+        add_pulled_mod(context, loader, plugins, id);
+    }
+}
+
+/// Add one mod the scene has not seen before, exactly as `ids` names it.
+fn add_pulled_mod(
+    context: &mut Context,
+    loader: &mut Loader,
+    plugins: &Rc<RefCell<PluginSet>>,
+    id: &str,
+) {
+    let Some(manifest) = loader
+        .mods_mut()
+        .iter_mut()
+        .find(|manifest| manifest.id.as_str() == id)
+    else {
+        eprintln!("[mods] {id} was pulled but is not in the mods directory");
+        return;
+    };
+    let table = serde_json::to_string(&manifest.json()).unwrap_or_else(|_| "{}".to_string());
+    // The bytes are handed over before the entry runs: an entry's `rl.loadModel`
+    // resolves the opaque name it declared, and a mod that loaded nothing would
+    // be a silent half-join. The boot path registers every mod's assets before
+    // any entry runs for the same reason.
+    let assets = manifest.take_assets();
+    let compiled = manifest
+        .wasm
+        .as_ref()
+        .map(|wasm| (manifest.side, wasm.bytes.clone()));
+    call_scene(context, "sceneModAdd", &[JsValue::string(table)]);
+    for asset in assets {
+        let name: &'static str = Box::leak(asset.name.into_boxed_str());
+        let data: &'static [u8] = Box::leak(asset.bytes.into_boxed_slice());
+        context.register_raylib_asset(name, data);
+    }
+    eval_entry(context, loader, id);
+    if let Some((side, bytes)) = compiled {
+        add_plugin(context, plugins, id, side, &bytes);
     }
 }
 
@@ -398,7 +524,19 @@ fn main() {
     // and the assets have to be in the engine's registry before the scene loads.
     // The directory is made absolute so the watcher's event paths, which are
     // absolute, can be matched against a mod's source.
-    let mods_dir = resolve_mods_dir(&options).map(|dir| canonical_dir(&dir));
+    let mods_dir = resolve_mods_dir(&options).map(|dir| {
+        // A client that will pull needs somewhere to install, and `--pull` on a
+        // fresh install has just named the default directory. Creating it now
+        // keeps the scan below from reporting a directory that is only missing
+        // because nothing has been fetched yet.
+        if options.pull
+            && !dir.is_dir()
+            && let Err(error) = std::fs::create_dir_all(&dir)
+        {
+            eprintln!("[mods] {}: {error}", dir.display());
+        }
+        canonical_dir(&dir)
+    });
     let mut loader = match &mods_dir {
         Some(dir) => {
             eprintln!("[mods] scanning {}", dir.display());
@@ -435,6 +573,11 @@ fn main() {
     };
 
     let world_mods = world_mod_refs(&loader);
+    if options.pull && options.no_mods {
+        // Not a contradiction worth refusing to start over: `--no-mods` is the
+        // stronger statement, and a pull with nowhere to install is simply off.
+        eprintln!("[mods] --pull is off: --no-mods leaves no mods directory to install into");
+    }
 
     let mut context = Context::new().unwrap();
     let callbacks = HostCallbacks {
@@ -474,23 +617,13 @@ fn main() {
     // path or an ArrayBuffer: the host owns the module's `Store` and memory.
     let plugins = Rc::new(RefCell::new(PluginSet::new()));
     for manifest in loader.mods() {
-        let Some(wasm) = manifest.wasm.as_ref() else {
-            continue;
-        };
-        let side = match manifest.side {
-            mods::Side::Client => PluginSide::Client,
-            mods::Side::World => PluginSide::World,
-        };
-        if let Err(error) = plugins.borrow_mut().add(&manifest.id, &wasm.bytes, side) {
-            eprintln!("[mods] {} failed: {error}", manifest.id);
-            call_scene(
+        if let Some(wasm) = manifest.wasm.as_ref() {
+            add_plugin(
                 &mut context,
-                "sceneModResult",
-                &[
-                    JsValue::string(manifest.id.clone()),
-                    JsValue::boolean(false),
-                    JsValue::string(error),
-                ],
+                &plugins,
+                &manifest.id,
+                manifest.side,
+                &wasm.bytes,
             );
         }
     }
@@ -590,7 +723,15 @@ fn main() {
     let net_event = scene_function_if_present(&context, "sceneNetEvent");
     let net_drain = scene_function_if_present(&context, "sceneNetDrain");
     let mod_drain = scene_function_if_present(&context, "sceneModDrain");
-    let mut net = net::Net::start(world_mods);
+    // The mods directory travels with the bridge: a refused join may fetch into
+    // it and retry, and a join we host may serve it (M18d).
+    let mut net = net::Net::start(
+        world_mods,
+        net::Pull {
+            mods_dir: mods_dir.clone(),
+            always: options.pull,
+        },
+    );
     let mut voice = audio::Voice::start(&mut net);
 
     // Watched mods whose files changed recently, waiting for the writes to stop.
@@ -620,6 +761,18 @@ fn main() {
         // Networking events land on the frame boundary, like commands do.
         if let Some(handler) = &net_event {
             while let Some(line) = net.next_event() {
+                // A pull's mods are the one event with host work behind it: they
+                // have to be in the scene before the retried join's world is, and
+                // that world is what comes next on this same stream.
+                if let Some(ids) = net::pulled_ids(&line) {
+                    load_pulled(
+                        &mut context,
+                        &mut loader,
+                        &plugins,
+                        mods_dir.as_deref(),
+                        &ids,
+                    );
+                }
                 if let Err(error) =
                     context.call(handler, &JsValue::undefined(), &[JsValue::string(line)])
                 {
@@ -697,6 +850,9 @@ fn main() {
         if let Some(watcher) = &watcher {
             let now = Instant::now();
             for path in watcher.take_changed() {
+                if pulled_archive(&path) {
+                    continue;
+                }
                 for id in loader.mods_touching(&path) {
                     settling.insert(id, now);
                 }

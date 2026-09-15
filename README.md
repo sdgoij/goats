@@ -142,6 +142,16 @@ ticket.
   text in the game window cannot be selected.
 - **Join**: `connect <ticket>` in the console; it asks for a username. Names are
   first come, first served, so a duplicate becomes `bob #2`.
+- **Joining a modded host**: a `side: "world"` mod is part of the session's
+  compatibility set, so a client missing one is refused, and the error names the
+  ids. The refusal is also where you ask for them -- `connect <ticket> --pull`
+  fetches exactly what is missing, verifies each archive against the identity the
+  host announced, installs it beside your own mods as `mods/.pulled-<id>.zip`, and
+  retries the join once. `goats --pull` makes that the default for every join, and
+  a host with a mods directory serves its world mods over the same ticket, so a
+  session hosted from a game window syncs a joiner the way `goatsd` does. Nothing
+  is ever fetched without that flag or command: a mod is code, and installing one
+  is the player's decision. Deleting the `.pulled-*` files is the uninstall.
 - **Paste, don't type**: the console reads the clipboard on Ctrl+V, so the ticket
   can be pasted. `copy` puts the ticket you were given back on the clipboard, and
   Ctrl+C copies the current line.
@@ -273,6 +283,7 @@ gets on the free plan.
 | `crates/scene/` | The scene bundle: the ordered parts, the joined script and the two `rl` stubs (the null one for `goatsd`, the recording one for the harness) |
 | `crates/harness/` | The scene tests: the Rust harness that runs the scene on Slag, with no Node (M15) |
 | `crates/mods/` | The mod loader: discovery, manifest validation, ordering and asset reads (pure Rust, no engine) |
+| `crates/pull/` | Mod sync (M18): fetch a host's world mods over the fetch ALPN, verify each with the loader, and install it beside the player's own |
 | `mods/` | Checked-in example mods: `example/` (a command, a HUD hook, an asset override) and `birds/` (a procedural world mod) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
 | `crates/server/src/web.rs` | The optional status page: ticket, protocol version, client count, the mod list and a `mods.zip` download, behind `--listen` |
@@ -352,6 +363,16 @@ While developing a mod, `goats --watch` reloads it when its files change on
 disk (the platform's native notification API, not polling), and `mod enable` /
 `mod reload` re-read the code from disk too. Editing the entry or `tuning.json`
 takes effect without a restart; an asset change still needs one.
+
+Mods also arrive *during* a session. The world mods a host runs are part of the
+compatibility set fixed at the join, so a client missing one cannot join at all --
+and that refusal is what offers to fix itself: see
+[Multiplayer](#multiplayer). What the scene does with a mod that arrives this way
+is `sceneModAdd`, and it is the boot path: the metadata lands, the declared asset
+slots re-point, the `tuning.json` merges and the entry is evaluated inside its own
+registration window, so a late mod is a mod like any other. What does not change is
+the freeze: registration opens for that mod and nothing else, and an asset the
+scene already loaded stays as it was.
 
 Mods are trusted code with one wall: no filesystem. All I/O is the Rust host's,
 and the scene sees only opaque asset names. A mod gets the hook API `goats`
@@ -560,7 +581,11 @@ cargo test -p runtime --features raylib --lib raylib
   hashes. The usual cause is the same mod hashing differently on two platforms,
   which line endings used to cause; the loader normalises them now, so a mismatch
   means the content really is different (a stale checkout, or a mod edited on one
-  side). `mod info <id>` shows the local hash at any time.
+  side). `mod info <id>` shows the local hash at any time. When it is a mod you
+  simply do not have, the refusal says so and `connect <ticket> --pull` fetches it
+  (or the host's status page hands you its `mods.zip`). A `differing` one is not
+  fetchable: a pull never replaces a mod you already have, so one of you has to
+  update.
 - **Goat renders untextured.** The `SUPPORT_FILEFORMAT_JPG` feature is missing
   from the raylib build (see above).
 - **Fur looks stretched.** The Blender materials tile the fleece with a Mapping

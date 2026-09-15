@@ -1,0 +1,20 @@
+[package]
+name = "pull"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# The client half of mod sync (M18b): fetch a host's world mods, check each
+# against the identity it was promised, and install it. Neither crate it composes
+# should learn about the other -- `session` is transport and `mods` is pure -- so
+# the policy lives here. No engine: this is unit-testable without a window.
+[dependencies]
+session = { workspace = true }
+mods = { workspace = true }
+# The provenance record beside the installed archives.
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# The tests drive a real host and client over iroh, so they need a runtime and a
+# deadline (`tokio::time::timeout`).
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

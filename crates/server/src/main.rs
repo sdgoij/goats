@@ -173,6 +173,34 @@ fn status_page_mods(
     (listed, zip)
 }
 
+/// The archives a joiner missing a world mod can fetch (M18): every world mod in
+/// its distributable form, so a fetch hands over exactly the mod the digest was
+/// taken over. Only world mods -- a client mod is local and never travels.
+fn mod_archives(loader: &mods::Loader) -> Vec<(session::ModRef, Vec<u8>)> {
+    loader
+        .mods()
+        .iter()
+        .filter(|manifest| manifest.side == mods::Side::World)
+        .filter_map(|manifest| {
+            let reference = session::ModRef {
+                id: manifest.id.clone(),
+                version: manifest.version.clone(),
+                hash: manifest.hash,
+            };
+            match mods::archive_source(&manifest.source) {
+                Ok(bytes) => Some((reference, bytes)),
+                Err(error) => {
+                    eprintln!(
+                        "goatsd: could not package {} for fetch: {error}",
+                        manifest.id
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 #[tokio::main]
 async fn main() {
     let options = match parse_args(std::env::args().skip(1)) {
@@ -213,18 +241,31 @@ async fn main() {
     // had, and this is the line to read that against.
     eprintln!("goatsd: world set: {}", describe_mods(&world_mods));
 
+    // The archives a joiner missing a world mod can fetch (M18): each world mod
+    // in its distributable form, packaged once at boot from the same loader the
+    // digest came from. A mod the loader could not read is skipped rather than
+    // fatal -- the session still runs; only that fetch is refused.
+    let archives = mod_archives(&loader);
+    if !archives.is_empty() {
+        eprintln!(
+            "goatsd: {} world mods ready to serve on fetch",
+            archives.len()
+        );
+    }
+
     // The status page's mod facts: every mod this host loaded, and the directory
     // they came from packaged as a `.zip`, so a visitor can obtain exactly the
     // set in use rather than assembling it by hand. Built once at boot.
     let (listed_mods, mods_zip) = status_page_mods(&loader, mods_dir.as_deref());
 
-    let mut host = match Host::start_with_mods(&options.name, world_mods).await {
-        Ok(host) => host,
-        Err(error) => {
-            eprintln!("goatsd: could not host: {error}");
-            std::process::exit(1);
-        }
-    };
+    let mut host =
+        match Host::start_with_mods_and_archives(&options.name, world_mods, archives).await {
+            Ok(host) => host,
+            Err(error) => {
+                eprintln!("goatsd: could not host: {error}");
+                std::process::exit(1);
+            }
+        };
     let mut sim = match headless::Sim::start(host.seed(), &loader) {
         Ok(sim) => sim,
         Err(error) => {
@@ -548,5 +589,52 @@ mod tests {
             "{page}"
         );
         assert!(page.contains("href=\"/mods.zip\""), "{page}");
+    }
+
+    /// The fetch archives (M18), wired from the real fixture mods the way `main`
+    /// does it: one per world mod, in its distributable form, keyed by the very
+    /// digest the handshake compares. A client mod is local and never served.
+    #[test]
+    fn the_fetch_archives_hold_the_world_mods_as_zips() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("mods");
+        let loader = mods::Loader::discover_with(&dir, mods::AssetMode::KeepWasm);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+
+        let archives = mod_archives(&loader);
+        let expected: Vec<&str> = loader
+            .mods()
+            .iter()
+            .filter(|manifest| manifest.side == mods::Side::World)
+            .map(|manifest| manifest.id.as_str())
+            .collect();
+        assert!(
+            expected.contains(&"com.github.sdgoij.goats.birds"),
+            "{expected:?}"
+        );
+        assert_eq!(
+            archives
+                .iter()
+                .map(|(reference, _)| reference.id.as_str())
+                .collect::<Vec<&str>>(),
+            expected,
+            "one archive per world mod, and nothing else"
+        );
+
+        for (reference, bytes) in &archives {
+            assert_eq!(&bytes[..2], b"PK", "{} is not an archive", reference.id);
+            let manifest = loader
+                .mods()
+                .iter()
+                .find(|manifest| manifest.id == reference.id)
+                .expect("the mod it was built from");
+            assert_eq!(
+                reference.hash, manifest.hash,
+                "keyed by the loader's digest"
+            );
+            assert_eq!(reference.version, manifest.version);
+        }
     }
 }

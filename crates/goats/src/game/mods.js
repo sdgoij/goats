@@ -154,6 +154,37 @@ function sceneModFreeze() {
     return "ok";
 }
 
+// Add one mod after the freeze (M18d): a world mod pulled from a host while the
+// game is already running. The metadata, its asset slots and its tuning land
+// exactly as `sceneMods` would have applied them at boot, and the host evaluates
+// the new entry next. Registration stays closed for everything else -- the entry
+// runs with `modOpenFor` set, which is the same window a reload gets.
+function sceneModAdd(json) {
+    let meta;
+    try {
+        meta = JSON.parse(String(json));
+    } catch (error) {
+        return "error unreadable mod metadata";
+    }
+    const entry = modEntry(meta);
+    if (modFind(entry.id) !== null) return "error already loaded: " + entry.id;
+    MODS.push(entry);
+    // The per-mod half of `sceneMods`, in the same order: asset slots first, so
+    // the entry resolves the names it declared, then its tuning tree.
+    const slots = Object.keys(entry.assets);
+    for (let i = 0; i < slots.length; i++) {
+        ASSET_SLOTS[slots[i]] = entry.assets[slots[i]];
+    }
+    if (entry.tuning !== null) {
+        try {
+            tuningMerge(entry.tuning);
+        } catch (error) {
+            console.log("mods: " + entry.id + " tuning: " + String(error));
+        }
+    }
+    return "ok";
+}
+
 // The queued intents, one JSON object per line; the host clears them by calling
 // this, exactly like `sceneNetDrain`.
 function sceneModDrain() {

@@ -15,7 +15,14 @@
 //! unidirectional stream: iroh streams are cheap, and it keeps the connection
 //! free of a framing state machine in both directions. The high-rate transform
 //! channel M12 adds will want datagrams instead.
+//!
+//! The same endpoint also answers a second ALPN, `goats-mods/1`: a connection a
+//! joiner opens to fetch the world mods it is missing, before it joins (M18).
+//! That protocol is versioned on its own, so it can serve a host built for an
+//! older wire version, and a failed fetch is a failed fetch rather than a failed
+//! session.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -24,15 +31,20 @@ use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::{Endpoint, EndpointAddr};
 use iroh_tickets::Ticket;
 use iroh_tickets::endpoint::EndpointTicket;
-use proto::{ClientMessage, PROTOCOL_VERSION, ServerMessage, compare_world_mods};
+use proto::{
+    ClientMessage, MAX_MOD_BLOB_BYTES, ModFetchReply, ModFetchRequest, PROTOCOL_VERSION,
+    ServerMessage, mod_fetch_alpn,
+};
 use tokio::sync::{Mutex, mpsc};
 
 // The wire types the session exchanges, re-exported so an embedding host (the
 // client's network bridge) can name a pose or a world without depending on
-// `proto` directly.
+// `proto` directly. `ModMismatch` and `compare_world_mods` ride along because a
+// refused join hands one back.
 pub use proto::{
-    BotState, Datagram, EatenCell, Gait, ModRef, ModsOutcome, ModsState, PeerFrame, PeerState,
-    Streams, VoiceFrame, WeatherKind, WeatherState, WorldOutcome, WorldState, describe_mods,
+    BotState, Datagram, EatenCell, Gait, ModMismatch, ModRef, ModsOutcome, ModsState, PeerFrame,
+    PeerState, Streams, VoiceFrame, WeatherKind, WeatherState, WorldOutcome, WorldState,
+    compare_world_mods, describe_mods,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a
@@ -124,6 +136,23 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl Error {
+    /// Was this the refusal about the world-mod set? A fetching client asks
+    /// because it can do something about exactly one kind of refusal (M18d).
+    ///
+    /// The check is on the refusal's text, which is a *hint* rather than a
+    /// contract: the host's message opens with [`proto::MISMATCH_PREFIX`], and a
+    /// refusal that does not is simply not recognised. Nothing depends on getting
+    /// this right -- a client that misreads it asks the host for its catalogue
+    /// and finds out, because [`fetch_catalogue`] is the authority, not this.
+    ///
+    /// A typed field on the refusal would be a `PROTOCOL_VERSION` change, which is
+    /// a price not worth paying for a UX hint (M18c, M18d).
+    pub fn is_mod_mismatch(&self) -> bool {
+        matches!(self, Error::Refused(message) if message.starts_with(proto::MISMATCH_PREFIX))
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Error::Stream(error.to_string())
@@ -150,8 +179,12 @@ async fn bind_endpoint() -> Result<Endpoint, Error> {
     } else {
         Endpoint::builder(presets::Minimal)
     };
+    // Two ALPNs: the session's, and the mod-fetch one (M18). The fetch is a
+    // protocol of its own -- its own version, its own connection -- so a host
+    // that cannot serve mods and a client that does not know how to ask are each
+    // just a failed connection rather than a broken session.
     builder
-        .alpns(vec![alpn()])
+        .alpns(vec![alpn(), mod_fetch_alpn()])
         .bind()
         .await
         .map_err(|error| Error::Bind(error.to_string()))
@@ -170,9 +203,9 @@ fn internet_from(value: Option<&str>) -> bool {
     matches!(value, Some(value) if !value.is_empty() && value != "0")
 }
 
-/// Encodes a message into a frame, writes it to a stream and finishes the
-/// stream, since every control message is one-shot.
-async fn write_message<T: serde::Serialize>(
+/// Encodes a message into a frame and writes it, leaving the stream open for a
+/// body (a mod archive follows its head on the same stream).
+async fn write_framed<T: serde::Serialize>(
     send: &mut SendStream,
     message: &T,
 ) -> Result<(), Error> {
@@ -181,6 +214,16 @@ async fn write_message<T: serde::Serialize>(
     send.write_all(&framed)
         .await
         .map_err(|error| Error::Stream(error.to_string()))?;
+    Ok(())
+}
+
+/// One framed message, then the stream is finished, since every control message
+/// is one-shot.
+async fn write_message<T: serde::Serialize>(
+    send: &mut SendStream,
+    message: &T,
+) -> Result<(), Error> {
+    write_framed(send, message).await?;
     send.finish()
         .map_err(|error| Error::Stream(error.to_string()))?;
     Ok(())
@@ -201,13 +244,46 @@ async fn read_message<T: serde::de::DeserializeOwned>(recv: &mut RecvStream) -> 
     Ok(proto::decode_frame(&payload)?)
 }
 
-/// Sends a server message on its own stream.
-async fn send_to(connection: &Connection, message: &ServerMessage) -> Result<(), Error> {
+/// Sends one framed message on a stream of its own.
+async fn send_one<T: serde::Serialize>(connection: &Connection, message: &T) -> Result<(), Error> {
     let mut send = connection
         .open_uni()
         .await
         .map_err(|error| Error::Stream(error.to_string()))?;
     write_message(&mut send, message).await
+}
+
+/// Sends a server message on its own stream.
+async fn send_to(connection: &Connection, message: &ServerMessage) -> Result<(), Error> {
+    send_one(connection, message).await
+}
+
+/// Sends a mod's archive: the framed head, then the raw bytes on the same
+/// stream. The head is JSON because every frame is; the archive is opaque and
+/// stays binary rather than paying base64 for a file that is mostly assets.
+async fn send_mod_blob(
+    connection: &Connection,
+    reference: &ModRef,
+    bytes: &[u8],
+) -> Result<(), Error> {
+    let mut send = connection
+        .open_uni()
+        .await
+        .map_err(|error| Error::Stream(error.to_string()))?;
+    write_framed(
+        &mut send,
+        &ModFetchReply::Blob {
+            reference: reference.clone(),
+            length: bytes.len() as u32,
+        },
+    )
+    .await?;
+    send.write_all(bytes)
+        .await
+        .map_err(|error| Error::Stream(error.to_string()))?;
+    send.finish()
+        .map_err(|error| Error::Stream(error.to_string()))?;
+    Ok(())
 }
 
 /// Sends a refusal and lets the peer read it before the connection goes away.
@@ -222,6 +298,59 @@ async fn refuse(connection: &Connection, message: &str) {
     )
     .await;
     let _ = tokio::time::timeout(Duration::from_secs(2), connection.closed()).await;
+}
+
+/// The archives a host can serve a fetching joiner, keyed by mod id. The bytes
+/// are opaque to everything here; `session` only moves them.
+type ModArchives = HashMap<String, (ModRef, Vec<u8>)>;
+
+/// Serves one fetch connection (M18): read the request, then answer it -- one
+/// stream per wanted mod, so a big archive never queues behind a small one, or a
+/// single stream for a catalogue.
+async fn handle_mod_fetch(connection: Connection, archives: Arc<ModArchives>) {
+    let Ok(mut recv) = connection.accept_uni().await else {
+        return;
+    };
+    let Ok(request) = read_message::<ModFetchRequest>(&mut recv).await else {
+        return;
+    };
+    match request {
+        ModFetchRequest::Catalogue => {
+            // Id order, so two answers to the same question are the same bytes.
+            let mut set: Vec<ModRef> = archives
+                .values()
+                .map(|(reference, _)| reference.clone())
+                .collect();
+            set.sort_by(|a, b| a.id.cmp(&b.id));
+            let _ = send_one(&connection, &ModFetchReply::Catalogue(set)).await;
+        }
+        ModFetchRequest::Wanted(want) => {
+            for reference in want.into_iter().take(proto::MAX_MODS) {
+                let bytes = archives.get(&reference.id).and_then(|(served, bytes)| {
+                    (served.version == reference.version && served.hash == reference.hash)
+                        .then(|| bytes.clone())
+                });
+                let _ = match bytes {
+                    Some(bytes) => send_mod_blob(&connection, &reference, &bytes).await,
+                    None => {
+                        send_one(
+                            &connection,
+                            &ModFetchReply::Unavailable {
+                                id: reference.id.clone(),
+                                reason: "the host does not hold this mod at that version and hash"
+                                    .to_string(),
+                            },
+                        )
+                        .await
+                    }
+                };
+            }
+        }
+    }
+    // Hold the connection open until the peer is done: dropping the last handle
+    // would close it and truncate the streams the client is still reading. The
+    // timeout bounds a peer that asks and then goes quiet.
+    let _ = tokio::time::timeout(Duration::from_secs(30), connection.closed()).await;
 }
 
 /// The server's state: who is in the session, and the connection to reach them.
@@ -475,6 +604,18 @@ impl Host {
     /// A client whose set differs is refused with a line naming what is wrong,
     /// rather than silently simulating a different world.
     pub async fn start_with_mods(host_name: &str, world_mods: Vec<ModRef>) -> Result<Host, Error> {
+        Host::start_with_mods_and_archives(host_name, world_mods, Vec::new()).await
+    }
+
+    /// Like [`Host::start_with_mods`], with the archives a joiner missing a world
+    /// mod can fetch (M18). Each is the mod in its distributable form: a `.zip`
+    /// with `mod.json` at the root, which is what the loader reads back. The
+    /// host serves only an entry whose `version` and `hash` match the request.
+    pub async fn start_with_mods_and_archives(
+        host_name: &str,
+        world_mods: Vec<ModRef>,
+        archives: Vec<(ModRef, Vec<u8>)>,
+    ) -> Result<Host, Error> {
         let endpoint = bind_endpoint().await?;
         let ticket = EndpointTicket::new(endpoint.addr()).encode_string();
 
@@ -493,18 +634,32 @@ impl Host {
         // same world the joiners will.
         let _ = events.send(Event::Session { seed });
 
+        let archives: Arc<ModArchives> = Arc::new(
+            archives
+                .into_iter()
+                .map(|(reference, bytes)| (reference.id.clone(), (reference, bytes)))
+                .collect(),
+        );
+
         let accepting = endpoint.clone();
         let state = server.clone();
+        let serving = archives.clone();
         tokio::spawn(async move {
             while let Some(incoming) = accepting.accept().await {
                 let Ok(connection) = incoming.await else {
                     continue;
                 };
-                tokio::spawn(handle_connection(
-                    connection,
-                    state.clone(),
-                    broadcaster.clone(),
-                ));
+                // The accept loop is shared by both ALPNs, so the negotiated one
+                // decides which protocol this connection speaks.
+                if connection.alpn() == mod_fetch_alpn().as_slice() {
+                    tokio::spawn(handle_mod_fetch(connection, serving.clone()));
+                } else {
+                    tokio::spawn(handle_connection(
+                        connection,
+                        state.clone(),
+                        broadcaster.clone(),
+                    ));
+                }
             }
         });
 
@@ -1156,6 +1311,113 @@ impl Client {
     }
 }
 
+/// One answer from a fetch connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fetched {
+    /// The archive the host sent, exactly as announced. That it is the *right*
+    /// mod is not established here: the caller checks it against the digest with
+    /// the loader, which is the only thing that can (M18b).
+    Mod { reference: ModRef, bytes: Vec<u8> },
+    /// The host could not serve this id.
+    Unavailable { id: String, reason: String },
+}
+
+/// Fetches the mods a joiner is missing from a host, over the fetch ALPN on the
+/// same ticket the session uses (M18). Returns one answer per wanted mod, in no
+/// guaranteed order: match them by id.
+///
+/// This is the transport half of M18. What to do with the bytes -- verify the
+/// digest with the loader, install them beside the player's own, retry the join
+/// -- is the caller's, and is deliberately not here.
+pub async fn fetch_mods(ticket: &str, want: Vec<ModRef>) -> Result<Vec<Fetched>, Error> {
+    let (endpoint, connection) = dial_mods(ticket).await?;
+
+    let expected = want.len();
+    let mut send = connection
+        .open_uni()
+        .await
+        .map_err(|error| Error::Stream(error.to_string()))?;
+    write_message(&mut send, &ModFetchRequest::Wanted(want)).await?;
+
+    let mut out = Vec::with_capacity(expected);
+    for _ in 0..expected {
+        match read_mod_reply(&connection).await {
+            Some(fetched) => out.push(fetched),
+            // A short answer is a broken host, not a partial success.
+            None => break,
+        }
+    }
+    endpoint.close().await;
+    Ok(out)
+}
+
+/// Asks a host which world mods it runs (M18c). A client works out what it is
+/// missing itself, by comparing this with its own set -- so nothing about the
+/// host's set has to ride the refusal, and adding mod sync is not a
+/// `PROTOCOL_VERSION` bump.
+///
+/// A host with no fetch surface fails at the handshake, which is the signal to
+/// fall back on the refusal and the status page's manual download.
+pub async fn fetch_catalogue(ticket: &str) -> Result<Vec<ModRef>, Error> {
+    let (endpoint, connection) = dial_mods(ticket).await?;
+    let mut send = connection
+        .open_uni()
+        .await
+        .map_err(|error| Error::Stream(error.to_string()))?;
+    write_message(&mut send, &ModFetchRequest::Catalogue).await?;
+
+    let answer = async {
+        let mut recv = connection
+            .accept_uni()
+            .await
+            .map_err(|error| Error::Accept(error.to_string()))?;
+        read_message::<ModFetchReply>(&mut recv).await
+    }
+    .await;
+    endpoint.close().await;
+
+    match answer? {
+        ModFetchReply::Catalogue(set) => Ok(set),
+        other => Err(Error::Message(format!(
+            "the host answered a catalogue with {other:?}"
+        ))),
+    }
+}
+
+/// Dials the fetch ALPN on a ticket's endpoint, the one thing both fetches do.
+async fn dial_mods(ticket: &str) -> Result<(Endpoint, Connection), Error> {
+    let ticket: EndpointTicket = ticket
+        .parse()
+        .map_err(|error: iroh_tickets::ParseError| Error::Ticket(error.to_string()))?;
+    let address: EndpointAddr = ticket.into();
+    let endpoint = bind_endpoint().await?;
+    let connection = endpoint
+        .connect(address, &mod_fetch_alpn())
+        .await
+        .map_err(|error| Error::Connect(error.to_string()))?;
+    Ok((endpoint, connection))
+}
+
+/// Reads one reply stream: the framed head, then the archive it announces.
+async fn read_mod_reply(connection: &Connection) -> Option<Fetched> {
+    let mut recv = connection.accept_uni().await.ok()?;
+    let reply: ModFetchReply = read_message(&mut recv).await.ok()?;
+    match reply {
+        ModFetchReply::Blob { reference, length } => {
+            if length > MAX_MOD_BLOB_BYTES {
+                return None;
+            }
+            let mut bytes = vec![0u8; length as usize];
+            recv.read_exact(&mut bytes).await.ok()?;
+            Some(Fetched::Mod { reference, bytes })
+        }
+        ModFetchReply::Unavailable { id, reason } => Some(Fetched::Unavailable { id, reason }),
+        // A catalogue is an answer to a question this call did not ask; a host
+        // that sends one here is confused, and the caller hears nothing.
+        ModFetchReply::Catalogue(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,6 +1535,109 @@ mod tests {
             assert_eq!(matching.name(), "bob");
 
             matching.close().await;
+            host.close().await;
+        })
+        .await;
+    }
+
+    /// A refused join is recognised for what it is (M18d), because that is what
+    /// decides whether a client offers to fetch. Two things have to hold: the
+    /// mismatch refusal matches, and nothing else does.
+    #[tokio::test]
+    async fn a_refusal_about_mods_is_recognized() {
+        within(async {
+            let world = vec![ModRef {
+                id: "com.example.dash".to_string(),
+                version: "1.0.0".to_string(),
+                hash: 0xd15e_a5e,
+            }];
+            let host = Host::start_with_mods("host", world).await.expect("host");
+            let refused = Client::join(host.ticket(), "alice")
+                .await
+                .err()
+                .expect("a mismatch must be refused");
+            assert!(refused.is_mod_mismatch(), "{refused}");
+            host.close().await;
+        })
+        .await;
+
+        // Every other way of being refused is not a mod problem, which is what
+        // keeps a client from offering a fetch for a version skew or a ban.
+        assert!(
+            !Error::Refused("protocol version 9 is not supported".to_string()).is_mod_mismatch()
+        );
+        assert!(!Error::Refused(String::new()).is_mod_mismatch());
+        assert!(!Error::Ticket("not a ticket".to_string()).is_mod_mismatch());
+        assert!(!Error::Message("unexpected reply".to_string()).is_mod_mismatch());
+    }
+
+    /// The mod-fetch transport (M18a): a host that holds archives serves them on
+    /// a fetch connection, to a client that dials with the fetch ALPN on the
+    /// same ticket -- and it serves *only* what it holds, at the identity asked.
+    #[tokio::test]
+    async fn a_host_serves_the_mods_a_joiner_is_missing() {
+        within(async {
+            let dash = ModRef {
+                id: "com.example.dash".to_string(),
+                version: "1.0.0".to_string(),
+                hash: 0xd15e_a5e,
+            };
+            let absent = ModRef {
+                id: "com.example.absent".to_string(),
+                version: "2.0.0".to_string(),
+                hash: 0x1,
+            };
+            let host = Host::start_with_mods_and_archives(
+                "host",
+                vec![dash.clone()],
+                vec![(dash.clone(), b"PK-dash-archive".to_vec())],
+            )
+            .await
+            .expect("host");
+
+            // The mod it holds comes back byte for byte.
+            let answers = fetch_mods(host.ticket(), vec![dash.clone()])
+                .await
+                .expect("fetch");
+            assert_eq!(
+                answers,
+                vec![Fetched::Mod {
+                    reference: dash.clone(),
+                    bytes: b"PK-dash-archive".to_vec(),
+                }]
+            );
+
+            // An id it does not hold is refused for that entry, not the fetch.
+            let answers = fetch_mods(host.ticket(), vec![dash.clone(), absent.clone()])
+                .await
+                .expect("fetch");
+            assert_eq!(answers.len(), 2, "{answers:?}");
+            assert!(
+                answers
+                    .iter()
+                    .any(|answer| matches!(answer, Fetched::Mod { .. })),
+                "{answers:?}"
+            );
+            assert!(
+                answers.iter().any(|answer| matches!(
+                    answer,
+                    Fetched::Unavailable { id, .. } if id == &absent.id
+                )),
+                "{answers:?}"
+            );
+
+            // A different hash for the same id is not served: the host hands
+            // over only what it holds at the version and hash asked for.
+            let mut forged = dash.clone();
+            forged.hash = 0xdead_beef;
+            let answers = fetch_mods(host.ticket(), vec![forged.clone()])
+                .await
+                .expect("fetch");
+            assert!(
+                matches!(&answers[..], [Fetched::Unavailable { id, .. }] if id == &forged.id),
+                "{answers:?}"
+            );
+
             host.close().await;
         })
         .await;

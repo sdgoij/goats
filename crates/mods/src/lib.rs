@@ -953,6 +953,26 @@ pub fn archive_dir(dir: &Path) -> Result<Vec<u8>, String> {
     Ok(cursor.into_inner())
 }
 
+/// A mod in the one form a joiner can install: a `.zip` with `mod.json` at the
+/// root. A directory mod is packaged; a mod already stored as a `.zip` is served
+/// as it is. This is what a host hands a fetching client (M18).
+pub fn archive_source(source: &ModSource) -> Result<Vec<u8>, String> {
+    match source {
+        ModSource::Dir(dir) => archive_dir(dir),
+        ModSource::Zip(zip) => {
+            std::fs::read(zip).map_err(|error| format!("'{}': {error}", zip.display()))
+        }
+    }
+}
+
+/// Load one `.zip` as a mod, without walking a directory -- the inverse of
+/// [`archive_source`], for an archive a caller has just written to disk and must
+/// check against the identity it was promised (M18b). Asset bytes are kept: this
+/// is an install, not a digest pass.
+pub fn load_zip(path: &Path) -> Result<Manifest, LoadError> {
+    load_source(&ModSource::Zip(path.to_path_buf()), AssetMode::Keep)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1394,6 +1414,40 @@ mod tests {
             "the archive must reload as the same mods"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_mod_archives_from_either_source() {
+        // M18's host hands a fetching joiner one mod in its distributable form.
+        // A directory mod is packaged; a mod already in a `.zip` is served as it
+        // is -- and both must reload as the same mod, or the joiner's digest
+        // would not match the one it fetched against.
+        let root = workspace("archive-source");
+        let manifest = r#"{ "id": "com.example.one", "name": "One", "version": "1.2.3",
+            "api": 1, "side": "world", "entry": "mod.js" }"#;
+        write_mod(&root, "one", manifest);
+        write(&root.join("one").join("mod.js"), "return 1;\n");
+        let loader = Loader::discover(&root);
+        let dir_manifest = loader.get("com.example.one").expect("the directory mod");
+
+        // A directory mod is packaged with `mod.json` at the archive root.
+        let bytes = archive_source(&dir_manifest.source).expect("archive a directory");
+        assert_eq!(&bytes[..2], b"PK", "a zip archive");
+        let zipped = workspace("archive-source-zip");
+        std::fs::write(zipped.join("one.zip"), &bytes).unwrap();
+        let reloaded = Loader::discover(&zipped);
+        assert!(reloaded.errors().is_empty(), "{:?}", reloaded.errors());
+        let zip_manifest = reloaded.get("com.example.one").expect("the zipped mod");
+        assert_eq!(
+            dir_manifest.hash, zip_manifest.hash,
+            "the packaged mod must reload to the same digest"
+        );
+
+        // A mod already stored as a zip is served byte for byte.
+        let served = archive_source(&zip_manifest.source).expect("serve a zip");
+        assert_eq!(served, bytes);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&zipped);
     }
 
     #[test]

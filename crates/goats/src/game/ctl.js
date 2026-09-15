@@ -296,13 +296,19 @@ function sceneCommand(line) {
             }
             return netHost(parts);
         case "connect":
-        case "join":
-            if (parts[1] === undefined) return "error connect expects a ticket";
-            if (parts.length < 3) {
-                consoleAsk("Username?", function (answer) { return netJoin(["connect", parts[1], answer]); });
+        case "join": {
+            // The consent flag may sit anywhere after the verb (`netJoinArgs`, in
+            // net.js), so the name cannot be counted off the raw parts: with the
+            // flag in hand, `connect T --pull` still needs a username.
+            const args = netJoinArgs(parts);
+            if (args.ticket === "") return "error connect expects a ticket";
+            if (args.name === undefined) {
+                const ask = ["connect", args.ticket].concat(args.pull ? [NET_PULL_FLAG] : []);
+                consoleAsk("Username?", function (answer) { return netJoin(ask.concat([answer])); });
                 return "ok name?";
             }
             return netJoin(parts);
+        }
         case "leave":
         case "disconnect":
             return netLeave();
