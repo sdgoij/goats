@@ -1,4 +1,4 @@
-// Part 8/15 of the goat scene: grass as food.
+// Part 8/16 of the goat scene: grass as food.
 // ---- food ------------------------------------------------------------------
 //
 // The "grass thingys" are the procedural tufts weather.js draws. A tuft's
@@ -40,10 +40,15 @@ function tuftKey(cx, cz) {
 }
 
 // The nearest tuft within `range` of (x, z), as { x, z, cx, cz, d2 }, or null.
+// With `trappedOnly`, only trapped tufts count -- the walk-over trigger for a
+// boobytrap (explosions.js) and the `traps` verb both want the tuft itself, and
+// this is where the cell hash that decides existence and position already lives.
+//
 // The cell hash is inlined (rather than calling a helper, as `drawTufts` does
 // too) to keep the per-frame call depth shallow -- debug builds guard the native
 // stack hard and the bots call this every action.
-function nearestTuft(x, z, range) {
+function nearestTuft(x, z, range, trappedOnly) {
+    const skip = trappedOnly === true;
     const r = Math.ceil(range / 2);
     const cx = Math.floor(x / 2);
     const cz = Math.floor(z / 2);
@@ -56,6 +61,7 @@ function nearestTuft(x, z, range) {
             h = (h ^ (h >>> 16)) >>> 0;
             const a = h / 4294967296;
             if (a < 0.45) continue;
+            if (skip && !trapAt(i, j)) continue;
             if (EATEN.has((i + 4096) * 8192 + (j + 4096))) continue;
             let h2 = (i * 1103515245 + j * 12345) | 0;
             h2 = Math.imul(h2 ^ (h2 >>> 15), 2246822519);
@@ -128,12 +134,20 @@ function applyEaten(list) {
 
 // Eat `target`: remove the tuft, turn onto it, top up energy, fill the belly,
 // and switch to the eat clip. Returns false when there is nothing to eat.
+//
+// A trapped tuft replaces the meal with a bang (explosions.js): the tuft is still
+// gone, because the goat did eat a mine, but it gives nothing back -- so the eat
+// path needs one test, not a rewrite.
 function startEat(target) {
     if (!consumeTuft(target)) return false;
     // Face the tuft, so the head comes down where the grass actually was.
     goat.yaw = Math.atan2(-(target.z - goat.pz), target.x - goat.px);
-    stats.energy = Math.min(TUNING.stats.max, stats.energy + TUNING.food.eatEnergy);
-    satiety = Math.min(1, satiety + TUNING.food.eatSatiety);
+    if (trapAt(target.cx, target.cz)) {
+        tripDevice("trap", target.cx, target.cz, target.x, target.z, 0);
+    } else {
+        stats.energy = Math.min(TUNING.stats.max, stats.energy + TUNING.food.eatEnergy);
+        satiety = Math.min(1, satiety + TUNING.food.eatSatiety);
+    }
     mode = "eat";
     eatTime = 0;
     cyclePlayerVariant("eat");

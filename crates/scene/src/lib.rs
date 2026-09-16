@@ -37,6 +37,7 @@ scene_bundle!(
     "../../goats/src/game/console.js",
     "../../goats/src/game/net.js",
     "../../goats/src/game/mods.js",
+    "../../goats/src/game/explosions.js",
 );
 
 /// The null `rl`: every member the scene touches, with the drawing and input
@@ -56,10 +57,10 @@ mod tests {
 
     #[test]
     fn the_parts_are_all_present_and_in_order() {
-        // Every part opens with a `// Part N/15` banner. Finding all of them in
+        // Every part opens with a `// Part N/16` banner. Finding all of them in
         // the joined scene proves the list and the files still agree -- a part
         // dropped from the list, or a renumbering, leaves a gap.
-        assert_eq!(PARTS.len(), 15);
+        assert_eq!(PARTS.len(), 16);
         for n in 1..=PARTS.len() {
             let banner = format!("// Part {n}/{}", PARTS.len());
             assert!(SCENE.contains(&banner), "the scene is missing `{banner}`");

@@ -39,10 +39,17 @@ fn the_scene_runs_the_scripted_timeline() {
     let settings_before = command_json(&mut harness, "settings");
     let obs = harness.run(TOTAL).expect("run the scene");
     let elapsed = started.elapsed();
+    // Read before the driven blocks below, which set off bangs of their own: this
+    // is how many the scripted walk tripped on its own.
+    let tripped = harness
+        .call("sceneExplosions", &[])
+        .ok()
+        .and_then(|state| state["blasts"].as_f64())
+        .unwrap_or(-1.0);
     let mut checks = Checks::new();
 
     eprintln!(
-        "harness: {} frames in {:?} ({:.1} ms/frame), {} cubes",
+        "harness: {} frames in {:?} ({:.1} ms/frame), {} cubes, {tripped} blasts",
         obs.timeline.len(),
         elapsed,
         elapsed.as_secs_f64() * 1000.0 / obs.timeline.len().max(1) as f64,
@@ -977,8 +984,8 @@ fn the_scene_runs_the_scripted_timeline() {
         clipboard_error,
     );
 
-    // The one-shot gait cases run last: they drive frames of their own, past the
-    // scripted run, and a jump is the goat's own from the reset frame.
+    // The one-shot gait cases drive frames of their own, past the scripted run,
+    // and a jump is the goat's own from the reset frame.
     let (gaits, gait_error) = match gait_block(&mut harness) {
         Ok(gaits) => (gaits, None),
         Err(error) => (Gaits::default(), Some(error)),
@@ -999,6 +1006,55 @@ fn the_scene_runs_the_scripted_timeline() {
         gaits.peer_loop_resent,
         &gaits,
     );
+
+    // ---- explosions --------------------------------------------------------
+    // The devices are derived rather than placed, so the cases are about the
+    // derivation agreeing with itself and about a goat that walks onto one. The
+    // block drives the real frame loop in bursts, which is what a fuse, a landing
+    // and a chain need.
+    let (fx, fx_error) = match explosions_block(&mut harness) {
+        Ok(fx) => (fx, None),
+        Err(error) => (Explosions::default(), Some(error)),
+    };
+    checks.check("no explosion errors", fx_error.is_none(), fx_error);
+    checks.check(
+        "the field is derived, not stored",
+        fx.same_field && fx.empty,
+        (fx.same_field, fx.empty),
+    );
+    checks.check(
+        "no device is derived inside `safe`",
+        fx.safe_clear,
+        fx.safe_clear,
+    );
+    checks.check("a tripped mine waits for its fuse", fx.fuse, fx.fuse);
+    checks.check(
+        "the bang damages the goat and spends the device",
+        fx.damaged && fx.spent,
+        (fx.damaged, fx.spent),
+    );
+    checks.check(
+        "a blast cannot take health below the floor",
+        fx.floor,
+        fx.floor,
+    );
+    checks.check(
+        "a hop clears a mine and the landing sets it off",
+        fx.clearance,
+        fx.clearance,
+    );
+    checks.check("a goat that runs onto a mine trips it", fx.walk, fx.walk);
+    checks.check(
+        "a trapped tuft replaces the meal",
+        fx.trap_meal,
+        fx.trap_meal,
+    );
+    checks.check(
+        "a blast sets off the neighbour it reaches, one level deep",
+        fx.chain,
+        fx.chain,
+    );
+    checks.check("the bang leaves an effect behind", fx.effect, fx.effect);
 
     checks.finish();
 }
@@ -1038,6 +1094,339 @@ struct Eat {
 /// The client's embedded-asset table: every `"name",` line whose next line is
 /// the `include_bytes!` that loads it. `crates/goats/src/main.rs` is the only
 /// place the binary's assets are listed.
+/// Whether the spawn's safe radius is clear: no mine in any cell whose centre is
+/// inside it. A mine there would end a run at the spawn, which is the one place a
+/// restart has to be survivable.
+const SAFE_PROBE: &str = "(function () { \
+     let found = 0; \
+     const safe = TUNING.explosions.safe; \
+     const r = Math.ceil(safe / 2) + 1; \
+     for (let cx = -r; cx <= r; cx++) { \
+       for (let cz = -r; cz <= r; cz++) { \
+         const x = cx * 2 + 1; \
+         const z = cz * 2 + 1; \
+         if (x * x + z * z > safe * safe) continue; \
+         if (mineAt(cx, cz)) found += 1; \
+       } \
+     } \
+     return found; })()";
+
+/// What the explosion cases found. One field per case.
+#[derive(Debug, Default)]
+struct Explosions {
+    same_field: bool,
+    empty: bool,
+    safe_clear: bool,
+    fuse: bool,
+    damaged: bool,
+    spent: bool,
+    floor: bool,
+    clearance: bool,
+    trap_meal: bool,
+    chain: bool,
+    effect: bool,
+    walk: bool,
+}
+
+/// The device state the scene reports: pending fuses, spent devices, blasts so
+/// far and live effect instances.
+fn explosion_state(harness: &mut Harness) -> Result<(f64, f64, f64, f64), String> {
+    let state = harness.call("sceneExplosions", &[])?;
+    Ok((
+        f64_of(state["pending"].clone()),
+        f64_of(state["spent"].clone()),
+        f64_of(state["blasts"].clone()),
+        f64_of(state["live"].clone()),
+    ))
+}
+
+/// Drives one burst of the real frame loop. The stub's scripted input replays
+/// from wherever the frame counter is reset to, and its first key is at frame 10,
+/// so a burst of nine frames or fewer carries none of it -- which is what keeps a
+/// case from being walked off its own device.
+fn drive_burst(harness: &mut Harness, frames: u32) -> Result<bool, String> {
+    harness.reset_frame()?;
+    for _ in 0..frames {
+        if !bool_of(harness.call("sceneFrame", &[])?) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The mines the `traps` verb reports around the goat, armed ones included.
+fn explosion_mines(harness: &mut Harness, range: f64) -> Result<Vec<serde_json::Value>, String> {
+    let field = try_command_json(harness, &format!("traps {range}"))?;
+    Ok(field["mines"].as_array().cloned().unwrap_or_default())
+}
+
+/// How far west of the target the walking case starts its run. Nine metres at a
+/// run is a little over three seconds: a real approach, and short enough that the
+/// goat is still moving forward when the fuse lands.
+const APPROACH: f64 = 9.0;
+
+/// Bursts of nine frames the approach is allowed. The run is about 185 frames and
+/// the fuse is eleven more, so this is slack rather than a target.
+const APPROACH_BURSTS: u32 = 32;
+
+/// The live effect instances' positions, as `[x, z]` pairs. The pool stores the
+/// trigger's own coordinates, so a match is the bang that landed *there* rather
+/// than one that happened nearby.
+const EFFECT_SPOTS: &str = "(function () { \
+     const out = []; \
+     for (let i = 0; i < FX_CAPACITY; i++) { \
+       if (FX[i].live) out.push([FX[i].x, FX[i].z]); \
+     } \
+     return out; })()";
+
+/// The mine with a clear run-up `APPROACH` metres west of it, as
+/// `(target x, target z, start x)`: neither the start point nor the corridor
+/// between the two holds another device, so whatever the goat trips on its way in
+/// can only be the target. `None` when the field has no such mine.
+fn approach_target(mines: &[serde_json::Value]) -> Option<(f64, f64, f64)> {
+    mines.iter().find_map(|mine| {
+        let tx = f64_of(mine["x"].clone());
+        let tz = f64_of(mine["z"].clone());
+        let sx = tx - APPROACH;
+        let clear = mines.iter().all(|other| {
+            let dx = f64_of(other["x"].clone()) - sx;
+            let dz = f64_of(other["z"].clone()) - tz;
+            // Anything the goat can reach before the target: level with the run-up
+            // (it holds its z, so a device more than a body's width off the line
+            // is never tripped) and west of the target. A device east of the
+            // target is left alone -- the target's bang still lands first.
+            dz.abs() > 2.0 || dx >= APPROACH
+        });
+        clear.then_some((tx, tz, sx))
+    })
+}
+
+/// Whether a bang in the effect pool is sitting on (x, z).
+fn bang_at(harness: &mut Harness, x: f64, z: f64) -> Result<bool, String> {
+    let spots = harness.eval(EFFECT_SPOTS)?;
+    Ok(spots.as_array().is_some_and(|list| {
+        list.iter().any(|spot| {
+            (f64_of(spot[0].clone()) - x).abs() < 0.01 && (f64_of(spot[1].clone()) - z).abs() < 0.01
+        })
+    }))
+}
+
+/// Walks the goat onto the mines it derives, hops over one, eats a trapped tuft,
+/// and watches a chain.
+fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
+    let mut out = Explosions::default();
+    // Alive, idle and at the spawn, with the scripted timeline's held keys
+    // released: it holds W from frame 200 on, so a burst would otherwise walk the
+    // goat off the device between the two frames a case needs.
+    harness.command("restart")?;
+    harness.command("stop")?;
+    harness.command("turn stop")?;
+    // The console is an overlay and `ctlKeyDown` refuses input while it is open, so
+    // the run's console cases leave a goat whose gait is held standing perfectly
+    // still. Every case here used to set its position with `pos`, which never
+    // noticed; the walking case below is the first that has to be *driven*.
+    harness.command("console close")?;
+
+    let field = try_command_json(harness, "traps 40")?;
+    out.same_field = field == try_command_json(harness, "traps 40")?;
+    let mines = field["mines"].as_array().cloned().unwrap_or_default();
+    out.empty = !mines.is_empty();
+    out.safe_clear = f64_of(harness.eval(SAFE_PROBE)?) == 0.0;
+
+    let Some(on) = mines.first() else {
+        return Ok(out);
+    };
+    let Some(next) = mines.get(1) else {
+        return Ok(out);
+    };
+    let (mx, mz) = (f64_of(on["x"].clone()), f64_of(on["z"].clone()));
+    let (nx, nz) = (f64_of(next["x"].clone()), f64_of(next["z"].clone()));
+    let health = |harness: &mut Harness| -> Result<f64, String> {
+        Ok(f64_of(harness.eval("stats.health")?))
+    };
+
+    // Standing on an armed mine: the first burst trips it, the fuse burns with
+    // the health untouched, and the bang lands after it.
+    harness.command("heal")?;
+    harness.command(&format!("pos {mx} {mz}"))?;
+    let before = health(harness)?;
+    let (_, spent_before, blasts_before, _) = explosion_state(harness)?;
+    let running = drive_burst(harness, 6)?;
+    let (pending, spent, blasts, _) = explosion_state(harness)?;
+    out.fuse = running
+        && pending == 1.0
+        && spent > spent_before
+        && blasts == blasts_before
+        && health(harness)? == before;
+    drive_burst(harness, 9)?;
+    let (pending, _, blasts, live) = explosion_state(harness)?;
+    out.damaged = pending == 0.0 && blasts > blasts_before && health(harness)? < before;
+    out.spent = explosion_state(harness)?.1 > spent_before;
+    out.effect = live > 0.0;
+
+    // The hop: airborne, the mine is not under the goat's feet, and the landing
+    // puts it back. `clearance` (and the jump itself) is what makes that a rule
+    // rather than a race.
+    harness.command("heal")?;
+    harness.command(&format!("pos {nx} {nz}"))?;
+    let (_, spent_mark, blasts_mark, _) = explosion_state(harness)?;
+    harness.command("jump")?;
+    drive_burst(harness, 4)?;
+    let jumped = explosion_state(harness)?;
+    let airborne = jumped.0 == 0.0 && jumped.1 == spent_mark && jumped.2 == blasts_mark;
+    // The jump clip is a little over a second and which variant it picks is the
+    // scene's business, so this drives until the hooves are down rather than for a
+    // frame count -- then past the landing, so the fuse it starts has burned.
+    let mut guarded = 0;
+    while bool_of(harness.eval("mode === \"jump\"")?) && guarded < 24 {
+        drive_burst(harness, 9)?;
+        guarded += 1;
+    }
+    let landed_on_ground = !bool_of(harness.eval("mode === \"jump\"")?);
+    drive_burst(harness, 9)?;
+    drive_burst(harness, 6)?;
+    let landed = explosion_state(harness)?;
+    out.clearance = airborne && landed_on_ground && landed.2 == blasts_mark + 1.0;
+
+    // A trapped tuft replaces the meal. `trap.chance 1` makes every tuft a trap,
+    // so the case does not depend on where the default 4% fell.
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 1)")?;
+    harness.command("heal")?;
+    let tuft = try_command_json(harness, "grass 40")?;
+    if !tuft.is_null() {
+        let (tx, tz) = (f64_of(tuft["x"].clone()), f64_of(tuft["z"].clone()));
+        harness.command(&format!("pos {tx} {tz}"))?;
+        let energy = f64_of(harness.eval("stats.energy")?);
+        let belly = f64_of(harness.eval("satiety")?);
+        let (_, _, blasts, _) = explosion_state(harness)?;
+        let eaten = harness.command("eat")?;
+        // The fuse is what makes this observable: the meal is judged before the
+        // bang lands.
+        out.trap_meal = eaten == "ok eat"
+            && f64_of(harness.eval("stats.energy")?) == energy
+            && f64_of(harness.eval("satiety")?) == belly;
+        drive_burst(harness, 9)?;
+        drive_burst(harness, 6)?;
+        let after = explosion_state(harness)?;
+        out.trap_meal &= after.2 > blasts;
+    }
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
+
+    // The floor: absurd damage cannot kill through a blast.
+    harness.eval("goats.tuning.set(\"explosions.blast.damage\", 1000)")?;
+    harness.command("heal")?;
+    harness.command(&format!("pos {mx} {mz}"))?;
+    harness.eval("SPENT.clear()")?;
+    drive_burst(harness, 9)?;
+    drive_burst(harness, 9)?;
+    let floored = health(harness)?;
+    out.floor = floored == 1.0;
+    harness.eval("goats.tuning.set(\"explosions.blast.damage\", 45)")?;
+
+    // The chain: a dense field, and a mine whose neighbour is also one. One level
+    // deep means the first blast sets off exactly the armed devices it reaches.
+    harness.eval("goats.tuning.set(\"explosions.mine.density\", 0.5)")?;
+    harness.command("heal")?;
+    harness.command("pos 0 0")?;
+    harness.eval("SPENT.clear()")?;
+    let dense = explosion_mines(harness, 40.0)?;
+    let radius = f64_of(harness.eval("TUNING.explosions.blast.radius")?);
+    let mut chain_case: Option<(f64, f64, usize)> = None;
+    for mine in &dense {
+        let (x, z) = (f64_of(mine["x"].clone()), f64_of(mine["z"].clone()));
+        let neighbours = dense
+            .iter()
+            .filter(|other| {
+                let dx = f64_of(other["x"].clone()) - x;
+                let dz = f64_of(other["z"].clone()) - z;
+                let d2 = dx * dx + dz * dz;
+                d2 > 0.0 && d2 <= radius * radius
+            })
+            .count();
+        if neighbours > 0 {
+            chain_case = Some((x, z, neighbours));
+            break;
+        }
+    }
+    if let Some((x, z, neighbours)) = chain_case {
+        let (_, _, blasts, _) = explosion_state(harness)?;
+        harness.command(&format!("pos {x} {z}"))?;
+        // The fuse, the chain's own delay, and the neighbours' fuses: three
+        // bursts of nine frames is 0.45 s, and the two fuses are 0.33 s.
+        for _ in 0..3 {
+            drive_burst(harness, 9)?;
+        }
+        let after = explosion_state(harness)?;
+        out.chain = after.2 == blasts + 1.0 + neighbours as f64;
+    }
+    harness.eval("goats.tuning.set(\"explosions.mine.density\", 0.012)")?;
+
+    // The real approach: the goat runs at a mine from nine metres out and trips it
+    // on the way in. Every case above teleports with `pos`, which trips a device
+    // only because the trip stamp notices the position changed -- this is the
+    // trigger met the way a player meets it, on foot, with the gait held down. Energy is
+    // topped up every burst on purpose: an exhausted goat is capped at a walk
+    // (`goat.js`), so an unfed one slows to 0.87 m/s and covers less ground than
+    // the approach needs.
+    harness.command("stop")?;
+    harness.eval("SPENT.clear()")?;
+    // Let any fuse still burning from the chain land, then wait for the goat to be
+    // free before taking a baseline: the trap case starts a two-and-a-half-second
+    // eating clip and a goat mid-meal stays exactly where it is (`goat.js`), so an
+    // approach started now would spend most of its budget standing still. Waiting
+    // here also swallows any bang that lands while it waits.
+    drive_burst(harness, 9)?;
+    let mut waited = 0;
+    while bool_of(harness.eval("mode === \"eat\" || mode === \"jump\"")?) && waited < 32 {
+        drive_burst(harness, 9)?;
+        waited += 1;
+    }
+    harness.command("heal")?;
+    let trigger = f64_of(harness.eval("TUNING.explosions.mine.trigger")?);
+    let (_, _, blasts_before, _) = explosion_state(harness)?;
+    if let Some((tx, tz, sx)) = approach_target(&mines) {
+        harness.command(&format!("pos {sx} {tz}"))?;
+        harness.command("yaw 0")?;
+        harness.command("run")?;
+        let mut tripped = false;
+        let mut px_end = sx;
+        for _ in 0..APPROACH_BURSTS {
+            harness.command("energy 100")?;
+            drive_burst(harness, 9)?;
+            px_end = f64_of(harness.eval("goat.px")?);
+            if explosion_state(harness)?.2 > blasts_before {
+                tripped = true;
+                break;
+            }
+        }
+        // Two things make this the walking case rather than another teleport: the
+        // goat is past the trigger ring because the held gait carried it there,
+        // and the bang in the pool is the *target's* coordinates.
+        let at_target = bang_at(harness, tx, tz)?;
+        out.walk = tripped && px_end >= tx - trigger && at_target;
+        // This case is the only one that depends on the *input* state rather than
+        // on the device state, and four different overlays can silently freeze a
+        // driven goat, so a failure says which part of it failed.
+        if !out.walk {
+            eprintln!(
+                "walk case: tripped={tripped} at_target={at_target} walked {} of {} \
+                 (target {tx}), mode={:?} uiScreen={:?} consoleOpen={:?}, effects={:?}",
+                px_end - sx,
+                APPROACH,
+                harness.eval("mode")?,
+                harness.eval("uiScreen")?,
+                harness.eval("consoleOpen")?,
+                harness.eval(EFFECT_SPOTS)?,
+            );
+        }
+        harness.command("stop")?;
+    }
+
+    harness.command("heal")?;
+    harness.command("pos 0 0")?;
+    Ok(out)
+}
+
 fn embedded_names() -> Vec<String> {
     const MAIN: &str = include_str!("../../goats/src/main.rs");
     let mut names = Vec::new();

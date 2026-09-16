@@ -1,4 +1,4 @@
-// Part 9/15 of the goat scene: the bot herd.
+// Part 9/16 of the goat scene: the bot herd.
 //
 // Each bot owns its own model handle. That is not wasteful book-keeping: this is
 // a CPU-skinning build, so `updateModelAnimation` deforms the vertices *inside
@@ -167,7 +167,14 @@ function botStartEat(b, t) {
     const info = clipAt("eat", b.var.eat);
     consumeTuft(t);
     b.yaw = Math.atan2(-(t.z - b.z), t.x - b.x);
-    b.satiety = Math.min(1, b.satiety + TUNING.food.eatSatiety);
+    // A trapped tuft is a bang for a bot too (explosions.js): the tuft is gone,
+    // the belly gets nothing, and the herd is where that pays off -- everyone
+    // sees a bot go up in the air.
+    if (trapAt(t.cx, t.cz)) {
+        tripDevice("trap", t.cx, t.cz, t.x, t.z, 0);
+    } else {
+        b.satiety = Math.min(1, b.satiety + TUNING.food.eatSatiety);
+    }
     b.mode = "eat";
     b.eatTime = 0;
     b.eatDur = info !== null && info !== undefined ? info.duration : EAT_FALLBACK_TIME;

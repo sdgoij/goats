@@ -1,4 +1,4 @@
-// Part 10/15 of the goat scene: the gait state machine, HUD and frame loop.
+// Part 10/16 of the goat scene: the gait state machine, HUD and frame loop.
 // ---- gait state ----------------------------------------------------------
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
@@ -435,6 +435,8 @@ function sceneFrame() {
         }
     }
 
+    perfStart();
+
     // The console is an overlay: update it first, because while it is open it
     // takes Escape (closing itself) and swallows the gameplay keys below.
     const consoleAteEsc = consoleUpdate();
@@ -457,6 +459,7 @@ function sceneFrame() {
     foodTarget = nearestTuft(goat.px, goat.pz, TUNING.food.eatRange);
     foodReady = foodTarget !== null && mode !== "dead" && mode !== "sleep" &&
         mode !== "jump" && mode !== "eat";
+    perfMark("food");
 
     // day/night: advance the clock, then refresh the sky and the ambient
     // tint the whole scene is drawn with.
@@ -474,10 +477,17 @@ function sceneFrame() {
         swayTime += dt;
         updateWeatherEffects();
     }
+    perfMark("weather");
     updateClouds(dt);
+    perfMark("clouds_upd");
     updateRain(dt);
+    perfMark("rain_upd");
     updateAudio(dt);
+    perfMark("audio");
     updateFood(dt);
+    perfMark("food_upd");
+    updateExplosions(dt);
+    perfMark("fx_upd");
     // overcast skies wash the gradient toward grey
     const grey = Math.min(0.75, cloudiness * 0.75);
     skyTop = lerpColor(sky.top, OVERCAST_TOP, grey);
@@ -486,6 +496,7 @@ function sceneFrame() {
     updateAmbient();
     updateLight();
     updateShadow();
+    perfMark("light");
     const hh = Math.floor(worldTime);
     const mm = Math.floor((worldTime - hh) * 60);
     clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
@@ -532,6 +543,7 @@ function sceneFrame() {
         useSkyShader = !useSkyShader;
         SETTINGS.sky = useSkyShader;
     }
+    perfMark("input");
     let move = 0;
     if (ctlKeyDown(rl.KEY_W)) move += 1;
     if (ctlKeyDown(rl.KEY_S)) move -= 1;
@@ -628,6 +640,7 @@ function sceneFrame() {
             goat.py = haveModel ? 0 : V_DROP + Math.sin(4 * Math.PI * goat.phase) * V_BOB;
         }
     }
+    perfMark("goat_sim");
 
     if (haveModel) {
         if (mode === "jump" && CLIP.jump) {
@@ -642,18 +655,24 @@ function sceneFrame() {
         const info = playerClip(curRole);
         curClipName = info !== null && info !== undefined ? rl.modelAnimationName(model, info.index) : "";
     }
+    perfMark("goat_pose");
     // The bots are server-owned in a session: only the host simulates them, and
     // a client mirrors the snapshots it receives instead.
     if (netWorldLocal()) updateBots(dt);
+    perfMark("bots_ai");
     updatePeers(dt);
+    perfMark("peers_upd");
     resolveGoatCollisions();
+    perfMark("collide");
     // The heightfield follows the goat: rebuild the grid if it has left the one
     // it was built around, before either the shadow pass or the visible one reads
     // it.
     terrainEnsure(goat.px, goat.pz);
+    perfMark("terrain_upd");
 
     // Mods see the world after it has moved and before it is drawn.
     modFrameTick(dt);
+    perfMark("mods_upd");
 
     // render
     const ty = 0.85 + goatBaseY(goat);
@@ -670,6 +689,7 @@ function sceneFrame() {
     } else {
         rl.drawRectangleGradientV(0, 0, screenW, screenH, skyTop, skyBot);
     }
+    perfMark("sky2d");
     const lit = useLighting && litShader >= 0;
     // The shadow-map pass must run before the main 3D pass, since it swaps
     // render targets and leaves the model pointing back at the lit shader.
@@ -677,7 +697,9 @@ function sceneFrame() {
     rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
     drawStars();
     drawCelestial();
+    perfMark("stars");
     if (!skyShaderOn) drawClouds();
+    perfMark("clouds");
 
     if (lit) {
         // `setLitUniforms` first: it binds the batch's texture units (the shadow
@@ -690,7 +712,9 @@ function sceneFrame() {
         drawTufts(goat, TUFT, 576, 180);   // cull beyond 24 units, detail inside ~13
         if (!haveModel) drawGoat(goat);
         rl.endShaderMode();
+        perfMark("tufts");
         drawTerrain(rl.WHITE);
+        perfMark("terrain");
         if (haveModel) {
             // The planar fallback is drawn first, under the goat; the shadow
             // map is sampled by the lit shader during the goat's own draw.
@@ -703,38 +727,59 @@ function sceneFrame() {
             drawModelGoat(goat, rl.WHITE);
             drawEyes();
         }
+        perfMark("goat");
         drawBots(rl.WHITE);
+        perfMark("bots");
         drawPeers(rl.WHITE);
+        perfMark("peers");
         if (shadowMode === SHADOW_MAP && shadowStrengthNow > 0.001) lightingText = "lit + shadow map";
         else if (shadowMode === SHADOW_PLANAR && LIGHT_DIR[1] > 0.06) lightingText = "lit + planar shadow";
         else lightingText = "lit";
     } else {
         // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
         drawTerrain(ambTint);
+        perfMark("terrain");
         drawTufts(goat, ambTuft, 576, 180);
         drawShadow();
+        perfMark("tufts");
         if (haveModel) {
             drawModelGoat(goat, ambTint);
             drawEyes();
         } else {
             drawGoat(goat);
         }
+        perfMark("goat");
         drawBots(ambTint);
+        perfMark("bots");
         drawPeers(ambTint);
+        perfMark("peers");
         lightingText = litShader < 0 ? "cube shader" : "off";
     }
+    // The bang goes over the world it happened in: after the goats and the grass,
+    // before the HUD, so the smoke reads in front of what it hit.
+    drawExplosions();
+    perfMark("fx");
     modEmit("draw3d", { x: cx, y: cy, z: cz, targetX: goat.px, targetY: ty, targetZ: goat.pz, fov: 55 });
+    perfMark("mods_draw3d");
     rl.endMode3D();
+    perfMark("endmode3d");
 drawRain(screenW, screenH);
+perfMark("rain2d");
 if (uiScreen === "hud") {
     drawHud(move);
+    perfMark("hud");
     modEmit("hud", { width: screenW, height: screenH });
+    perfMark("mods_hud");
     if (consoleOpen) drawConsole();
 } else {
     drawUi();
+    perfMark("hud");
 }
 modEmit("draw");
+perfMark("mod2d");
 rl.endDrawing();
+perfMark("boundary");
+perfEnd();
 
 if (sceneFrames % 240 === 0) {
     console.log("frame " + sceneFrames + " mode " + mode + " phase " + goat.phase.toFixed(2) +
@@ -768,4 +813,82 @@ function run() {
     sceneInit();
     while (sceneFrame()) {}
     sceneShutdown();
+}
+
+// ---- perf probe ------------------------------------------------------------
+//
+// A benchmark, not a feature: where a real (non-stub) frame spends its time.
+// The scene times its own phases with `rl.getTime()` and reports ms/frame per
+// phase; `perf on` logs every 240 frames, `perf` prints on demand, `perf probe`
+// measures the engine boundary itself.
+//
+// Two things to read it with. The frame is vsynced, so a healthy frame is
+// quantised to 16.7 ms and the numbers below decompose the *budget* rather than
+// expose a stall; `boundary` is where the rest of it waits. And a phase time is
+// submission plus any synchronous work in the call -- the GPU's own time lands in
+// `boundary`, at the swap.
+const PERF = { on: false, t: 0, acc: {}, frames: 0 };
+let perfCubes = 0;
+
+function perfStart() {
+    if (PERF.on) PERF.t = rl.getTime();
+}
+
+// Ends the span that began at the previous mark (or at `perfStart`).
+function perfMark(name) {
+    if (!PERF.on) return;
+    const now = rl.getTime();
+    const had = PERF.acc[name];
+    PERF.acc[name] = (had === undefined ? 0 : had) + (now - PERF.t);
+    PERF.t = now;
+}
+
+function perfEnd() {
+    if (!PERF.on) return;
+    PERF.frames += 1;
+    if (PERF.frames % 240 === 0) perfLog();
+}
+
+function perfLog() {
+    if (PERF.frames === 0) return;
+    let line = "perf ms/frame n=" + PERF.frames;
+    for (const name in PERF.acc) {
+        line += " " + name + " " + ((PERF.acc[name] * 1000) / PERF.frames).toFixed(2);
+    }
+    line += " cubes/frame " + Math.round(perfCubes / PERF.frames);
+    console.log(line + " fps " + rl.getFPS() + " bots " + BOTS.length);
+    PERF.acc = {};
+    PERF.frames = 0;
+    perfCubes = 0;
+}
+
+// The numbers inside a phase time cannot show: what one JS->native call costs,
+// and what one property read off `rl` costs. A frame here is thousands of both
+// (every cube, tuft and billboard is a read plus a call), so a change in either
+// moves every phase at once -- which is the shape to look for when the whole
+// frame gets slower and no single phase does. `jsNs` is the yardstick: the same
+// loop with no engine crossing at all.
+function perfProbe() {
+    const n = 20000;
+    let sink = 0;
+    for (let i = 0; i < 2000; i++) { sink += rl.getFPS(); sink += rl.WHITE === undefined ? 0 : 1; }
+    const t0 = rl.getTime();
+    for (let i = 0; i < n; i++) sink += rl.getFPS();
+    const t1 = rl.getTime();
+    for (let i = 0; i < n; i++) sink += rl.WHITE === undefined ? 0 : 1;
+    const t2 = rl.getTime();
+    for (let i = 0; i < n; i++) sink += Math.sin(i);
+    const t3 = rl.getTime();
+    // A loop with nothing native in it at all, as the floor: if this is not an
+    // order of magnitude under the others, the probe is measuring "this loop ran
+    // in the interpreter" rather than "a call costs X".
+    for (let i = 0; i < n; i++) sink += i * 3;
+    const t4 = rl.getTime();
+    return {
+        callNs: ((t1 - t0) / n) * 1e9,
+        propNs: ((t2 - t1) / n) * 1e9,
+        jsNs: ((t3 - t2) / n) * 1e9,
+        arithNs: ((t4 - t3) / n) * 1e9,
+        sink: sink
+    };
 }

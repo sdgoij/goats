@@ -1,4 +1,4 @@
-// Part 1/15 of the goat scene: tuning, stats, palette and maths helpers. This
+// Part 1/16 of the goat scene: tuning, stats, palette and maths helpers. This
 // file also carries the scene's overall header comment.
 //
 // A walking, running, jumping goat for the Slag x raylib sandbox.
@@ -152,6 +152,30 @@ const TUNING = {
         regrowMin: 40,             // seconds before an eaten tuft comes back
         regrowMax: 90,             // ...at most, so the meadow recovers patchily
     },
+    explosions: {
+        enabled: 1,                // 0 disables the whole system (a frame-cost bisect)
+        safe: 8,                   // metres around the spawn with no devices
+        fuse: 0.18,                // seconds between the trigger and the bang
+        maxActive: 24,             // effect instances; each is a draw call
+        mine: {
+            density: 0.012,        // chance per 2-unit cell, so one per ~330 m²
+            trigger: 0.6,          // metres a goat has to come within
+            clearance: 0.45,       // metres above the ground that counts as "over it"
+            tell: 3.0,             // metres at which the patch becomes visible; 0 = never
+            rearm: 300,            // seconds before the cell is mined again
+        },
+        trap: {
+            chance: 0.04,          // share of the tufts that are trapped
+            rearm: 300,
+        },
+        blast: {
+            radius: 3.2,           // metres
+            damage: 45,            // at the centre, falling to 0 at the rim
+            healthFloor: 1,        // a blast cannot take health below this
+        },
+        chain: 0.15,               // seconds before a blast sets off a neighbour
+        chainDepth: 1,             // how far a cascade goes; 1 = neighbours only
+    },
     weather: {
         windBase: 1.6,             // m/s
         cloudDrift: 0.35,          // clouds move slower than the ground wind
@@ -224,6 +248,16 @@ const TUNING_CLAMP = {
     "camera.minDist": [0.1, 1000],
     "camera.maxDist": [0.1, 1000],
     "lighting.shadow.size": [16, 8192],
+    // Explosions: the clamps a mistake could make unplayable. Density sets how
+    // much of the field is a minefield, the radius and the damage decide whether
+    // one bang ends a run, the floor is the promise that it cannot, and the depth
+    // bounds a cascade.
+    "explosions.mine.density": [0, 0.1],
+    "explosions.blast.radius": [0, 12],
+    "explosions.blast.damage": [0, 100],
+    "explosions.blast.healthFloor": [0, 100],
+    "explosions.maxActive": [0, 64],
+    "explosions.chainDepth": [0, 2],
 };
 
 // Leaves that must stay whole numbers (counts and pixel sizes). Integer-ness is

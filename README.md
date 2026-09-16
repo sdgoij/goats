@@ -276,7 +276,7 @@ gets on the free plan.
 | `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
 | `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
 | `crates/goats/src/audio.rs` | Voice chat: `cpal` capture, the speech gate, Opus coding, and one raylib stream its callback fills |
-| `crates/goats/src/game/*.js` | The scene, split into 15 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net, mods) |
+| `crates/goats/src/game/*.js` | The scene, split into 16 parts (core, model, world, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net, mods, explosions) |
 | `crates/scene/` | The scene bundle: the ordered parts, the joined script and the two `rl` stubs (the null one for `goatsd`, the recording one for the harness) |
 | `crates/harness/` | The scene tests: the Rust harness that runs the scene on Slag, with no Node (M15) |
 | `crates/mods/` | The mod loader: discovery, manifest validation, ordering and asset reads (pure Rust, no engine) |

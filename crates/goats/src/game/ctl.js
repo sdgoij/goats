@@ -1,4 +1,4 @@
-// Part 11/15 of the goat scene: the stdin command channel.
+// Part 11/16 of the goat scene: the stdin command channel.
 // ---- control channel ------------------------------------------------------
 //
 // The host (`crates/goats/src/main.rs`) reads a line from stdin, calls
@@ -26,8 +26,8 @@ const HELP_GROUPS = [
     ["basics", "help ping"],
     ["state", "state stats time weather bots camera pos phase features fps"],
     ["move", "jump sleep wake walk trot run back stop turn yaw"],
-    ["vitals", "health energy heal eat grass restart kill"],
-    ["view", "lighting shadows sky mute settings setting ui console screenshot"],
+    ["vitals", "health energy heal eat grass traps restart kill"],
+    ["view", "lighting shadows sky mute settings setting tune perf ui console screenshot"],
     ["session", "host connect leave who net copy say msg"],
     ["mods", "mod"],
     ["flow", "pause resume step quit"],
@@ -250,6 +250,22 @@ function sceneCommand(line) {
             applySettings();
             return "ok setting " + key;
         }
+        // Any leaf of the tuning tree, by path -- the same tree a mod writes
+        // through `goats.tuning.set`, so the console reaches every knob the game
+        // has rather than the handful `setting` names. One argument reads, two
+        // write.
+        case "tune": {
+            const path = parts[1];
+            if (path === undefined) return "error tune expects <path> [value]";
+            try {
+                if (parts[2] === undefined) return "ok " + JSON.stringify(tuningGet(path));
+                const value = ctlArg(parts, 2);
+                if (value === null) return "error tune " + path + " expects a number";
+                return "ok tune " + path + " " + ctlRound(tuningSet(path, value));
+            } catch (error) {
+                return "error " + (error && error.message ? error.message : String(error));
+            }
+        }
         case "ui": {
             const screen = parts[1];
             if (screen === undefined) return "ok " + uiScreen;
@@ -391,6 +407,57 @@ function sceneCommand(line) {
                 inReach: t.d2 <= TUNING.food.eatRange * TUNING.food.eatRange,
                 key: tuftKey(t.cx, t.cz)
             });
+        }
+        // The derived devices around the goat (explosions.js): mines and trapped
+        // tufts, their distance, and how long a spent one has left before it
+        // re-arms. A debugging tool, the answer to "was that thing actually
+        // there?", and the shape a mod's mine detector reads.
+        case "traps": {
+            const range = ctlArg(parts, 1) || 30;
+            const near = sceneTraps(goat.px, goat.pz, range);
+            const rows = (list) => list.map((d) => ({
+                x: ctlRound(d.x),
+                z: ctlRound(d.z),
+                dist: ctlRound(d.dist),
+                rearm: ctlRound(d.rearm),
+                key: d.key
+            }));
+            return "ok " + JSON.stringify({
+                range: range,
+                mines: rows(near.mines),
+                traps: rows(near.traps),
+                spent: sceneExplosions().spent,
+                pending: sceneExplosions().pending
+            });
+        }
+        // The frame-cost benchmark (goat.js): `perf` prints the phase breakdown
+        // gathered since the last print, `perf on` logs it every 240 frames,
+        // `perf probe` measures one JS->native call and one `rl` property read.
+        case "perf": {
+            const side = parts[1];
+            if (side === "on") {
+                PERF.on = true;
+                PERF.acc = {};
+                PERF.frames = 0;
+                return "ok perf on";
+            }
+            if (side === "off") {
+                PERF.on = false;
+                return "ok perf off";
+            }
+            if (side === "probe") {
+                const p = perfProbe();
+                return "ok " + JSON.stringify({
+                    callNs: ctlRound(p.callNs),
+                    propNs: ctlRound(p.propNs),
+                    jsNs: ctlRound(p.jsNs),
+                    arithNs: ctlRound(p.arithNs),
+                    fps: rl.getFPS()
+                });
+            }
+            if (side !== undefined) return "error perf expects on|off|probe";
+            perfLog();
+            return "ok perf logged";
         }
         case "eat": {
             const t = nearestTuft(goat.px, goat.pz, TUNING.food.eatRange);

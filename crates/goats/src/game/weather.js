@@ -1,4 +1,4 @@
-// Part 7/15 of the goat scene: the weather state machine, wind and effects.
+// Part 7/16 of the goat scene: the weather state machine, wind and effects.
 // ---- weather -------------------------------------------------------------
 
 // The wind, rain and gameplay-impact numbers live in `TUNING.weather`
@@ -40,6 +40,12 @@ let rngState = 0x9e3779b9;
 // streaks, and so offline rain does not perturb the weather sequence the harness
 // asserts on.
 let rainSeed = 0x13579bdf;
+// The trap layout's session salt (explosions.js), mixed into the per-cell hash so
+// two sessions have their mines in different places. It is deliberately not one
+// of the streams above and never appears in `sceneStreams()`: the layout is
+// *derived* and never advances, so a peer needs the seed and not a mid-session
+// value -- which is why adding it changes nothing on the wire.
+let trapSalt = 0x2f6e2b1d;
 
 // Derive every scene PRNG from the session seed, so two players in the same
 // session run the same weather, food regrowth and bleat variety. Offline the
@@ -60,6 +66,9 @@ function sceneUseSeed(seed) {
     botRngState = next() || 1;
     foodRngState = next() || 1;
     audioSeed = next() || 1;
+    // Drawn after the four streams, so their values (which the harness asserts)
+    // do not move when a later stream is added.
+    trapSalt = next() || 1;
     // Mod streams draw from the same seed, so every peer derives the same ones.
     modSeedStreams(seed);
 }
@@ -386,6 +395,7 @@ function drawTufts(g, tuftCol, cull2, detail2) {
                 if (TERRAIN_CELL_H.size > 32768) TERRAIN_CELL_H.clear();
                 TERRAIN_CELL_H.set(hkey, gy);
             }
+            perfCubes += d2 < detail2 ? 2 : 1;
             rl.drawCube(x + off, gy + 0.06, z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
             if (d2 < detail2) {
                 rl.drawCube(x + off * 1.7, gy + 0.20, z + off * 0.7, 0.11, 0.16, 0.11, tuftCol);
