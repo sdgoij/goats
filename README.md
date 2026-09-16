@@ -191,15 +191,11 @@ are capped and burst-limited on the relay the same way. Player movement is
 client-authoritative: the host relays each player's own goat rather than
 simulating it, while the bots it owns outright.
 
-By default the endpoint binds local sockets with no relay, so it reaches other
-machines on the same network and not the wider internet — and, since that preset
-disables relaying and address lookup too, a ticket only carries local addresses.
-Set `GOATS_INTERNET=1` on **every** participant to use n0's public relays plus
-DNS discovery instead: `RelayMode::Disabled` blocks dialing relays as well as
-listening on them, so a host in the default mode is not reachable this way even
-if it hands out a ticket, and a default client could not use a relay address
-either. Verified: two clients on a home network joined a `goatsd` on a remote VPS
-over n0, with the switch on all three.
+The endpoint binds with n0's public relays plus DNS discovery, so a ticket works
+across networks: paste one and it dials, with nothing to configure. The trade is
+that address lookup goes through n0, and a session falls back to their relays
+when no direct path between the two machines can be found. Verified: two clients
+on a home network joined a `goatsd` on a remote VPS over n0.
 
 The sky and the meadow are the server's as well: the weather state machine, its
 easing, the day/night clock, the PRNG streams and the eaten grass all run only on

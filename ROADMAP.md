@@ -757,13 +757,15 @@ crates/server    bin `goatsd`: session + a headless frame loop
 **Transport.** `iroh`, pinned exactly (1.2.0 at the time of writing). One ALPN
 per major protocol version (`goats/1`) so a mismatched build fails cleanly
 instead of deserialising garbage. Joining is copy-pasting an `iroh-tickets`
-ticket. LAN/direct is the default and contacts no third party;
-`GOATS_INTERNET=1` swaps the preset to `presets::N0`, which reaches peers over
-n0's public relays with DNS lookup. Self-hosting `iroh-relay` remains a later
-option (see the open questions). `bevy_iroh` is worth **trialling** and pinning — it
-advertises replication, rooms, presence and voice, which is exactly the shape we
-want — but it is Bevy-shaped and days old, so plain `iroh` plus our own
-`session` layer is the fallback, not a rewrite.
+ticket. Reach is `presets::N0` — n0's public relays plus DNS lookup — so a
+ticket dials across networks. It was opt-in behind `GOATS_INTERNET=1` for a
+while; that was dropped, because an env var is not a setting a player has, and
+the LAN-only default left a pasted ticket unable to reach anything off the LAN.
+Self-hosting `iroh-relay` remains a later option (see the open questions).
+`bevy_iroh` is worth **trialling** and pinning — it advertises replication,
+rooms, presence and voice, which is exactly the shape we want — but it is
+Bevy-shaped and days old, so plain `iroh` plus our own `session` layer is the
+fallback, not a rewrite.
 
 **Host bridge.** A Tokio runtime on its own thread owns the `Endpoint`; the
 synchronous frame loop drains an `mpsc` at frame boundaries and **never awaits**,
@@ -2230,15 +2232,16 @@ when the client has a mod the host lacks or a shared id at another version, or
    (simple, low-latency, trusts the client) is what we ship first;
    server-authoritative movement, prediction and reconciliation wait until the
    sandbox actually needs them.
-10. ~~**Reach.**~~ **Settled and verified:** LAN/direct is the default and needs
-    no third party at all; `GOATS_INTERNET=1` swaps the preset to `presets::N0`
-    (n0's public relays plus DNS discovery) for internet reach. A `goatsd` on a
-    remote VPS accepted two clients from a home network over it. Two things
-    learned in the doing: a default (`Minimal`) host is not WAN-reachable even
-    through its ticket — it surfaced as a connect timeout — and the switch has to
-    be on **both** ends, not just the host, because `RelayMode::Disabled` also
-    disables dialing relays. Whether the established path ended up direct or
-    relayed was not logged.
+10. ~~**Reach.**~~ **Settled:** the endpoint binds `presets::N0` — n0's public
+    relays plus DNS discovery — so a ticket pasted across networks dials with
+    nothing to configure, and a `goatsd` on a remote VPS accepted two clients from
+    a home network over it. Two things learned in the doing: a `Minimal` host is
+    not WAN-reachable even through its ticket — it surfaced as a connect timeout —
+    and the switch had to be on **both** ends, not just the host, because
+    `RelayMode::Disabled` also disables dialing relays. Whether the established
+    path ended up direct or relayed was not logged. The flag that gated all this
+    (`GOATS_INTERNET`) is gone: an env var is not a setting a player has, so reach
+    is not something to opt into.
 11. **Bots and weather in multiplayer.** Server-owned (recommended — bots
     collide with players, so they diverge the moment anyone interacts) or
     cosmetic per client?

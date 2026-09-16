@@ -222,9 +222,6 @@ impl Net {
                 runtime.block_on(run(command_rx, event_tx, voice_tx, world_mods, pull));
             })
             .expect("spawn the networking thread");
-        if session::internet_enabled() {
-            eprintln!("[net] internet mode (n0 relays + DNS discovery)");
-        }
         Net {
             voice_out: VoiceSender(command_tx.clone()),
             commands: command_tx,

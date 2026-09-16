@@ -278,14 +278,7 @@ async fn main() {
     println!("ticket {}", host.ticket());
     println!("goatsd: world seed {}", host.seed());
     println!("goatsd: paste that into a client's console with `connect <ticket> <name>`");
-    println!(
-        "goatsd: {}; Ctrl-C to stop",
-        if session::internet_enabled() {
-            "internet mode (n0 relays + DNS discovery)"
-        } else {
-            "LAN only (set GOATS_INTERNET=1 for n0 relays + DNS discovery)"
-        }
-    );
+    println!("goatsd: internet reach (n0 relays + DNS discovery); Ctrl-C to stop");
     let _ = std::io::stdout().flush();
 
     // The status page, only when asked for. It reports the ticket, the client

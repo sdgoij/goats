@@ -167,40 +167,22 @@ impl From<proto::Error> for Error {
 
 /// Binds an endpoint that can both host and dial.
 ///
-/// The default preset reaches peers directly -- the same machine or the LAN --
-/// and contacts no third party. Setting `GOATS_INTERNET` (to anything but empty
-/// or `0`) swaps in `presets::N0`: n0's public relays plus DNS discovery, so a
-/// ticket pasted across networks can dial. That is also why a default ticket is
-/// LAN-only by construction: `Minimal` disables relaying and address lookup, so
-/// the ticket carries only local addresses.
+/// `N0` is the whole of the preset choice: n0's public relays plus DNS
+/// discovery, so a ticket pasted across networks dials as readily as one handed
+/// over on the same LAN. It used to be opt-in behind `GOATS_INTERNET`, which
+/// made reach depend on every player setting an env var -- the one step nobody
+/// does. The trade is that address lookup, and relaying when no direct path can
+/// be found, go through n0 rather than nobody.
 async fn bind_endpoint() -> Result<Endpoint, Error> {
-    let builder = if internet_enabled() {
-        Endpoint::builder(presets::N0)
-    } else {
-        Endpoint::builder(presets::Minimal)
-    };
     // Two ALPNs: the session's, and the mod-fetch one (M18). The fetch is a
     // protocol of its own -- its own version, its own connection -- so a host
     // that cannot serve mods and a client that does not know how to ask are each
     // just a failed connection rather than a broken session.
-    builder
+    Endpoint::builder(presets::N0)
         .alpns(vec![alpn(), mod_fetch_alpn()])
         .bind()
         .await
         .map_err(|error| Error::Bind(error.to_string()))
-}
-
-/// Whether `GOATS_INTERNET` asks for internet reach, so a host can say which
-/// mode it is in. Read at bind time.
-pub fn internet_enabled() -> bool {
-    internet_from(std::env::var("GOATS_INTERNET").ok().as_deref())
-}
-
-/// The env var's meaning, split out so it can be tested without touching the
-/// process environment. Unset, empty and `0` all mean LAN-only; anything else
-/// counts as on, the usual `VAR=1` idiom.
-fn internet_from(value: Option<&str>) -> bool {
-    matches!(value, Some(value) if !value.is_empty() && value != "0")
 }
 
 /// Encodes a message into a frame and writes it, leaving the stream open for a
@@ -1438,15 +1420,6 @@ mod tests {
     #[test]
     fn the_alpn_carries_the_protocol_version() {
         assert_eq!(alpn(), format!("goats/{PROTOCOL_VERSION}").into_bytes());
-    }
-
-    #[test]
-    fn the_internet_switch_reads_its_env_value() {
-        assert!(!internet_from(None));
-        assert!(!internet_from(Some("")));
-        assert!(!internet_from(Some("0")));
-        assert!(internet_from(Some("1")));
-        assert!(internet_from(Some("yes")));
     }
 
     #[tokio::test]
