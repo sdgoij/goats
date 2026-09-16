@@ -191,11 +191,21 @@ const TUNING = {
             trigger: 0.6,          // metres a goat has to come within
             clearance: 0.45,       // metres above the ground that counts as "over it"
             tell: 3.0,             // metres at which the patch becomes visible; 0 = never
-            rearm: 300,            // seconds before the cell is mined again
         },
         trap: {
             chance: 0.04,          // share of the tufts that are trapped
-            rearm: 300,
+        },
+        // Where a device goes when it has gone off (M19b, revised): it is gone from the
+        // cell it was in -- for the session -- and re-placed on a ring this far from
+        // that cell, drawn from the cell's own key. So the field *drifts* rather than
+        // thinning out, and because the destination is derived from the cell that
+        // fired, every peer computes the same move without being told where. The floor
+        // is raised to `blast.radius` in the code whatever this says: a bang must not
+        // set off the mine it has just moved.
+        relocate: {
+            min: 8,                // metres from the cell the device left
+            max: 24,               // ...at most, so a device stays in its own field
+            tries: 12,             // candidate draws before it is simply not replaced
         },
         blast: {
             radius: 3.2,           // metres
@@ -318,6 +328,9 @@ const TUNING_CLAMP = {
     // throws the goat out of the world, and a pivot away from the body spins it
     // around a point that is not on the goat), and the depth bounds a cascade.
     "explosions.mine.density": [0, 0.1],
+    "explosions.relocate.min": [0, 60],
+    "explosions.relocate.max": [0, 60],
+    "explosions.relocate.tries": [1, 64],
     "explosions.blast.radius": [0, 12],
     "explosions.blast.damage": [0, 100],
     "explosions.blast.healthFloor": [0, 100],
@@ -337,6 +350,7 @@ const TUNING_CLAMP = {
 const TUNING_INT = {
     "herd.count": true,
     "lighting.shadow.size": true,
+    "explosions.relocate.tries": true,
 };
 
 function tuningHas(node, key) {

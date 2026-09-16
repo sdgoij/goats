@@ -1082,6 +1082,11 @@ fn the_scene_runs_the_scripted_timeline() {
         fx.herd_flung,
     );
     checks.check(
+        "a device that goes off leaves its cell and lands elsewhere",
+        fx.relocated,
+        fx.relocated,
+    );
+    checks.check(
         "a blast hurts a bot as much as it hurts the goat",
         fx.bot_hurt,
         fx.bot_hurt,
@@ -1192,6 +1197,7 @@ struct Explosions {
     flung_lock: bool,
     flung_tumble: bool,
     herd_flung: bool,
+    relocated: bool,
     bot_hurt: bool,
     bot_death: bool,
     bot_lands: bool,
@@ -1247,6 +1253,32 @@ fn wait_mobile(harness: &mut Harness) -> Result<(), String> {
 fn explosion_mines(harness: &mut Harness, range: f64) -> Result<Vec<serde_json::Value>, String> {
     let field = try_command_json(harness, &format!("traps {range}"))?;
     Ok(field["mines"].as_array().cloned().unwrap_or_default())
+}
+
+/// The cells a replacement has moved into, as `(cx, cz)`, for the set named (the
+/// scene keeps one per kind: `MOVED` for mines, `TRAP_MOVED` for trapped tufts).
+fn moved_cells(harness: &mut Harness, set: &str) -> Result<Vec<(f64, f64)>, String> {
+    let probe = harness.eval(&format!(
+        "(function () {{ const out = []; \
+         for (const key of {set}) {{\
+           out.push([Math.floor(key / 8192) - 4096, (key % 8192) - 4096]); \
+         }} \
+         return out; }})()"
+    ))?;
+    Ok(probe
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .map(|row| (f64_of(row[0].clone()), f64_of(row[1].clone())))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Whether the cell `(cx, cz)` holds a mine right now, by the scene's own test.
+fn mine_armed(harness: &mut Harness, cx: f64, cz: f64) -> Result<bool, String> {
+    let value = harness.eval(&format!("mineArmed({cx}, {cz})"))?;
+    Ok(value.as_bool().unwrap_or(false))
 }
 
 /// How far west of the target the walking case starts its run. Nine metres at a
@@ -1416,7 +1448,7 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
     harness.eval("goats.tuning.set(\"explosions.blast.damage\", 1000)")?;
     harness.command("heal")?;
     harness.command(&format!("pos {mx} {mz}"))?;
-    harness.eval("SPENT.clear()")?;
+    harness.eval("sceneResetDevices()")?;
     drive_burst(harness, 9)?;
     drive_burst(harness, 9)?;
     let floored = health(harness)?;
@@ -1429,7 +1461,7 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
     harness.eval("goats.tuning.set(\"explosions.mine.density\", 0.5)")?;
     harness.command("heal")?;
     harness.command("pos 0 0")?;
-    harness.eval("SPENT.clear()")?;
+    harness.eval("sceneResetDevices()")?;
     let dense = explosion_mines(harness, 40.0)?;
     let radius = f64_of(harness.eval("TUNING.explosions.blast.radius")?);
     let mut chain_case: Option<(f64, f64, usize)> = None;
@@ -1470,7 +1502,7 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
     // (`goat.js`), so an unfed one slows to 0.87 m/s and covers less ground than
     // the approach needs.
     harness.command("stop")?;
-    harness.eval("SPENT.clear()")?;
+    harness.eval("sceneResetDevices()")?;
     // Let any fuse still burning from the chain land, then wait for the goat to be
     // free before taking a baseline: the trap case starts a two-and-a-half-second
     // eating clip, a goat mid-meal stays exactly where it is (`goat.js`), and one
@@ -1534,6 +1566,99 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
     }
     harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
 
+    // ---- M19b revised: a device that has gone off moves house ------------------
+    //
+    // A spent device is not put back where it was: it is gone from its cell for the
+    // session, and one replacement is placed on a ring away from that cell, drawn from
+    // the cell's own key -- so the field drifts rather than thinning out, and every
+    // peer computes the same move without a word on the wire (*The wire* in
+    // ROADMAP.md). Driven through `checkTriggers` at the device's own coordinates
+    // rather than by walking the goat in: this case is about the move, not the walk.
+    harness.command("heal")?;
+    harness.command("pos 0 0")?;
+    harness.eval("goats.tuning.set(\"explosions.mine.density\", 0.012)")?;
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
+    harness.eval("sceneResetDevices()")?;
+    let lo = f64_of(harness.eval("TUNING.explosions.relocate.min")?);
+    let hi = f64_of(harness.eval("TUNING.explosions.relocate.max")?);
+    let (_, spent0, blast0, _) = explosion_state(harness)?;
+    let mine_moved = if let Some(mine) = explosion_mines(harness, 40.0)?.first() {
+        let mx = f64_of(mine["x"].clone());
+        let mz = f64_of(mine["z"].clone());
+        let (fcx, fcz) = ((mx / 2.0).floor(), (mz / 2.0).floor());
+        let armed_before = mine_armed(harness, fcx, fcz)?;
+        // The trip stamp is per unit and the cases above left the goat with one, so it
+        // is cleared to make this the goat's own arrival rather than a repeat.
+        harness.eval("goat.trip = -1")?;
+        harness.eval(&format!("checkTriggers(goat, {mx}, {mz}, false)"))?;
+        let gone = !mine_armed(harness, fcx, fcz)?;
+        let arrived = moved_cells(harness, "MOVED")?;
+        let spent1 = explosion_state(harness)?.1;
+        // One left, one arrived, and the ring it arrived on is the tuning's -- a cell
+        // either way, since a ring in metres lands wherever it lands in the grid.
+        let ringed = arrived.len() == 1 && {
+            let dx = arrived[0].0 - fcx;
+            let dz = arrived[0].1 - fcz;
+            let metres = (dx * dx + dz * dz).sqrt() * 2.0;
+            (dx != 0.0 || dz != 0.0) && metres >= lo - 1.5 && metres <= hi + 1.5
+        };
+        let armed_there = match arrived.first() {
+            Some((cx, cz)) => mine_armed(harness, *cx, *cz)?,
+            None => false,
+        };
+        // ...and the fuse still lands: the device left the world, and the bang it owed
+        // still arrives. Only the blast count is asserted afterwards -- the herd is
+        // walking the same field while these frames run.
+        for _ in 0..3 {
+            drive_burst(harness, 9)?;
+        }
+        let banged = explosion_state(harness)?.2 == blast0 + 1.0;
+        armed_before && gone && spent1 == spent0 + 1.0 && ringed && armed_there && banged
+    } else {
+        false
+    };
+    // The trap half, on the same rule plus one: a trap has to land on a tuft, because a
+    // trap without a tuft is not a device.
+    let traps = try_command_json(harness, "traps 40")?["traps"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let trap_moved = if let Some(trap) = traps.first() {
+        let tx = f64_of(trap["x"].clone());
+        let tz = f64_of(trap["z"].clone());
+        let (tcx, tcz) = ((tx / 2.0).floor(), (tz / 2.0).floor());
+        harness.eval("goat.trip = -1")?;
+        harness.eval(&format!("checkTriggers(goat, {tx}, {tz}, false)"))?;
+        let gone = !bool_of(harness.eval(&format!("trapAt({tcx}, {tcz})"))?);
+        let arrived = moved_cells(harness, "TRAP_MOVED")?;
+        let mut on_a_tuft = arrived.len() == 1;
+        for (cx, cz) in &arrived {
+            let x = cx * 2.0 + 1.0;
+            let z = cz * 2.0 + 1.0;
+            if harness
+                .eval(&format!("nearestTuft({x}, {z}, 1.5, false)"))?
+                .is_null()
+            {
+                on_a_tuft = false;
+            }
+        }
+        gone && on_a_tuft
+    } else {
+        false
+    };
+    out.relocated = mine_moved && trap_moved;
+    if !out.relocated {
+        eprintln!(
+            "relocation case: mine_moved={mine_moved} trap_moved={trap_moved} \
+             lo={lo} hi={hi} moved={} trapped={}",
+            harness.eval("MOVED.size")?,
+            harness.eval("TRAP_MOVED.size")?,
+        );
+    }
+    harness.command("heal")?;
+    harness.command("pos 0 0")?;
+    harness.eval("sceneResetDevices()")?;
+
     // ---- M19c: the blast throws the goat --------------------------------------
     //
     // The bang owns the impulse and the goat owns the flight, and the part a player
@@ -1571,7 +1696,7 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
         // goat.
         drive_burst(harness, 9)?;
         drive_burst(harness, 9)?;
-        harness.eval("SPENT.clear()")?;
+        harness.eval("sceneResetDevices()")?;
         wait_mobile(harness)?;
         harness.eval(if placeholder {
             "CLIP.flung = null"

@@ -408,10 +408,10 @@ function sceneCommand(line) {
                 key: tuftKey(t.cx, t.cz)
             });
         }
-        // The derived devices around the goat (explosions.js): mines and trapped
-        // tufts, their distance, and how long a spent one has left before it
-        // re-arms. A debugging tool, the answer to "was that thing actually
-        // there?", and the shape a mod's mine detector reads.
+        // The devices around the goat (explosions.js): mines and trapped tufts, their
+        // distance, and whether the device moved there rather than being part of the
+        // field's own derivation. A debugging tool, the answer to "was that thing
+        // actually there?", and the shape a mod's mine detector reads.
         case "traps": {
             const range = ctlArg(parts, 1) || 30;
             const near = sceneTraps(goat.px, goat.pz, range);
@@ -419,7 +419,7 @@ function sceneCommand(line) {
                 x: ctlRound(d.x),
                 z: ctlRound(d.z),
                 dist: ctlRound(d.dist),
-                rearm: ctlRound(d.rearm),
+                moved: d.moved,
                 key: d.key
             }));
             return "ok " + JSON.stringify({
@@ -427,6 +427,7 @@ function sceneCommand(line) {
                 mines: rows(near.mines),
                 traps: rows(near.traps),
                 spent: sceneExplosions().spent,
+                moved: sceneExplosions().moved,
                 pending: sceneExplosions().pending
             });
         }

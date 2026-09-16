@@ -8,21 +8,32 @@
 // field -- which is also what makes a mine detector a *mod* rather than a core
 // feature, and why the layout needs no room on the wire.
 //
-// The only state is what changes: which devices have gone off (`SPENT`, until
-// they re-arm), what is waiting on a fuse (`PENDING`) and the live effect
-// instances (`FX`). A device does not blow up where it was tripped -- the trigger
-// starts a fuse (`TUNING.explosions.fuse`), and the bang lands that many seconds
-// later, which gives the art a beat to read and the player a beat of "oh no".
+// The only state is where the devices are: which cells have already gone off and
+// which cells a replacement moved into (`SPENT`/`MOVED` and their trap twins), what
+// is waiting on a fuse (`PENDING`) and the live effect instances (`FX`). A device
+// does not blow up where it was tripped -- the trigger starts a fuse
+// (`TUNING.explosions.fuse`), and the bang lands that many seconds later, which gives
+// the art a beat to read and the player a beat of "oh no".
 //
 // What a blast does here is damage, with a falloff and a floor (M19b). The fling
 // is M19c, the crater is M19d and the wire is M19e; the effect is the weather's
 // cloud puff drawn as a camera-facing billboard, which M19f replaces with Blender
 // atlases behind the same pool.
 
-// A device key is a cell key, packed exactly as `tuftKey` (food.js) packs one, so
-// a mine and a tuft in the same cell cannot be mistaken for each other's.
-const SPENT = new Map();       // key -> seconds left before it re-arms
-const PENDING = [];            // { kind, x, z, seed, depth, left }
+// A device's *location* is the only thing that changes during a session: when one
+// goes off it is gone from where it was and a replacement is placed elsewhere by the
+// same kind of hash (`relocateDevice`), so the field drifts instead of thinning out.
+// Both halves stay derived, which is what keeps the wire honest: a peer that learns
+// *which cell fired* computes the same move, so nothing about the move travels (see
+// the M19e note in ROADMAP.md).
+//
+// A key is a cell key, packed exactly as `tuftKey` (food.js) packs one.
+const SPENT = new Set();        // mine cells that have gone off: empty ground now
+const MOVED = new Set();        // ...and mine cells a replacement was placed in
+const TRAP_SPENT = new Set();   // the same two, for trapped tufts
+const TRAP_MOVED = new Set();
+const PENDING = [];             // { kind, x, z, seed, depth, left }
+let tripCount = 0;              // devices tripped this session (the tell cache's key)
 
 // The effect pool. Fixed capacity, built once: nothing allocates while the game
 // runs, and `TUNING.explosions.maxActive` selects how much of it is live, so a
@@ -84,17 +95,79 @@ function mineAt(cx, cz) {
     return trapNoise(cx, cz, trapSalt) < TUNING.explosions.mine.density;
 }
 
-// Whether the tuft in cell (cx, cz) is trapped. A tuft exists only where the
-// meadow's own hash says so, so this is only ever asked about a tuft that is
-// there -- `nearestTuft` is what finds those, and it is also what carries the
-// `trappedOnly` filter this is used through.
-function trapAt(cx, cz) {
-    return trapNoise(cx ^ 0x5bf03635, cz ^ 0x27d4eb2f, trapSalt) < TUNING.explosions.trap.chance;
+// Whether cell (cx, cz) holds an armed mine *now*: the derived field, minus the
+// mines that have gone off, plus the replacements that have moved in.
+function mineArmed(cx, cz) {
+    const key = tuftKey(cx, cz);
+    if (SPENT.has(key)) return false;
+    return MOVED.has(key) || mineAt(cx, cz);
 }
 
-// How long a device that has just gone off stays down.
-function rearmFor(kind) {
-    return kind === "trap" ? TUNING.explosions.trap.rearm : TUNING.explosions.mine.rearm;
+// Whether the tuft in cell (cx, cz) is trapped now, on the same rule. A tuft exists
+// only where the meadow's own hash says so, so this is only ever asked about a tuft
+// that is there -- `nearestTuft` is what finds those, and it is also what carries the
+// `trappedOnly` filter this is used through.
+function trapAt(cx, cz) {
+    const key = tuftKey(cx, cz);
+    if (TRAP_SPENT.has(key)) return false;
+    return TRAP_MOVED.has(key) ||
+        trapNoise(cx ^ 0x5bf03635, cz ^ 0x27d4eb2f, trapSalt) < TUNING.explosions.trap.chance;
+}
+
+// Where a device goes when it has gone off.
+//
+// The destination is derived from the cell it left rather than from anything that
+// has to be remembered or sent: a ring `relocate.min`..`relocate.max` metres around
+// the cell, with the radius and the angle drawn from the cell's own key and the try
+// index. Every process that knows which cell fired therefore computes the same
+// destination, which is what lets a device move without a word on the wire.
+//
+// The ring never reaches inside `blast.radius`: a bang must not set off a mine it has
+// just placed, or a single blast would chain forever. `tries` draws before the device
+// is simply not replaced -- a bang takes one out of the world rather than ever
+// doubling one up -- and the spawn's safe disc is refused like everything else.
+//
+// A trap has one more condition: it has to land in a cell the meadow grows a tuft in,
+// because a trap without a tuft is not a device. That is why it asks `nearestTuft`
+// about the candidate cell rather than the meadow's hash directly.
+function relocateDevice(kind, fcx, fcz) {
+    const e = TUNING.explosions;
+    const r = e.relocate;
+    const lo = r.min > e.blast.radius ? r.min : e.blast.radius;
+    const fx = fcx * 2 + 1;
+    const fz = fcz * 2 + 1;
+    const mine = kind !== "trap";
+    for (let tries = 0; tries < r.tries; tries++) {
+        const d = lo + (r.max - lo) * trapNoise(fcx, fcz, trapSalt + tries);
+        // A second draw for the angle, off the other coordinate and the try.
+        const a = 6.283185307179586 * trapNoise(fcz ^ tries, fcx + tries, trapSalt ^ 0x27d4eb2f);
+        const cx = Math.floor((fx + Math.cos(a) * d) / 2);
+        const cz = Math.floor((fz + Math.sin(a) * d) / 2);
+        const x = cx * 2 + 1;
+        const z = cz * 2 + 1;
+        // The spawn's disc, measured to the cell's nearest edge exactly as
+        // `mineAt` measures it.
+        const ax = x < 0 ? -x : x;
+        const az = z < 0 ? -z : z;
+        const sx = ax > 1 ? ax - 1 : 0;
+        const sz = az > 1 ? az - 1 : 0;
+        if (sx * sx + sz * sz < e.safe * e.safe) continue;
+        const key = tuftKey(cx, cz);
+        if (mine) {
+            // `mineArmed` is false both for a cell that already holds one *and* for a
+            // cell whose mine has already gone off, and the second must stay empty for
+            // the session -- so the spent set is its own test here.
+            if (SPENT.has(key) || mineArmed(cx, cz)) continue;
+            MOVED.add(key);
+            return true;
+        }
+        if (TRAP_SPENT.has(key) || trapAt(cx, cz)) continue;
+        const t = nearestTuft(x, z, 1.5, false);
+        if (t === null || t.cx !== cx || t.cz !== cz) continue;
+        TRAP_MOVED.add(key);
+        return true;
+    }
+    return false;
 }
 
 // The nearest armed mine within `trigger` of (x, z), or null -- the goat's *own*
@@ -102,24 +175,34 @@ function rearmFor(kind) {
 // disc is `trigger` around a 2 m cell's centre, so it never comes within `trigger`
 // of a neighbour's centre. One cell per goat per arrival, not a box around it.
 function mineInCell(x, z, cx, cz) {
-    if (!mineAt(cx, cz)) return null;
+    if (!mineArmed(cx, cz)) return null;
     const e = TUNING.explosions;
     const mx = cx * 2 + 1;
     const mz = cz * 2 + 1;
     const dx = mx - x;
     const dz = mz - z;
     if (dx * dx + dz * dz > e.mine.trigger * e.mine.trigger) return null;
-    if (SPENT.has(tuftKey(cx, cz))) return null;
     return { cx: cx, cz: cz, x: mx, z: mz };
 }
 
-// Put a device on a fuse: it is spent from this moment (so nothing trips it
-// again while it waits) and the bang lands when the fuse runs out. Returns false
-// when the device had already gone off.
+// Put a device on a fuse: it leaves the world from this moment -- it cannot be
+// tripped again while it waits, and its replacement has already been placed
+// elsewhere -- and the bang lands when the fuse runs out. Returns false when there
+// is nothing armed at that cell (a spent cell, or one whose replacement is gone too).
 function tripDevice(kind, cx, cz, x, z, depth) {
     const key = tuftKey(cx, cz);
-    if (SPENT.has(key)) return false;
-    SPENT.set(key, rearmFor(kind));
+    const mine = kind !== "trap";
+    if (mine) {
+        if (!mineArmed(cx, cz)) return false;
+        // A replacement that goes off is simply removed; a derived mine leaves its
+        // cell spent, which is what keeps that cell empty for the session.
+        if (!MOVED.delete(key)) SPENT.add(key);
+    } else {
+        if (!trapAt(cx, cz)) return false;
+        if (!TRAP_MOVED.delete(key)) TRAP_SPENT.add(key);
+    }
+    tripCount += 1;
+    relocateDevice(kind, cx, cz);
     PENDING.push({
         kind: kind,
         x: x,
@@ -210,7 +293,10 @@ function flingDirection(ox, oz, d, seed) {
 }
 
 // A blast sets off the armed devices it reaches, `chain` seconds later. The fuse
-// makes a cascade read as a sequence rather than as one frame of noise.
+// makes a cascade read as a sequence rather than as one frame of noise. Armed means
+// what `mineArmed` means, so a mine that has moved into the blast's reach chains like
+// any other -- and the ring a replacement is placed on never reaches inside
+// `blast.radius`, so a bang cannot set off the mine it has just moved.
 function chainFrom(x, z, depth) {
     const e = TUNING.explosions;
     const r = e.blast.radius;
@@ -220,7 +306,7 @@ function chainFrom(x, z, depth) {
     const cz1 = Math.floor((z + r) / 2);
     for (let cx = cx0; cx <= cx1; cx++) {
         for (let cz = cz0; cz <= cz1; cz++) {
-            if (!mineAt(cx, cz)) continue;
+            if (!mineArmed(cx, cz)) continue;
             const mx = cx * 2 + 1;
             const mz = cz * 2 + 1;
             const dx = mx - x;
@@ -333,16 +419,6 @@ function updateExplosions(dt) {
         blast(pending.kind, pending.x, pending.z, pending.seed, pending.depth);
     }
 
-    // Devices that have gone off re-arm, which is what keeps a minefield a place
-    // you avoid for a while rather than a permanent no-go zone.
-    if (SPENT.size > 0) {
-        for (const key of SPENT.keys()) {
-            const left = SPENT.get(key) - dt;
-            if (left <= 0) SPENT.delete(key);
-            else SPENT.set(key, left);
-        }
-    }
-
     for (let i = 0; i < fxTop; i++) {
         const slot = FX[i];
         if (!slot.live) continue;
@@ -392,16 +468,16 @@ function drawExplosions() {
 // armed mine within `tell` metres shows a faint disturbed-earth patch. `tell: 0`
 // makes them invisible (and a mod can read the layout and draw its own).
 //
-// The patches are found once and redrawn, because a patch never moves and never
-// changes: the frame's cost is then the nought-to-two patches on screen rather
-// than the sixteen-cell window that finds them. That matters here -- a per-cell
-// derivation is a call, a builtin (`Math.imul`) and a property read, and this
-// engine's own numbers say a `property read` is its slowest per-frame operation
-// once the pool sweeps are out of the way. The window is re-scanned when the goat
-// has gone far enough for it to hold different cells, or when any of the field's
-// inputs moves: the density and the safe radius are live tuning leaves (the
-// console, mods and the harness's chain case all write them) and the salt moves
-// with the session.
+// The patches are found once and redrawn, because a patch does not move: the frame's
+// cost is then the nought-to-two patches on screen rather than the sixteen-cell
+// window that finds them. That matters here -- a per-cell derivation is a call, a
+// builtin (`Math.imul`) and a property read, and this engine's own numbers say a
+// `property read` is its slowest per-frame operation once the pool sweeps are out of
+// the way. The window is re-scanned when the goat has gone far enough for it to hold
+// different cells, or when any of the field's inputs moves: the density and the safe
+// radius are live tuning leaves (the console, mods and the harness's chain case all
+// write them), the salt moves with the session, and `tripCount` moves whenever a
+// device goes off, since its replacement lands somewhere else in that same window.
 const TELLS = [];
 let tellX = 0;
 let tellZ = 0;
@@ -409,6 +485,7 @@ let tellRange = -1;
 let tellSalt = 0;
 let tellDensity = 0;
 let tellSafe = 0;
+let tellTrips = 0;
 
 function drawMineTells(tell) {
     const e = TUNING.explosions;
@@ -416,6 +493,7 @@ function drawMineTells(tell) {
     const dz = goat.pz - tellZ;
     if (tellRange !== tell || tellSalt !== trapSalt ||
         tellDensity !== e.mine.density || tellSafe !== e.safe ||
+        tellTrips !== tripCount ||
         dx * dx + dz * dz > 0.25) {
         tellX = goat.px;
         tellZ = goat.pz;
@@ -423,11 +501,11 @@ function drawMineTells(tell) {
         tellSalt = trapSalt;
         tellDensity = e.mine.density;
         tellSafe = e.safe;
+        tellTrips = tripCount;
         scanMineTells(tell);
     }
     for (let i = 0; i < TELLS.length; i++) {
         const patch = TELLS[i];
-        if (SPENT.has(patch.key)) continue;
         rl.drawBillboard(cloudTex, patch.x, patch.y, patch.z, 1.3,
             rl.color(46, 40, 32, 120));
     }
@@ -444,7 +522,7 @@ function scanMineTells(tell) {
     const limit = tell * tell;
     for (let cx = cx0; cx <= cx1; cx++) {
         for (let cz = cz0; cz <= cz1; cz++) {
-            if (!mineAt(cx, cz)) continue;
+            if (!mineArmed(cx, cz)) continue;
             const mx = cx * 2 + 1;
             const mz = cz * 2 + 1;
             const dx = mx - goat.px;
@@ -477,10 +555,10 @@ function sceneTraps(x, z, range) {
             const dz = mz - z;
             if (dx * dx + dz * dz > range2) continue;
             const key = tuftKey(cx, cz);
-            const left = SPENT.has(key) ? SPENT.get(key) : 0;
-            if (mineAt(cx, cz)) {
+            if (mineArmed(cx, cz)) {
                 out.mines.push({
-                    x: mx, z: mz, key: key, dist: Math.sqrt(dx * dx + dz * dz), rearm: left,
+                    x: mx, z: mz, key: key, dist: Math.sqrt(dx * dx + dz * dz),
+                    moved: MOVED.has(key),
                 });
             }
             // A trapped tuft is reported at the tuft, which is where the bang
@@ -493,7 +571,7 @@ function sceneTraps(x, z, range) {
                         z: t.z,
                         key: key,
                         dist: Math.sqrt((t.x - x) * (t.x - x) + (t.z - z) * (t.z - z)),
-                        rearm: left,
+                        moved: TRAP_MOVED.has(key),
                     });
                 }
             }
@@ -502,18 +580,30 @@ function sceneTraps(x, z, range) {
     return out;
 }
 
-// The device state as one object, for the console and the tests: how many have
-// gone off, how many are waiting on a fuse, how many effects are live.
+// The device state as one object, for the console and the tests: how many devices
+// have gone off, how many replacements have moved in, how many are waiting on a
+// fuse, how many effects are live.
 function sceneExplosions() {
     let live = 0;
     for (let i = 0; i < fxTop; i++) {
         if (FX[i].live) live += 1;
     }
     return {
-        spent: SPENT.size,
+        spent: SPENT.size + TRAP_SPENT.size,
+        moved: MOVED.size + TRAP_MOVED.size,
         pending: PENDING.length,
         live: live,
         blasts: blastCount,
         safe: TUNING.explosions.safe,
     };
+}
+
+// Forget where the devices have got to: the derived field comes back exactly as it was
+// at boot. This is what the harness resets the field with between cases -- clearing
+// `SPENT` alone would leave the replacements it moved standing in the field.
+function sceneResetDevices() {
+    SPENT.clear();
+    MOVED.clear();
+    TRAP_SPENT.clear();
+    TRAP_MOVED.clear();
 }

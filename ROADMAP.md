@@ -2264,6 +2264,19 @@ exists only for what changes -- which devices are spent (see *The wire*).
   walking. `TUNING.explosions.mine.tell` (proposed 3 m) draws a faint
   disturbed-earth patch once the goat is that close, at low alpha. `tell: 0` makes
   them truly invisible; a mod can read the layout and draw its own (see *Mods*).
+- **A mine that has gone off moves house.** The cell it was in stays empty for the
+  session and a replacement is placed on a ring `relocate.min`..`relocate.max` metres
+  around it (8 to 24 by default) -- so the field *drifts* instead of thinning out, and
+  its density is a property of the world rather than something a session wears away.
+  The destination is drawn from the fired cell's own key, which is the whole trick:
+  every process that learns *which cell fired* computes the same move, so a device can
+  relocate without anything about the move travelling (see *The wire*). Cell
+  arithmetic on the ring's point, not a stored position, keeps the field derived. The
+  ring never reaches inside `blast.radius` -- a bang must not set off the mine it has
+  just placed -- and the spawn's `safe` disc is refused like any other unfit cell.
+  `relocate.tries` draws before the device is simply *not* replaced: a bang takes one
+  out of the world rather than ever doubling one up. This replaced M19b's re-arm
+  (`mine.rearm`/`trap.rearm`, 300 s): a device is not put back where it was.
 
 **Boobytrap.** Same charge, different host: a *tuft* is trapped, so it exists only
 where a tuft exists, and it has two triggers.
@@ -2502,12 +2515,15 @@ with `craters: Option<Vec<Crater>>` and `spent: Option<Vec<Spent>>`, both using
   client missing one disagrees with the host about the ground under the goat, and
   the goat then visibly stands in the air or in the floor. So the list is either
   whole or absent, and absent means "keep yours".
-- **Bounded by healing.** A crater fills in over `TUNING.explosions.crater.heal`
-  (proposed 240 s) and a spent device re-arms after
-  `TUNING.explosions.<kind>.rearm` (proposed 300 s, so a minefield is a place you
-  avoid for a while and then forget about). Both lists are therefore bounded by
-  (window × rate), exactly as `EATEN` is bounded by its regrow window -- the steady
-  state is a handful of entries, not an ever-growing field.
+- **Bounded by healing and by the move.** A crater fills in over
+  `TUNING.explosions.crater.heal` (proposed 240 s), which is what keeps the crater
+  list bounded: (window × rate), exactly as `EATEN` is bounded by its regrow window.
+  A spent device is bounded differently now that it *moves* rather than re-arms: the
+  `spent` list is one entry per bang for the session (it never shrinks), and it is
+  small for the same reason a blast log is -- a goat sets off a handful of devices a
+  minute at the very most. The *arrivals* need nothing at all: where a device moved to
+  is derived from the cell that fired, so a client that has the spent list has the
+  field (`mineArmed`).
 
 **Budget arithmetic** (to be pinned against the real encoder in M19e; the numbers
 here are estimates of the same order as `EatenCell`'s six bytes):
@@ -2531,8 +2547,8 @@ craters can too.
 With craters and spent devices, the proposed order is, least essential first:
 
 1. the world mods' state (already on its own datagram),
-2. the **spent** list (a client that re-arms a mine early sets it off again --
-   noisy, survivable),
+2. the **spent** list (a client that misses a trip leaves a mine standing that the
+   host has moved -- noisy, survivable, and self-correcting on the next snapshot),
 3. the **craters** (see the all-or-nothing note above: shed as a whole, never
    truncated),
 4. the meadow,
@@ -2755,11 +2771,14 @@ it rather than overlapping. That is M19g's, with the rest of the mixing.
             trigger: 0.6,              // metres; a goat closer than this sets it off
             clearance: 0.45,           // metres above the ground that counts as "over it"
             tell: 3.0,                 // metres at which the patch becomes visible; 0 = never
-            rearm: 300,                // seconds before the cell is mined again
         },
         trap: {
             chance: 0.04,              // share of tufts that are trapped
-            rearm: 300,
+        },
+        relocate: {
+            min: 8,                    // metres from the cell a device left to its replacement
+            max: 24,                   // ...at most, so a device stays in its own field
+            tries: 12,                 // draws before the device is simply not replaced
         },
         blast: {
             radius: 3.2,               // metres
@@ -2804,7 +2823,9 @@ and `lethal` are still the proposal -- and `lethal`, when it lands, is a promise
 about the *player*: the herd is already mortal without it.
 
 with `TUNING_CLAMP` entries for the ones a mistake could make unplayable
-(`mine.density` ≤ 0.1, `blast.radius` ≤ 12, `blast.damage` ≤ 100, the fling's
+(`mine.density` ≤ 0.1, `relocate.min`/`max` ≤ 60 with the floor raised to
+`blast.radius` in the code, `relocate.tries` an integer ≤ 64, `blast.radius` ≤ 12,
+`blast.damage` ≤ 100, the fling's
 gravity a negative, `fling.pivot` within the goat's own height, `herd.deathLinger`
 at least half a second so a corpse cannot ping-pong, `crater.heal`
 ≥ 30, `maxActive` ≤ 64, `chainDepth` ≤ 2) -- the tuning registry already has that
@@ -2822,10 +2843,11 @@ world unplayable.
   sells the impact more than the sprite does.
 - **The health bar drops**, and flashes: `drawHud` already draws the bars, so a red
   pulse on damage (and a dust-brown vignette if the blast was close) is a few lines.
-- **A console verb**, `traps` (or `mines`): the derived devices within N metres, as
-  JSON, exactly like `grass` and `bots` already report their own worlds. This is a
-  debugging tool, the harness's best friend, and the answer to "was that thing
-  actually there?" without a screenshot.
+- **A console verb**, `traps` (or `mines`): the devices within N metres, as JSON --
+  where each one is, how far, and whether it *moved* there rather than being part of
+  the field's own derivation -- exactly like `grass` and `bots` already report their
+  own worlds. This is a debugging tool, the harness's best friend, and the answer to
+  "was that thing actually there?" without a screenshot.
 
 ### Offline, the herd, and collisions
 
@@ -2956,11 +2978,11 @@ JavaScript stubs are the only implementation either of them ever gets.
 | # | Slice | Depends on | Size | Lands |
 | --- | --- | --- | --- | --- |
 | **M19a** | Engine additions | — | S | ✅ **Done** — landed upstream in `slag` (`8a4209fa`): `beginBlendMode`/`endBlendMode` with the whole `BLEND_*` set (`setBlendFactors`/`setBlendFactorsSeparate` plus `BLEND_FACTOR_*`/`BLEND_EQUATION_*` for the custom pair), `drawQuad3D`, `setTextureFilter` (+ `TEXTURE_FILTER_*`), `unloadTexture`, and the image read (`loadImage`, `imageWidth`/`imageHeight`, `imagePixel`, `unloadImage`), with the `rl` surface test and the README's surface prose (which also gains the texture bindings it never listed) |
-| **M19b** | Devices and blasts, offline, art-free | — | S–M | `explosions.js` (a sixteenth scene part): the derived layout, the triggers, `blast()`, the one-deep chain, damage and the health floor, the `traps` verb, a `tune` verb for the whole tuning tree, and the walking-onto-a-mine case. The bang reuses the weather's cloud puff, so the part adds no texture and no load step |
+| **M19b** | Devices and blasts, offline, art-free | — | S–M | `explosions.js` (a sixteenth scene part): the derived layout, the triggers, `blast()`, the one-deep chain, damage and the health floor, the `traps` verb, a `tune` verb for the whole tuning tree, and the walking-onto-a-mine case. The bang reuses the weather's cloud puff, so the part adds no texture and no load step. **Revised**: a spent device *moves* rather than re-arming (`relocate`, 8-24 m from the cell it left, derived from that cell's key) -- the field drifts, its density is the world's, and the move needs nothing on the wire |
 | **M19c** | The flung goat | M19b | M | Landed: the `"flung"` mode and its arc (integrated in absolute height, so a slope it crosses mid-air cannot drag it), the input lock, landing on the ground it actually meets, the roll the placeholder owes (`flingDraw`), `Gait::Flung` + the `PROTOCOL_VERSION` 9 bump, the peer path, `restart()` clearing it, the clip contract -- with the jump variant as the fallback until Blender lands -- and the herd, which is flung, lands, and walks on. A bang in `sfx/` is heard too, faded by its distance. **Open, and named in *The wire*: the flung *height* does not travel**, so a bot on a client (and a peer's goat anywhere) tumbles on the ground until `py` rides on `BotState`/`PeerState` -- which M19f's rootless `GoatFlung` will force |
 | **M19c2** | The herd is mortal: bots take damage, and die | M19c | S | ✅ **Landed** — bots take the player's own blast curve without the player's floor (`health` on a bot, charged in `blast()`), a lethal bang kills instead of throwing (`botDie`, bots.js), a killed bot lies there for `herd.deathLinger` playing the death clip and then gets up 10-26 m away on ground with no armed mine under it (`botRespawn`), a corpse has no AI and trips no device but *does* land — a bot killed mid-arc keeps the arc it had. On the wire it is `Gait::Dead` plus the fraction (`netBotPhase`/`netApplyWorld`), which the enum already carried, so **no protocol version** |
 | **M19d** | Craters | M19b | M | The dish in `terrainHeight` (with the cell cache and the forced rebuild), the tufts killed inside it, healing, the cap, and the offline look (a tinted disc) |
-| **M19e** | The wire | M19b-d | M | `BlastKind`, the two messages, the rate limit, `craters`/`spent` on the world datagram with `None`-means-keep, the shed order, the budget case, and the two-window check |
+| **M19e** | The wire | M19b-d | M | `BlastKind`, the two messages, the rate limit, `craters`/`spent` on the world datagram with `None`-means-keep, the shed order, the budget case, and the two-window check. The **move** needs no field of its own: a peer that knows which cell fired derives the same destination, so `spent` is the whole of it |
 | **M19f** | The art | M19a, M19c, M19d | M–L | `GoatFlung` in `goat.blend` (which retires the procedural roll and the jump-clip placeholder together); the three atlases and the crater decals as PNGs in the asset table; the flipbook instances; the light-flash uniforms; the camera shake and the HUD pulse |
 | **M19g** | Sound and the mod surface | M19e, M19f | S–M | The rest of the slots (`sfx.fuse`, `sfx.trap`, `sfx.blast.close`) and the per-slot pools, the fuse's click; `goats.explosions.*`, the `blast` event, the docs (`APIv1.md` §4, `README.md`) |
 
@@ -2993,7 +3015,13 @@ it:
   charges the goat and still throws it, a lethal one drops it dead with `Gait::Dead`
   and a fraction in between (and `GoatDeath` among `bot_clip_names`, which is what a
   bot posed), a bot killed in the air falls and lands still dead, and `deathLinger`
-  later it is up again, whole, on the respawn ring. Two of the cases wait for the
+  later it is up again, whole, on the respawn ring. The move has its own case: a
+  device tripped through `checkTriggers` at its own coordinates is gone from its cell
+  (`mineArmed` false), exactly one replacement has arrived, it stands on the ring the
+  tuning asks for (a cell either way, since a ring in metres lands wherever it lands
+  in the grid), it is armed where it landed, the fuse it owed still lands -- and a
+  trap's replacement is on a tuft, because a trap without a tuft is not a device. Two
+  of the cases wait for the
   goat's own bang rather than for the blast counter to move: `checkTriggers` runs over
   the herd too, so a bot stepping on a device of its own used to be able to end a case
   about the player early.

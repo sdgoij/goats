@@ -250,7 +250,7 @@ function botRespawn(b) {
         const r = 10 + botRnd() * 16;
         x = goat.px + Math.cos(a) * r;
         z = goat.pz + Math.sin(a) * r;
-        if (!mineAt(Math.floor(x / 2), Math.floor(z / 2))) break;
+        if (!mineArmed(Math.floor(x / 2), Math.floor(z / 2))) break;
     }
     b.x = x;
     b.z = z;
