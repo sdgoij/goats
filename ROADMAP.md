@@ -1158,8 +1158,11 @@ decisions behind it and the constraints that shape it.
   startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
   diagnosis one look rather than a guess. Opaque assets are still compared byte
   for byte, since the loader cannot know what they are. `mods/birds` itself is
-  pinned at `bf1f98a740460a01` by a test, because a release ships it and an
-  older client refuses a server whose birds differs.
+  pinned at `37415a1ffcafa331` by a test, because a release ships it and an
+  older client refuses a server whose birds differs. That pin has moved once, when
+  the mod's arithmetic was rewritten to stop naming `Math` (PERF.md §4b) -- a
+  deliberate change, and a compatibility boundary: a peer on the older birds
+  cannot join a host on the newer one.
 - **M14d2 — World-mod simulation. ✅ Done.** `goats.world.registerStream` and
   `goats.rng` own a seeded PRNG stream per `side: "world"` mod; `sceneUseSeed`
   re-derives them from the session seed, and their state travels in the

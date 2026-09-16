@@ -12,10 +12,18 @@ build rather than the revision, which is itself the most actionable finding here
 - **The biggest single cost is the herd: 5.4 ms/frame for 7 goats.** It is
   per-bot CPU skinning (`updateModelAnimation` deforms the mesh) plus one model
   draw per bot. No other phase is close.
-- **The grass field is second: 4.2 ms** for ~370 immediate-mode cube draws per
-  frame (plus 0.9 ms more in the shadow pass, which draws the same grass again).
-- **Mods cost ~2.0 ms/frame** of that budget (`mods_upd` + `mods_draw3d`) with
-  four mods loaded.
+- **The grass is second: ~2.0 ms/frame** (1.76 visible + 0.28 in the shadow pass,
+  down from 5.0) for ~370 immediate-mode cube draws — and the shadow pass draws the
+  same grass again.
+- **Mods cost ~0.9 ms/frame** (`mods_upd` + `mods_draw3d`) with four mods loaded,
+  down from 2.0.
+- **Rain scales with a count the weather sets, and used to be the third cost**: in a
+  full downpour `rain_upd` was 0.89–0.95 ms for ~600 drops; it is 0.08–0.09 now. What
+  is left of the rain is `rain2d` (0.62), one `drawLine` crossing per drop.
+- **Every small phase in the table carries a ~0.03 ms floor** — `perfMark` is two
+  engine calls — which is ~1.1 ms of the reported sum across ~36 phases. `peers_upd`,
+  `terrain_upd`, `mod2d`, `goat`, `clouds_upd`, `stars` and `food_upd` are essentially
+  all floor.
 - **Engine `8a4209fa` is not shown to be slower.** It measured 17% slower, and
   then the *same source* — verified byte-identical — measured as fast as the old
   engine, depending only on how cargo built it. See §6.
@@ -24,10 +32,35 @@ build rather than the revision, which is itself the most actionable finding here
   between those two binaries, while every path that enters native code is 13–29%
   slower in the slow one. **`codegen-units = 1` + `lto = "thin"` removes it** and
   lands on the fast side, for ~7× the build time (§6).
-- **The lever for the engine is the crossing itself.** A frame here is thousands
-  of `rl.*` reads and calls, each of which measures in the microseconds. That is
-  what to attack — and it is 2–3× bigger than the build spread, so it shows through
-  either way.
+- **The scene’s cost is per global *read*, and it is a specific kind of read.**
+  §4b’s rule (“a body that names a global is not compiled”) is corrected by §4c:
+  the scene’s bodies *do* compile, and what they pay is ~63 ns for every read of a
+  script-level `const`/`let`/function *name* inside a loop — 25× the same read from
+  a local, and 25× a global *object* property like `Math` or `rl` (2.5–7 ns),
+  because the engine’s global-value cell only warms for object records (§4c). Inside
+  a **mod** the cell is disabled entirely by an unclean env chain, so a global read
+  there costs ~2.9 µs — which is why `mods/birds` needed its `Math` members frozen.
+- **Removing global reads from four hot bodies recovered 2.1–2.3 ms/frame dry and
+  ~0.8 ms more in the rain**: the grass grid 2.88 → 1.76 ms (`shadow_grass` 0.53 →
+  0.28–0.36), the goat collision resolve 0.49 → 0.22 ms, the birds mod (0.70 →
+  0.47–0.53 update, 0.68 → 0.31–0.37 draw), and the rain drops (0.89–0.95 →
+  0.08–0.09 in a held downpour) (§4b, §5b). The arithmetic, the ~1000 draw calls and
+  the behaviour of every system are unchanged; only the reads moved.
+- **The frame is at vsync, so these wins show up as headroom, not as fps.** The
+  sum of the phases went 14.3 → 12.0–12.2 ms dry, and a held downpour still only
+  reaches 13.2 ms of a 16.7 ms budget (`boundary`, the swap wait, absorbs the rest);
+  fps stayed 59–61 throughout. The budget is what changes; fps only will when the
+  *sum* drops under ~16 ms with margin, or on hardware slower than this.
+- **The scene side of this is done, and what is left is the engine's interface to
+  it.** Every hot loop that could be moved into a parameter-only body has been
+  (§5b, “what is left”). The remaining phases are counts of engine crossings — 670
+  `drawLine` in rain, ~370 `drawCube` of grass, ~10 key reads a frame — or engine
+  cost inside one call (`bots` 5.5). The levers are a batched submission path, a
+  batched key read, and GPU skinning (§7.1).
+- **The lever for the engine is the compile gate, then the crossing.** A frame
+  here is also thousands of `rl.*` calls, but the microsecond figures §4 read off
+  the probe were mostly the interpreter, not the crossing (§4b): fix the gate and
+  the scene's own loops stop paying it.
 
 ## 1. What was measured, and how
 
@@ -154,6 +187,158 @@ carry that overhead. What survives the caveat is the comparison:
   are not plain data. If they are native accessors, every `rl.KEY_W`-style read
   in the scene is a crossing.
 
+**§4b supersedes the reading above.** `Math.sin` is not slow and `rl.WHITE` is not
+an accessor: the *loop* is not compiled, because the function holding it names
+`rl` and `Math`. The same loop in a function that names neither runs 60× faster.
+The relative result (a native-touching loop got slower between the two builds)
+still stands — that is a build effect on the interpreted path as well.
+
+## 4b. What the engine actually compiles
+
+> **Corrected by §4c.** Everything below was measured from `mods/jitprobe`, i.e. from
+> inside a **mod**, whose env chain is not clean and which therefore disables the
+> engine's global fast cell for every global read. The *rule* it states does not hold
+> for the scene; the *measurements* are real and describe mods. Read §4c for the
+> corrected, cross-engine picture before acting on anything here.
+
+The `perf probe` loop that started this was the interpreter, not the crossing, and
+the rule behind it is narrow enough to state, measure and code around.
+
+`perf probe` reports `pureNs` (added during this work): the identical
+`sink += i * 3` loop, in a function of its own with no engine call and no global
+in it. Measured on the current binary it reports **9.7–56.6 ns** per iteration
+(56.6 on the first probe, ~9.7 once the engine has settled) against **646–707 ns**
+for the same loop beside the engine calls — a ~60× gap, which is the interpreter's
+own per-step cost (~90–200 ns for the ~4 steps a loop iteration takes).
+
+To find the *rule* rather than guess at it, `mods/jitprobe` (a throwaway
+measurement mod, `jitprobe` verb) times one body per shape over 200 000
+iterations, warm, after the JIT has been consulted. Nanoseconds per iteration;
+four runs, same binary, same order as listed (and note these bodies are inside a
+*mod* — see §4c):
+
+| body | ns/iter | verdict |
+| --- | ---: | --- |
+| `sink += i * 3`, parameters only | 9.2–15.4 | compiled |
+| `+` a wrapper-scope `const` | 12.8–20.9 | compiled |
+| `+` a two-level member chain on that const | 17.3–28.8 | compiled |
+| `+` a call to a wrapper-scope function | 55.6–56.8 | compiled |
+| `+` a call to a parameter | 13.6–13.9 | compiled |
+| `+` `(i + 1) ** 0.5` | 32.1–35.4 | compiled |
+| `+` a `continue` | 24.2–25.5 | compiled |
+| `+` an `if`/`else` | 20.8–21.7 | compiled |
+| nested loops with member reads *and writes* | 30.6–34.4 | compiled |
+| **`+` a true global read (`Math.PI`)** | **2830–2913** | **interpreted** |
+| **`+` a global object property read** | **3030–3051** | **interpreted** |
+| **`+` a call to a global function** | **3030–3032** | **interpreted** |
+| **`+` `Math.sqrt(i)`** | **2829–3286** | **interpreted** |
+
+So the gate is: **a body that names a true global is not compiled.** A global read,
+not a global *call*, is enough on its own; note the last four rows are ~100× the
+rows above them and that swapping `Math.sqrt(i)` for `(i + 1) ** 0.5` moves a row
+from the interpreted group to the compiled one. Calls are fine — including calls
+to functions the body does not know statically — and so are member reads and
+writes on objects reached through a local, a parameter or a captured binding,
+nested loops, `continue`, and declarations inside blocks. The engine does have
+`load_ident`/`get_global` slow paths for compiled bodies, so what fails is
+certification / leaf eligibility rather than the lowering — which is why this is
+worth raising upstream: **the scene is written the way JS is normally written,
+and normal JS is exactly what does not compile.**
+
+This is not a fixture-only effect. All three of this session’s frame-level wins
+are the rule in the scene:
+
+| change | body | phase (ms/frame) |
+| --- | --- | ---: |
+| three `Math.imul`, one `Math.sin` and a `terrainHeight()` call moved out of the grass grid into parameters | `tuftField` | `tufts` 2.88 → 1.78, `shadow_grass` 0.53 → 0.36 |
+| two `TUNING` reads and a `Math.sqrt` removed from the pair loop | `collidePairs` | `collide` 0.49 → 0.22 |
+| every `Math.*` member frozen into a module-scope const (same functions, read as locals) | the birds mod’s step, pose and quaternion helpers | `mods_upd` 0.70 → 0.47–0.53, `mods_draw3d` 0.68 → 0.31–0.37 |
+| the wind, the seed and `hash` passed in, the seed returned | `rainFall` | `rain_upd` 0.89–0.95 → 0.08–0.09 in a held downpour (§5b) |
+
+The grass change is the cleanest evidence: the grid walks the same 600 cells, does
+the same hash, and issues the same ~380 draws — only the reads moved.
+
+There are two forms of the same fix, and which one applies is a judgement about
+the call graph. The grass grid, the collision resolve and the rain drops take
+**everything as a parameter** (`out, cellH, eaten, imul, sin, groundY, …`); the birds
+mod instead **freezes the members at module scope** and reads them as captured
+bindings, which needs no change to a signature anywhere. A module-scope `const` in a
+mod lives in the mod wrapper’s scope, and reading it from a nested function is a
+context-slot read, not a global one — measured at 13–18 ns/iter in the table above.
+Prefer freezing when many small helpers each need the same two or three builtins;
+prefer parameters when a leaf body needs one or two. **In the scene, only parameters
+work**: a top-level `const` in the concatenated scene script is a global lexical
+binding, and reading one costs ~63 ns a read (§4c), which is the same order as the
+mod’s problem and just as worth hoisting out of a loop.
+
+A kernel that has to hand back state — the rain’s PRNG seed advances once per
+wrapped drop — returns it, since it cannot write the module’s global. And one
+counter-example is on the record in §5b: precomputing *into* an array for an
+interpreted consumer loses more than it saves.
+
+## 4c. Correction: the scene *does* compile, and the cost is per read
+
+§4b’s rule — “a body that names a true global is not compiled” — is wrong, and the
+fixture that produced it could not have shown it: those bodies live inside a **mod**,
+whose env chain is not clean, so the JIT disables its global fast cell for every
+global read there. That is a real effect of its own (a global read costs ~2.9 µs in
+a mod function where a script pays 7 ns for the same read), but it is a *mod* fact.
+
+Re-measured with the engine’s own cross-engine corpus runner (`slag --corpus`, the
+same steady-state protocol as node), the picture is per-read rather than per-body:
+
+| workload, 1,000,000 iterations | slag jit | slag jitless | node |
+| --- | ---: | ---: | ---: |
+| a top-level `const` read in the loop | **63.5 ms** | 96.6 | 0.58 |
+| the same value read from a local | **2.5** | 17.2 | 0.59 |
+| the same value as `globalThis.K` (object record) | **2.5** | 17.3 | 86.5 |
+| the same loop, literal bound (no global read at all) | 1.06 | 10.1 | 0.18 |
+| `Math.PI` in the loop body | 2.12 | 16.7 | 25.7 |
+| `(i + 1) ** 0.5` / `Math.sqrt(i + 1)` | 5.7 / 8.7 | 15.4 / 20.8 | 0.53 / 25.7 |
+| a script-level function called per iteration | 2.33 | 18.7 | 12.6 |
+| a parameter-only kernel called 1000× | 11.9 | 69.2 | 0.79 |
+
+The scene is evaluated as a script (`context.eval(SCENE)`), so its chain *is* clean
+and its bodies are compiled. What it pays is **~63 ns for every read of a
+script-level `const`/`let`/function name inside a compiled loop** — 25× the same
+read from a local — because the engine’s global-value cell is only warmed for
+global **object-record** properties (`Math`, `rl`, host globals: 2.5–7 ns) and never
+for the global **declarative** record, which is what every top-level `const` here
+is: `TUNING`, `BOTS`, `CLIP`, `RAIN`, `TUFT_POOL`, `EATEN`, `TERRAIN_CELL_H`, and
+every scene function *name*. The engine-side write-up, with the code comment that
+gives the soundness reason, is `slag/.notes/global-read-cells.md`; the shapes are now
+corpus rows under `tools/corpus/workloads/globals/`.
+
+So §5b’s wins are real and the recipe is unchanged in practice — hoist the reads out
+of the loop — but the reason is “~63 ns per declarative read”, not “the body never
+compiled”. Two consequences to carry:
+
+- **`** 0.5` for `Math.sqrt` was not the win it looked like in §4b’s table.** `Math`
+  is the *cheap* kind of global in a script (2.12 ms vs 1.06 for no read at all),
+  and the corpus puts `Math.sqrt` at 30 ns/iter against `** 0.5`’s 20 ns. The
+  substitution still matters in a *mod*, where every global read is ~2.9 µs.
+- **The magnitudes are not reconciled yet**, and this is now the most valuable open
+  question in the profile: `collidePairs` still measures ~3.4 µs per pair-step, ~40×
+  the corpus’s compiled kernel, and a single call to a compiled kernel measured
+  ~226 µs once per frame against ~9 µs in a burst (§4b). Both point at how a
+  compiled body is *reached*, not at whether it compiles.
+
+**Open, and the next thing to chase:** the absolute cost of a *single* call to one
+of these kernels does not match its cost in a burst. In the same process, the same
+global-free body costs **~9 µs/call** called 2000 times in a row and **~226 µs/call**
+called once per frame from the scene’s own update path (or from a console command),
+stable across runs, with the measurement floor at ~2.9 µs. `collide`’s 0.22 ms per
+frame matches the per-frame figure almost exactly, which suggests the scene’s
+kernels are **still interpreted** and that what this session recovered is the cost
+of the global reads that were removed rather than interpreter overhead in general.
+What makes the per-call cost depend on the calling pattern — an eviction between
+calls, the leaf-inline room check, a first-consult path — is the number to explain
+in the engine: 226 µs for a body that measures 9 µs in a burst.
+<br>(A second, smaller oddity in the same fixture: within one run the *same* body
+measured 4147 ns/iter early and 93 ns/iter later, which is the same
+pattern-dependence seen from the other side. Treat any single measurement of a
+newly-called body as provisional until it is repeated.)
+
 ## 5. Where our usage spends the frame
 
 Top items, the slow git build of §3 beside the profile this repo now ships (§6):
@@ -187,6 +372,123 @@ Two things stand out for the near term:
 `shadow_bots` is worth a separate look: it ranged from 0.14 to 2.40 ms across
 windows in the same run, which is a 17× spread on what should be a constant
 amount of work.
+
+## 5b. This session: the compile gate, worked around
+
+Same machine, same protocol, same binary flags — only the bodies named in §4b
+changed. A mod change needs no rebuild at all (the client loads `mods/` at
+startup), so the birds row is measured in the same binary as the two before it.
+All runs are `perf on` windows from a settled client, 7 bots, 4 mods, dry.
+ms/frame:
+
+| phase | before | + scene kernels | + birds |
+| --- | ---: | ---: | ---: |
+| `tufts` | 2.88 | 1.78 | 1.76–1.77 |
+| `shadow_grass` | 0.53 | 0.35–0.36 | 0.28–0.36 |
+| `collide` | 0.49 | 0.22 | 0.21–0.22 |
+| `mods_upd` | 0.69–0.77 | 0.70–0.79 | **0.47–0.53** |
+| `mods_draw3d` | 0.68–0.69 | 0.68 | **0.31–0.37** |
+| `shadow_tail` | 0.14–0.15 | 0.14 | 0.03–0.13 |
+| `endmode3d` | 0.08 | 0.08 | 0.02–0.09 |
+| **sum of phases** | **14.31** | **12.78** | **11.99–12.21** |
+| `boundary` | 2.22 | 3.55 | 4.24–4.32 |
+| frame total | 16.53 | 16.33 | 16.31–16.45 |
+| fps | 59 | 60 | 59–60 |
+
+Ranges are run-to-run, and one of them has a known cause: the grass cull follows the
+goat, so `tufts`, `shadow_grass` and the two tail spans move with it — the runs
+above drew 347–381 cubes/frame. The `mods_*` rows are the ones to read: they are
+the flock, they do not depend on where the goat is, and they fell by 0.24 and 0.34
+ms/frame.
+
+Two things to read from this. The JS phases fall by 2.1–2.3 ms and `boundary`
+(the swap wait) takes exactly that back: the frame was already vsync-limited at
+59–60, so the win appears as **headroom** — about a third of the 16.7 ms budget
+returned — not as fps. And the phases that did not change are the ones the rule
+predicts: `bots` 5.45–5.5 (the herd’s CPU skinning and model draw, inside a single
+engine call), `goat_pose` 0.77–0.83 (the same for the player), and the rest of the
+scene, which still reads globals.
+
+One earlier attempt in this same phase **did not** pay: replacing the birds’
+`update` loop’s four `Number.isFinite` global reads with one call changed
+`mods_upd` by nothing measurable. That was the right shape for the wrong body —
+the cost was never in the loop, it was in the O(n²) neighbour loop inside
+`stepFly` and in the ~10 small helpers each bird calls, every one of which named
+`Math` in its own body. Freezing the members (§4b) is what moved it.
+
+### The wet frame, and the rain loop
+
+Rain is the one system whose cost scales with a count the weather sets, so it gets
+its own measurement: `weather rain` holds a full downpour (`rain: 1`, ~670 drops)
+for as long as the command is re-issued, and `rain2d` — which this session did *not*
+change — is the control for how many drops are live.
+
+| phase | before (natural rain, 440–610 drops) | after (held downpour, ~670 drops) |
+| --- | ---: | ---: |
+| `rain_upd` | 0.89–0.95 | **0.08–0.09** |
+| `rain2d` | 0.44–0.61 | 0.62–0.64 |
+
+The update loop is ~10× cheaper and it is handling *more* drops than the run it is
+compared with. `rainFall` (`weather.js`) takes the wind, the seed and `hash` as
+parameters and returns the advanced seed, so the body stops naming globals; at
+0.08 ms for ~670 drops it is ~75 ns a drop, which is machine code (and the phase
+floor below is ~0.03 of it).
+
+`rain2d` is where the rain now spends its time: one `rl.drawLine` crossing per drop,
+~670 of them. That is not a JS problem — see §7.1.
+
+**One thing that did not work, recorded so it is not retried.** The same split
+applied to `drawRain` — hoist the four rounded endpoints into a scratch number pool
+in a kernel, then let the interpreted draw loop read them — made the phase **2.4×
+worse**: `rain2d` 0.62 → 1.50 ms. Four indexed reads of a shared array cost an
+interpreted body more than the arithmetic they replaced (a monomorphic `d.x * w` is
+cheaper than `pool[o + 2]` on a 4096-number array). It is reverted, and the comment
+in `drawRain` records the numbers. The recipe holds when the *kernel* keeps the work
+and the interpreted body gets smaller; it backfires when the interpreted body swaps
+arithmetic for indirection.
+
+### The measurement floor
+
+`perfMark` itself costs something, and the M19 work handed us a way to measure it:
+`tune explosions.enabled 0` turns the whole explosion system off, and
+`updateExplosions` then returns on its first statement.
+
+| `fx_upd` | ms/frame |
+| --- | ---: |
+| system on | 0.10 |
+| `tune explosions.enabled 0` | **0.03** |
+
+A phase that does nothing but be called and marked is **0.03 ms**, and with ~36
+phases in the frame that is **~1.1 ms of the reported “sum of phases”** — around 9%
+of it. Two consequences for reading the tables above. Small phases are mostly floor:
+`peers_upd` 0.02, `terrain_upd` 0.02, `mod2d` 0.03, `goat` 0.04, `clouds_upd` 0.05
+and `stars` 0.06 have essentially nothing left to win, and “0.15 ms” for a weather or
+lighting phase is ~0.12 ms of work. And the *deltas* are unaffected: both sides of
+every comparison carry the same floor.
+
+### What is left in the scene, and why it is not JS work
+
+With the rain loop done, every hot loop in the scene that could be moved into a
+parameter-only body has been: the cloud drift, the grass field, the collision
+resolve, the rain drops, and — in a mod — the flock. What remains above the floor,
+by measured cost:
+
+| phase | ms | what it actually is |
+| --- | ---: | --- |
+| `goat_sim` | 0.26 | ~10 `rl.isKeyDown` crossings in the gait and state machine |
+| `sky2d` | 0.18 | `drawSky`: shader uniform sets |
+| `audio` | 0.18 | `rl.updateMusic`/`setMusicVolume` — streaming work inside the engine |
+| `hud` | 0.17 | text and rectangle draws |
+| `weather` | 0.15 | four small scalar functions, one call each |
+| `light` | 0.15 | `updateAmbient`/`updateLight`/`updateShadow` + two `lerpColor` |
+| `input` | 0.12 | camera and action key reads |
+| `rain2d` | 0.62 in rain | one `drawLine` per drop |
+| `goat_pose` + `bots` | 0.8 + 5.5 | CPU skinning and one model draw per goat |
+
+Every one of those is a count of engine crossings or an engine-side cost, not
+arithmetic that can be moved. The lever is submission: a batched line/cube call, a
+batched key-state read, GPU skinning (§7.1). Optimising the scene further would now
+be optimising the engine's interface to it.
 
 ## 6. The `8a4209f` "regression" is a build artifact
 
@@ -333,34 +635,68 @@ table in §3 should be read as "this build is faster than that build", not as
    engine source and the same scene went from 45–49 fps to 55–62, with every phase
    improving except the herd's own work. Cost: ~3 m 27 s per release build.
    `lto = "fat"` is a tie on frame time and twice the build.
-1. **Attack the per-crossing cost.** A frame here is thousands of `rl.*` reads
-   and calls, and the probe puts a crossing in the microseconds. Every phase in
-   the table is bounded by it. Concrete things to check: whether each call builds
-   an arguments array or formats anything on the success path; whether the texture
-   registry's `Mutex` is taken per draw; whether `rl`'s constants are plain data
-   (they are registered with `create_data_property`, so that one is likely fine).
-3. **GPU skinning.** CPU skinning is what makes the herd cost 5.4 ms and what
+1. **Attack the compile gate (§4b) before the crossing.** A body that names a
+true global is not compiled at all, and this scene names globals everywhere, so
+the interpreter’s ~90–200 ns/step is what most of the frame is actually paying.
+The JIT already has the `load_ident`/`get_global` slow paths for it, so the gate
+is in certification / leaf eligibility. Whatever is decided there, the number to
+beat is measured: 9–35 ns/iter compiled versus ~2900 ns/iter for the same body
+with one global read in it. Relaxing it requires no changes to any scene, ours
+included.
+2. **Then the calling-pattern dependence (§4b).** The same global-free body costs
+~9 µs/call in a burst and ~226 µs/call once per frame, in the same process. If a
+compiled body can be reached reliably once per frame, the kernels this session
+rewrote would go to ~0.01 ms each instead of 0.22 and ~0.9.
+3. **A batched immediate-mode path.** The scene’s remaining JSON-side cost is
+   almost entirely submission counts: ~670 `rl.drawLine` in a downpour, ~370
+   `rl.drawCube` for the grass (twice, with the shadow pass), plus the `hud`
+   rectangles and text. Anything that lets the scene submit N primitives in one
+   crossing — a line/quad batch, or a mesh it can rebuild — removes most of
+   `rain2d`, `tufts`, `shadow_grass` and `hud` at once. The JS round those loops is
+   already as small as this engine lets it be (§5b).
+4. **A batched key-state read.** `goat_sim` (0.26) and `input` (0.12) are ~10
+   `rl.isKeyDown` crossings a frame between them. One call returning the state of
+   the keys the scene cares about (or a bitmask) would collapse that to one or two.
+5. **GPU skinning.** CPU skinning is what makes the herd cost 5.5 ms and what
    forces one model per goat (`updateModelAnimation` deforms the mesh itself, so
    two goats cannot share one). Bone matrices as uniforms would collapse both the
-   cost and the memory.
-4. **A batched immediate-mode path.** ~370 `drawCube` crossings per frame for the
-   grass; anything that lets the scene submit N quads in one crossing (or a mesh
-   it can rebuild) removes them.
+   cost and the memory, and it is the single largest item left in the frame.
+6. **Then the per-crossing cost.** A frame is thousands of `rl.*` reads and calls;
+   the two items above remove a large fraction of them by construction, and what is
+   left is worth attacking one crossing at a time (argument marshalling, the texture
+   registry’s `Mutex`, whether each call allocates).
 
 ### 7.2 Scene
 
-1. **Draw the grass once.** Build the visible field as a mesh instead of ~370
+1. **Write hot bodies the way the gate wants them (§4b).** Two forms, both in
+   use now: **parameters** (`collidePairs`, `tuftField` — the members of `TUNING`
+   it needs, the caches it touches, and any builtin it calls are all passed in)
+   and **frozen module-scope consts** (`mods/birds`, where `PI`/`SIN`/`COS`/… are
+   captured bindings instead of `Math.*`, needing no signature change anywhere).
+   Let the caller, which is interpreted anyway, do the global reads and the
+   `rl.*` calls. Use `** 0.5` for a square root and `x < 0 ? -x : x` for
+   `Math.abs`; both keep a body compiled where the `Math` call would not.
+2. ~~The birds mod is the next candidate~~ **done** (§5b): `mods_upd` 0.70 → 0.47–0.53,
+   `mods_draw3d` 0.68 → 0.31–0.37. What worked was freezing `Math`’s members; what
+   did not was replacing the update loop’s own `Number.isFinite` reads, because the
+   cost was never in that loop. `mods/birds` is the template for the rest: the
+   helpers are untouched behaviourally, they just stop naming a global.
+3. **Draw the grass once.** Build the visible field as a mesh instead of ~370
    immediate-mode cubes, and/or cut the shadow pass's grass (`shadow_grass`,
-   0.87 ms, draws the same grass the main pass already drew).
-2. **Attribute the mods.** 2.0 ms/frame for four mods; measure per mod and per
-   hook before adding a fifth.
-3. **`clouds_upd` is 1.27 ms of JS state per frame** while the cloud *marching*
-   lives in the shader. Worth checking whether the update can run at a lower rate
-   or be amortised.
-4. **`collide` (0.80 ms)** and **`mods_upd` (1.00 ms)** are unglamorous but real;
-   both are pure JS and cheap to shave.
-5. Keep the herd honest: `bots_ai` is 0.28 ms while `bots` (pose + draw) is
-   5.38 ms. The AI is not the problem; the rendering of it is.
+   0.35 ms after this session, draws the same grass the main pass already drew).
+4. **Attribute the mods.** ~0.9 ms/frame for four mods, down from 1.4; measure
+   per mod and per hook before adding a fifth.
+5. Keep the herd honest: `bots_ai` is 0.16 ms while `bots` (pose + draw) is
+   5.5 ms. The AI is not the problem; the rendering of it is, and it is one
+   engine call per bot.
+6. **This pass is complete.** Every hot loop that could live in a parameter-only
+   body now does — the cloud drift, the grass field, the goat collisions, the rain
+   drops, and the flock in `mods/birds`. Two things to carry forward: the recipe
+   needs the *interpreted* body to get smaller, not to swap arithmetic for
+   indirection (the `drawRain` counter-example in §5b cost 2.4×), and in the scene
+   only parameters work, because a script-level `const` is a global binding.
+   Everything still above the floor is a crossing or an engine cost (§5b), so the
+   next move is §7.1, not another scene edit.
 
 ## 8. Caveats
 
@@ -371,7 +707,22 @@ table in §3 should be read as "this build is faster than that build", not as
 - Weather-dependent phases (`rain_upd`, `rain2d`, cloud state) vary by design;
   the windows quoted here are dry ones, and the runs are seeded so they line up.
 - The micro-probe's absolute magnitudes include interpreter overhead (§4); use
-  it for the comparison, not the absolute cost of a call.
+  it for the comparison, not the absolute cost of a call. §4b is the reason: the
+  probe's own loops are interpreted.
+- **Every phase carries a ~0.03 ms measurement floor** (≈1.1 ms of the reported
+  sum across ~36 phases), measured with `tune explosions.enabled 0` (§5b). Small
+  phases are mostly floor; read the dry table's deltas, not its level.
+- **The rain phases only exist when it rains.** `rain_upd` and `rain2d` are 0.02–0.12
+  in a dry window and 0.08/0.62 in a held downpour (`weather rain`). Quote the
+  weather with any rain number — the natural timeline moves between the two.
+- **A kernel’s cost depends on how it is called (§4b).** The same global-free body
+  measures ~9 µs/call in a burst and ~226 µs/call once per frame. Any conclusion
+  from a single call pattern must be repeated in the other before it is trusted;
+  the four-run shape table in §4b was stable, the absolute per-call figure was not.
+- The `collide` and `tufts` rewrites were validated with the scene harness
+  (`cargo test -p harness --test scene_logic -- --ignored`, 158 checks), which
+  asserts the collision invariants and that the grass field is derived rather than
+  stored.
 - **The engine comparison in §3/§6 is between builds, not between revisions.**
   The same source built two ways differs by 13–29% on native dispatch; treat any
   single-revision comparison as provisional until the build is stabilised.
@@ -415,3 +766,65 @@ main, old engine, no M19     56 62 58 58 58 61 62 61 59 59 59 60 61 60 59 59 58
 M19 scene, old engine        60 57 61 61 61 61 61 61 60 61 60 61 60 61 59 56 55
 M19 scene, new engine        53 50 49 50 50 52 54 53 51 55 56 56 49 48 48 50
 ```
+
+This session’s stages, `perf on` for 64 s (7 bots, 4 mods), before and after each
+rewrite — first and last window of each run, to show the spread:
+
+```text
+before  [...] collide 0.50 tufts 2.88 shadow_grass 0.53 bots 5.46 mods_upd 0.72 cubes/frame 381 fps 59
+before  [...] collide 0.49 tufts 2.87 shadow_grass 0.53 bots 5.49 mods_upd 0.69 cubes/frame 380 fps 59
+after   [...] collide 0.22 tufts 1.78 shadow_grass 0.36 bots 5.48 mods_upd 0.70 cubes/frame 381 fps 60
+after   [...] collide 0.22 tufts 1.75 shadow_grass 0.35 bots 5.47 mods_upd 0.79 cubes/frame 375 fps 60
+birds   [...] collide 0.22 tufts 1.76 shadow_grass 0.35 bots 5.54 mods_upd 0.51 mods_draw3d 0.37 cubes/frame 372 fps 59
+birds   [...] collide 0.22 tufts 1.76 shadow_grass 0.36 bots 5.53 mods_upd 0.53 mods_draw3d 0.36 cubes/frame 366 fps 59
+birds2  [...] collide 0.21 tufts 1.77 shadow_grass 0.28 bots 5.45 mods_upd 0.53 mods_draw3d 0.31 cubes/frame 347 fps 60
+birds2  [...] collide 0.21 tufts 1.77 shadow_grass 0.28 bots 5.45 mods_upd 0.47 mods_draw3d 0.31 cubes/frame 347 fps 60
+```
+
+The held downpour (`weather rain` re-issued every 6 s, so `rain: 1` throughout),
+before the rain kernel and after it. The two runs are not the same drop count —
+`rain2d` is the control:
+
+```text
+before (natural rain)  [...] rain_upd 0.95 rain2d 0.61
+before (natural rain)  [...] rain_upd 0.89 rain2d 0.44
+after  (held, rain 1)  [...] rain_upd 0.08 rain2d 0.62
+after  (held, rain 1)  [...] rain_upd 0.08 rain2d 0.64
+rejected precompute    [...] rain_upd 0.08 rain2d 1.50
+```
+
+The `birds` runs also sanity-check the flock, since the change was supposed to be
+behaviour-neutral: `birds` reported all five flight states in use across the runs
+(`{"idle":1,"fly":3,"perch":1,"land":1}` then
+`{"fly":2,"takeoff":1,"walk":1,"idle":2}`), with `near`/`far` of 3.5–9.1 and
+15.3–23.7 m from whichever anchor the flock had picked — the same ranges as before
+the change.
+
+The full shape table from §4b, one run verbatim (`jitprobe` and
+`jitprobe-globals` from `mods/jitprobe`, which is a measurement fixture and not
+part of the game):
+
+```text
+jitprobe N=200000 (10 ns/iter = compiled, 150+ = interpreter)
+arith                  9.5 ns/iter
+outer-read            13.3 ns/iter
+outer-chain           18.1 ns/iter
+global-read         2885.3 ns/iter
+call-outer            56.3 ns/iter
+call-param            13.8 ns/iter
+sqrt-global         3286.1 ns/iter
+pow-half              35.4 ns/iter
+continue              25.5 ns/iter
+if-else               21.6 ns/iter
+nested-7              34.4 ns/iter
+collide-current     4983.3 ns/iter
+collide-leaf        4148.3 ns/iter
+jitprobe-globals N=200000
+outer-fn-call         17.9 ns/iter
+global-fn-call      3030.2 ns/iter
+global-value        3051.1 ns/iter
+```
+
+The next run of the same binary put `arith` at 15.4 and `nested-7` at 31.2 — the
+ranges in §4b are the envelope of four runs, and the *grouping* was identical in
+all four.

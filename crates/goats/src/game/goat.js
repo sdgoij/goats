@@ -884,11 +884,26 @@ function perfProbe() {
     // in the interpreter" rather than "a call costs X".
     for (let i = 0; i < n; i++) sink += i * 3;
     const t4 = rl.getTime();
+    // The same loop again, but in a function of its own with no engine call
+    // anywhere in it -- the only caller does one native call before it and one
+    // after. If the JIT compiles this and not the loops above, `pureNs` will be an
+    // order of magnitude under `arithNs`, and the reason the scene's loops are
+    // slow is visible in one number.
+    sink += perfPureLoop(n);
+    const t5 = rl.getTime();
     return {
         callNs: ((t1 - t0) / n) * 1e9,
         propNs: ((t2 - t1) / n) * 1e9,
         jsNs: ((t3 - t2) / n) * 1e9,
         arithNs: ((t4 - t3) / n) * 1e9,
+        pureNs: ((t5 - t4) / n) * 1e9,
         sink: sink
     };
+}
+
+// Deliberately its own function, deliberately no engine call in it.
+function perfPureLoop(n) {
+    let sink = 0;
+    for (let i = 0; i < n; i++) sink += i * 3;
+    return sink;
 }

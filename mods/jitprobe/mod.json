@@ -1,0 +1,9 @@
+{
+  "id": "com.example.jitprobe",
+  "name": "JIT probe",
+  "version": "0.1.0",
+  "api": 1,
+  "side": "client",
+  "description": "Scratch benchmark: which JS body shapes the Slag JIT actually compiles.",
+  "entry": "mod.js"
+}

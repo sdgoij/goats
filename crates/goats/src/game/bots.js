@@ -363,47 +363,62 @@ function updateBots(dt) {
 // Push apart any goats that overlap, so nobody can walk through anybody else.
 // Bots yield fully to the player (it can shove them) and split the push evenly
 // with each other. Runs after both the player and the bots have moved.
-function resolveGoatCollisions() {
-    const pr = TUNING.movement.goatRadius * TUNING.movement.modelScale;
+//
+// Split in two on purpose: `collidePairs` touches nothing but its parameters,
+// which is what lets this engine compile it -- a body that names a true global
+// (this one read `TUNING` and called `Math.sqrt`) stays in the interpreter at
+// roughly forty times the cost, which is the whole of the 0.49 ms this phase
+// used to take. See PERF.md §7 for the measurements; the caller below is the
+// hoisting half of that recipe and the `** 0.5` is the other half (`Math.sqrt`
+// is a global read of `Math`).
+function collidePairs(bots, count, gx, gz, rad, pr) {
     // Two relaxation passes: shoving a bot off the player can push it into
     // another bot, so a second pass settles the chain.
     for (let pass = 0; pass < 2; pass++) {
-        for (let i = 0; i < BOTS.length; i++) {
-            const b = BOTS[i];
-            const rr = pr + TUNING.movement.goatRadius * b.spec.scale;
-            const dx = b.x - goat.px;
-            const dz = b.z - goat.pz;
+        for (let i = 0; i < count; i++) {
+            const b = bots[i];
+            const rr = pr + rad * b.spec.scale;
+            const dx = b.x - gx;
+            const dz = b.z - gz;
             const d2 = dx * dx + dz * dz;
-            if (d2 >= rr * rr) continue;
-            if (d2 <= 1e-4) {
-                b.x = goat.px + rr;    // dead centre: shove it out sideways
-            } else {
-                const d = Math.sqrt(d2);
-                const push = (rr - d) / d;
-                b.x += dx * push;
-                b.z += dz * push;
+            if (d2 < rr * rr) {
+                if (d2 <= 1e-4) {
+                    b.x = gx + rr;    // dead centre: shove it out sideways
+                } else {
+                    const d = d2 ** 0.5;
+                    const push = (rr - d) / d;
+                    b.x += dx * push;
+                    b.z += dz * push;
+                }
+                if (b.timer > 0.6) b.timer = 0.6;   // re-think the plan soon
             }
-            if (b.timer > 0.6) b.timer = 0.6;   // re-think the plan soon
         }
-        for (let i = 0; i < BOTS.length; i++) {
-            const a = BOTS[i];
-            const ar = TUNING.movement.goatRadius * a.spec.scale;
-            for (let j = i + 1; j < BOTS.length; j++) {
-                const b = BOTS[j];
-                const rr = ar + TUNING.movement.goatRadius * b.spec.scale;
+        for (let i = 0; i < count; i++) {
+            const a = bots[i];
+            const ar = rad * a.spec.scale;
+            for (let j = i + 1; j < count; j++) {
+                const b = bots[j];
+                const rr = ar + rad * b.spec.scale;
                 const dx = b.x - a.x;
                 const dz = b.z - a.z;
                 const d2 = dx * dx + dz * dz;
-                if (d2 >= rr * rr || d2 <= 1e-4) continue;
-                const d = Math.sqrt(d2);
-                const push = (rr - d) / (2 * d);
-                a.x -= dx * push;
-                a.z -= dz * push;
-                b.x += dx * push;
-                b.z += dz * push;
+                if (d2 < rr * rr && d2 > 1e-4) {
+                    const d = d2 ** 0.5;
+                    const push = (rr - d) / (2 * d);
+                    a.x -= dx * push;
+                    a.z -= dz * push;
+                    b.x += dx * push;
+                    b.z += dz * push;
+                }
             }
         }
     }
+}
+
+function resolveGoatCollisions() {
+    const movement = TUNING.movement;
+    const rad = movement.goatRadius;
+    collidePairs(BOTS, BOTS.length, goat.px, goat.pz, rad, rad * movement.modelScale);
 }
 
 // Smallest gap between any two goats (negative means they overlap). The frame
@@ -453,6 +468,12 @@ function drawBots(tint) {
 
 // Depth pass: draw the bots that fall inside the light's box. Called from
 // `renderShadowMap` while the goat's own depth draw is set up.
+// The herd in the depth pass. It does **not** pose: the mesh still carries the
+// pose the previous frame's lit pass left in it, and CPU skinning is the single
+// most expensive thing this scene does per bot (updateModelAnimation rewrites the
+// deformed vertices), so posing twice per frame -- once here, once in `drawBots`
+// -- was paying for the same deformation twice. A shadow map drawn from a pose one
+// frame old is not something anyone can see.
 function drawBotsShadow() {
     for (let i = 0; i < BOTS.length; i++) {
         const b = BOTS[i];
@@ -461,10 +482,6 @@ function drawBotsShadow() {
         if (dx * dx + dz * dz > shadowGrassCull2()) continue;
         rl.setModelShader(b.model, depthShader);
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, -1);
-        const role = botRole(b);
-        const pose = b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1)
-            : b.mode === "eat" ? Math.min(b.eatTime / b.eatDur, 1) : b.phase;
-        poseModelOn(b.model, clipAt(role, b.var[role]), pose);
         rl.drawModelEx(b.model, b.x, terrainHeight(b.x, b.z) + groundOffset * b.spec.scale, b.z,
             0, 1, 0, (b.yaw * 180) / Math.PI,
             b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);

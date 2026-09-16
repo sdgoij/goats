@@ -281,17 +281,26 @@ function forceWeather() {
     modEmit("weather", weatherKind, previous);
 }
 
-function updateClouds(dt) {
-    const W = CLOUD_WRAP;
-    for (let i = 0; i < CLOUDS.length; i++) {
-        const c = CLOUDS[i];
-        c.x += windX * TUNING.weather.cloudDrift * dt;
-        c.z += windZ * TUNING.weather.cloudDrift * dt;
-        if (c.x - goat.px > W) c.x -= 2 * W;
-        else if (c.x - goat.px < -W) c.x += 2 * W;
-        if (c.z - goat.pz > W) c.z -= 2 * W;
-        else if (c.z - goat.pz < -W) c.z += 2 * W;
+// The per-cloud drift, in a function of its own with nothing but arithmetic in
+// it. This engine's interpreter charges ~1.5-2 us for a property read and does
+// not compile a loop that lives beside engine calls, so the three `TUNING`
+// lookups that used to sit *inside* this loop are hoisted to the caller and the
+// loop itself is left as plain numbers -- 46 clouds a frame was costing 0.75 ms.
+function cloudDrift(list, count, dx, dz, px, pz, wrap) {
+    for (let i = 0; i < count; i++) {
+        const c = list[i];
+        c.x += dx;
+        c.z += dz;
+        if (c.x - px > wrap) c.x -= 2 * wrap;
+        else if (c.x - px < -wrap) c.x += 2 * wrap;
+        if (c.z - pz > wrap) c.z -= 2 * wrap;
+        else if (c.z - pz < -wrap) c.z += 2 * wrap;
     }
+}
+
+function updateClouds(dt) {
+    const drift = TUNING.weather.cloudDrift * dt;
+    cloudDrift(CLOUDS, CLOUDS.length, windX * drift, windZ * drift, goat.px, goat.pz, CLOUD_WRAP);
 }
 
 function drawClouds() {
@@ -310,27 +319,48 @@ function drawClouds() {
     }
 }
 
-function updateRain(dt) {
-    rainActive = Math.min(RAIN.length, Math.round(TUNING.weather.rainMax * rainAmount));
-    for (let i = 0; i < rainActive; i++) {
-        const d = RAIN[i];
+// The drop update, in a body that takes every value it needs -- the live wind
+// component, the seed, and `hash` itself -- because a body that names any of them
+// as a global is run by the interpreter (PERF.md §4b) and this one walks ~600
+// drops a frame in the rain. Two details of the kernel shape are deliberate: the
+// seed cannot be a global it writes, so it crosses as an argument and comes back
+// as the return value; and `hash` crosses as a function so that the call inside
+// the loop is a call to a parameter, which is compiled, rather than a call to a
+// script-level name, which is not.
+function rainFall(list, count, dt, wind, seed, hashFn) {
+    const wx = wind * 0.02 * dt;
+    for (let i = 0; i < count; i++) {
+        const d = list[i];
         d.y += (0.7 + d.speed) * dt;
-        d.x += windX * 0.02 * dt;
+        d.x += wx;
         if (d.y > 1.05) {
             d.y = d.y - 1.1;
-            rainSeed ^= rainSeed << 13;
-            rainSeed >>>= 0;
-            rainSeed ^= rainSeed >>> 17;
-            rainSeed ^= rainSeed << 5;
-            rainSeed >>>= 0;
-            d.x = hash(i * 13.1 + rainSeed * 0.0001);
+            seed ^= seed << 13;
+            seed >>>= 0;
+            seed ^= seed >>> 17;
+            seed ^= seed << 5;
+            seed >>>= 0;
+            d.x = hashFn(i * 13.1 + seed * 0.0001);
         }
         if (d.x > 1.1) d.x = d.x - 1.2;
         else if (d.x < -0.1) d.x = d.x + 1.2;
     }
+    return seed;
+}
+
+function updateRain(dt) {
+    rainActive = Math.min(RAIN.length, Math.round(TUNING.weather.rainMax * rainAmount));
+    rainSeed = rainFall(RAIN, rainActive, dt, windX, rainSeed, hash);
 }
 
 // Screen-space rain overlay: short streaks angled along the wind.
+//
+// The endpoints are computed here, not in a kernel, and that is a measured choice
+// rather than an omission: hoisting the four rounded endpoints into a precomputed
+// per-drop array made this phase 2.4x *worse* (0.62 -> 1.50 ms in a full downpour,
+// PERF.md §5b). Four indexed reads of a shared number pool cost an interpreted body
+// more than the arithmetic they replaced, so the loop that must cross into the
+// engine for each drop is better off also computing what it draws.
 function drawRain(w, h) {
     if (rainActive <= 0) return;
     const slant = windX * 0.035;
@@ -352,55 +382,87 @@ function drawRain(w, h) {
 // pass, which draws the same cubes through the depth program so the grass casts
 // too. `cull2` is the cull radius squared; nearer tufts get a second segment so
 // the bend reads up close.
-function drawTufts(g, tuftCol, cull2, detail2) {
-    const r = Math.sqrt(cull2);
-    const cx0 = Math.floor((g.px - r) * 0.5);
-    const cx1 = Math.ceil((g.px + r) * 0.5);
-    const cz0 = Math.floor((g.pz - r) * 0.5);
-    const cz1 = Math.ceil((g.pz + r) * 0.5);
+//
+// The field's arithmetic lives in `tuftField`, and it takes *everything* it
+// needs -- `Math.imul`, `Math.sin`, `terrainHeight`, the two caches -- as a
+// parameter, because a body that names a true global is run by the interpreter
+// (PERF.md §7); this grid is walked cell by cell, ~600 of them a frame, so it is
+// the largest block of arithmetic the scene runs per frame that is not an engine
+// call. The caller below does the drawing, since `rl.drawCube` is a global read
+// too. `out` is a pool of preallocated entries the kernel fills; the count comes
+// back as the return value.
+const TUFT_POOL = [];
+
+function tuftField(out, cellH, eaten, imul, sin, groundY,
+                   cx0, cz0, cx1, cz1, gx, gz, cull2, detail2, swayTime, windSway) {
+    let n = 0;
     for (let cx = cx0; cx <= cx1; cx++) {
         for (let cz = cz0; cz <= cz1; cz++) {
             let h = (cx * 374761393 + cz * 668265263) | 0;
-            h = Math.imul(h ^ (h >>> 13), 1274126177);
+            h = imul(h ^ (h >>> 13), 1274126177);
             h = (h ^ (h >>> 16)) >>> 0;
             const a = h / 4294967296;             // existence (and z jitter)
             if (a < 0.45) continue;
             // Eaten cells are skipped entirely, so the field thins as the goat
             // grazes. The key mirrors `tuftKey` in food.js, inlined to keep the
             // per-cell call depth down.
-            if (EATEN.has((cx + 4096) * 8192 + (cz + 4096))) continue;
+            if (eaten.has((cx + 4096) * 8192 + (cz + 4096))) continue;
             let h2 = (cx * 1103515245 + cz * 12345) | 0;
-            h2 = Math.imul(h2 ^ (h2 >>> 15), 2246822519);
+            h2 = imul(h2 ^ (h2 >>> 15), 2246822519);
             h2 = (h2 ^ (h2 >>> 13)) >>> 0;
             let h3 = (cx * 2654435761 + cz * 40503) | 0;
-            h3 = Math.imul(h3 ^ (h3 >>> 16), 3266489917);
+            h3 = imul(h3 ^ (h3 >>> 16), 3266489917);
             h3 = (h3 ^ (h3 >>> 16)) >>> 0;
             const x = cx * 2 + (h2 / 4294967296 - 0.5) * 1.8;
             const z = cz * 2 + (a - 0.5) * 1.8;
-            const tx = x - g.px;
-            const tz = z - g.pz;
+            const tx = x - gx;
+            const tz = z - gz;
             const d2 = tx * tx + tz * tz;
             if (d2 > cull2) continue;
-            const off = Math.sin(swayTime * 3.0 + (h3 / 4294967296) * 6.28) * 0.11 * windSway;
+            const off = sin(swayTime * 3.0 + (h3 / 4294967296) * 6.28) * 0.11 * windSway;
             // The tuft sits on the heightfield, so the grass follows the ground.
             // The cell's height is cached: the field is world-anchored, so a
             // cell never changes, and this drops the visible field's ~500 noise
             // samples per frame to nearly none (the key mirrors `tuftKey` in
-            // food.js). Inlined rather than a helper call, to keep the per-frame
-            // depth shallow.
+            // food.js).
             const hkey = (cx + 4096) * 8192 + (cz + 4096);
-            let gy = TERRAIN_CELL_H.get(hkey);
+            let gy = cellH.get(hkey);
             if (gy === undefined) {
-                gy = terrainHeight(x, z);
-                if (TERRAIN_CELL_H.size > 32768) TERRAIN_CELL_H.clear();
-                TERRAIN_CELL_H.set(hkey, gy);
+                gy = groundY(x, z);
+                if (cellH.size > 32768) cellH.clear();
+                cellH.set(hkey, gy);
             }
-            perfCubes += d2 < detail2 ? 2 : 1;
-            rl.drawCube(x + off, gy + 0.06, z + off * 0.4, 0.14, 0.16, 0.14, tuftCol);
-            if (d2 < detail2) {
-                rl.drawCube(x + off * 1.7, gy + 0.20, z + off * 0.7, 0.11, 0.16, 0.11, tuftCol);
-            }
+            const t = out[n];
+            t.ax = x + off;
+            t.ay = gy + 0.06;
+            t.az = z + off * 0.4;
+            t.bx = x + off * 1.7;
+            t.by = gy + 0.20;
+            t.bz = z + off * 0.7;
+            t.d = d2 < detail2 ? 1 : 0;
+            n += 1;
         }
+    }
+    return n;
+}
+
+function drawTufts(g, tuftCol, cull2, detail2) {
+    const r = Math.sqrt(cull2);
+    const cx0 = Math.floor((g.px - r) * 0.5);
+    const cx1 = Math.ceil((g.px + r) * 0.5);
+    const cz0 = Math.floor((g.pz - r) * 0.5);
+    const cz1 = Math.ceil((g.pz + r) * 0.5);
+    const cells = (cx1 - cx0 + 1) * (cz1 - cz0 + 1);
+    while (TUFT_POOL.length < cells) {
+        TUFT_POOL.push({ ax: 0, ay: 0, az: 0, bx: 0, by: 0, bz: 0, d: 0 });
+    }
+    const n = tuftField(TUFT_POOL, TERRAIN_CELL_H, EATEN, Math.imul, Math.sin, terrainHeight,
+        cx0, cz0, cx1, cz1, g.px, g.pz, cull2, detail2, swayTime, windSway);
+    for (let i = 0; i < n; i++) {
+        const t = TUFT_POOL[i];
+        perfCubes += t.d ? 2 : 1;
+        rl.drawCube(t.ax, t.ay, t.az, 0.14, 0.16, 0.14, tuftCol);
+        if (t.d) rl.drawCube(t.bx, t.by, t.bz, 0.11, 0.16, 0.11, tuftCol);
     }
 }
 

@@ -452,6 +452,7 @@ function sceneCommand(line) {
                     propNs: ctlRound(p.propNs),
                     jsNs: ctlRound(p.jsNs),
                     arithNs: ctlRound(p.arithNs),
+                    pureNs: ctlRound(p.pureNs),
                     fps: rl.getFPS()
                 });
             }

@@ -357,7 +357,9 @@ function drawPeersShadow() {
         if (dx * dx + dz * dz > shadowGrassCull2()) continue;
         rl.setModelShader(p.model, depthShader);
         rl.setModelTexture(p.model, SHADOW_MAP_INDEX, -1);
-        poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);
+        // No `poseModelOn` here, for the reason spelled out in `drawBotsShadow`:
+        // the depth pass draws the pose `drawPeers` left in the mesh last frame,
+        // so a remote goat is skinned once a frame rather than twice.
         rl.drawModelEx(p.model, p.x, terrainHeight(p.x, p.z) + groundOffset, p.z,
             0, 1, 0, (p.yaw * 180) / Math.PI, 1, 1, 1, rl.WHITE);
         rl.setModelTexture(p.model, SHADOW_MAP_INDEX, shadowColor);

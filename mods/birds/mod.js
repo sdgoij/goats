@@ -57,6 +57,29 @@ const SHOULDER = { x: 0.06, y: 0.055, z: 0.05 };
 // The public `goats` surface is the contract; these are self-contained rather
 // than reaching into the scene's own globals.
 
+// Frozen members of `Math`, and the reason this file reads the way it does.
+//
+// The engine compiles a function body only when it names no *global* (PERF.md
+// §4b): one `Math.sin(b.yaw)` in a body -- and `stepFly` has a dozen, inside an
+// O(n^2) neighbour loop -- costs that whole body its compiled path and leaves it
+// on the interpreter at ~100x the cost, every frame, for six birds. Reading a
+// binding from an enclosing scope is not a global read and does not disqualify a
+// body, so the members are frozen here and called as locals below. Behaviour is
+// unchanged: these are the same functions and the same values.
+const PI = Math.PI;
+const ABS = Math.abs;
+const MIN = Math.min;
+const MAX = Math.max;
+const FLOOR = Math.floor;
+const ROUND = Math.round;
+const SQRT = Math.sqrt;
+const SIN = Math.sin;
+const COS = Math.cos;
+const ATAN2 = Math.atan2;
+const HYPOT = Math.hypot;
+const ACOS = Math.acos;
+const IS_FINITE = Number.isFinite;
+
 const flockRnd = (function () {
     goats.world.registerStream("f", 0x5eed);
     return goats.rng("f");
@@ -65,19 +88,19 @@ const HOME = { x: 0, z: 0 };
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 function rand(a, b) { return a + (b - a) * flockRnd(); }
-function r1(v) { return Math.round(v * 10) / 10; }
-function r2(v) { return Math.round(v * 100) / 100; }
+function r1(v) { return ROUND(v * 10) / 10; }
+function r2(v) { return ROUND(v * 100) / 100; }
 function groundAt(x, z) { return goats.world.terrainHeight(x, z); }
 function angleDelta(a, b) {
     let d = a - b;
-    while (d > Math.PI) d -= Math.PI * 2;
-    while (d < -Math.PI) d += Math.PI * 2;
+    while (d > PI) d -= PI * 2;
+    while (d < -PI) d += PI * 2;
     return d;
 }
 // A small 2D value noise, for the feather texture. Deterministic and local.
-function hash1(n) { const s = Math.sin(n) * 43758.5453; return s - Math.floor(s); }
+function hash1(n) { const s = SIN(n) * 43758.5453; return s - FLOOR(s); }
 function noise(x, y) {
-    const xi = Math.floor(x), yi = Math.floor(y);
+    const xi = FLOOR(x), yi = FLOOR(y);
     const xf = x - xi, yf = y - yi;
     const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
     const a = hash1(xi * 57.0 + yi * 131.0);
@@ -89,10 +112,10 @@ function noise(x, y) {
 const HEX = (function () {
     const d = "0123456789abcdef";
     const out = [];
-    for (let i = 0; i < 256; i++) out.push(d[Math.floor(i / 16)] + d[i % 16]);
+    for (let i = 0; i < 256; i++) out.push(d[FLOOR(i / 16)] + d[i % 16]);
     return out;
 })();
-function hex2(v) { return HEX[clamp(Math.round(v), 0, 255)]; }
+function hex2(v) { return HEX[clamp(ROUND(v), 0, 255)]; }
 
 // ---- quaternions ----------------------------------------------------------
 //
@@ -101,8 +124,8 @@ function hex2(v) { return HEX[clamp(Math.round(v), 0, 255)]; }
 // right wing is +Z; yaw is about Y, pitch about Z, roll about X.
 
 function qAxis(x, y, z, rad) {
-    const s = Math.sin(rad / 2);
-    return { x: x * s, y: y * s, z: z * s, w: Math.cos(rad / 2) };
+    const s = SIN(rad / 2);
+    return { x: x * s, y: y * s, z: z * s, w: COS(rad / 2) };
 }
 function qMul(a, b) {
     return {
@@ -125,9 +148,9 @@ function qRot(q, v) {
 }
 function qAxisAngle(q) {
     const w = clamp(q.w, -1, 1);
-    const s = Math.sqrt(Math.max(1e-12, 1 - w * w));
+    const s = SQRT(MAX(1e-12, 1 - w * w));
     if (s < 1e-6) return { x: 0, y: 1, z: 0, deg: 0 };
-    return { x: q.x / s, y: q.y / s, z: q.z / s, deg: (2 * Math.acos(w) * 180) / Math.PI };
+    return { x: q.x / s, y: q.y / s, z: q.z / s, deg: (2 * ACOS(w) * 180) / PI };
 }
 function bodyQuat(b) {
     return qMul(qMul(qAxis(0, 1, 0, b.yaw), qAxis(0, 0, 1, b.pitch)), qAxis(1, 0, 0, b.roll));
@@ -179,8 +202,8 @@ function buildBodyModel() {
         start.push(m.v.length / 3);
         const x = RINGS[r][0], cy = RINGS[r][1], rad = RINGS[r][2];
         for (let s = 0; s < SEG; s++) {
-            const a = (s / SEG) * Math.PI * 2;
-            const sy = Math.sin(a), sz = Math.cos(a);
+            const a = (s / SEG) * PI * 2;
+            const sy = SIN(a), sz = COS(a);
             m.vert(x, cy + sy * rad * 0.9, sz * rad, r >= 4 ? HEAD_COL : BODY_COL,
                 (x + 0.8) * 1.1, s / SEG, 0, sy, sz);
         }
@@ -189,8 +212,8 @@ function buildBodyModel() {
         for (let s = 0; s < SEG; s++) {
             const a = start[r] + s, b = start[r] + (s + 1) % SEG;
             const c = start[r + 1] + s, d = start[r + 1] + (s + 1) % SEG;
-            const mid = ((s + 0.5) / SEG) * Math.PI * 2;
-            m.quad(a, b, d, c, 0, Math.sin(mid), Math.cos(mid));
+            const mid = ((s + 0.5) / SEG) * PI * 2;
+            m.quad(a, b, d, c, 0, SIN(mid), COS(mid));
         }
     }
     // A pointed tail, then a beak ring and tip at the front.
@@ -200,8 +223,8 @@ function buildBodyModel() {
     const head = start[start.length - 1];
     const beak = m.v.length / 3;
     for (let s = 0; s < SEG; s++) {
-        const a = (s / SEG) * Math.PI * 2;
-        m.vert(0.565, 0.072 + Math.sin(a) * 0.020, Math.cos(a) * 0.024, BEAK_COL, 0.9, s / SEG, 1, 0, 0);
+        const a = (s / SEG) * PI * 2;
+        m.vert(0.565, 0.072 + SIN(a) * 0.020, COS(a) * 0.024, BEAK_COL, 0.9, s / SEG, 1, 0, 0);
     }
     const tip = m.vert(0.70, 0.068, 0, BEAK_COL, 1, 0.5, 1, 0, 0);
     for (let s = 0; s < SEG; s++) {
@@ -257,7 +280,7 @@ function featherHex(n) {
     let out = "";
     for (let y = 0; y < n; y++) {
         for (let x = 0; x < n; x++) {
-            const bars = Math.sin((y / n) * Math.PI * 2 * 6 + Math.sin((x / n) * 6.0) * 0.9);
+            const bars = SIN((y / n) * PI * 2 * 6 + SIN((x / n) * 6.0) * 0.9);
             const g = clamp(0.80 + 0.16 * (noise(x * 0.28, y * 0.28) - 0.5) + 0.10 * bars, 0, 1);
             const c = hex2(g * 255);
             out += c + c + c + "ff";
@@ -297,10 +320,10 @@ function seedFlock() {
 function placeBird(b, i) {
     const a = i * 2.399963 + 0.7;
     const r = 5 + flockRnd() * 9;
-    b.x = HOME.x + Math.cos(a) * r;
-    b.z = HOME.z + Math.sin(a) * r;
+    b.x = HOME.x + COS(a) * r;
+    b.z = HOME.z + SIN(a) * r;
     b.y = groundAt(b.x, b.z) + LEG;
-    b.yaw = a + Math.PI;
+    b.yaw = a + PI;
     b.prevYaw = b.yaw;
     b.st = ST.IDLE;
     b.t = 0;
@@ -348,7 +371,7 @@ let anchorPlayer = false;
 let lastPX = null, lastPZ = null;
 function updateHome() {
     const p = goats.player.state();
-    if (lastPX !== null && Math.abs(p.x - lastPX) + Math.abs(p.z - lastPZ) > 0.01) {
+    if (lastPX !== null && ABS(p.x - lastPX) + ABS(p.z - lastPZ) > 0.01) {
         anchorPlayer = true;
     }
     lastPX = p.x;
@@ -377,14 +400,14 @@ function setSt(b, st, dur) { b.st = st; b.t = 0; b.dur = dur; }
 // the quickest way to confirm the models are being drawn at all.
 function gatherBirds() {
     const p = goats.player.state();
-    const n = Math.max(1, BIRDS.length);
+    const n = MAX(1, BIRDS.length);
     for (let i = 0; i < BIRDS.length; i++) {
         const b = BIRDS[i];
-        const a = (i / n) * Math.PI * 2;
-        b.x = p.x + Math.cos(a) * 2.5;
-        b.z = p.z + Math.sin(a) * 2.5;
+        const a = (i / n) * PI * 2;
+        b.x = p.x + COS(a) * 2.5;
+        b.z = p.z + SIN(a) * 2.5;
         b.y = groundAt(b.x, b.z) + LEG;
-        b.yaw = a + Math.PI;
+        b.yaw = a + PI;
         b.prevYaw = b.yaw;
         b.vx = b.vz = b.vy = 0;
         b.pitch = b.roll = b.yawRate = 0;
@@ -399,8 +422,8 @@ function startTakeoff(b) {
     setSt(b, ST.TAKEOFF, TAKEOFF_TIME);
     b.cruise = rand(CRUISE_MIN, CRUISE_MAX);
     b.perch = -1;   // chosen again when this flight decides to land
-    b.vx = Math.cos(b.yaw) * 2;
-    b.vz = -Math.sin(b.yaw) * 2;
+    b.vx = COS(b.yaw) * 2;
+    b.vz = -SIN(b.yaw) * 2;
 }
 
 // The nearest settled goat to perch on: the player's or a bot's, whichever is
@@ -435,7 +458,7 @@ function perchTarget(b) {
         speed: bot.mode === "run" ? 4 : 0 };
 }
 
-function flapWave(t, amp, hz) { return amp * (0.5 - 0.5 * Math.cos(t * hz * Math.PI * 2)); }
+function flapWave(t, amp, hz) { return amp * (0.5 - 0.5 * COS(t * hz * PI * 2)); }
 
 // A grounded bird that has been left behind flies to catch up; walking at 1.1
 // m/s cannot keep pace with a running player, and a bird stranded far away is
@@ -449,20 +472,20 @@ function tooFar(b) {
 // The wing flap is a pure function of the state and its clock, so the host and
 // a mirroring client pose a bird identically without sending the angle.
 function flapFor(b) {
-    const glide = b.st === ST.FLY && Math.floor(b.t / 6) % 2 === 1;
+    const glide = b.st === ST.FLY && FLOOR(b.t / 6) % 2 === 1;
     switch (b.st) {
-        case ST.FLY: return glide ? 0.10 + 0.05 * Math.sin(b.t * 2) : flapWave(b.t, 0.8, 2.2);
+        case ST.FLY: return glide ? 0.10 + 0.05 * SIN(b.t * 2) : flapWave(b.t, 0.8, 2.2);
         case ST.TAKEOFF: return flapWave(b.t, 0.95, 1.7);
         case ST.LAND: return flapWave(b.t, 0.7, 1.2) * (1 - 0.6 * clamp(b.t / LAND_TIME, 0, 1));
-        case ST.WALK: return 0.06 * (1 + Math.sin(b.t * 8));
-        case ST.PERCH: return 0.04 * (1 + Math.sin(b.t * 5));
+        case ST.WALK: return 0.06 * (1 + SIN(b.t * 8));
+        case ST.PERCH: return 0.04 * (1 + SIN(b.t * 5));
         default: return 0;
     }
 }
 
 function stepIdle(b, dt) {
     if (tooFar(b)) { startTakeoff(b); return; }
-    b.y += (groundAt(b.x, b.z) + LEG - b.y) * Math.min(1, dt * 8);
+    b.y += (groundAt(b.x, b.z) + LEG - b.y) * MIN(1, dt * 8);
     if (b.t < b.dur) return;
     const roll = flockRnd();
     if (roll < 0.72) setSt(b, ST.WALK, rand(3, 7));
@@ -470,13 +493,13 @@ function stepIdle(b, dt) {
 }
 
 function stepWalk(b, dt) {
-    b.x += Math.cos(b.yaw) * WALK_SPEED * dt;
-    b.z += -Math.sin(b.yaw) * WALK_SPEED * dt;
-    b.y += (groundAt(b.x, b.z) + LEG - b.y) * Math.min(1, dt * 8);
-    b.yaw += Math.sin(b.t * 1.7 + b.size * 9) * 0.6 * dt;
+    b.x += COS(b.yaw) * WALK_SPEED * dt;
+    b.z += -SIN(b.yaw) * WALK_SPEED * dt;
+    b.y += (groundAt(b.x, b.z) + LEG - b.y) * MIN(1, dt * 8);
+    b.yaw += SIN(b.t * 1.7 + b.size * 9) * 0.6 * dt;
     if (tooFar(b)) { startTakeoff(b); return; }
     const dx = HOME.x - b.x, dz = HOME.z - b.z;
-    if (dx * dx + dz * dz > HOME_R * HOME_R) b.yaw = Math.atan2(-dz, dx);
+    if (dx * dx + dz * dz > HOME_R * HOME_R) b.yaw = ATAN2(-dz, dx);
     if (b.t < b.dur) return;
     const roll = flockRnd();
     if (roll < 0.45) setSt(b, ST.IDLE, rand(2, 6));
@@ -489,8 +512,8 @@ function stepTakeoff(b, dt) {
     b.vy = 3.4 * u;
     b.y += b.vy * dt;
     const sp = 1.5 + 3.5 * u;
-    b.x += Math.cos(b.yaw) * sp * dt;
-    b.z += -Math.sin(b.yaw) * sp * dt;
+    b.x += COS(b.yaw) * sp * dt;
+    b.z += -SIN(b.yaw) * sp * dt;
     if (u >= 1) setSt(b, ST.FLY, rand(6, 12));
 }
 
@@ -505,21 +528,21 @@ function stepLand(b, dt) {
     const tx = perch === null ? b.x : perch.x;
     const tz = perch === null ? b.z : perch.z;
     const ty = perch === null ? ground : perch.y;
-    const k = Math.min(1, dt * 2.5);
+    const k = MIN(1, dt * 2.5);
     b.x += (tx - b.x) * k;
     b.z += (tz - b.z) * k;
     b.y += (ty - b.y) * k;
-    b.yaw += angleDelta(Math.atan2(-(tz - b.z), tx - b.x), b.yaw) * k;
+    b.yaw += angleDelta(ATAN2(-(tz - b.z), tx - b.x), b.yaw) * k;
 
     if (perch === null) {
         // The ground target moves with the bird, so only the height can settle.
-        if (Math.abs(b.y - ground) < 0.25) {
+        if (ABS(b.y - ground) < 0.25) {
             setSt(b, flockRnd() < 0.4 ? ST.WALK : ST.IDLE, rand(2, 6));
         }
         return;
     }
     const dx = b.x - perch.x, dz = b.z - perch.z;
-    if (dx * dx + dz * dz < 1.44 && Math.abs(b.y - perch.y) < 0.9) {
+    if (dx * dx + dz * dz < 1.44 && ABS(b.y - perch.y) < 0.9) {
         setSt(b, ST.PERCH, rand(4, 9));
     }
 }
@@ -544,11 +567,11 @@ function stepFly(b, dt) {
         const d2 = dx * dx + dz * dz;
         if (d2 < COH * COH) {
             cohX += o.x; cohZ += o.z; nC++;
-            aliX += Math.cos(o.yaw); aliZ += -Math.sin(o.yaw); nA++;
+            aliX += COS(o.yaw); aliZ += -SIN(o.yaw); nA++;
         }
         if (d2 > 1e-4 && d2 < SEP * SEP) {
             // Graded by distance, so a near pair pushes harder than a distant one.
-            const d = Math.sqrt(d2);
+            const d = SQRT(d2);
             const w = (SEP - d) / SEP;
             sepX += (dx / d) * w;
             sepZ += (dz / d) * w;
@@ -557,46 +580,46 @@ function stepFly(b, dt) {
     }
     let ax = 0, az = 0;
     if (nS > 0) {
-        const m = Math.hypot(sepX, sepZ) || 1;
+        const m = HYPOT(sepX, sepZ) || 1;
         ax += (sepX / m) * 10.0;
         az += (sepZ / m) * 10.0;
     }
     if (nA > 0) {
-        const m = Math.hypot(aliX, aliZ) || 1;
-        ax += (aliX / m - Math.cos(b.yaw)) * 2.4;
-        az += (aliZ / m + Math.sin(b.yaw)) * 2.4;
+        const m = HYPOT(aliX, aliZ) || 1;
+        ax += (aliX / m - COS(b.yaw)) * 2.4;
+        az += (aliZ / m + SIN(b.yaw)) * 2.4;
     }
     if (nC > 0) {
         const cx = cohX / nC - b.x, cz = cohZ / nC - b.z;
-        const m = Math.hypot(cx, cz) || 1;
+        const m = HYPOT(cx, cz) || 1;
         ax += (cx / m) * 0.9;
         az += (cz / m) * 0.9;
     }
     const hx = HOME.x - b.x, hz = HOME.z - b.z;
-    const hd = Math.hypot(hx, hz);
+    const hd = HYPOT(hx, hz);
     if (hd > HOME_R) { ax += (hx / hd) * 6.0; az += (hz / hd) * 6.0; }
 
-    if (!(Math.hypot(b.vx, b.vz) > 0.05)) {
-        b.vx = Math.cos(b.yaw) * FLY_SPEED;
-        b.vz = -Math.sin(b.yaw) * FLY_SPEED;
+    if (!(HYPOT(b.vx, b.vz) > 0.05)) {
+        b.vx = COS(b.yaw) * FLY_SPEED;
+        b.vz = -SIN(b.yaw) * FLY_SPEED;
     }
     b.vx += ax * dt;
     b.vz += az * dt;
-    const sp = Math.hypot(b.vx, b.vz);
-    const ns = sp + (FLY_SPEED - sp) * Math.min(1, dt * 1.2);
+    const sp = HYPOT(b.vx, b.vz);
+    const ns = sp + (FLY_SPEED - sp) * MIN(1, dt * 1.2);
     b.vx = (b.vx / sp) * ns;
     b.vz = (b.vz / sp) * ns;
     b.x += b.vx * dt;
     b.z += b.vz * dt;
-    b.yaw = Math.atan2(-b.vz, b.vx);
+    b.yaw = ATAN2(-b.vz, b.vx);
 
     // Glide in stretches; flap in between. The glide flag is a function of the
     // state clock, so a client derives it from the synced `t` without being told.
-    const glide = Math.floor(b.t / 6) % 2 === 1;
+    const glide = FLOOR(b.t / 6) % 2 === 1;
     const targetY = glide ? b.cruise - 0.8 : b.cruise;
-    b.y += (targetY - b.y) * Math.min(1, dt * 0.9);
+    b.y += (targetY - b.y) * MIN(1, dt * 0.9);
     const floor = groundAt(b.x, b.z) + 2.5;
-    if (b.y < floor) b.y += (floor - b.y) * Math.min(1, dt * 2);
+    if (b.y < floor) b.y += (floor - b.y) * MIN(1, dt * 2);
     b.vy = (targetY - b.y) * 0.5;
 
     if (b.t >= b.dur) {
@@ -629,9 +652,9 @@ function separateFlock() {
             let dx = b.x - a.x, dz = b.z - a.z;
             let d2 = dx * dx + dz * dz;
             if (d2 >= MIN_GAP * MIN_GAP) continue;
-            let d = Math.sqrt(d2);
+            let d = SQRT(d2);
             let ux, uz;
-            if (d < 1e-3) { ux = Math.cos(i * 2.4); uz = Math.sin(i * 2.4); }
+            if (d < 1e-3) { ux = COS(i * 2.4); uz = SIN(i * 2.4); }
             else { ux = dx / d; uz = dz / d; }
             const push = (MIN_GAP - d) * 0.5;
             a.x -= ux * push; a.z -= uz * push;
@@ -646,8 +669,8 @@ function simulate(dt) {
         const b = BIRDS[i];
         // A non-finite position draws as nothing, so recover the bird rather
         // than let it silently vanish.
-        if (!Number.isFinite(b.x) || !Number.isFinite(b.y) || !Number.isFinite(b.z) ||
-            !Number.isFinite(b.yaw)) {
+        if (!IS_FINITE(b.x) || !IS_FINITE(b.y) || !IS_FINITE(b.z) ||
+            !IS_FINITE(b.yaw)) {
             placeBird(b, i);
             continue;
         }
@@ -675,7 +698,7 @@ function mirror(dt) {
         const b = BIRDS[i];
         b.prevYaw = b.yaw;
         b.t += dt;
-        const k = Math.min(1, dt * MIRROR_K);
+        const k = MIN(1, dt * MIRROR_K);
         b.x += (b.tx - b.x) * k;
         b.y += (b.ty - b.y) * k;
         b.z += (b.tz - b.z) * k;
@@ -706,8 +729,8 @@ goats.world.extend(MOD_ID, {
             const s = state[i];
             const b = BIRDS[i];
             if (!Array.isArray(s) || s.length < 5) continue;
-            if (!Number.isFinite(s[0]) || !Number.isFinite(s[1]) || !Number.isFinite(s[2]) ||
-                !Number.isFinite(s[3])) continue;
+            if (!IS_FINITE(s[0]) || !IS_FINITE(s[1]) || !IS_FINITE(s[2]) ||
+                !IS_FINITE(s[3])) continue;
             const st = s[4] | 0;
             // The state clock is local; reset it only when the state changes, so
             // the flap and the take-off/landing pitch still run smoothly.
@@ -793,7 +816,7 @@ goats.command("birds", function (parts) {
     for (let i = 0; i < BIRDS.length; i++) {
         const name = ST_NAME[BIRDS[i].st] || "?";
         counts[name] = (counts[name] || 0) + 1;
-        const d = Math.hypot(BIRDS[i].x - p.x, BIRDS[i].z - p.z);
+        const d = HYPOT(BIRDS[i].x - p.x, BIRDS[i].z - p.z);
         if (d < near) near = d;
         if (d > far) far = d;
     }
