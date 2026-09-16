@@ -230,7 +230,12 @@
                     axisX: axisX, axisY: axisY, axisZ: axisZ, angle: angle,
                 };
             } else if (model < 1000) {
+                // The handle rides along: the herd is resized on the scripted
+                // timeline, and a row for a model that has since been unloaded is
+                // still in here, so a check that wants *this* bot's draw needs to
+                // find it by handle rather than by position in the list.
                 drawnRows[model] = {
+                    model: model,
                     x: x, y: y, z: z,
                     axisX: axisX, axisY: axisY, axisZ: axisZ, angle: angle,
                 };

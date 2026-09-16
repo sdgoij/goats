@@ -98,7 +98,7 @@ uses.
 | **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | ✅ **Done** — M17a (the ABI), M17b (the Rust host), M17c (the digest + determinism), M17c2 (the state surface) and M17d (the performance debt) all landed |
 | **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | ✅ **Done** — the fetch ALPN, the client's fetch/verify/install, the catalogue and the client wiring (consent, `--pull`, the one retry, and loading a mod that arrives after the freeze) |
 | **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
-| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | Not started — designed in full below; M19a, the engine additions it needed, is landed upstream. The layout is derived from the seed, so nothing new on the handshake |
+| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | In progress — M19a (the engine additions), M19b (the devices and the blasts) and M19c (the flung goat, and the herd that now dies to it) have landed; M19d-M19g are below. The layout is derived from the seed, so nothing new on the handshake |
 
 ---
 
@@ -2172,8 +2172,9 @@ when the client has a mod the host lacks or a shared id at another version, or
 
 ## M19 — Landmines and boobytraps: blasts, craters, a flung goat
 
-**Status:** designed, not started -- except M19a, the engine additions it needed,
-which is landed upstream (`slag` `8a4209fa`). The mechanics, the wire, the Blender
+**Status:** M19a (the engine additions), M19b (the devices, the blasts and the
+flung goat's damage) and M19c (the flung goat, the peer path and the herd that now
+dies to it) are landed; M19d (craters) is next. The mechanics, the wire, the Blender
 contract, the tuning tree, the calls and the file list are all below -- this section
 is the whole design, not a summary of one.
 
@@ -2209,9 +2210,11 @@ flowchart TD
 - **Boobytrap.** The same charge, hidden under a grass tuft. It goes off when a
   goat eats that tuft, or when one walks over it. Eating a trapped tuft is the joke
   of the feature: the meal is replaced by a bang.
-- **The blast** does not kill. Health drops by how close the goat was, and the goat
-  is thrown: up, out, and tumbling, then back on its feet. Landing in the crater it
-  just made is allowed, and looks brilliant.
+- **The blast** does not kill *the player*. Health drops by how close the goat was,
+  and the goat is thrown: up, out, and tumbling, then back on its feet. Landing in
+  the crater it just made is allowed, and looks brilliant. That is a promise about
+  the player's own run, and it is `blast.healthFloor`'s whole job -- the herd takes
+  the same curve without it, so **a bot can be killed** (*The herd is mortal*).
 - **The crater** is real ground. The goat walks down into it, the grass inside is
   gone, the sides are scorched, and it fills in over a few minutes.
 
@@ -2304,10 +2307,12 @@ knob and it is clamped.
 goat it is. For each goat *that process simulates*, within `radius`:
 
 - **Damage**, `TUNING.explosions.blast.damage * falloff(d)` where
-  `falloff = (1 - d/radius)²` -- 45 at the centre, nothing at the rim. Clamped so a
-  blast cannot take health below `blast.healthFloor` (proposed 1): the feature is
-  meant to hurt and embarrass, not to end runs. `TUNING.explosions.blast.lethal`
-  sits next to it as the flag that would change that, and the answer is no.
+  `falloff = (1 - d/radius)²` -- 45 at the centre, nothing at the rim. For the player
+  it is clamped so a blast cannot take health below `blast.healthFloor` (proposed 1):
+  the feature is meant to hurt and embarrass, not to end runs, and
+  `TUNING.explosions.blast.lethal` sits next to it as the flag that would change
+  that -- the answer is no. The herd gets no such clamp: same curve, no floor, and a
+  bot that has taken three bangs dies (*The herd is mortal*).
 - **Fling**, an impulse along the direction from the blast to the goat:
   `blast.push * (1 - d/radius)` outward, plus `blast.lift * (1 - d/radius)` up,
   plus a small jitter from the blast's own stream, so two goats side by side do not
@@ -2384,7 +2389,7 @@ for explosions:
 | Goat | Simulated by | Who applies the blast | Who sees the arc |
 | --- | --- | --- | --- |
 | The local player's | This client, always (even when hosting) | The client that owns it | Everyone, via the pose datagram |
-| The herd | Whoever is world-local (the host, or nobody offline) | The host | Everyone, via the world snapshot |
+| The herd | Whoever is world-local (the host, or nobody offline) | The host | Everyone: the gait and the fraction, in the world snapshot -- **not the height yet** (see *The wire*) |
 | A peer's | That peer's client, never ours | That peer's client | Everyone, via the pose datagram |
 
 So a blast is applied by exactly one process per goat, that process is the one that
@@ -2395,11 +2400,49 @@ already simulates it, and nothing new has to be negotiated. Consequences:
 - **A client never applies a blast to a peer's goat.** A peer that was flung is
   flung by its own client, and the arc arrives as a `Gait::Flung` pose (see *The
   wire*) -- so `peerRole` maps it to the flung clip and everyone sees it.
-- **The herd is flung, not hurt**: `BotState` carries no health, so a bot that
-  steps on a mine goes up in the air, lands, and walks on. Adding bot health is a
-  wire change for a feature nobody has asked for yet.
+- **The herd is mortal.** `blast()` throws every bot the world-local process
+  simulates (the same rule `checkTriggers` follows) and charges it the player's own
+  curve -- `damage * falloff * falloff` off the same radius -- but not the player's
+  `healthFloor`, which is the promise that a mine cannot end a *player's* run. So
+  three bangs on the centre kill a bot and one at the rim is a bruise, and no health
+  crosses the wire: nothing outside the owning process can ever act on it. A bot's arc
+  lives in its own fields (`startBotFling`, `botFlingProgress`, `botAirborne`,
+  bots.js), its AI is skipped while it flies, and `botRole` maps the flung mode to the
+  flung clip or to the jump. What a *client* sees is the gait and the fraction, because
+  a `BotState` carries no height -- see *The wire* for that one. The cases are driven
+  through `blast()` in the harness rather than by luring a bot onto a mine: the herd
+  wanders on its own PRNG, and what is under test is the reaction, not the walking.
+- **A killed bot is not a missing bot.** The herd keeps the size
+  `TUNING.herd.count` asks for, so a dead bot lies where it fell for
+  `TUNING.herd.deathLinger` (8 s) playing the death clip -- `botRole` returns
+  `death` exactly as `clipRole` does -- and then gets up 10 to 26 m from the player,
+  facing it, with a whole skin. A respawn prefers ground whose cell holds no armed
+  mine, so coming back is not an instant second death; eight tries is the whole of
+  that search. A corpse has no AI and trips no device. It is the one thing in the
+  herd that still does physics, and only because it may be mid-fall: **a bot killed
+  in the air keeps the arc it had and lands**, so a chain on a flung bot drops a body
+  rather than teleporting one to the ground. A bot's health comes back no other way,
+  which makes the herd the field's memory -- a bot that has been through three bangs
+  of bruises dies to the next one.
+- **A dead bot is a `Gait::Dead` bot**, so a client mirrors the pose and the fraction
+  like any other one-shot and getting up is the host's business: the next snapshot
+  simply says something else. `Gait::Dead` has been on the wire since the peers' goats
+  had it, so bot death needed **no protocol version** -- unlike `Gait::Flung`, which
+  was a variant that did not exist yet (see *The wire*).
 
 ### The wire
+
+**The flung *height* does not travel, and it should.** `Gait::Flung` carries the gait
+and the fraction through the arc, but the arc's height is the owner's, so a mirrored
+goat -- a client's view of a bot, or a peer's goat anywhere -- is drawn on the ground
+while it tumbles. The placeholder jump clip's 0.4 m hop is what hides that today, and
+M19f's rootless `GoatFlung` would expose it. The fix is one quantized field on each
+side: `py` on `BotState` (in `centimetres`, so two bytes a bot -- the vanilla world is
+under a third of its budget, so this one can argue for its bytes) and on `PeerState`
+(a JSON frame, so a plain number), published by `sceneWorldBots`/`netMaybePublish` and
+applied in `netApplyWorld`/`drawPeers`/`updatePeers` (directly, not eased -- easing a
+parabola flattens its apex), with `PROTOCOL_VERSION` 9 -> 10 for the reason 8 -> 9
+needed it: a variant that decodes as something else is worse than a refusal.
 
 Two different things travel, and they belong on two different channels -- which is
 the same split M16 already made for the world versus the world mods.
@@ -2511,6 +2554,12 @@ clip, which needs no bump and hides a real difference (nobody sees the tumble).
 The recommendation is the bump: it is a one-line change, the project bumps it
 readily (it is at 8), and the cost of *not* doing it is a feature that only works
 for the player who triggered it.
+
+**A bot's death is not a bump.** `Gait::Dead` has been in that same enum since the
+peers' goats had a death to report -- `peerRole` and `netPeerPhase` have carried a
+player's death since M1 -- so a bot dying is a variant every version-9 peer already
+decodes. That is the whole of why M19c2's wire change is one branch in
+`netApplyWorld` and nothing in `crates/proto`.
 
 ### The look
 
@@ -2715,8 +2764,8 @@ it rather than overlapping. That is M19g's, with the rest of the mixing.
         blast: {
             radius: 3.2,               // metres
             damage: 45,                // at the centre, falling to 0 at the rim
-            healthFloor: 1,            // a blast cannot take health below this
-            lethal: false,             // ...and cannot kill at all while this is false
+            healthFloor: 1,            // a blast cannot take health below this (the player's)
+            lethal: false,             // ...and cannot kill the player while this is false
             push: 13.0,                // m/s of outward velocity at the centre
             lift: 34.0,                // m/s of upward velocity at the centre
         },
@@ -2738,6 +2787,10 @@ it rather than overlapping. That is M19g's, with the rest of the mixing.
         chain: 0.15,                   // seconds before a blast sets off a neighbour; 0 = off
         chainDepth: 1,                 // how far a cascade may go; 1 = neighbours only
     },
+    herd: {
+        count: 7,                      // bot goats
+        deathLinger: 8,                // seconds a killed bot lies there before it gets up
+    },
 ```
 
 `push` and `lift` as landed are a steep throw: a blast the goat is standing on puts
@@ -2746,12 +2799,14 @@ is 0.6 m, so the goat is at arm's length -- is four to five metres up and six ou
 Height came out of the lift and the gravity together, not out of the push: the
 throw is the one it always was (the push *fell* from 14 to 13 to pay for the longer
 fall), and only the air is new. The values in the tree above are the ones in
-`core.js` today for everything M19b and M19c landed; `crater`, `maxReports` and
-`lethal` are still the proposal.
+`core.js` today for everything M19b, M19c and M19c2 landed; `crater`, `maxReports`
+and `lethal` are still the proposal -- and `lethal`, when it lands, is a promise
+about the *player*: the herd is already mortal without it.
 
 with `TUNING_CLAMP` entries for the ones a mistake could make unplayable
 (`mine.density` ≤ 0.1, `blast.radius` ≤ 12, `blast.damage` ≤ 100, the fling's
-gravity a negative, `fling.pivot` within the goat's own height, `crater.heal`
+gravity a negative, `fling.pivot` within the goat's own height, `herd.deathLinger`
+at least half a second so a corpse cannot ping-pong, `crater.heal`
 ≥ 30, `maxActive` ≤ 64, `chainDepth` ≤ 2) -- the tuning registry already has that
 mechanism, and a bad `tuning.json` in a pulled mod should not be able to make the
 world unplayable.
@@ -2781,7 +2836,11 @@ world unplayable.
   wall, and two goats colliding mid-air is a physics problem nobody asked for.
   `resolveGoatCollisions` gets one guard.
 - **The herd** is flung by the host and mirrored (`Gait::Flung` in `BotState`), with
-  `botRole` mapping the gait to the flung clip. Bots do not take damage.
+  `botRole` mapping the gait to the flung clip and the fraction posing and rolling it;
+  it also takes damage and dies (*The herd is mortal*), mirrored as `Gait::Dead` plus
+  the fraction through the death clip. Neither the height nor the health travels yet:
+  the height is M19c's named gap below, and the health never needs to, because only
+  the host ever acts on it.
 - **A goat asleep on a mine** is a delicious edge case: sleeping is a mode, so the
   goat is not moving, so nothing triggers -- until it wakes and steps. A mine placed
   under a sleeping goat does nothing until it stands up, which is consistent and
@@ -2898,7 +2957,8 @@ JavaScript stubs are the only implementation either of them ever gets.
 | --- | --- | --- | --- | --- |
 | **M19a** | Engine additions | — | S | ✅ **Done** — landed upstream in `slag` (`8a4209fa`): `beginBlendMode`/`endBlendMode` with the whole `BLEND_*` set (`setBlendFactors`/`setBlendFactorsSeparate` plus `BLEND_FACTOR_*`/`BLEND_EQUATION_*` for the custom pair), `drawQuad3D`, `setTextureFilter` (+ `TEXTURE_FILTER_*`), `unloadTexture`, and the image read (`loadImage`, `imageWidth`/`imageHeight`, `imagePixel`, `unloadImage`), with the `rl` surface test and the README's surface prose (which also gains the texture bindings it never listed) |
 | **M19b** | Devices and blasts, offline, art-free | — | S–M | `explosions.js` (a sixteenth scene part): the derived layout, the triggers, `blast()`, the one-deep chain, damage and the health floor, the `traps` verb, a `tune` verb for the whole tuning tree, and the walking-onto-a-mine case. The bang reuses the weather's cloud puff, so the part adds no texture and no load step |
-| **M19c** | The flung goat | M19b | M | Landed except for the herd: the `"flung"` mode and its arc (integrated in absolute height, so a slope it crosses mid-air cannot drag it), the input lock, landing on the ground it actually meets, the roll the placeholder owes (`flingDraw`), `Gait::Flung` + the `PROTOCOL_VERSION` 9 bump, the peer path, `restart()` clearing it, and the clip contract -- with the jump variant as the fallback until Blender lands. A bang in `sfx/` is heard too, faded by its distance. **Open: the bots.** `blast()` only reaches the player's goat, so the herd's own arc (and its gait on the world datagram) is still to write |
+| **M19c** | The flung goat | M19b | M | Landed: the `"flung"` mode and its arc (integrated in absolute height, so a slope it crosses mid-air cannot drag it), the input lock, landing on the ground it actually meets, the roll the placeholder owes (`flingDraw`), `Gait::Flung` + the `PROTOCOL_VERSION` 9 bump, the peer path, `restart()` clearing it, the clip contract -- with the jump variant as the fallback until Blender lands -- and the herd, which is flung, lands, and walks on. A bang in `sfx/` is heard too, faded by its distance. **Open, and named in *The wire*: the flung *height* does not travel**, so a bot on a client (and a peer's goat anywhere) tumbles on the ground until `py` rides on `BotState`/`PeerState` -- which M19f's rootless `GoatFlung` will force |
+| **M19c2** | The herd is mortal: bots take damage, and die | M19c | S | ✅ **Landed** — bots take the player's own blast curve without the player's floor (`health` on a bot, charged in `blast()`), a lethal bang kills instead of throwing (`botDie`, bots.js), a killed bot lies there for `herd.deathLinger` playing the death clip and then gets up 10-26 m away on ground with no armed mine under it (`botRespawn`), a corpse has no AI and trips no device but *does* land — a bot killed mid-arc keeps the arc it had. On the wire it is `Gait::Dead` plus the fraction (`netBotPhase`/`netApplyWorld`), which the enum already carried, so **no protocol version** |
 | **M19d** | Craters | M19b | M | The dish in `terrainHeight` (with the cell cache and the forced rebuild), the tufts killed inside it, healing, the cap, and the offline look (a tinted disc) |
 | **M19e** | The wire | M19b-d | M | `BlastKind`, the two messages, the rate limit, `craters`/`spent` on the world datagram with `None`-means-keep, the shed order, the budget case, and the two-window check |
 | **M19f** | The art | M19a, M19c, M19d | M–L | `GoatFlung` in `goat.blend` (which retires the procedural roll and the jump-clip placeholder together); the three atlases and the crater decals as PNGs in the asset table; the flipbook instances; the light-flash uniforms; the camera shake and the HUD pulse |
@@ -2925,10 +2985,18 @@ it:
   paths, one pass each -- with a clip and without (the placeholder that ships
   today) -- and asserts the lock frame by frame, that the *arc* is what lifts the
   goat in both paths, that the roll is drawn on an axis of its own only where no clip
-  is tumbling, and that `restart` mid-arc clears it. Two of the cases wait for the
+  is tumbling, and that `restart` mid-arc clears it. The herd has its own case: a
+  bang on a bot throws it off the ground, the row the world snapshot would send says
+  `flung` with a fraction in between, the *drawn* bot (found by its model handle, the
+  herd being resized on the scripted timeline) is above the terrain on a rolled axis,
+  and it lands and walks on. M19c2 kills one: a bang charges a bot as much as it
+  charges the goat and still throws it, a lethal one drops it dead with `Gait::Dead`
+  and a fraction in between (and `GoatDeath` among `bot_clip_names`, which is what a
+  bot posed), a bot killed in the air falls and lands still dead, and `deathLinger`
+  later it is up again, whole, on the respawn ring. Two of the cases wait for the
   goat's own bang rather than for the blast counter to move: `checkTriggers` runs over
-  the herd too, so a bot stepping on a device of its own used to be able to end a
-  case about the player early.
+  the herd too, so a bot stepping on a device of its own used to be able to end a case
+  about the player early.
 - **`crates/harness/tests/mods.rs`** -- a mod's `goats.explosions.blast` goes
   through the report path, the `blast` event fires, and `traps` is readable.
 - **`crates/harness/tests/birds.rs`**-style -- the effect pool: instances age and
@@ -2963,11 +3031,11 @@ this milestone is a consequence of these, so they come first.
 | # | Question | Recommended |
 | --- | --- | --- |
 | 1 | The flung pose | **Blender iteration, not prose** (see *The mechanics*): splayed and spinning, landing on its feet -- the forgiving read, and it needs no get-up clip. The clip contract is what lets this change without touching the code |
-| 2 | Does a blast ever kill? | **No.** `blast.healthFloor` is the floor and the arc owns the physics; the death clip stays reachable only through starvation |
+| 2 | Does a blast ever kill? | **Not the player.** `blast.healthFloor` is the floor and the arc owns the physics; the player's death clip stays reachable only through starvation. **A bot is mortal**: it takes the same curve with no floor, so three centre bangs kill it (*The herd is mortal*) |
 | 3 | Do craters heal? | **Yes**, over `crater.heal` -- it is what bounds the world datagram (see *The wire*). Permanent scars need a datagram of their own and can come later without touching the blast path |
 | 4 | Are the traps a secret? | **No**: derived from the cell and the seed, instant, mod-readable |
 | 5 | Chain reactions | **On, one level deep**: a blast sets off its neighbours, those do not chain further. `chain: 0.15` is the delay; a dense field cannot cascade |
-| 6 | Do bots take damage? | **Not in v1**: `BotState` has no health. A bot is flung and gets up, and bot health is a wire field the day the herd is worth killing |
+| 6 | Do bots take damage? | **Yes, and they die** (decided by the player, and landed as M19c2): the same curve the player takes, no floor, a `herd.deathLinger` of lying dead, and a respawn rather than a smaller herd -- so bot health never has to cross the wire |
 | 7 | Panning | **Mono with attenuation, for v1**, and a README line about it. The mixer in `audio.rs` is the path if it ever grates (see *Sound*) |
 | 8 | A flung goat meeting a peer | **No collision** -- two airborne goats is the joke, not the problem |
 | 9 | The safe zone | **The spawn radius only**, `TUNING.explosions.safe` (8 m), no grace period, and `restart()` respawns inside it |

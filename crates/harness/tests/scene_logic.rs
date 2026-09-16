@@ -703,6 +703,12 @@ fn the_scene_runs_the_scripted_timeline() {
 
     let mut herd_stands = !obs.bot_draw.is_empty();
     for bot in &obs.bot_draw {
+        // A flung bot is drawn rolled, and it belongs in the air (M19c): the herd
+        // trips devices of its own on a long run, so the one frame this records can
+        // catch a bot mid-arc. Everything else stands exactly on the terrain.
+        if bot.axis_x.abs() + bot.axis_z.abs() > 0.01 {
+            continue;
+        }
         let ground = f64_of(
             harness
                 .call("terrainHeight", &[json!(bot.x), json!(bot.z)])
@@ -1071,6 +1077,31 @@ fn the_scene_runs_the_scripted_timeline() {
         fx.flung_tumble,
     );
     checks.check(
+        "a blast throws the herd, and a bot walks away",
+        fx.herd_flung,
+        fx.herd_flung,
+    );
+    checks.check(
+        "a blast hurts a bot as much as it hurts the goat",
+        fx.bot_hurt,
+        fx.bot_hurt,
+    );
+    checks.check(
+        "a lethal blast kills a bot, and the world snapshot says so",
+        fx.bot_death,
+        fx.bot_death,
+    );
+    checks.check(
+        "a bot killed in the air lands, still dead",
+        fx.bot_lands,
+        fx.bot_lands,
+    );
+    checks.check(
+        "a dead bot gets up again, somewhere else",
+        fx.bot_respawn,
+        fx.bot_respawn,
+    );
+    checks.check(
         "the flung gait reads as the flung clip, or the jump without one",
         fx.flung_clip,
         fx.flung_clip,
@@ -1160,6 +1191,11 @@ struct Explosions {
     flung: bool,
     flung_lock: bool,
     flung_tumble: bool,
+    herd_flung: bool,
+    bot_hurt: bool,
+    bot_death: bool,
+    bot_lands: bool,
+    bot_respawn: bool,
     flung_clip: bool,
     flung_restart: bool,
     blast_sound: bool,
@@ -1231,6 +1267,14 @@ const EFFECT_SPOTS: &str = "(function () { \
        if (FX[i].live) out.push([FX[i].x, FX[i].z]); \
      } \
      return out; })()";
+
+/// How far the first bot is from the player, in metres. A respawn puts it out on the
+/// ring `botRespawn` draws (10 to 26 m), so this is what says "somewhere else" rather
+/// than "back where it fell".
+const BOT_DISTANCE: &str = "(function () { \
+     const dx = BOTS[0].x - goat.px; \
+     const dz = BOTS[0].z - goat.pz; \
+     return Math.sqrt(dx * dx + dz * dz); })()";
 
 /// The mine with a clear run-up `APPROACH` metres west of it, as
 /// `(target x, target z, start x)`: neither the start point nor the corridor
@@ -1679,6 +1723,151 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
         eprintln!("flung roll case: roll={roll:?}");
     }
     out.flung_tumble &= centred;
+
+    // ---- M19c: the herd is thrown too -----------------------------------------
+    //
+    // A survivable bang's whole reaction on a bot is the arc: it goes up, comes down,
+    // and walks on (M19c2, below, is the one that kills it). Driven through `blast()`
+    // itself rather than by luring a bot onto a mine -- the herd wanders on its own
+    // PRNG, and what is under test is the reaction, not the walking. The bang is placed
+    // on the bot, so the falloff is 1 and the throw is the full one.
+    if f64_of(harness.eval("BOTS.length")?) > 0.0 {
+        harness.eval("blast(\"mine\", BOTS[0].x, BOTS[0].z, 0.25, 0)")?;
+        let caught = bool_of(harness.eval("BOTS[0].mode === \"flung\"")?);
+        drive_burst(harness, 6)?;
+        let up = f64_of(harness.eval("BOTS[0].py")?);
+        // The row a client is sent, while it flies: the gait, and the fraction
+        // through the arc (which is what a viewer poses and rolls from).
+        let row = harness.call("sceneWorldBots", &[])?;
+        let broadcast = row[0]["gait"] == json!("flung")
+            && f64_of(row[0]["phase"].clone()) > 0.0
+            && f64_of(row[0]["phase"].clone()) < 1.0;
+        // ...and the drawn bot is off the ground and rolled, which is the half the
+        // *draw* owns: `py` above the terrain, on an axis that is not the plain +Y.
+        // Found by its own model handle -- the herd is resized on the scripted
+        // timeline, and `drawnRows` still holds the rows of models it unloaded.
+        let handle = f64_of(harness.eval("BOTS[0].model")?);
+        let drawn = harness
+            .observe()?
+            .bot_draw
+            .into_iter()
+            .find(|d| d.model as f64 == handle);
+        let airborne = drawn.as_ref().is_some_and(|d| {
+            let ground = f64_of(
+                harness
+                    .call("terrainHeight", &[json!(d.x), json!(d.z)])
+                    .unwrap_or(json!(0.0)),
+            );
+            d.y - ground > 0.5
+        });
+        let rolled = drawn
+            .as_ref()
+            .is_some_and(|d| d.axis_x.abs() + d.axis_z.abs() > 0.01);
+        // Fly it out: the ground it meets ends it, and a bot walks on afterwards.
+        let mut guard = 0;
+        while bool_of(harness.eval("BOTS[0].mode === \"flung\"")?) && guard < 40 {
+            drive_burst(harness, 9)?;
+            guard += 1;
+        }
+        let landed = !bool_of(harness.eval("BOTS[0].mode === \"flung\"")?)
+            && f64_of(harness.eval("BOTS[0].py")?) == 0.0;
+        let walks_on = bool_of(harness.eval("BOTS[0].mode !== \"dead\"")?);
+        out.herd_flung =
+            caught && up > 1.0 && broadcast && airborne && rolled && landed && walks_on;
+        if !out.herd_flung {
+            eprintln!(
+                "herd flung case: caught={caught} up={up} broadcast={broadcast} \
+                 airborne={airborne} rolled={rolled} landed={landed} walks_on={walks_on} \
+                 row={row:?} drawn={drawn:?}",
+            );
+        }
+    }
+
+    // ---- M19a: the herd is hurt, and dies ------------------------------------
+    // A bot takes the player's own blast curve and, unlike the player, is not spared
+    // by `blast.healthFloor` -- that floor is the promise that a *player's* run cannot
+    // be ended by a mine. So a bot can be killed, and it is not gone: the herd keeps
+    // the size the setting asks for, so the body lies there for `herd.deathLinger` and
+    // then gets up somewhere else. The lethal bang is deliberately aimed at a bot that
+    // is still in the air, which is the one path a corpse has physics for: a bot killed
+    // mid-arc keeps the arc it had and lands.
+    if f64_of(harness.eval("BOTS.length")?) > 0.0 {
+        let max_health = f64_of(harness.eval("TUNING.stats.max")?);
+        // The herd flung case above charged this bot a bang of its own, and the herd
+        // trips devices of its own over the scripted timeline: both are damage now, so
+        // the case starts from a whole skin rather than from whatever it walked into.
+        harness.eval("BOTS[0].health = TUNING.stats.max")?;
+        harness.command("heal")?;
+        // A bang it survives: it hurts, and it still throws.
+        harness.eval("goats.tuning.set(\"explosions.blast.damage\", 45)")?;
+        harness.eval("blast(\"mine\", BOTS[0].x, BOTS[0].z, 0.25, 0)")?;
+        let hurt = f64_of(harness.eval("BOTS[0].health")?);
+        let thrown = bool_of(harness.eval("BOTS[0].mode === \"flung\"")?);
+        out.bot_hurt = hurt > 0.0 && hurt < max_health && thrown;
+        if !out.bot_hurt {
+            eprintln!("bot hurt case: hurt={hurt} max={max_health} thrown={thrown}",);
+        }
+        // Two frames in, so the bot is genuinely off the ground when the next bang
+        // lands -- and so the death fraction the world snapshot carries is past 0.
+        drive_burst(harness, 2)?;
+        harness.eval("goats.tuning.set(\"explosions.blast.damage\", 100)")?;
+        harness.eval("blast(\"mine\", BOTS[0].x, BOTS[0].z, 0.25, 0)")?;
+        drive_burst(harness, 2)?;
+        let dead = bool_of(harness.eval("BOTS[0].mode === \"dead\"")?);
+        let at_zero = f64_of(harness.eval("BOTS[0].health")?) == 0.0;
+        let row = harness.call("sceneWorldBots", &[])?;
+        let broadcast = row[0]["gait"] == json!("dead")
+            && f64_of(row[0]["phase"].clone()) > 0.0
+            && f64_of(row[0]["phase"].clone()) < 1.0;
+        // The clip the *bot* posed, not the player's: the death is the death clip, and
+        // `bot_clip_names` is the harness's record of what the herd animated.
+        let posed = harness
+            .observe()?
+            .bot_clip_names
+            .iter()
+            .any(|name| name == "GoatDeath");
+        out.bot_death = dead && at_zero && broadcast && posed;
+        if !out.bot_death {
+            eprintln!(
+                "bot death case: dead={dead} at_zero={at_zero} broadcast={broadcast} \
+                 posed={posed} row={row:?}",
+            );
+        }
+        // The corpse falls -- the arc it was already on -- and lands still dead. The
+        // guard is generous: the flight it was killed into is under a second.
+        let mut guard = 0;
+        while f64_of(harness.eval("BOTS[0].py")?) > 0.0 && guard < 40 {
+            drive_burst(harness, 9)?;
+            guard += 1;
+        }
+        let landed_py = f64_of(harness.eval("BOTS[0].py")?);
+        let landed_dead = bool_of(harness.eval("BOTS[0].mode === \"dead\"")?);
+        out.bot_lands = landed_py == 0.0 && landed_dead;
+        if !out.bot_lands {
+            eprintln!("bot corpse case: py={landed_py} dead={landed_dead}");
+        }
+        // ...and then it gets up somewhere else with a whole skin. The default linger
+        // is eight seconds of standing around, so the case shortens it.
+        harness.eval("goats.tuning.set(\"herd.deathLinger\", 1)")?;
+        guard = 0;
+        while bool_of(harness.eval("BOTS[0].mode === \"dead\"")?) && guard < 40 {
+            drive_burst(harness, 9)?;
+            guard += 1;
+        }
+        let alive = bool_of(harness.eval("BOTS[0].mode !== \"dead\"")?);
+        let healed = f64_of(harness.eval("BOTS[0].health")?) == max_health;
+        let away = f64_of(harness.eval(BOT_DISTANCE)?);
+        out.bot_respawn = alive && healed && (9.0..=27.0).contains(&away);
+        if !out.bot_respawn {
+            eprintln!(
+                "bot respawn case: alive={alive} healed={healed} away={away} \
+                 guard={guard} mode={:?}",
+                harness.eval("BOTS[0].mode")?,
+            );
+        }
+        harness.eval("goats.tuning.set(\"herd.deathLinger\", 8)")?;
+        harness.eval("goats.tuning.set(\"explosions.blast.damage\", 45)")?;
+    }
 
     // The clip contract, both paths, plus what a peer is told: the flung gait reads
     // as the flung clip when the model has one and as the jump when it does not, it

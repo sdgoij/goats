@@ -440,6 +440,12 @@ function netWorldLocal() {
 // A one-shot gait is posed from its own clock when it is drawn, so the wire
 // carries the fraction through the clip rather than the bot's private timer.
 function netBotPhase(b) {
+    // A flung bot's arc is the host's; the fraction through it is what a viewer
+    // poses and rolls from, the same as for a peer's goat.
+    if (b.mode === "flung") return botFlingProgress(b);
+    // A death is one-shot too: the pose comes from the fraction, not from a timer a
+    // viewer does not have.
+    if (b.mode === "dead") return Math.min(b.deathTime / b.deathDur, 1);
     if (b.mode === "jump") return Math.min(b.jumpTime / b.jumpDur, 1);
     if (b.mode === "eat") return Math.min(b.eatTime / b.eatDur, 1);
     return b.phase;
@@ -507,8 +513,25 @@ function netApplyWorld(bots, weather, streams, eaten) {
             b.jumpDur = 1;
             b.jumpTime = s.phase;
         } else if (s.gait === "eat") {
-            b.eatDur = 1;
             b.eatTime = s.phase;
+            b.eatDur = 1;
+        } else if (s.gait === "flung") {
+            // The arc belongs to the host, and only the fraction travels: point the
+            // clock at it (as above) so the pose and the roll read the same here.
+            // The *height* is the host's too and does not travel yet, so a mirrored
+            // bot tumbles on the ground -- see the M19c note in ROADMAP.md.
+            b.flyTime = s.phase;
+            b.flyFlight = 1;
+            b.py = 0;
+        } else if (s.gait === "dead") {
+            // A death is the host's, clip and all: the fraction is the pose, and the
+            // body lies at the position the snapshot carries. Getting up again is the
+            // host's too -- `herd.deathLinger` runs where the herd is simulated, so a
+            // client simply sees the next snapshot say something else. `Gait::Dead`
+            // has been on the wire since the peers' goats had it, so a bot dying
+            // costs no protocol version.
+            b.deathTime = s.phase;
+            b.deathDur = 1;
         }
         const v = s.variant | 0;
         b.var.idle = v;

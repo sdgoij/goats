@@ -260,6 +260,7 @@ const TUNING = {
     },
     herd: {
         count: 7,                  // bot goats, 0..10
+        deathLinger: 8,            // seconds a killed bot lies there before it gets up
         spec: [
             { coat: [196, 168, 128], scale: 0.80, bold: 0.95, lazy: 0.55, name: "tan kid" },
             { coat: [222, 216, 206], scale: 1.06, bold: 1.00, lazy: 0.50, name: "cream" },
@@ -304,6 +305,9 @@ const TUNING = {
 // the game needs one.
 const TUNING_CLAMP = {
     "herd.count": [0, 10],
+    // A killed bot has to lie there for *some* of it: `0` would ping-pong it in and
+    // out of the world, and the death is worth watching.
+    "herd.deathLinger": [0.5, 120],
     "camera.minDist": [0.1, 1000],
     "camera.maxDist": [0.1, 1000],
     "lighting.shadow.size": [16, 8192],

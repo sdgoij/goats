@@ -59,6 +59,9 @@ pub struct Frame {
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Draw {
+    /// The model handle, so a check can find one bot's draw among a resized herd.
+    #[serde(default)]
+    pub model: i64,
     pub x: f64,
     pub y: f64,
     pub z: f64,

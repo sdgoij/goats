@@ -105,9 +105,28 @@ function botAdd(i) {
         eatCool: 0,    // seconds before this bot will graze again
         satiety: 0,    // 0..1, eases this bot's rain slowdown while it lasts
         graze: false,  // walking to a tuft to eat when it arrives
+        // Blast damage (M19a). A bot takes the same curve the player does and, unlike
+        // the player, is not spared by `blast.healthFloor` -- that floor is the
+        // promise that *this* player's run cannot be ended by a mine. So a bot can be
+        // killed, and the only thing that heals it is coming back: a bot's bruises are
+        // the herd's memory of a minefield.
+        health: TUNING.stats.max,
+        deathTime: 0,  // seconds since it died
+        deathDur: 1,   // seconds the death clip runs for (the pose's stretch)
+        // The blast's arc (M19c), the player's shape (goat.js) in a bot's own
+        // fields: `py` is the height above the ground it is drawn at, `flyY` the
+        // absolute height the physics integrates, and `flyTime`/`flyFlight` the
+        // clip's stretch.
+        py: 0,
+        flyTime: 0,
+        flyY: 0,
+        flyFlight: 1,
+        flyVX: 0,
+        flyVY: 0,
+        flyVZ: 0,
         // Which clip variant this bot plays per role; -1 so the first cycle
         // lands on index 0, and walk/trot/run have only one clip each.
-        var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0 },
+        var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0, flung: -1, death: -1 },
     };
     BOTS.push(spawned);
     modEmit("spawn", modBotHandle(spawned));
@@ -145,6 +164,13 @@ function setBotsShader(shader) {
 
 // The clip role a bot is currently playing, falling back like the player does.
 function botRole(b) {
+    // Dead is not a gait: the bot plays the death clip, the one `clipRole` reaches
+    // for, and with no such clip it falls through to the walk like the player does.
+    if (b.mode === "dead" && CLIP.death) return "death";
+    // A flung bot reads as the flung clip when the model has one and as the jump
+    // when it does not -- the same fallback as `clipRole` and `peerRole`, since a
+    // flung bot is posed from its arc's fraction rather than from a gait.
+    if (b.mode === "flung") return CLIP.flung ? "flung" : "jump";
     if (b.mode === "jump" && CLIP.jump) return "jump";
     if (b.mode === "eat" && CLIP.eat) return "eat";
     if (b.mode === "sleep" && CLIP.sleep) return "sleep";
@@ -152,6 +178,96 @@ function botRole(b) {
     if (b.mode === "trot" && CLIP.trot) return "trot";
     if (b.mode === "idle" && CLIP.idle) return "idle";
     return "walk";
+}
+
+// Take a blast's impulse (M19c), the player's `startFling` (goat.js) in a bot's
+// fields. A second bang mid-arc adds to the arc rather than restarting it, so a
+// chain through a minefield reads as one continuous throw.
+function startBotFling(b, vx, vz, vy) {
+    if (b.mode !== "flung") {
+        b.flyY = terrainHeight(b.x, b.z);   // the arc starts where the bot is
+        b.flyTime = 0;
+        b.mode = "flung";
+        b.timer = 0;
+        b.graze = false;
+        b.zoom = 0;
+    }
+    b.flyVX += vx;
+    b.flyVZ += vz;
+    b.flyVY += vy;
+    const g = TUNING.explosions.fling.gravity;
+    const air = b.flyVY > 0 && g < 0 ? (-2 * b.flyVY) / g : 0.4;
+    b.flyFlight = Math.max(0.3, Math.min(TUNING.explosions.fling.maxFlight, b.flyTime + air));
+}
+
+// The fraction through a flung bot's arc, which is what the pose is stretched over
+// and what a viewer rolls it by. A client has no arc of its own: `netApplyWorld`
+// points `flyTime`/`flyFlight` at the fraction the host sent, exactly as it does for
+// a jump, so this reads the same on both sides of the wire.
+function botFlingProgress(b) {
+    return Math.min(b.flyTime / b.flyFlight, 1);
+}
+
+// Whether a bot is over the ground rather than on it. A jump is airborne by mode
+// (the clip's root motion does the hop, so there is no height to read) and a flung
+// bot owns its own height. A landing is when this stops being true, which is what
+// sets off a mine the bot comes down on.
+function botAirborne(b) {
+    return b.mode === "jump" || b.mode === "flung";
+}
+
+// A lethal bang (M19a). The blast that kills a bot does not also throw it -- that is
+// the one place this differs from the player, whose arc and damage are applied
+// together -- but a bot killed *in the air* keeps the arc it already had, so a chain
+// on a flung bot drops a corpse rather than teleporting one to the ground. The
+// timing, the clip and the pose are the player's `die()` and `clipRole` exactly.
+function botDie(b) {
+    b.health = 0;
+    b.mode = "dead";
+    b.deathTime = 0;
+    b.graze = false;
+    b.zoom = 0;
+    const n = clipCount("death");
+    if (n > 1) b.var.death = (b.var.death + 1) % n;
+    const info = clipAt("death", b.var.death);
+    // With no death clip there is nothing to stretch the fraction over (`botRole`
+    // falls through to the walk, as the player's `clipRole` does), so any positive
+    // number will do -- but it has to be one, because the pose divides by it.
+    b.deathDur = info !== null && info !== undefined && info.duration > 0 ? info.duration : 1;
+}
+
+// Bring a dead bot back (M19a). The herd keeps the size the setting asks for, so a
+// bot that dies is replaced by itself rather than by nothing: it gets up out of the
+// way, facing the player, with a whole skin. Ground with no armed mine under it is
+// preferred -- a bot that respawned onto one would be blown up before it took a
+// step, which reads as a bug rather than as a minefield -- but eight tries is the
+// whole of the search, and a dense field has no clean ground left to offer.
+function botRespawn(b) {
+    let x = b.x;
+    let z = b.z;
+    for (let tries = 0; tries < 8; tries++) {
+        const a = botRnd() * Math.PI * 2;
+        const r = 10 + botRnd() * 16;
+        x = goat.px + Math.cos(a) * r;
+        z = goat.pz + Math.sin(a) * r;
+        if (!mineAt(Math.floor(x / 2), Math.floor(z / 2))) break;
+    }
+    b.x = x;
+    b.z = z;
+    b.yaw = Math.atan2(-(goat.pz - z), goat.px - x);
+    b.health = TUNING.stats.max;
+    b.deathTime = 0;
+    b.py = 0;
+    b.flyTime = 0;
+    b.flyFlight = 1;
+    b.flyVX = 0;
+    b.flyVY = 0;
+    b.flyVZ = 0;
+    b.satiety = 0;
+    b.graze = false;
+    b.zoom = 0;
+    b.mode = "idle";
+    b.timer = 1.5 + botRnd() * 3;
 }
 
 // Pick a new action: graze, stand and gaze, doze, or set off to a wander target,
@@ -240,13 +356,57 @@ function updateBots(dt) {
     const TURN = 1.5;
     for (let i = 0; i < BOTS.length; i++) {
         const b = BOTS[i];
+        if (b.mode === "dead") {
+            // Dead (M19a): the body lies where it fell, playing the death clip, and
+            // nothing else happens to it -- no AI, no grazing, and no devices, since
+            // a corpse does not set off a mine. The one thing a corpse still does is
+            // fall: a bot killed mid-arc lands (the arc it had is the arc it keeps),
+            // and the death clip plays on the way down. `herd.deathLinger` seconds
+            // later `botRespawn` puts it back on its feet somewhere else.
+            b.deathTime += dt;
+            if (b.py > 0) {
+                b.x += b.flyVX * dt;
+                b.z += b.flyVZ * dt;
+                b.flyVY += TUNING.explosions.fling.gravity * dt;
+                b.flyY += b.flyVY * dt;
+                b.py = b.flyY - terrainHeight(b.x, b.z);
+                if (b.flyVY <= 0 && b.py <= 0) {
+                    b.py = 0;
+                    b.flyVX = 0;
+                    b.flyVY = 0;
+                    b.flyVZ = 0;
+                }
+            }
+            if (b.deathTime >= TUNING.herd.deathLinger) botRespawn(b);
+            continue;
+        }
         b.timer -= dt;
         if (b.jumpCool > 0) b.jumpCool -= dt;
         if (b.eatCool > 0) b.eatCool -= dt;
         if (b.satiety > 0) b.satiety = Math.max(0, b.satiety - TUNING.food.satietyDecay * dt);
         if (b.satiety > botBellyMax) botBellyMax = b.satiety;
 
-        if (b.mode === "jump") {
+        if (b.mode === "flung") {
+            // The arc (M19c), the player's exactly: an absolute height with `py`
+            // derived from it, so a slope a bot crosses mid-air cannot drag it, and
+            // the ground it actually meets that ends the flight. There is no AI
+            // while it flies -- being thrown is the whole of it -- and a bot that
+            // lands simply takes up its next idea.
+            b.flyTime += dt;
+            b.x += b.flyVX * dt;
+            b.z += b.flyVZ * dt;
+            b.flyVY += TUNING.explosions.fling.gravity * dt;
+            b.flyY += b.flyVY * dt;
+            b.py = b.flyY - terrainHeight(b.x, b.z);
+            if (b.flyVY <= 0 && b.py <= 0) {
+                b.py = 0;
+                b.flyVX = 0;
+                b.flyVY = 0;
+                b.flyVZ = 0;
+                b.mode = "idle";
+                b.timer = 1.5 + botRnd() * 3;
+            }
+        } else if (b.mode === "jump") {
             // Airborne: the jump clip's root motion does the hop, so this only
             // carries the bot forward along its heading.
             b.jumpTime += dt;
@@ -454,14 +614,27 @@ function drawBots(tint) {
                 1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
         }
         const role = botRole(b);
-        // One-shot roles (jump, eat) pose from their own clock; the rest loop.
+        // One-shot roles (jump, eat, death, flung) pose from their own clock; the rest
+        // loop. The death clip is the model's, so the fraction is real there; with no
+        // such clip `botRole` has nothing to pose and the loop phase stands in.
         const pose = b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1)
-            : b.mode === "eat" ? Math.min(b.eatTime / b.eatDur, 1) : b.phase;
+            : b.mode === "eat" ? Math.min(b.eatTime / b.eatDur, 1)
+                : b.mode === "dead" && CLIP.death ? Math.min(b.deathTime / b.deathDur, 1)
+                    : b.mode === "flung" ? botFlingProgress(b) : b.phase;
         poseModelOn(b.model, clipAt(role, b.var[role]), pose);
         // Draw directly (no `drawModelAt` wrapper) to keep the JS call depth
         // shallow -- the debug stack guard is tight.
-        rl.drawModelEx(b.model, b.x, terrainHeight(b.x, b.z) + groundOffset * b.spec.scale, b.z,
-            0, 1, 0, (b.yaw * 180) / Math.PI,
+        const y = terrainHeight(b.x, b.z) + groundOffset * b.spec.scale + b.py;
+        if (b.mode === "flung") {
+            // The roll is the placeholder's, on the same rule as the player's: with
+            // no clip tumbling the bot, the scene turns it (`flingDraw`, model.js).
+            const d = flingDraw(b.x, y, b.z, b.yaw, flingTumble(pose),
+                TUNING.explosions.fling.pivot * b.spec.scale);
+            rl.drawModelEx(b.model, d.x, d.y, d.z, d.ax, d.ay, d.az, d.deg,
+                b.spec.scale, b.spec.scale, b.spec.scale, tint);
+            continue;
+        }
+        rl.drawModelEx(b.model, b.x, y, b.z, 0, 1, 0, (b.yaw * 180) / Math.PI,
             b.spec.scale, b.spec.scale, b.spec.scale, tint);
     }
 }
@@ -482,9 +655,19 @@ function drawBotsShadow() {
         if (dx * dx + dz * dz > shadowGrassCull2()) continue;
         rl.setModelShader(b.model, depthShader);
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, -1);
-        rl.drawModelEx(b.model, b.x, terrainHeight(b.x, b.z) + groundOffset * b.spec.scale, b.z,
-            0, 1, 0, (b.yaw * 180) / Math.PI,
-            b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);
+        // No pose here, but the transform is free: a thrown bot is in the air in
+        // the depth pass too (the roll comes from the fraction the pose already
+        // reflects, so a client's mirrored bot rolls the same way).
+        const y = terrainHeight(b.x, b.z) + groundOffset * b.spec.scale + b.py;
+        if (b.mode === "flung") {
+            const d = flingDraw(b.x, y, b.z, b.yaw, flingTumble(botFlingProgress(b)),
+                TUNING.explosions.fling.pivot * b.spec.scale);
+            rl.drawModelEx(b.model, d.x, d.y, d.z, d.ax, d.ay, d.az, d.deg,
+                b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);
+        } else {
+            rl.drawModelEx(b.model, b.x, y, b.z, 0, 1, 0, (b.yaw * 180) / Math.PI,
+                b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);
+        }
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, shadowColor);
         rl.setModelShader(b.model, litShader);
     }

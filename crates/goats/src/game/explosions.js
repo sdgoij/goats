@@ -139,8 +139,8 @@ function blast(kind, x, z, seed, depth) {
     blastCount += 1;
     const r = e.blast.radius;
     // The player's goat is simulated here whatever the session looks like
-    // (M12b), so it always takes the blast. A bot has no health to take, so its
-    // reaction is the fling (M19c) rather than damage.
+    // (M12b), so it always takes the blast, and it is clamped by `healthFloor`. The
+    // herd's blast is a few lines below, on the same curve without that floor.
     const dx = goat.px - x;
     const dz = goat.pz - z;
     const d2 = dx * dx + dz * dz;
@@ -154,6 +154,35 @@ function blast(kind, x, z, seed, depth) {
         const u = flingDirection(dx, dz, d, seed);
         startFling(u.x * e.blast.push * falloff, u.z * e.blast.push * falloff,
             e.blast.lift * falloff);
+    }
+    // The herd takes the blast too, but only where the herd is ours to move -- the
+    // same rule `checkTriggers` follows below: offline and on the host. A client
+    // never applies a blast to a bot it only mirrors.
+    if (netWorldLocal()) {
+        for (let i = 0; i < BOTS.length; i++) {
+            const b = BOTS[i];
+            if (b.mode === "dead") continue;   // a corpse takes no second bang
+            const bx = b.x - x;
+            const bz = b.z - z;
+            const bd2 = bx * bx + bz * bz;
+            if (bd2 > r * r) continue;
+            const bd = Math.sqrt(bd2);
+            const bfalloff = 1 - bd / r;
+            // The player's own curve, off the player's radius and damage -- but not
+            // the player's floor, which is the promise that a mine cannot end *this*
+            // player's run. A bot is not that promise: three bangs on the centre kill
+            // it and one at the rim is a bruise. A lethal bang kills instead of
+            // throwing, and a bot killed in the air keeps the arc it already had, so
+            // a chain on a flung bot drops a corpse rather than teleporting one.
+            b.health = Math.max(0, b.health - e.blast.damage * bfalloff * bfalloff);
+            if (b.health <= 0) {
+                botDie(b);
+                continue;
+            }
+            const bu = flingDirection(bx, bz, bd, seed);
+            startBotFling(b, bu.x * e.blast.push * bfalloff, bu.z * e.blast.push * bfalloff,
+                e.blast.lift * bfalloff);
+        }
     }
     spawnBlastFx(x, z, seed);
     // Heard wherever the goat is, in or out of the radius (audio.js).
@@ -332,8 +361,12 @@ function updateExplosions(dt) {
     if (!netWorldLocal()) return;
     for (let i = 0; i < BOTS.length; i++) {
         const b = BOTS[i];
-        if (b.mode === "sleep") continue;
-        checkTriggers(b, b.x, b.z, b.mode === "jump");
+        // Neither a sleeping bot nor a dead one is walking anywhere. Sleeping is the
+        // rule that was already here; a corpse is the same argument and one more: a
+        // body lying on a mine is inert until something moves it, and letting one
+        // trip a device would only ever be a bot blowing itself up again.
+        if (b.mode === "sleep" || b.mode === "dead") continue;
+        checkTriggers(b, b.x, b.z, botAirborne(b));
     }
 }
 
