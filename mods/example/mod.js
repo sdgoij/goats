@@ -5,7 +5,10 @@
 // It shows four things:
 //   * `goats.command` -- a new console verb, `hello`.
 //   * `goats.on("hud")` -- drawing over the HUD with the engine's `rl` surface.
-//   * a declared `assets` entry (mod.json) -- `sfx.bleat` now plays bleat.wav.
+//   * a declared `assetAdds` entry (mod.json) -- bleat.wav and a scream join
+//     `sfx.bleat`, so the game's own bleats are still there and these two are on
+//     the end. (Use `assets` instead to *replace* a slot's list, or
+//     `goats.assets.add` from code to do the same thing at runtime.)
 //   * a `tuning.json` merged before this file runs (camera.dist is a little
 //     further out, and its deliberate typo is warned about, not fatal).
 

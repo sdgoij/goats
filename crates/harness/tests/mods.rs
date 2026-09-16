@@ -79,6 +79,11 @@ fn the_mod_surface_works() {
         &reg,
     );
     checks.check(
+        "a declared or registered addition joins the slot's list",
+        reg.joined && reg.appended,
+        &reg,
+    );
+    checks.check(
         "mod registers a bot archetype and a gait",
         reg.bots_registered && reg.gait,
         &reg,
@@ -156,7 +161,7 @@ fn the_mod_surface_works() {
         &fixture,
     );
     checks.check(
-        "the fixture's declared asset is a real wav",
+        "the fixture's declared assets are real files",
         fixture.asset,
         &fixture,
     );
@@ -167,8 +172,13 @@ fn the_mod_surface_works() {
         &fixture,
     );
     checks.check(
-        "the fixture's declared asset re-points its slot",
+        "the fixture's declared addition joins the slot's list",
         fixture.slot,
+        &fixture,
+    );
+    checks.check(
+        "disabling a mod hands its asset slots back, enabling re-takes them",
+        fixture.released && fixture.regrabbed,
         &fixture,
     );
     checks.check(
@@ -252,7 +262,7 @@ const TABLE_TWO: &str = r#"[
 
 const TABLE_HOOKS: &str = r#"[{"id":"com.hooks","name":"Hooks","version":"1.0.0","api":1,"side":"client","enabled":true,"hash":"0"}]"#;
 
-const TABLE_PACK: &str = r#"[{"id":"com.pack","name":"Pack","version":"1","api":1,"side":"client","enabled":true,"hash":"0","assets":{"model.goat":"mod:com.pack:model.goat","sfx.music":"mod:com.pack:sfx.music"}}]"#;
+const TABLE_PACK: &str = r#"[{"id":"com.pack","name":"Pack","version":"1","api":1,"side":"client","enabled":true,"hash":"0","assets":{"model.goat":"mod:com.pack:model.goat","sfx.music":"mod:com.pack:sfx.music"},"assetAdds":{"sfx.thunder":"mod:com.pack:sfx.thunder"}}]"#;
 
 const TABLE_WORLD: &str =
     r#"[{"id":"com.w","name":"W","version":"1","api":1,"side":"world","enabled":true,"hash":"0"}]"#;
@@ -282,6 +292,7 @@ const PACK_ENTRY: &str = r#"(function (goats) {
     globalThis.__specAfter = goats.tuning.get("herd.spec").length;
     goats.clips.register("run", { gait: { stride: 0.6, duty: 0.4 } });
     goats.assets.override("sfx.rain", "mod:com.pack:sfx.rain");
+    goats.assets.add("sfx.bleat", "mod:com.pack:sfx.bleat");
 })(goats.begin("com.pack"))"#;
 
 const WORLD_ENTRY: &str = r#"(function (goats) {
@@ -485,14 +496,17 @@ fn api_block(harness: &mut Harness) -> Result<ModApi, String> {
 struct ModReg {
     slot_applied: bool,
     slots_listed: bool,
+    joined: bool,
+    appended: bool,
     bots_registered: bool,
     gait: bool,
     override_: bool,
     asset_refused: bool,
 }
 
-/// A declared asset re-points its slot when the table is pushed, and a mod adds a
-/// bot archetype, a gait and an explicit override while its entry window is open.
+/// A declared asset re-points its slot when the table is pushed, `assetAdds` joins
+/// the list instead, and a mod adds a bot archetype, a gait and an explicit override
+/// while its entry window is open.
 fn reg_block(harness: &mut Harness) -> Result<ModReg, String> {
     let mut reg = ModReg::default();
     harness.call("sceneMods", &[json!(TABLE_PACK)])?;
@@ -501,12 +515,30 @@ fn reg_block(harness: &mut Harness) -> Result<ModReg, String> {
         == json!("mod:com.pack:model.goat")
         && harness.eval("goats.assets.get(\"sfx.music\")")? == json!("mod:com.pack:sfx.music");
     reg.slots_listed = bool_of(harness.eval("goats.assets.slots().indexOf(\"sfx.rain\") >= 0")?);
+    // `assetAdds` joins the slot's list rather than replacing it, so the built-ins
+    // are still there and the mod's file is on the end.
+    reg.joined = bool_of(harness.eval(
+        "(function () { \
+           const list = goats.assets.get('sfx.thunder'); \
+           return Array.isArray(list) && list.length > 1 \
+             && list[list.length - 1] === 'mod:com.pack:sfx.thunder' \
+             && list.some(function (path) { return path.indexOf('sfx/') === 0; }); \
+         })()",
+    )?);
 
     harness.eval(PACK_ENTRY)?;
     harness.call(
         "sceneModResult",
         &[json!("com.pack"), json!(true), json!("")],
     )?;
+    // ...and the code half of it, `goats.assets.add`, does the same thing.
+    reg.appended = bool_of(harness.eval(
+        "(function () { \
+           const list = goats.assets.get('sfx.bleat'); \
+           return Array.isArray(list) && list.length > 1 \
+             && list[list.length - 1] === 'mod:com.pack:sfx.bleat'; \
+         })()",
+    )?);
     reg.bots_registered = bool_of(harness.eval(
         "globalThis.__specAfter === globalThis.__specBefore + 1 && goats.tuning.get(\"herd.spec\")[globalThis.__specBefore].name === \"giant\"",
     )?);
@@ -710,6 +742,10 @@ const EXAMPLE_MANIFEST: &str = include_str!("../../../mods/example/mod.json");
 const EXAMPLE_ENTRY: &str = include_str!("../../../mods/example/mod.js");
 const EXAMPLE_TUNING: &str = include_str!("../../../mods/example/tuning.json");
 const EXAMPLE_BLEAT: &[u8] = include_bytes!("../../../mods/example/assets/bleat.wav");
+/// The second file the fixture adds to the same slot, so the case covers the array
+/// form of `assetAdds` as well as the single name.
+const EXAMPLE_SCREAM: &[u8] =
+    include_bytes!("../../../mods/example/assets/u_k48zvsr64u-girl_scream_arya-531091.mp3");
 
 /// One `hud` emit with `rl.drawText` stood in for, returning the lines drawn.
 /// `modEmit` reaches mod handlers only, so every line is the hook's -- which is
@@ -763,6 +799,8 @@ struct ModFixture {
     installed: bool,
     listed: bool,
     slot: bool,
+    released: bool,
+    regrabbed: bool,
     tuning: bool,
     typo: bool,
     command: bool,
@@ -789,8 +827,13 @@ fn fixture_block(harness: &mut Harness) -> Result<ModFixture, String> {
     fixture.manifest = manifest["api"] == json!(1)
         && manifest["side"] == json!("client")
         && manifest["entry"].is_string();
-    fixture.asset = manifest["assets"]["sfx.bleat"] == json!("assets/bleat.wav")
-        && EXAMPLE_BLEAT.starts_with(b"RIFF");
+    fixture.asset = manifest["assetAdds"]["sfx.bleat"]
+        .as_array()
+        .is_some_and(|list| {
+            list.iter().any(|path| path == &json!("assets/bleat.wav")) && list.len() > 1
+        })
+        && EXAMPLE_BLEAT.starts_with(b"RIFF")
+        && EXAMPLE_SCREAM.len() > 1000;
 
     let tuning: serde_json::Value =
         serde_json::from_str(EXAMPLE_TUNING).map_err(|error| format!("tuning.json: {error}"))?;
@@ -803,7 +846,10 @@ fn fixture_block(harness: &mut Harness) -> Result<ModFixture, String> {
         "description": manifest["description"],
         "enabled": true,
         "hash": "0",
-        "assets": { "sfx.bleat": format!("mod:{id}:sfx.bleat") },
+        "assets": {},
+        // The array form, as the fixture's own manifest now uses: both files join the
+        // slot, so the scene's string-or-array handling is on the tested path.
+        "assetAdds": { "sfx.bleat": [format!("mod:{id}:sfx.bleat"), format!("mod:{id}:sfx.extra")] },
         "tuning": tuning,
     }]);
     let table = serde_json::to_string(&table).map_err(|error| error.to_string())?;
@@ -811,8 +857,33 @@ fn fixture_block(harness: &mut Harness) -> Result<ModFixture, String> {
     fixture.listed = bool_of(harness.eval(&format!(
         "goats.mods().some(function (m) {{ return m.id === {id:?} && m.enabled; }})"
     ))?);
-    fixture.slot =
-        harness.eval("goats.assets.get(\"sfx.bleat\")")? == json!(format!("mod:{id}:sfx.bleat"));
+    // The fixture *joins* the bleats rather than replacing them, which is what
+    // `assetAdds` is for: the case that used to read "the slot is the mod's name"
+    // now reads "the mod's name is in the list, and the game's own bleats are still
+    // there" -- a fixture that replaces them is how the jump ended up a test tone.
+    let name = format!("mod:{id}:sfx.bleat");
+    let holds = |harness: &mut Harness| -> Result<bool, String> {
+        Ok(bool_of(harness.eval(&format!(
+            "(function () {{ \
+               const list = goats.assets.get('sfx.bleat'); \
+               return Array.isArray(list) && list.indexOf({name:?}) >= 0; \
+             }})()"
+        ))?))
+    };
+    let builtins = |harness: &mut Harness| -> Result<f64, String> {
+        Ok(f64_of(harness.eval(
+            "(function () { \
+               const list = goats.assets.get('sfx.bleat'); \
+               let n = 0; \
+               if (Array.isArray(list)) { \
+                 for (let i = 0; i < list.length; i++) { \
+                   if (list[i].indexOf('sfx/') === 0) n += 1; \
+                 } \
+               } \
+               return n; })()",
+        )?))
+    };
+    fixture.slot = holds(harness)? && builtins(harness)? > 1.0;
     fixture.tuning = f64_of(harness.eval("goats.tuning.get(\"camera.dist\")")?) == 6.5;
     fixture.typo = harness
         .observe()?
@@ -851,6 +922,19 @@ fn fixture_block(harness: &mut Harness) -> Result<ModFixture, String> {
     reload(harness, &id, EXAMPLE_ENTRY)?;
     fixture.reload_hud = hud_lines(harness)?.len() == 1;
     fixture.reload_command = harness.command("hello goat")? == "ok hello goat";
+
+    // A toggle takes the slots with it. This is the one a player notices: a slot is
+    // read when the game loads and a `Sound` that has been loaded cannot be picked
+    // again, so `mod disable` has to re-point the slot *and* re-read the effects, or
+    // the mod's bleat plays on with the mod switched off.
+    fixture.released = harness.command(&format!("mod disable {id}"))?
+        == format!("ok mod disable {id}")
+        && !holds(harness)?
+        && builtins(harness)? > 1.0;
+    fixture.regrabbed = harness.command(&format!("mod enable {id}"))?
+        == format!("ok mod enable {id}")
+        && holds(harness)?;
+
     harness.call("sceneModEnd", &[json!(id)])?;
     Ok(fixture)
 }

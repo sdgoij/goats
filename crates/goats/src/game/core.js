@@ -123,11 +123,24 @@ const ASSET_SLOTS = {
     ],
 };
 
+// The built-ins, kept so a slot can be handed back. A mod fills slots in
+// `ASSET_SLOTS`, and enabling or disabling one has to be able to undo that --
+// including for the slots a mod invented, which the game does not have at all.
+//
+// A shallow copy is enough *because* a slot is only ever replaced, never edited in
+// place -- a mod that joins a list gets a copy of it first (`modSlotJoin`, mods.js),
+// so nothing here can be grown by accident and leak into the next rebuild.
+const ASSET_DEFAULTS = Object.assign({}, ASSET_SLOTS);
+
 // A slot value as a list: a mod may point a list slot at a single file.
+function assetNames(value) {
+    return Array.isArray(value) ? value : [value];
+}
+
 function assetList(slot) {
     const value = ASSET_SLOTS[slot];
     if (value === undefined) return [];
-    return Array.isArray(value) ? value : [value];
+    return assetNames(value);
 }
 
 const TUNING = {

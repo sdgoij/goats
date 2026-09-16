@@ -4,8 +4,8 @@
   "version": "1.0.0",
   "api": 1,
   "side": "client",
-  "description": "The checked-in example: a command, a HUD hook, an asset override and a tuning tweak.",
+  "description": "The checked-in example: a command, a HUD hook, an asset added to a slot and a tuning tweak.",
   "entry": "mod.js",
   "tuning": "tuning.json",
-  "assets": { "sfx.bleat": "assets/bleat.wav" }
+  "assetAdds": { "sfx.bleat": ["assets/bleat.wav", "assets/u_k48zvsr64u-girl_scream_arya-531091.mp3"] }
 }

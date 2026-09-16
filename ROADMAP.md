@@ -1126,6 +1126,31 @@ decisions behind it and the constraints that shape it.
   run gait (`asset` is refused with a message until the model work, since
   swapping one clip's source is a different job); `goats.assets.override`
   re-points a slot at an opaque asset name. All three are pre-freeze.
+
+  **Slots belong to the toggle (fixed later, with M19c).** The writes above landed
+  in `ASSET_SLOTS` for every mod in the table, enabled or not, so `mod disable
+  <id>` dropped a mod's code and left its assets behind -- which is how the example
+  fixture's 0.16 s test bleat went on playing the jump sound with the fixture
+  switched off. `modApplyAssets` (mods.js) now rebuilds the table from the built-ins
+  (`ASSET_DEFAULTS`, core.js) plus the *enabled* mods, on the table push, on a
+  toggle and on a pulled world mod; a toggle also re-reads the effects
+  (`reloadSfx`, audio.js), because a `Sound` that has been loaded cannot be
+  un-picked. Slots are therefore logged as they are filled. A slot the game keeps
+  (the goat model) still waits for a restart.
+
+  **...and a mod may join a list instead of taking it (`assetAdds`).** Every write
+  above was a *replace*, which for the bleats meant a mod with one more goat sound
+  silenced the six the game ships -- the same fixture, one review later. So the
+  manifest gained `assetAdds` (and the API `goats.assets.add`): the files join the
+  slot's list, after that mod's fills and after the mods before it, so a mod either
+  sets a slot or joins it and the host refuses a manifest that does both. The bytes,
+  the name and the digest are the same either way -- an `Asset` carries an `add`
+  flag, and only the table ([`Manifest::json`]) says which was asked for -- so
+  registration, hashing and `take_assets` are untouched. A slot that holds a single
+  file is refused a join (a warning from a manifest, a `throw` from code), and the
+  list is *copied* before it grows, because the built-ins are the baseline every
+  rebuild starts from. The example fixture is now an addition rather than a
+  replacement, which is the example worth copying.
 - **M14d — World-mod digest and join handshake. ✅ Done.** A `side: "world"` mod
   is identified by `ModRef { id, version, hash }` -- the loader's FNV-1a hash
   over the id, the version, the entry's text, the `tuning.json` tree and every

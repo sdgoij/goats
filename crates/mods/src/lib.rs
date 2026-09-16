@@ -81,6 +81,11 @@ pub struct Asset {
     /// FNV-1a over the file's bytes, so the manifest hash is the same whether
     /// the bytes were kept or streamed.
     pub content_hash: u64,
+    /// Whether the file *joins* the slot's list rather than becoming it. The
+    /// bytes, the name and the hash are the same either way -- only the scene's
+    /// table says which of the two the mod asked for, which is why the flag
+    /// rides on the asset instead of on a second list.
+    pub add: bool,
 }
 
 /// Whether discovery keeps asset bytes in memory.
@@ -165,10 +170,25 @@ impl Manifest {
         self.source.path()
     }
 
-    /// `slot -> opaque engine names`, for the scene's asset table.
+    /// `slot -> opaque engine names` for the slots the mod *fills*, for the
+    /// scene's asset table.
     pub fn asset_map(&self) -> BTreeMap<String, Vec<String>> {
+        self.by_slot(false)
+    }
+
+    /// The same for the slots it *adds to*: the files join the slot's list
+    /// instead of replacing it, which is what a mod that has one more bleat than
+    /// the game does should do.
+    pub fn asset_add_map(&self) -> BTreeMap<String, Vec<String>> {
+        self.by_slot(true)
+    }
+
+    fn by_slot(&self, add: bool) -> BTreeMap<String, Vec<String>> {
         let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for asset in &self.assets {
+            if asset.add != add {
+                continue;
+            }
             map.entry(asset.slot.clone())
                 .or_default()
                 .push(asset.name.clone());
@@ -188,15 +208,6 @@ impl Manifest {
 
     /// The metadata the scene is handed (no paths, ever).
     pub fn json(&self) -> serde_json::Value {
-        let mut assets = serde_json::Map::new();
-        for (slot, names) in self.asset_map() {
-            let value = if names.len() == 1 {
-                serde_json::Value::String(names.into_iter().next().unwrap_or_default())
-            } else {
-                serde_json::Value::Array(names.into_iter().map(serde_json::Value::String).collect())
-            };
-            assets.insert(slot, value);
-        }
         let mut value = serde_json::json!({
             "id": self.id,
             "name": self.name,
@@ -206,7 +217,8 @@ impl Manifest {
             "description": self.description,
             "enabled": true,
             "hash": format!("{:016x}", self.hash),
-            "assets": assets,
+            "assets": slot_map(self.asset_map()),
+            "assetAdds": slot_map(self.asset_add_map()),
         });
         // The scene merges this before the entry runs. A malformed tree is the
         // scene's to warn about; here it is passed through verbatim, since only
@@ -241,10 +253,26 @@ impl Manifest {
                 name: asset.name.clone(),
                 bytes: Vec::new(),
                 content_hash: asset.content_hash,
+                add: asset.add,
             })
             .collect();
         taken
     }
+}
+
+/// One map of slot to names, as the metadata table wants it: a string for a
+/// slot a mod points at one file, an array for one it points at several.
+fn slot_map(map: BTreeMap<String, Vec<String>>) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for (slot, names) in map {
+        let value = if names.len() == 1 {
+            serde_json::Value::String(names.into_iter().next().unwrap_or_default())
+        } else {
+            serde_json::Value::Array(names.into_iter().map(serde_json::Value::String).collect())
+        };
+        out.insert(slot, value);
+    }
+    out
 }
 
 /// The set of mods the host found, in the order they should load.
@@ -429,6 +457,10 @@ struct RawManifest {
     entry: Option<String>,
     #[serde(default)]
     assets: BTreeMap<String, OneOrMany>,
+    /// Files the mod *adds* to a slot rather than replacing it, so a pack with
+    /// one more bleat joins the game's six instead of silencing five of them.
+    #[serde(default)]
+    asset_adds: BTreeMap<String, OneOrMany>,
     #[serde(default)]
     tuning: Option<String>,
     #[serde(default)]
@@ -507,36 +539,18 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
 
     let mut assets = Vec::new();
     for (slot, files) in &raw.assets {
-        let files = files.to_vec();
-        for (index, file) in files.iter().enumerate() {
-            let (bytes, content_hash) = read_asset_source(source, file, mode == AssetMode::Keep)
-                .map_err(|message| fail(format!("asset '{slot}': {message}")))?;
-            // One file fills the slot on its own; several are addressed by
-            // index, so a mod can replace a whole sound list.
-            //
-            // The name ends in the source file's extension because the engine
-            // materialises the bytes to a temp file and raylib picks its decoder
-            // from that extension. A name ending in the slot (`...model.fatguy`)
-            // is handed to raylib as `.fatguy`, which no decoder claims. A file
-            // with no extension keeps the bare name.
-            let extension = std::path::Path::new(file)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .map(|extension| format!(".{extension}"))
-                .unwrap_or_default();
-            let name = if files.len() == 1 {
-                format!("mod:{}:{}{}", raw.id, slot, extension)
-            } else {
-                format!("mod:{}:{}:{}{}", raw.id, slot, index, extension)
-            };
-            assets.push(Asset {
-                slot: slot.clone(),
-                index,
-                name,
-                bytes,
-                content_hash,
-            });
+        assets
+            .extend(read_slot(source, mode, &raw.id, slot, &files.to_vec(), false).map_err(fail)?);
+    }
+    for (slot, files) in &raw.asset_adds {
+        // One slot, one statement: a file cannot both *be* a slot's list and join
+        // it, and the two would even collide on the same opaque name.
+        if raw.assets.contains_key(slot) {
+            return Err(fail(format!(
+                "asset '{slot}': a slot is either filled or added to, not both"
+            )));
         }
+        assets.extend(read_slot(source, mode, &raw.id, slot, &files.to_vec(), true).map_err(fail)?);
     }
 
     let wasm = match &raw.wasm {
@@ -713,6 +727,51 @@ fn read_source_text(
 /// Read an asset from either source, returning its bytes (empty in hash-only
 /// mode) and the FNV-1a hash the manifest folds in. Both sources hash the same
 /// bytes, so a directory mod and its zipped twin have the same digest.
+/// Read one slot's files into assets. `add` rides along so the scene can tell a mod
+/// that *fills* a slot from one that *joins* it -- the bytes, the name and the hash
+/// are the same either way, and only the table says which was asked for.
+fn read_slot(
+    source: &ModSource,
+    mode: AssetMode,
+    id: &str,
+    slot: &str,
+    files: &[String],
+    add: bool,
+) -> Result<Vec<Asset>, String> {
+    let mut out = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let (bytes, content_hash) = read_asset_source(source, file, mode == AssetMode::Keep)
+            .map_err(|message| format!("asset '{slot}': {message}"))?;
+        // One file fills the slot on its own; several are addressed by index, so a
+        // mod can replace a whole sound list.
+        //
+        // The name ends in the source file's extension because the engine
+        // materialises the bytes to a temp file and raylib picks its decoder from
+        // that extension. A name ending in the slot (`...model.fatguy`) is handed to
+        // raylib as `.fatguy`, which no decoder claims. A file with no extension
+        // keeps the bare name.
+        let extension = std::path::Path::new(file)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| format!(".{extension}"))
+            .unwrap_or_default();
+        let name = if files.len() == 1 {
+            format!("mod:{id}:{slot}{extension}")
+        } else {
+            format!("mod:{id}:{slot}:{index}{extension}")
+        };
+        out.push(Asset {
+            slot: slot.to_string(),
+            index,
+            name,
+            bytes,
+            content_hash,
+            add,
+        });
+    }
+    Ok(out)
+}
+
 fn read_asset_source(source: &ModSource, file: &str, keep: bool) -> Result<(Vec<u8>, u64), String> {
     match source {
         ModSource::Dir(dir) => {
@@ -1233,6 +1292,68 @@ mod tests {
         // The engine reads the extension off the name to pick raylib's decoder,
         // so the opaque name has to carry the file's own.
         assert_eq!(manifest.assets[0].name, "mod:coat:model.goat.glb");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_addition_joins_a_slot_and_is_refused_beside_a_fill() {
+        let root = workspace("adds");
+        write_mod(
+            &root,
+            "pack",
+            r#"{ "id": "pack", "name": "Pack", "version": "1", "api": 1,
+                 "assetAdds": { "sfx.bleat": ["a.ogg", "b.ogg"], "mine": "c.ogg" } }"#,
+        );
+        for name in ["a.ogg", "b.ogg", "c.ogg"] {
+            write(&root.join("pack").join(name), "ogg-bytes");
+        }
+        let loader = Loader::discover(&root);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        let manifest = &loader.mods()[0];
+        // The two halves of the table are told apart by the flag the host sets, not
+        // by two lists: a fill would have gone in `asset_map`.
+        assert!(manifest.asset_map().is_empty());
+        assert_eq!(
+            manifest.asset_add_map().get("sfx.bleat").unwrap(),
+            &vec![
+                "mod:pack:sfx.bleat:0.ogg".to_string(),
+                "mod:pack:sfx.bleat:1.ogg".to_string()
+            ]
+        );
+        assert_eq!(
+            manifest.asset_add_map().get("mine").unwrap(),
+            &vec!["mod:pack:mine.ogg".to_string()]
+        );
+        assert!(manifest.assets.iter().all(|asset| asset.add));
+        let value = manifest.json();
+        assert!(value["assets"].as_object().unwrap().is_empty());
+        assert_eq!(
+            value["assetAdds"]["mine"],
+            serde_json::json!("mod:pack:mine.ogg")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // One slot, one statement: filling and joining the same slot is refused,
+        // because the two would even collide on the same opaque name.
+        let root = workspace("adds-clash");
+        write_mod(
+            &root,
+            "clash",
+            r#"{ "id": "clash", "name": "Clash", "version": "1", "api": 1,
+                 "assets": { "sfx.bleat": "a.ogg" },
+                 "assetAdds": { "sfx.bleat": "b.ogg" } }"#,
+        );
+        write(&root.join("clash").join("a.ogg"), "ogg-bytes");
+        write(&root.join("clash").join("b.ogg"), "ogg-bytes");
+        let loader = Loader::discover(&root);
+        assert!(loader.mods().is_empty());
+        assert!(
+            loader.errors()[0]
+                .message
+                .contains("either filled or added to"),
+            "{:?}",
+            loader.errors()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

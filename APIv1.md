@@ -240,6 +240,9 @@ by hiding the finished one.
   "assets": {
     "model.goat": "models/goat_fast.glb",
     "sfx.bleat": ["audio/sprint.ogg"]
+  },
+  "assetAdds": {
+    "sfx.bleat": "audio/scream.ogg"
   }
 }
 ```
@@ -256,6 +259,7 @@ by hiding the finished one.
 | `author` | no | Free text. |
 | `loadAfter` | no | Ids that must load first. |
 | `entry` | no | JS entry. Absent means a data-only mod (assets + tuning). |
+| `assetAdds` | no | Assets that *join* a slot's list instead of replacing it (§3.3). |
 | `wasm` | no | A compiled module: `{ "module": "plugin.wasm" }`. The bytes are handed to the scene as an `ArrayBuffer`, never a path; see `ABIv1.md`. |
 | `tuning` | no | JSON merged into `goats.tuning` (§3.4). |
 | `assets` | no | Slot → file, or slot → list of files (§3.3). |
@@ -295,6 +299,25 @@ Built-in file-backed slots in v1 (all of them live in `ASSET_SLOTS`, core.js):
 `sfx.bleat`, `sfx.thunder`, `sfx.blast` and `sfx.debris` are lists: the value may be
 a string (replace the one-clip list) or an array (replace the whole list). Indexed
 forms (`sfx.bleat.0`) replace a single entry.
+
+`assetAdds` takes the same string-or-array shapes and *joins* the list instead of
+replacing it: a mod with one more sound than the game has adds to the six bleats
+rather than silencing five of them. `goats.assets.add` (§4.11) is the same
+statement made from code. Additions land after the fills, in load order, so a mod
+either sets a slot or joins it and one slot cannot be both -- which the host
+refuses at load.
+
+A mod's slots are part of its enablement. Disabling a mod -- `mod disable <id>`
+or the Mods screen's toggle -- hands every slot it filled back to the built-in (and
+clears the slots it invented), and enabling it takes them again. The short effects
+(`sfx.bleat`, `sfx.thunder`, `sfx.blast`, `sfx.debris`) are re-read at that moment,
+so a mod's bleat stops the instant the mod is switched off rather than at the next
+start. A slot the game loaded once and keeps -- `model.goat` -- is the exception:
+the goat is not rebuilt under a running session, so that one waits for a restart.
+
+Every fill is logged at load and at each toggle (`mods: <id> fills <slot>`), which
+is the only cheap way to see who moved a slot that is read once and then only
+heard.
 
 The procedural textures (`xTex`, `moonTex`, `glowTex`, `terrainDetail`,
 `cloudTex`, the per-bot fleeces) are generated in JavaScript and are **not**
@@ -562,13 +585,19 @@ non-leaf or unknown path throws, so a typo is loud.
 goats.assets.slots();                 // every known slot: ["model.goat", ...]
 goats.assets.get("model.goat");       // the name to pass to rl.loadModel
 goats.assets.override("sfx.music", "mod:com.example:sfx.music.mp3");   // pre-freeze only
+goats.assets.add("sfx.bleat", "mod:com.example:sfx.bleat");           // ...as one more bleat
 ```
 
 `get` prefers the mod's own declared asset for the slot, then falls back to the
 built-in logical name (`"goat_animated.glb"`), which the engine already resolves
 from its embedded registry before the disk. A manifest's `assets` map is applied
 automatically when the host pushes the table, so a data-only pack (no `entry`)
-replaces a built-in just by declaring the slot.
+replaces a built-in just by declaring the slot. `assetAdds` -- and `assets.add`,
+which is the same statement made from code -- joins the slot's list instead: the
+game's own files stay and the mod's go on the end. A slot that holds a single file
+(a track, a bed, a model) has no list to join, and an addition to one is a warning
+from a manifest and a `throw` from code. One slot cannot be both filled and joined,
+which the host refuses at load.
 
 An opaque name ends in the asset file's own extension (`mod:com.example:model.fatguy.glb`)
 because the engine materialises the bytes to a temp file and raylib picks its
@@ -1010,7 +1039,7 @@ New console vocabulary (all routed through the existing `sceneCommand`):
 | Command | Effect |
 | --- | --- |
 | `mod list` | Id, name, version, side, enabled. |
-| `mod info <id>` | The manifest fields, asset overrides and the digest hash. |
+| `mod info <id>` | The manifest fields, the slots it fills or joins and the digest hash. |
 | `mod enable <id>` | Load a discovered-but-failed or disabled mod (session only). |
 | `mod disable <id>` | Unload and unsubscribe a mod (session only). |
 | `mod reload <id>` | Re-read and re-evaluate a mod (iteration loop). |
@@ -1048,15 +1077,19 @@ with a note to leave the session first, because the set was fixed at join.
 
 Landed with the implementation, and Rust on the engine since M15:
 
-- `mods/example/` — a small checked-in fixture (one command, one HUD hook, one
-  declared asset override, a `tuning.json` with a valid leaf and a deliberate
-  typo) used by the scene suite and as documentation.
+- `mods/example/` — a small checked-in fixture (one command, one HUD hook, two
+  `assetAdds` entries on one slot, a `tuning.json` with a valid leaf and a deliberate
+  typo) used by the scene suite and as documentation. It *joins* `sfx.bleat` rather
+  than replacing it, which is the example worth copying: replacing it silences the
+  six bleats the game ships, and the two it adds are a 0.16 s test tone and a
+  scream, which is how a joined slot is heard in one keypress.
 - `crates/harness/tests/mods.rs` — its `fixture_block` loads the scene plus that
   fixture the way the host does (the files are compiled in, so a broken fixture
   fails the build as well as the case) and asserts: the command is dispatchable,
-  the `"hud"` hook runs, the asset slot returns the override name, the known
-  tuning leaf merges while an unknown distinct path warns, a throwing handler is
-  isolated, and a reload leaves no duplicate handler or command. The same file
+  the `"hud"` hook runs, the declared addition joins the slot's list, disabling the
+  fixture hands the slot back and enabling it takes it again, the known tuning leaf
+  merges while an unknown distinct path warns, a throwing handler is isolated, and a
+  reload leaves no duplicate handler or command. The same file
   holds the synthetic-table cases for the Mods screen and `modSetEnabled`, and
   (since M18d) the post-freeze-add cases: `sceneModAdd` adds a row that behaves
   like a boot-loaded mod -- assets, tuning and a registering entry -- while the

@@ -56,10 +56,73 @@ function modEntry(meta) {
         failed: false,
         error: "",
         assets: meta.assets === undefined ? {} : meta.assets,
+        adds: meta.assetAdds === undefined ? {} : meta.assetAdds,
         tuning: meta.tuning === undefined || meta.tuning === null ? null : meta.tuning,
         hash: meta.hash === undefined ? "" : String(meta.hash),
         wasm: meta.wasm === undefined || meta.wasm === null ? null : String(meta.wasm),
     };
+}
+
+// Join `name` to a slot's list, so a mod with one more bleat than the game has adds
+// to the six instead of silencing five of them. The list is *copied* before it
+// grows: the built-ins are the baseline every rebuild starts from, and pushing onto
+// one in place would leak the mod's file into the game's own table for the rest of
+// the session. A slot the game does not have at all is created as a list, so a mod
+// can build its own multi-file slot; a slot that holds a single file (a track, a
+// bed, a model) has no list to join and is refused.
+function modSlotJoin(slot, name) {
+    const current = ASSET_SLOTS[slot];
+    if (current === undefined) {
+        ASSET_SLOTS[slot] = [name];
+        return true;
+    }
+    if (!Array.isArray(current)) return false;
+    const list = current.slice();
+    list.push(name);
+    ASSET_SLOTS[slot] = list;
+    return true;
+}
+
+// Point every slot at what the *enabled* mods ask for, rebuilt from the built-ins
+// each time so the result does not depend on the order toggles happened in.
+//
+// This is why `mod disable example` gives the game its own bleats back rather than
+// only dropping the mod's code: the slots a mod filled are part of its enablement,
+// and a mod may name slots the game does not have at all (a model of its own), so
+// those are cleared when nothing enabled claims them. Every fill is logged, because
+// a slot is read once at load and the ones that make a noise are otherwise only
+// discovered by ear, hours later.
+function modApplyAssets() {
+    const mine = Object.keys(ASSET_SLOTS);
+    for (let i = 0; i < mine.length; i++) {
+        if (ASSET_DEFAULTS[mine[i]] === undefined) delete ASSET_SLOTS[mine[i]];
+        else ASSET_SLOTS[mine[i]] = ASSET_DEFAULTS[mine[i]];
+    }
+    for (let i = 0; i < MODS.length; i++) {
+        if (!MODS[i].enabled) continue;
+        // Fills first, then adds: a mod that names a whole list sets the slot, and
+        // one that only wants its sound in with the others joins whatever is there
+        // when its turn comes -- including what an earlier mod installed.
+        const declared = MODS[i].assets;
+        const slots = Object.keys(declared);
+        for (let j = 0; j < slots.length; j++) {
+            ASSET_SLOTS[slots[j]] = declared[slots[j]];
+            console.log("mods: " + MODS[i].id + " fills " + slots[j]);
+        }
+        const added = MODS[i].adds;
+        const into = Object.keys(added);
+        for (let j = 0; j < into.length; j++) {
+            const names = assetNames(added[into[j]]);
+            for (let k = 0; k < names.length; k++) {
+                if (modSlotJoin(into[j], names[k])) {
+                    console.log("mods: " + MODS[i].id + " adds " + into[j]);
+                } else {
+                    console.log("mods: " + MODS[i].id + " cannot join " + into[j] +
+                        ": it holds a single file");
+                }
+            }
+        }
+    }
 }
 
 // Install the host's metadata table. Called once, before any entry runs.
@@ -77,13 +140,7 @@ function sceneMods(json) {
     }
     // A mod's declared assets re-point the slots it filled, in load order, so
     // the last mod wins. This is what lets a data-only pack replace a built-in.
-    for (let i = 0; i < MODS.length; i++) {
-        const declared = MODS[i].assets;
-        const slots = Object.keys(declared);
-        for (let j = 0; j < slots.length; j++) {
-            ASSET_SLOTS[slots[j]] = declared[slots[j]];
-        }
-    }
+    modApplyAssets();
     // A mod's `tuning.json` lands before any entry runs, so the entry reads the
     // values it declared. Every leaf is validated by `tuningMerge`; a typo is a
     // warning, not a failure, so the rest of the tree still applies.
@@ -170,11 +227,11 @@ function sceneModAdd(json) {
     if (modFind(entry.id) !== null) return "error already loaded: " + entry.id;
     MODS.push(entry);
     // The per-mod half of `sceneMods`, in the same order: asset slots first, so
-    // the entry resolves the names it declared, then its tuning tree.
-    const slots = Object.keys(entry.assets);
-    for (let i = 0; i < slots.length; i++) {
-        ASSET_SLOTS[slots[i]] = entry.assets[slots[i]];
-    }
+    // the entry resolves the names it declared, then its tuning tree. The effects
+    // are re-read because a mod pulled in mid-session lands *after* the audio was
+    // loaded, and a slot that is never read again is a slot that does nothing.
+    modApplyAssets();
+    reloadSfx();
     if (entry.tuning !== null) {
         try {
             tuningMerge(entry.tuning);
@@ -541,6 +598,7 @@ function modAssetsFor(id, meta) {
             return assetList(slot);
         },
         override: function (slot, name) { return modAssetOverride(id, slot, name); },
+        add: function (slot, name) { return modAssetAdd(id, slot, name); },
     };
 }
 
@@ -601,7 +659,33 @@ function modAssetOverride(id, slot, name) {
     if (!modRegistrationAllowed(id)) throw new Error("goats.assets.override: registration is closed");
     if (typeof slot !== "string" || slot === "") throw new Error("goats.assets.override: a slot is required");
     if (name === undefined) throw new Error("goats.assets.override: an asset name is required");
+    // Recorded on the entry as well as written now: `modApplyAssets` rebuilds the
+    // table from what the enabled mods ask for, and this is a mod asking for a slot
+    // -- from code rather than from its manifest, which is the only difference.
+    const meta = modFind(id);
+    if (meta !== null) meta.assets[slot] = name;
     ASSET_SLOTS[slot] = name;
+    return true;
+}
+
+// Join one of the mod's assets to a slot's list instead of replacing it -- the code
+// half of the manifest's `assetAdds`, and the thing to reach for when a mod has one
+// more sound than the game does. Recorded on the entry for the same reason
+// `override` is, and refused by the same rule `modSlotJoin` applies.
+function modAssetAdd(id, slot, name) {
+    if (!modRegistrationAllowed(id)) throw new Error("goats.assets.add: registration is closed");
+    if (typeof slot !== "string" || slot === "") throw new Error("goats.assets.add: a slot is required");
+    if (name === undefined) throw new Error("goats.assets.add: an asset name is required");
+    if (!modSlotJoin(slot, name)) {
+        throw new Error("goats.assets.add: " + slot + " holds a single file, so there is no list to join");
+    }
+    const meta = modFind(id);
+    if (meta !== null) {
+        const have = meta.adds[slot];
+        if (have === undefined) meta.adds[slot] = [name];
+        else if (Array.isArray(have)) have.push(name);
+        else meta.adds[slot] = [have, name];
+    }
     return true;
 }
 
@@ -1022,17 +1106,23 @@ function modSetEnabled(id, enabled) {
     if (netInSession() && meta.side === "world") {
         return "error " + id + " is a world mod; leave the session first";
     }
+    // Whether the mod filled anything, decided before the flag moves. A toggle
+    // re-points the slots it filled, and a `Sound` that has already been loaded
+    // cannot be un-picked, so the effects are read again from the table -- that is
+    // what makes the toggle mean something to the ear and not only to the code. A
+    // slot that is not audio (a model) still only changes at the next start.
+    const filled = Object.keys(meta.assets).length > 0 || Object.keys(meta.adds).length > 0;
+    meta.enabled = enabled;
     if (enabled) {
-        meta.enabled = true;
         meta.failed = false;
         meta.error = "";
-        modQueue("enable", id);
-        return "ok mod enable " + id;
+    } else {
+        meta.loaded = false;
     }
-    meta.enabled = false;
-    meta.loaded = false;
-    modQueue("disable", id);
-    return "ok mod disable " + id;
+    modApplyAssets();
+    if (filled) reloadSfx();
+    modQueue(enabled ? "enable" : "disable", id);
+    return "ok mod " + (enabled ? "enable " : "disable ") + id;
 }
 
 // The compiled-mod view for `mod info`: the JS driver's instance if it owns one,
@@ -1081,6 +1171,7 @@ function modCommand(parts) {
             error: meta.error,
             hash: meta.hash,
             assets: Object.keys(meta.assets),
+            assetAdds: Object.keys(meta.adds),
             commands: modCommandsOf(meta.id),
             wasm: modWasmInfo(meta.id),
         });

@@ -84,18 +84,17 @@ function arnd() {
     return audioSeed / 4294967296;
 }
 
-function makeAudio() {
-    if (typeof rl.loadMusic !== "function" || typeof rl.loadSound !== "function" ||
-        typeof rl.updateMusic !== "function" || typeof rl.initAudioDevice !== "function") {
-        console.log("audio: engine has no audio bindings");
-        return;
-    }
-    rl.initAudioDevice();
-    musicMain = rl.loadMusic(ASSET_SLOTS["sfx.music"]);
-    if (musicMain >= 0) {
-        rl.setMusicVolume(musicMain, musicGain());
-        rl.playMusic(musicMain);
-    }
+// Load the short effects from the current slot table. Kept apart from `makeAudio`
+// because the table can move at runtime: a mod that fills a slot is enabled or
+// disabled, or is pulled in from a host, and the sounds it names have to be picked
+// up then. The track and the two weather beds are *not* here -- they are streams
+// that are already playing, and re-pointing a slot must not restart them.
+function loadSfx() {
+    BLEATS.length = 0;
+    THUNDERS.length = 0;
+    BLASTS.length = 0;
+    DEBRIS.length = 0;
+    DEBRIS_QUEUE.length = 0;   // a fall queued for a handle that is going away
     const bleatPaths = assetList("sfx.bleat");
     for (let i = 0; i < bleatPaths.length; i++) {
         const sound = rl.loadSound(bleatPaths[i]);
@@ -116,6 +115,32 @@ function makeAudio() {
         const sound = rl.loadSound(debrisPaths[i]);
         if (sound >= 0) DEBRIS.push(sound);
     }
+}
+
+// Re-read the effects because the slot table moved. A `Sound` that has already been
+// loaded cannot be un-picked -- the `rl` surface has no `unloadSound` -- so the old
+// handles are dropped rather than freed, which leaks one decoded buffer per toggle.
+// That is the price of a mod going quiet the moment it is switched off.
+function reloadSfx() {
+    if (!audioReady) return;
+    loadSfx();
+    console.log("audio: effects reloaded, bleats " + BLEATS.length + " thunder " +
+        THUNDERS.length + " blasts " + BLASTS.length + " debris " + DEBRIS.length);
+}
+
+function makeAudio() {
+    if (typeof rl.loadMusic !== "function" || typeof rl.loadSound !== "function" ||
+        typeof rl.updateMusic !== "function" || typeof rl.initAudioDevice !== "function") {
+        console.log("audio: engine has no audio bindings");
+        return;
+    }
+    rl.initAudioDevice();
+    musicMain = rl.loadMusic(ASSET_SLOTS["sfx.music"]);
+    if (musicMain >= 0) {
+        rl.setMusicVolume(musicMain, musicGain());
+        rl.playMusic(musicMain);
+    }
+    loadSfx();
     // The ambience beds start at silence and swell with the weather; keeping
     // them playing avoids a start/stop click at every transition.
     rainLoop = rl.loadMusic(ASSET_SLOTS["sfx.rain"]);
