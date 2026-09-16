@@ -49,6 +49,8 @@ covers more than it first appears:
 | Voice playback | ✅ Rust-side | the `rl` surface has no audio streams, but `raylib_sys` exposes them and the client already links raylib, so Rust plays into a stream directly (M13a) |
 | Networking | Host only | the JS engine has no sockets; `iroh` lives in the Rust host and reaches the scene over the command bridge (M10) |
 | Mod support | ✅ | `crates/mods/` loads a `mods/` directory into a versioned `goats` hook API; world mods are hashed into the join handshake (M14, see `APIv1.md`) |
+| Fire / smoke flipbooks | ✅ | `drawBillboardRec` takes a source rectangle, which *is* a flipbook frame; a Blender atlas is a PNG in the asset table like the goat's GLB (M19) |
+| A scorch decal on the ground, additive blending | ✅ | `drawQuad3D` lays a textured quad down on an explicit basis, and `beginBlendMode` carries raylib's whole mode set plus the factors its two custom modes blend with; `loadImage`/`imagePixel` read an artist's mask or height stamp (M19a, landed upstream) |
 
 The practical consequence: **stats, sleep and death needed no engine work at all**,
 and day/night plus a first pass of weather needed only the M0 primitives. With M0
@@ -96,6 +98,7 @@ uses.
 | **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | ✅ **Done** — M17a (the ABI), M17b (the Rust host), M17c (the digest + determinism), M17c2 (the state surface) and M17d (the performance debt) all landed |
 | **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | ✅ **Done** — the fetch ALPN, the client's fetch/verify/install, the catalogue and the client wiring (consent, `--pull`, the one retry, and loading a mod that arrives after the freeze) |
 | **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
+| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | Not started — designed in full below; M19a, the engine additions it needed, is landed upstream. The layout is derived from the seed, so nothing new on the handshake |
 
 ---
 
@@ -481,8 +484,9 @@ What would unblock it:
    That is the route to try first, and needs no engine change.
 2. **A per-pixel reprojection depth.** Carrying it in the target's alpha does not
    survive raylib's alpha-blended 2D drawing; it needs `BLEND_ALPHA_PREMULTIPLY`
-   (or no blending) exposed, or a second target. Failing that, the slab geometry
-   (`(cloudBase - camY) / dir.y`) is a serviceable depth proxy.
+   (or no blending) exposed, or a second target. M19a put the whole blend mode set in
+   the surface, so the first of those is now available. Failing that, the slab
+   geometry (`(cloudBase - camY) / dir.y`) is a serviceable depth proxy.
 
 ---
 
@@ -2135,6 +2139,798 @@ when the client has a mod the host lacks or a shared id at another version, or
 | The client's consent, console and mod reload | `crates/goats/src/main.rs`, `crates/goats/src/net.rs`, `crates/goats/src/game/ctl.js`, `mods.js`, `net.js` |
 | The page's manual path (already shipped) | `crates/server/src/web.rs`, `crates/mods/` |
 | Loading a mod that arrives late (M18d) | `sceneModAdd` in `crates/goats/src/game/mods.js`, `add_pulled_mod` in `crates/goats/src/main.rs` |
+
+---
+
+## M19 — Landmines and boobytraps: blasts, craters, a flung goat
+
+**Status:** designed, not started -- except M19a, the engine additions it needed,
+which is landed upstream (`slag` `8a4209fa`). The mechanics, the wire, the Blender
+contract, the tuning tree, the calls and the file list are all below -- this section
+is the whole design, not a summary of one.
+
+**Why.** The field has things to eat and things to bump into, and nothing that
+punishes a goat for walking where it was going anyway. Step on a mine, or eat a
+boobytrapped tuft, and the goat loses some health, flies a few metres, and leaves a
+hole in the ground. One mechanic, landing on every system the last few milestones
+built -- the terrain, the herd, the wire, the mod surface, Blender -- without
+adding a new one.
+
+**The one-sentence version.** A goat walks over a nearly invisible device, or eats
+a boobytrapped tuft, and gets blown a few metres with most of its health intact, a
+crater left where the ground was, and a mod API that can see all of it.
+
+### The mechanics
+
+```mermaid
+flowchart TD
+    A[Goat moves or eats] --> B{Triggered}
+    B -- no --> A
+    B -- yes, a mine, a trap or a bot --> C[Blast]
+    C --> D[Damage where the goat is simulated]
+    C --> E[Fling, a ballistic arc with a new clip]
+    C --> F[Fire, smoke, dirt, light flash, boom]
+    C --> G[Crater, dished ground that heals]
+    C --> H[The device is spent, and the herd is told]
+```
+
+- **Landmine.** A small device on the ground, invisible past a couple of metres,
+  that goes off when a goat walks over it -- or lands on it. It is not a tripwire:
+  a *hop* over one clears it if the goat gets high enough, which makes jumping a
+  real decision rather than a way to cheat the meadow.
+- **Boobytrap.** The same charge, hidden under a grass tuft. It goes off when a
+  goat eats that tuft, or when one walks over it. Eating a trapped tuft is the joke
+  of the feature: the meal is replaced by a bang.
+- **The blast** does not kill. Health drops by how close the goat was, and the goat
+  is thrown: up, out, and tumbling, then back on its feet. Landing in the crater it
+  just made is allowed, and looks brilliant.
+- **The crater** is real ground. The goat walks down into it, the grass inside is
+  gone, the sides are scorched, and it fills in over a few minutes.
+
+**Why this is cheaper than it looks.** Everything below already exists and is
+load-bearing for this feature; M19 is mostly *composing* things the world already
+does.
+
+| We need | Already there |
+| --- | --- |
+| A tuft's identity and existence | A tuft is a pure function of its 2-unit cell (`nearestTuft`'s hash in `food.js`), so "which tufts exist" needs no state, and neither does "which are trapped" |
+| Meadow state, bounded and on the wire | `EATEN` (`food.js`): a `Map` keyed by `tuftKey`, a regrow window in `TUNING.food`, six bytes a cell on the datagram, and `sceneConsume(key)` as the host's door for a client's bite |
+| A per-session random layout every peer agrees on | `sceneUseSeed(seed)` (`weather.js`) derives four streams from the session seed, each a separate xorshift draw, so they do not move in lockstep; adding a fifth is one line and needs no wire change -- because the layout is only ever *derived* and never *advances*: nothing about it changes during play, so no peer has to be handed a mid-session value (which is what the four travelling streams exist for) |
+| Repeatable runs for the harness | The same streams keep *constant* defaults offline, "which is what makes the harness stable" -- a new stream must do that too |
+| Ground that can be dished | `terrainHeight(x, z)` is a pure function (`world.js`) and the mesh is rebuilt wholesale when the goat has moved `TUNING.terrain.snap`, so a crater is a term in that function, not a mesh edit |
+| Somewhere to draw a scorch | The terrain rebuild already computes per-vertex colours, and a decal can be drawn on top |
+| Who owns a goat | M12b's rule: a client owns its own goat, the host owns the bots and the meadow. That answers "who applies the blast" without a new concept |
+| One-shot events on a reliable channel | `ClientMessage::Consume` / `ServerMessage::Notice` ride the JSON stream, rate-limited, one frame each |
+| A bounded datagram with a defined shed order | M16's `fit_world` + the meadow's `None`-means-keep-yours, and the test that guards the budget |
+| Effects that degrade when an asset is missing | The cube goat, the flat slab and the unlit shader path: every asset in this repo has a fallback, and a missing flipbook must not break the game |
+| Sound with variants | `BLEATS`/`THUNDERS` (`audio.js`): several files per slot, picked with a separate PRNG, pitched slightly, gated by `muted` and `SETTINGS.sfx` |
+| A mod surface for all of it | `TUNING` + `TUNING_CLAMP`, `modEmit`, `goats.world.extend`, `goats.player.giveHealth/setMode`, asset slots |
+
+**The devices are derived, not placed.** Given the session seed, every peer computes
+the same layout, cell by cell, with no state and nothing to synchronise. State
+exists only for what changes -- which devices are spent (see *The wire*).
+
+**Landmine.**
+
+- **Where.** Every 2-unit cell in the field, the same grid the grass uses. A cell
+  either has a mine or does not, from a hash of the cell and the trap stream, with
+  `TUNING.explosions.mine.density` as the probability (0.012 per cell is about one
+  mine per 330 m² -- sparse enough to forget about, dense enough to meet one).
+- **Excluded:** a safe radius around the spawn (`TUNING.explosions.safe`, proposed
+  8 m, comfortably outside `TUNING.terrain.flat`'s 6-unit bowl), so `restart()` puts
+  the goat somewhere survivable. Nothing else is excluded: mines on slopes, in
+  hollows, at the edge of the field, everywhere.
+- **Trigger.** Once per frame, for every goat the local process simulates, a
+  proximity test against the mine cells near it -- with one addition: `goat.py` (the
+  height above the ground, which the jump already drives) must be below
+  `TUNING.explosions.mine.clearance` for the mine to go off. So a hop clears a mine
+  and a landing sets one off, and `clearance: 0.45` makes that a real answer rather
+  than a technicality.
+- **Tunnelling is not a concern:** the fastest gait is 2.94 m/s (`runSpeed`), which
+  is 4.9 cm a frame, against a trigger radius of ~0.6 m. A goat cannot step over a
+  mine between two frames, whatever the framerate does.
+- **The tell.** "Nearly invisible" needs a fair tell, or the feature is a tax on
+  walking. `TUNING.explosions.mine.tell` (proposed 3 m) draws a faint
+  disturbed-earth patch once the goat is that close, at low alpha. `tell: 0` makes
+  them truly invisible; a mod can read the layout and draw its own (see *Mods*).
+
+**Boobytrap.** Same charge, different host: a *tuft* is trapped, so it exists only
+where a tuft exists, and it has two triggers.
+
+- **Eaten.** `startEat(target)` is the door (`food.js`). A trapped tuft's blast
+  replaces the meal: no energy, no satiety, and the tuft is still gone -- the goat
+  ate a mine. `consumeTuft` already removes it, so the eat path needs one test, not
+  a rewrite: *if the cell is trapped, fire the blast instead of the benefit*.
+- **Walked over.** The mine's proximity test, at the tuft's own position (which the
+  hash already gives, jittered inside the cell).
+- Trapped fraction: `TUNING.explosions.trap.chance`, proposed 0.04 (one tuft in
+  25), which across the tufts a goat actually eats in a session is roughly one bang
+  every few minutes of grazing.
+- **Bots can be trapped too** (`botStartEat` is the herd's door), and the herd is
+  where this pays off visually: a bot that eats a trapped tuft goes up in the air,
+  which a player sees happen across the field.
+
+**Secrets, and who is allowed to know.** The layout is derived, so **the client
+knows where the traps are.** That is a deliberate choice, and it is worth stating
+both ways:
+
+- *For:* instant feedback (no round trip between the step and the bang), no new
+  authority concept, offline and online take the same path, and a mod can build a
+  mine detector -- a genuinely good mod, which is the point of the mod API.
+- *Against:* a modified client or a mod can read the layout and walk around
+  everything. For a co-op goat game where each client already owns its own goat's
+  movement, position and health, this is not a new hole: the trust model is
+  `APIv1.md` section 0's "trusted code with an I/O wall", and the wall is about
+  *files and sockets*, not about the world being a secret.
+
+If a later version wants secrets, the layout moves to the host and the trigger
+becomes a report like `Consume` -- detection then happens where the goat is *not*
+simulated, which costs about one pose interval plus a round trip (~100 ms) between
+the step and the bang. The first option is the one taken, with that cost named.
+
+**Chains are one deep.** A blast sets off its neighbours and those do not chain
+further, so a dense field cannot cascade; `TUNING.explosions.chainDepth` is the
+knob and it is clamped.
+
+**The blast.** One function, `blast(kind, x, z, seed)`, local to the process whose
+goat it is. For each goat *that process simulates*, within `radius`:
+
+- **Damage**, `TUNING.explosions.blast.damage * falloff(d)` where
+  `falloff = (1 - d/radius)²` -- 45 at the centre, nothing at the rim. Clamped so a
+  blast cannot take health below `blast.healthFloor` (proposed 1): the feature is
+  meant to hurt and embarrass, not to end runs. `TUNING.explosions.blast.lethal`
+  sits next to it as the flag that would change that, and the answer is no.
+- **Fling**, an impulse along the direction from the blast to the goat:
+  `blast.push * (1 - d/radius)` outward, plus `blast.lift * (1 - d/radius)` up,
+  plus a small jitter from the blast's own stream, so two goats side by side do not
+  fly in lockstep.
+
+A goat standing outside the radius is untouched -- no damage, no fling, but it still
+sees and hears the bang, which is most of what makes this funny in a session.
+
+**The flung goat.** A new mode, `"flung"`, with its own state, next to `jump`'s:
+
+```js
+// goat.js, beside jumpTime/jumpSpeed/jumpDir
+let flingTime = 0;      // seconds into the arc
+let flingVX = 0, flingVZ = 0, flingVY = 0;   // world-space velocity, m/s
+let flingFlight = 0;    // seconds the arc will take, from the impulse
+```
+
+- The mode **locks input**, like `jump`, `sleep` and `eat` do: no steering, no
+  jumping out of it, no eating. The goat is not in charge for about a second, which
+  is the entire feeling of the feature.
+- **Gravity** comes from `TUNING.explosions.fling.gravity` (proposed -16 m/s²,
+  heavier than real gravity: a game-y arc reads as an impact rather than as a
+  float), and the arc ends when `terrainHeight(px, pz)` catches the goat -- so a
+  blast near a crater wall, or on a slope, lands where the ground actually is.
+- **The clip is stretched over the arc**, exactly as `jump` already does it:
+  `poseModel("flung", flingTime / flingFlight)`. One Blender action covers take-off,
+  tumble and the first contact, and the *duration* is the physics', not the clip's
+  -- which is what keeps the goat's feet on the animation while the arc length
+  varies with the impulse.
+- **On landing**: `mode = "idle"` (or `gait`, if the player is holding a movement
+  key -- they may as well be running when their feet touch). If health is at the
+  floor, nothing else happens; if a later version makes blasts lethal, the landing
+  is where death is decided.
+- **`restart()` clears it** -- the mode, the velocities and `goat.py` -- so a death
+  mid-arc cannot leave the next life hovering, whether or not a later version makes
+  blasts lethal.
+- **The pose itself is a later decision** (see *The calls to confirm*): tucked,
+  splayed, spinning, hooves up. What is fixed here is the *contract*: one action
+  named to match `GoatFlung` in `goat.blend`, phase 0 at the instant of the blast,
+  phase 1 at ground contact, auto-grounded at the end the way
+  `tools/goat_states.py` already grounds `GoatSleep` and `GoatDeath`, and found by
+  name like every other role (`findClip(names, "flung")` filling `CLIP.flung` in
+  `model.js`; one clip, no variants). Until the clip exists, a placeholder holds the
+  slot: `clipRole` (`goat.js`) returns the flung clip when the model has one and the
+  jump variant when it does not, which is the shape every other role already has --
+  and the harness asserts both paths rather than assuming the model has the clip.
+
+**Who applies a blast.** The rule is the one M12b already established, restated
+for explosions:
+
+| Goat | Simulated by | Who applies the blast | Who sees the arc |
+| --- | --- | --- | --- |
+| The local player's | This client, always (even when hosting) | The client that owns it | Everyone, via the pose datagram |
+| The herd | Whoever is world-local (the host, or nobody offline) | The host | Everyone, via the world snapshot |
+| A peer's | That peer's client, never ours | That peer's client | Everyone, via the pose datagram |
+
+So a blast is applied by exactly one process per goat, that process is the one that
+already simulates it, and nothing new has to be negotiated. Consequences:
+
+- **Offline** the same code runs with the host and the player in one process, which
+  is how most of this will be developed and tested.
+- **A client never applies a blast to a peer's goat.** A peer that was flung is
+  flung by its own client, and the arc arrives as a `Gait::Flung` pose (see *The
+  wire*) -- so `peerRole` maps it to the flung clip and everyone sees it.
+- **The herd is flung, not hurt**: `BotState` carries no health, so a bot that
+  steps on a mine goes up in the air, lands, and walks on. Adding bot health is a
+  wire change for a feature nobody has asked for yet.
+
+### The wire
+
+Two different things travel, and they belong on two different channels -- which is
+the same split M16 already made for the world versus the world mods.
+
+**A blast is an event: the reliable stream.** One JSON frame each way, small and
+infrequent, on the channel that already carries `Consume` and `Notice`:
+
+```rust
+ClientMessage::Blast { kind: BlastKind, key: i64 }   // "I set this off"
+ServerMessage::Blast { kind, key, x, z, by: String } // "...and so did my bot, here"
+```
+
+- **Client → host** so the host can mark the device spent (the neighbours must not
+  trip it again) and so the herd's copy of the world agrees.
+- **Host → all** so every client draws the fire, hears the bang at the right
+  distance, dishes the same crater, and applies the blast to its *own* goat if it
+  is standing in it -- which is how a peer gets flung by a mine someone else
+  stepped on.
+- **Rate-limited** the way `Consume` and chat are, and capped at
+  `TUNING.explosions.maxReports` a second per client, so a modified client cannot
+  make every peer draw a thousand explosions.
+- **The coordinates are the host's, not the reporter's**, on the way back out: the
+  host owns the layout, so it is the one that can say where a key actually is. A
+  client that lies about a key gets a blast where the host believes the device is,
+  which is a nicer failure than trusting a peer's numbers.
+
+**A device fires in exactly one place**, or the blast lands twice:
+
+1. the process that simulates the goat that tripped it fires locally, at once, and
+   reports it -- it does **not** wait for the host to fire it back;
+2. the host hears the report, marks the device spent so its snapshot carries that
+   (and nobody re-trips it), and broadcasts it to the others;
+3. every other client draws the effect, and applies the blast to the goats *it*
+   simulates -- which is how a peer standing next to the blast is flung, by its own
+   client, a frame or two after the reporter was;
+4. and the host **never** fires for a reported client trigger. It fires for its own
+   goats: the local player's, and the herd's.
+
+Which is the whole reason the report exists: not to ask permission, but so that one
+device fires once and everyone still sees it.
+
+**Craters and spent devices are state: the world datagram.** They are not events
+because they persist: a joiner has to see the field as it is, not as it was when it
+started. They go where the meadow goes, with the meadow's semantics (`proto`'s
+`EatenCell` is the model):
+
+```rust
+pub struct Crater { pub x: f32, pub z: f32, pub r: f32, pub depth: f32 }  // quantized
+pub struct Spent  { pub key: i64 }                                        // a fired device
+```
+
+with `craters: Option<Vec<Crater>>` and `spent: Option<Vec<Spent>>`, both using
+`None` for "this snapshot could not carry it -- keep what you have".
+
+- **All or nothing, not truncated.** The meadow may be shed because it is content;
+  a crater list may not be *partially* shed, because craters are geometry -- a
+  client missing one disagrees with the host about the ground under the goat, and
+  the goat then visibly stands in the air or in the floor. So the list is either
+  whole or absent, and absent means "keep yours".
+- **Bounded by healing.** A crater fills in over `TUNING.explosions.crater.heal`
+  (proposed 240 s) and a spent device re-arms after
+  `TUNING.explosions.<kind>.rearm` (proposed 300 s, so a minefield is a place you
+  avoid for a while and then forget about). Both lists are therefore bounded by
+  (window × rate), exactly as `EATEN` is bounded by its regrow window -- the steady
+  state is a handful of entries, not an ever-growing field.
+
+**Budget arithmetic** (to be pinned against the real encoder in M19e; the numbers
+here are estimates of the same order as `EatenCell`'s six bytes):
+
+| Item | Size | Live in a normal session |
+| --- | --- | --- |
+| One bot, quantized | 10 B | 7-10 bots: 70-100 B |
+| The weather | ~24 B | 1 |
+| The meadow | 6 B a cell | 8-10 cells: ~60 B |
+| **A crater** | **~10 B** | 8-16 craters: **80-160 B** |
+| **A spent device** | **~4 B** | 4-12: **16-48 B** |
+| World mods | own datagram | -- |
+
+Against `MAX_DATAGRAM_BYTES` (1200) with a herd at its clamp, that fits, but the
+margin is now thin enough to matter -- which is what M16's guard test is for, and it
+gets a craters case. If the numbers do not fit, the precedent is already set: the
+world mods got a datagram of their own so they could not evict the world, and
+craters can too.
+
+**The shed order.** `fit_world` sheds in a defined order today (the meadow first).
+With craters and spent devices, the proposed order is, least essential first:
+
+1. the world mods' state (already on its own datagram),
+2. the **spent** list (a client that re-arms a mine early sets it off again --
+   noisy, survivable),
+3. the **craters** (see the all-or-nothing note above: shed as a whole, never
+   truncated),
+4. the meadow,
+5. and if the world itself still does not fit, the same `TooLarge` outcome as
+   today.
+
+The order is a decision, not a coin toss: it is written down because a reader will
+ask why the meadow is not first any more, and the answer is that geometry outranks
+content.
+
+**`Gait::Flung` is a version bump.** `proto::Gait` is a closed enum that travels in
+every peer frame, and postcard decodes an unknown variant as a failure -- of the
+*whole* datagram, so a peer that does not know `Flung` would see nothing move at
+all rather than see a goat jump. So a flung gait is `PROTOCOL_VERSION` **8 → 9**,
+with the same reasoning M16 wrote down for version 8.
+
+The alternative is to report a flung goat as `Jump` and let each client pick a
+clip, which needs no bump and hides a real difference (nobody sees the tumble).
+The recommendation is the bump: it is a one-line change, the project bumps it
+readily (it is at 8), and the cost of *not* doing it is a feature that only works
+for the player who triggered it.
+
+### The look
+
+Blender is the source of truth here, as it is for the goat, and **the engine
+already has almost everything this needs** -- more than the README's surface list
+suggests, so it is worth stating what is actually there before asking for anything:
+
+- `loadTexture(name)` exists, and it resolves the host's embedded assets first
+  (`Context::register_raylib_asset`), decoding them with the hint the asset's own
+  name gives (`.png` for a name with no extension, and `SUPPORT_FILEFORMAT_JPG`
+  is on, so a JPEG decodes too). So a Blender-exported atlas dropped into the
+  asset table is loadable by name, with no file on disk -- the same path the
+  goat's GLB and every sound already take.
+- `drawBillboardRec(texture, sx, sy, sw, sh, x, y, z, w, h, tint)` exists, and a
+  **source rectangle is exactly a flipbook**: one atlas, one texture handle, and
+  the frame is four numbers. No shader, no per-instance model, no GLB wrapper.
+- `textureWidth` / `textureHeight` exist, so the scene can read the atlas's grid
+  out of the image instead of being told.
+- `drawSphereEx`, `drawTriangle3D`, `drawPoint3D`, `drawCube` and `drawModelEx`
+  cover a hot core and the debris, and `makeTexture` + `drawBillboard` cover a
+  procedural fallback with no art at all.
+- M19a added the rest, and it is in the pinned revision: `drawQuad3D` (a textured
+  quad on an explicit basis, so it can lie on the ground), `beginBlendMode` /
+  `endBlendMode` with the whole `BLEND_*` set and the custom factors behind it,
+  `setTextureFilter` and `unloadTexture`, and the image read (`loadImage`,
+  `imageWidth`/`imageHeight`, `imagePixel`, `unloadImage`) for a mask or a height
+  stamp an artist exports.
+
+What is genuinely missing was a short list, and since we own the engine it was a list
+of *things to add* rather than a list of things to work around: all of them landed
+upstream as M19a (see *Engine work*).
+
+**What Blender produces.**
+
+| Asset | Form | Notes |
+| --- | --- | --- |
+| `GoatFlung` | one action in `goat.blend`, re-exported into `goat_animated.glb` | The clip contract is in *The mechanics*; `tools/goat_states.py` is the precedent for a script that builds and grounds a clip |
+| `fx_blast.png` | a flipbook atlas: fire | 4×4 of 256² (16 frames, 1024²) is ~0.5 s at 30 fps -- one bang |
+| `fx_smoke.png` | a flipbook atlas: smoke | More frames, slower: 8×8 of 160² (1280²), 1.2 s, drawn at two scales for depth |
+| `fx_debris.png` | a flipbook atlas: dirt and grit | Shorter, dimmer, thrown outward with the blast's own stream |
+| `fx_crater_*.png` | 2-3 scorch decals | Drawn per crater, yawed by its seed, tinted as it heals |
+| `crater_profile_*.png` | *optional* greyscale height stamps, 64² | Artist-shaped dishes instead of the procedural profile (below); read once, not sampled per frame |
+| sounds | `sfx.*` slots, files provided | see *Sound* |
+
+**The atlases need gutters.** Anything drawn by source rectangle is sampled at its
+edges, and a bilinear filter will bleed the neighbouring frame in: so either the art
+leaves an 8 px margin of padding inside each cell (the standard fix, and the one to
+prefer because it needs nothing from the engine), or the atlas is set to
+`rl.TEXTURE_FILTER_POINT` with M19a's `setTextureFilter` and drawn without bleed.
+
+Atlas sizes are estimates to be confirmed against the binary: the tradeoff is
+picture size against release size, exactly like the Ogg decision in `main.rs`
+(3.6 MB of Ogg against 71 MB of PCM). A 1024² RGBA atlas is 4 MB in memory and
+typically 0.3-1 MB as a PNG; three of them plus the goat is a binary in the "tens
+of megabytes" range, which is the same order it is now.
+
+**How the scene knows the grid:** from the texture itself
+(`textureWidth`/`textureHeight`, both already bound) with
+`TUNING.explosions.<kind>.cols` as an *override* for the case where a mod swaps in
+an atlas with a different layout. Reading it beats restating it, and it turns a
+mismatched grid from a silent corruption into an arithmetic check.
+
+**How an effect is drawn.** A fixed-capacity pool of instances (`FX_CAP`,
+`TUNING.explosions.maxActive`, proposed 24), built once and reused -- the same shape
+as `RAIN_CAPACITY` and `TUNING.weather.rainMax` ("a mod can raise the count without
+rebuilding the array").
+
+```js
+const FX = [];   // {kind, x, y, z, age, dur, seed, scale, spin}
+```
+
+Each frame: age the instances, retire the dead ones, and draw the live ones.
+
+- **The flipbook frame is a source rectangle.** `drawBillboardRec(tex, sx, sy, sw,
+  sh, x, y, z, w, h, tint)` -- four numbers computed from the instance's age, the
+  grid read off the texture, and the atlas loaded once at boot. One texture handle,
+  24 draw calls, no shader, and nothing per instance but the rect. It is also why
+  the effect costs nothing like a skinned model does: a goat needs its own model
+  handle because CPU skinning writes into the mesh, and a billboard has no mesh to
+  write into.
+- **Billboards for fire and smoke**, because camera-facing is what makes smoke
+  read, with the pool's scale and spin jitter keeping repeats from looking like a
+  loop. Debris is the exception: grit thrown outward reads better as bodies, so a
+  handful of `drawCube`s or `drawPoint3D`s on the same instance, with their own
+  outward velocity.
+- **The hot core** is `drawSphereEx` -- a small expanding, fading sphere under the
+  fire billboards. With additive blending (see *Engine work*) it reads as a flash
+  rather than as a ball.
+- **Degrade, always.** No texture (the asset is missing, or a mod replaced it with
+  something that will not decode): procedural puffs, because `makeWeatherTextures`
+  already builds a 48² cloud puff with value noise and `makeTexture` +
+  `drawBillboard` can raise that to a fireball. No shader: a tinted quad. This is
+  the same ladder as the cube goat and the flat slab, and the harness can force each
+  rung.
+- **The light flash is our shader.** `LIT_FS`/`LIT_VS` in `lighting.js` are built in
+  JavaScript, so a blast can add `blastPos`/`blastColor`/`blastEnergy` uniforms and
+  have the *ground, the goat, the herd and the grass* lit by the explosion for
+  ~0.3 s. No engine work, and it is the difference between a sprite pasted on and
+  something that happened in the world. One or two live blasts are enough; the
+  strongest wins.
+- **Order:** after the terrain and the goats, before the HUD, with the smoke
+  depth-tested. Fire wants additive blending, which
+  `beginBlendMode(rl.BLEND_ADDITIVE)` gives (M19a), so the art no longer has to be
+  baked to read under normal alpha.
+
+**Craters in the terrain.** Three parts, in order of how much they matter:
+
+1. **The dish**, in `terrainHeight`: a pure function of the crater list, so
+   everything that reads the ground -- the goat, the herd, the peers, the grass,
+   both shadows -- stands in the crater for free. It is *cached per cell* the way
+   `TERRAIN_CELL_H` already is, with the affected cells dropped from the cache when
+   a crater appears or heals. The profile is either the procedural bowl (a smooth
+   dish with a raised lip: `-depth · smoothstep(r) + lip · ring(r)`) or an artist's:
+   `crater_profile_*.png` is a 64² greyscale stamp which is **read once at crater
+   creation into a small JS grid** (a 8×8 resample of the stamp) and then
+   interpolated like any other field -- read once, not sampled per query, because
+   `terrainHeight` is called for every goat, every tuft and every shadow-casting
+   vertex in the box.
+2. **The scorch**, a decal from `fx_crater_*.png` drawn once per crater with its
+   own yaw (from the crater's seed) and a tint that fades as it heals. This is what
+   `drawQuad3D` is for (M19a), and its one contract is the winding: the quad is
+   visible from the side `right × up` points to, so a decal on the ground passes
+   `right = (1, 0, 0)`, `up = (0, 0, -1)` -- the opposite handedness is culled.
+   Deliberately *not* baked into the terrain's per-vertex colours: the grid is 2 m a
+   cell (`TERRAIN_CELL`), so a 1.6 m-radius crater spans barely two cells of it --
+   too coarse to read as a crater, which is exactly why the decal exists.
+3. **The grass inside is gone.** A crater kills the tufts in its radius: this is
+   the `EATEN` mechanism reused (mark the cells bare for the duration of the heal),
+   which means nothing new on the wire -- the meadow already says which cells are
+   bare. It is the **host** that marks them, when it records the crater, because the
+   meadow is the host's; a client's own blast does not touch `EATEN` locally and the
+   next snapshot settles it, which is exactly the optimism `startEat` already has
+   (the tuft goes, the bite is reported, the snapshot replaces the optimistic copy).
+
+**A new crater forces a terrain rebuild.** The mesh otherwise rebuilds only when
+the goat has moved `TUNING.terrain.snap` (`terrainEnsure`), which is fine for a
+field that changes slowly and wrong for the one case that matters: the crater the
+player is standing in, at the moment of the bang. So a blast calls `terrainBuild`
+(and drops the affected cells from `TERRAIN_CELL_H`), and the goat is visibly
+standing in a fresh hole rather than on ground that catches up 24 units later.
+
+**Healing** is one scalar per crater (`depth · (1 - age/heal)`) easing the dish back
+to flat, with the tufts coming back as the heal completes. The ground closes over,
+and the wire stays bounded -- which is the real reason for it.
+
+### Sound
+
+The user is providing the files; this is the contract they land in.
+
+| Slot | Role | Notes |
+| --- | --- | --- |
+| `sfx.blast` | the bang | 2-3 variants; distance-attenuated |
+| `sfx.blast.close` | the same, for a blast within a few metres | Optional: a cleaner "you got hit" mix without the room |
+| `sfx.fuse` | the click/whine between the trigger and the bang | The third point below |
+| `sfx.trap` | a tuft's trap: a snap, then the bang | Eating a trapped tuft is its own joke |
+| `sfx.debris` | dirt and grit falling after | Ties the smoke's life to the audio |
+
+- **Variants and pitch**, like the bleats: several files per slot, picked with a
+  dedicated PRNG stream, `setSoundPitch` jittered so repeats do not sound identical,
+  and *pooled copies* per slot -- two simultaneous bangs must not cut each other
+  off, and a `Sound` handle played twice restarts.
+- **Distance attenuation is ours**: the `rl` surface has no listener, so the scene
+  scales `setSoundVolume(sound, sfxGain() * f(distance))` with `f = 1/(1 + (d/d0)²)`
+  and a floor. No panning (there is no per-sound position); a blast behind the
+  player sounds like one in front, which is a known cost of the surface and not
+  something to fix here.
+- **A fuse delay is a gift.** `TUNING.explosions.fuse` (proposed 0.12-0.25 s)
+  between the trigger and the bang: it gives the art time to read, gives the player a
+  beat of "oh no", gives the sound designer a click to hang the bang on, and
+  collapses the code to one path (a fuse is an instance in `FX`, not a special
+  case).
+- Respect `muted` and `SETTINGS.sfx`, the way every other sound does, and note that
+  `M` (master mute) must silence the boom.
+
+### Tuning: the proposed tree
+
+```js
+    explosions: {
+        safe: 8,                       // no traps within this radius of the spawn
+        fuse: 0.18,                    // seconds between the trigger and the bang
+        maxActive: 24,                 // effect instances; each is a draw call
+        maxReports: 4,                 // blasts a client may report per second; the host drops the rest
+        mine: {
+            density: 0.012,            // chance per 2-unit cell
+            trigger: 0.6,              // metres; a goat closer than this sets it off
+            clearance: 0.45,           // metres above the ground that counts as "over it"
+            tell: 3.0,                 // metres at which the patch becomes visible; 0 = never
+            rearm: 300,                // seconds before the cell is mined again
+        },
+        trap: {
+            chance: 0.04,              // share of tufts that are trapped
+            rearm: 300,
+        },
+        blast: {
+            radius: 3.2,               // metres
+            damage: 45,                // at the centre, falling to 0 at the rim
+            healthFloor: 1,            // a blast cannot take health below this
+            lethal: false,             // ...and cannot kill at all while this is false
+            push: 9.0,                 // m/s of outward velocity at the centre
+            lift: 4.5,                 // m/s of upward velocity at the centre
+        },
+        fling: {
+            gravity: -16,              // m/s²; heavier than life, for a snappier arc
+            maxFlight: 2.5,            // seconds; a safety net for a silly impulse
+        },
+        crater: {
+            radius: 1.6,               // metres of the dish
+            depth: 0.45,               // metres deep at the centre
+            lip: 0.12,                 // metres of raised rim
+            heal: 240,                 // seconds, then the ground is flat again
+            max: 24,                   // hard cap on the live list, oldest healed first
+        },
+        chain: 0.15,                   // seconds before a blast sets off a neighbour; 0 = off
+        chainDepth: 1,                 // how far a cascade may go; 1 = neighbours only
+    },
+```
+
+with `TUNING_CLAMP` entries for the ones a mistake could make unplayable
+(`mine.density` ≤ 0.1, `blast.radius` ≤ 12, `blast.damage` ≤ 100, `crater.heal`
+≥ 30, `maxActive` ≤ 64, `chainDepth` ≤ 2) -- the tuning registry already has that
+mechanism, and a bad `tuning.json` in a pulled mod should not be able to make the
+world unplayable.
+
+### What the player sees, and the console
+
+- **A tell** within a few metres (see *The mechanics*), because invisible-forever is
+  unfair.
+- **The flash**, then the fire, then the smoke, then the dirt (see *The look*), with
+  the ground and the goats lit by it.
+- **A camera shake**: the camera is ours (`camYaw`/`camPitch`/`camDist`), so a blast
+  within `radius·2` offsets the eye for ~0.35 s, scaled by distance. Cheap, and it
+  sells the impact more than the sprite does.
+- **The health bar drops**, and flashes: `drawHud` already draws the bars, so a red
+  pulse on damage (and a dust-brown vignette if the blast was close) is a few lines.
+- **A console verb**, `traps` (or `mines`): the derived devices within N metres, as
+  JSON, exactly like `grass` and `bots` already report their own worlds. This is a
+  debugging tool, the harness's best friend, and the answer to "was that thing
+  actually there?" without a screenshot.
+
+### Offline, the herd, and collisions
+
+- **Offline** is the same code path with the host in-process, which is how this gets
+  built and tested.
+- **A blown goat in flight** still resolves collisions with the ground
+  (`terrainHeight`) and, proposed, *not* with other goats: a flung goat is not a
+  wall, and two goats colliding mid-air is a physics problem nobody asked for.
+  `resolveGoatCollisions` gets one guard.
+- **The herd** is flung by the host and mirrored (`Gait::Flung` in `BotState`), with
+  `botRole` mapping the gait to the flung clip. Bots do not take damage.
+- **A goat asleep on a mine** is a delicious edge case: sleeping is a mode, so the
+  goat is not moving, so nothing triggers -- until it wakes and steps. A mine placed
+  under a sleeping goat does nothing until it stands up, which is consistent and
+  probably fine.
+
+### Mods
+
+What a mod gets, in `goats` terms (`APIv1.md` is the reference; these are the
+additions):
+
+| Surface | Why |
+| --- | --- |
+| `goats.explosions.blast(x, z, kind)` | A mod's own trap: it reports through the same path as a core blast, so a world mod's blast is the host's and everyone sees it |
+| `goats.on("blast", fn)` | Fired after any blast (core or mod), with the position, kind and the goat it touched -- a mod can add scorch, a smell of gunpowder, a scoreboard |
+| `goats.explosions.traps(x, z, range)` | The derived devices nearby, read-only: **a mine detector is then a mod**, and so is a "clear the field" tool |
+| `goats.explosions.armed(bool)` | A mod that adds its own devices can turn the core ones off |
+| `TUNING.explosions.*` | Densities, radii, damage, heal: retuned per mod, with the clamps above |
+
+- A mod's **own** device type cannot be a new `BlastKind` on the wire in v1 (the
+  enum is closed, see *The wire*), but a world mod's device state can ride its own
+  `world.extend` payload, which is how `birds` already syncs a flock. So a "poisoned
+  mushrooms" mod is fully possible without touching `proto`.
+- **A mod can ship images now.** A mod's declared asset is registered under an
+  opaque name like any other, and `rl.loadTexture` resolves a registered name out of
+  the host's embedded registry -- so a mod can hand
+  `rl.loadTexture(goats.assets.get("fx.mine"))` a PNG it ships, and draw it with
+  `drawBillboardRec`. Nothing has to change for that; it is a consequence of
+  `loadTexture` already existing, and it is worth a line in `APIv1.md` because
+  modders have been told the surface is "the engine's `rl` surface" without being
+  told that images are part of it. The one caveat is the engine's: an embedded
+  asset decodes with the hint its name gives, so the name has to carry a real
+  extension.
+- The wall is unchanged: no filesystem, no sockets, and the layout is readable
+  because the client derives it (see *The mechanics*).
+
+### Engine work
+
+We own the engine, so this started as a list of *things to add* rather than a list of
+things to work around -- and the list was short because most of it was already there.
+Everything on it landed upstream as M19a (`slag` `8a4209fa`), so the scene can call
+all of it today. The audit below is taken from the engine's own binding table
+(`crates/runtime/src/raylib.rs`, the `FUNCTIONS` list), which is the authoritative
+surface list -- the README's `rl` prose summarises it and now names the texture,
+image and blend bindings it used to omit.
+
+**A binding has two possible homes.** The scene can call the host directly
+(`Context::register_fn`, the mechanism the wasm seams already use), so a future item
+could be a wrapper in `crates/goats` over `raylib-sys` instead of a change in `slag`.
+The engine is still the home to prefer -- these are plain raylib projections, and one
+vocabulary serves the game, the docs and mods -- with one real exception: a host
+wrapper cannot bind a texture the engine loaded, because `loadTexture` returns an
+index into `raylib.rs`'s private registry and no binding exposes the raw
+`Texture2D::id`. So `drawQuad3D` is an engine binding (it needs that registry anyway)
+or a host binding with a texture registry of the host's own. That is why none of these
+blocked the milestone: a binding we wanted but had not merged was one the host could
+register itself.
+
+**Already in the surface, and directly load-bearing:**
+
+| Need | Binding | Note |
+| --- | --- | --- |
+| Blender art in the binary, by name | `loadTexture` | Resolves the host's embedded assets first (`register_raylib_asset`), decoding with the hint the asset's own name gives -- so an image in the asset table needs no file on disk, exactly like the goat and the sounds |
+| A flipbook frame | `drawBillboardRec` | A source rectangle *is* the frame |
+| The atlas's grid | `textureWidth`, `textureHeight` | Read it, do not restate it |
+| A hot core | `drawSphereEx` | With additive blending it reads as a flash |
+| Debris | `drawCube`, `drawPoint3D`, `drawTriangle3D`, `drawLine3D` | |
+| A procedural fallback effect | `makeTexture`, `drawBillboard`, `textureWidth` | No art at all when an asset is missing |
+| Effects lit by the blast | `loadShaderFromMemory`, `setShaderValue*` | Our own `LIT_FS`; the uniform is JavaScript's to add |
+| Overlapping bangs | `loadSound`, `playSound`, `stopSound`, `setSoundVolume`, `setSoundPitch`, `isSoundPlaying` | Several handles per slot, a free one picked with `isSoundPlaying` |
+| A dished ground | `makeModel`, `setModelShader`, `terrainHeight` | Ours, not the engine's |
+
+**Landed in M19a (upstream `slag`, `8a4209fa`).** Each was small and generic
+(nothing here is explosion-specific). The last column is the fallback the plan
+carried while the revision moved, kept because it is what any future binding of
+the same kind has to weigh:
+
+| Binding | Wraps | Why it is reasonable | If we had skipped it |
+| --- | --- | --- | --- |
+| `beginBlendMode(mode)` / `endBlendMode` | `BeginBlendMode` / `EndBlendMode` | Additive fire and glow, and the whole blend mode set: `setBlendFactors(src, dst, equation)` / `setBlendFactorsSeparate(...)` (with the `BLEND_FACTOR_*` / `BLEND_EQUATION_*` enums) are what make raylib's two `BLEND_CUSTOM` modes usable, and they are the only way to reach screen, lighten/darken and `MIN`/`MAX` compositing. This was a *general* gap, and this milestone was the second time it came up: M5b's temporal-reprojection experiment stalled on `BLEND_ALPHA_PREMULTIPLY` not being exposed, which M19a provides as well | Bake the art to read under normal alpha: dimmer fire, no glow |
+| `drawQuad3D(texture, sx, sy, sw, sh, cx, cy, cz, rx, ry, rz, ux, uy, uz, w, h, tint)` | `rlgl` triangles + a texture bind | A textured quad with an **explicit basis**, so it can lie on the ground (a scorch decal). raylib's `DrawBillboardPro` is not this: its `up` parameter *tilts* a camera-facing quad, it does not lay one down. The quad faces `right × up` and raylib culls back faces, so a ground decal points its `up` away from the viewer (`right = (1, 0, 0)`, `up = (0, 0, -1)`); the opposite handedness draws nothing. Scorch marks, footprints and road markings all want this | The decal ships as a tiny GLB quad whose material carries the texture -- it works today, it is just one more moving part per decal |
+| `loadImage(name)` + `imageWidth`/`imageHeight` + `imagePixel(img, x, y)` + `unloadImage` | `LoadImage` / `GetImageColor` / `UnloadImage` | Artist-shaped crater profiles, read once into a JS grid. It also unlocks any later heightmap or mask authored in Blender | The procedural dish (see *The look*) -- which is fine, and is what v1 would do anyway |
+| `setTextureFilter(texture, filter)` | `SetTextureFilter` | Point sampling stops bilinear bleed between atlas cells | Gutter the atlas by 8 px (the standard fix, and the one to prefer) |
+| `unloadTexture(texture)` | `UnloadTexture` | Symmetry with `unloadModel`/`unloadShader`/`unloadRenderTexture`; the registry grows forever today | Nothing: textures are loaded once at boot and live for the process |
+
+Three details worth writing down before someone spends an afternoon on them:
+
+- **The embedded-texture path decodes by the asset's own extension.**
+  `LoadImageFromMemory` takes the decoder hint as an argument, and the binding
+  takes it from the registered name (`tex/goat.png`), falling back to `.png` for a
+  name with no extension. A JPEG atlas decodes because the runtime enables
+  `SUPPORT_FILEFORMAT_JPG` -- the PNG-only limit this section used to record is
+  gone.
+- **`loadTexture` returns `-1` on failure, not an error** -- so the scene's "degrade,
+  always" ladder has a natural first rung, exactly like `loadModel < 0` and
+  `loadSound < 0` do today.
+- **Unloading follows ownership.** `unloadTexture` refuses a render texture's colour
+  and depth attachments, which `unloadRenderTexture` frees (and whose handles it now
+  invalidates); a handle used after its texture was unloaded throws instead of
+  sampling freed VRAM. Relevant when a mod's art is released on reload.
+
+**What the scene has to write.** The bindings are in the pinned revision, so the
+scene calls them directly -- the `typeof` guards this section used to prescribe were
+for the window before the engine revision moved, and M0's shader and render-texture
+bindings are the only ones that still need theirs. The headless stubs are still the
+whole story for the two hosts that have no raylib at all: `crates/scene/src/null_rl.js`
+(so `goatsd` keeps running) and `crates/scene/src/harness_rl.js` (so the suite keeps
+running, and so the counters the new tests read -- `billboardsDrawn`,
+`texturesLoaded` -- exist). `goatsd` and the harness install no raylib, so their
+JavaScript stubs are the only implementation either of them ever gets.
+
+### Slices
+
+| # | Slice | Depends on | Size | Lands |
+| --- | --- | --- | --- | --- |
+| **M19a** | Engine additions | — | S | ✅ **Done** — landed upstream in `slag` (`8a4209fa`): `beginBlendMode`/`endBlendMode` with the whole `BLEND_*` set (`setBlendFactors`/`setBlendFactorsSeparate` plus `BLEND_FACTOR_*`/`BLEND_EQUATION_*` for the custom pair), `drawQuad3D`, `setTextureFilter` (+ `TEXTURE_FILTER_*`), `unloadTexture`, and the image read (`loadImage`, `imageWidth`/`imageHeight`, `imagePixel`, `unloadImage`), with the `rl` surface test and the README's surface prose (which also gains the texture bindings it never listed) |
+| **M19b** | Devices and blasts, offline, art-free | — | S–M | `explosions.js` (a sixteenth scene part): the derived layout, the triggers, `blast()`, the one-deep chain, damage and the health floor, the `traps` verb, a `tune` verb for the whole tuning tree, and the walking-onto-a-mine case. The bang reuses the weather's cloud puff, so the part adds no texture and no load step |
+| **M19c** | The flung goat | M19b | M | The `"flung"` mode and its arc, the mode lock, landing, `Gait::Flung` + the `PROTOCOL_VERSION` 9 bump, the peer/bot paths, and the clip contract -- with the jump variant as the fallback until Blender lands |
+| **M19d** | Craters | M19b | M | The dish in `terrainHeight` (with the cell cache and the forced rebuild), the tufts killed inside it, healing, the cap, and the offline look (a tinted disc) |
+| **M19e** | The wire | M19b-d | M | `BlastKind`, the two messages, the rate limit, `craters`/`spent` on the world datagram with `None`-means-keep, the shed order, the budget case, and the two-window check |
+| **M19f** | The art | M19a, M19c, M19d | M–L | `GoatFlung` in `goat.blend`; the three atlases and the crater decals as PNGs in the asset table; the flipbook instances; the light-flash uniforms; the camera shake and the HUD pulse |
+| **M19g** | Sound and the mod surface | M19e, M19f | S–M | The slots and the pooling, distance attenuation, the fuse; `goats.explosions.*`, the `blast` event, the docs (`APIv1.md` §4, `README.md`) |
+
+Two things about the ordering. **M19a is independent of everything else**, which was
+the point of it: it landed upstream while the logic was still being designed, so
+nothing in the rest of the milestone has to wait on an engine review (and if it had
+slipped, the host could have registered the same operations itself). And **M19b and
+M19f are the two halves** of the feature: one is logic, the other is Blender, and the
+flipbook pipeline only needs the texture binding that already exists.
+
+
+**Testing.** What can be proven without a window, which for this repo is most of
+it:
+
+- **`crates/harness/tests/scene_logic.rs`** -- the deterministic cases, on the
+  scripted timeline: the same seed gives the same layout (`traps` twice, in two
+  contexts); a goat that walks onto a mine is flung, damaged and lands on the
+  ground; a hop *over* one clears it and a hop *onto* one does not; a trapped
+  tuft's meal is replaced (energy and satiety unchanged, the tuft gone); a blast
+  never takes health below the floor; no device is derived inside `safe`; a crater
+  appears, the ground under it drops, and it heals back.
+- **`crates/harness/tests/mods.rs`** -- a mod's `goats.explosions.blast` goes
+  through the report path, the `blast` event fires, and `traps` is readable.
+- **`crates/harness/tests/birds.rs`**-style -- the effect pool: instances age and
+  retire, the cap holds, and the recording stub's counters (`modelsDrawn`,
+  `textureBinds`, `soundsPlayed`) prove one draw per live instance and one sound
+  per blast.
+- **`crates/proto`** -- the blast messages round-trip; a crater's encoding is the
+  size the budget table claims; `fit_world` sheds in the documented order; and the
+  vanilla world *with craters* still fits (the M16 guard, extended).
+- **`crates/session`** -- a client's blast reaches the host and is broadcast to the
+  others tagged with the reporter; the rate limit holds; a blast from an unknown
+  peer is ignored.
+- **Blender-side** -- `tools/inspect_glb.py` on the re-exported `goat_animated.glb`
+  (the new `GoatFlung` clip is there, and the eleven that were already there still
+  are), the clip checks the goat's own clips already get (ground contact, loop
+  closure where it applies), and a render of the flung clip for review. The
+  *atlases* are checked from the other side: the scene reads their grid with
+  `textureWidth`/`textureHeight` at boot, so a mismatched or missing sheet is a
+  load-time report rather than a corrupted frame in a fire.
+- **The live check**, which is the one that matters for feel: two windows on one
+  machine, one of them hosting, a mine between them, and a peer watching the other
+  goat arc through the air.
+
+### The calls to confirm
+
+One line each: the recommendation, and where the reasoning is. Everything else in
+this milestone is a consequence of these, so they come first.
+
+| # | Question | Recommended |
+| --- | --- | --- |
+| 1 | The flung pose | **Blender iteration, not prose** (see *The mechanics*): splayed and spinning, landing on its feet -- the forgiving read, and it needs no get-up clip. The clip contract is what lets this change without touching the code |
+| 2 | Does a blast ever kill? | **No.** `blast.healthFloor` is the floor and the arc owns the physics; the death clip stays reachable only through starvation |
+| 3 | Do craters heal? | **Yes**, over `crater.heal` -- it is what bounds the world datagram (see *The wire*). Permanent scars need a datagram of their own and can come later without touching the blast path |
+| 4 | Are the traps a secret? | **No**: derived from the cell and the seed, instant, mod-readable |
+| 5 | Chain reactions | **On, one level deep**: a blast sets off its neighbours, those do not chain further. `chain: 0.15` is the delay; a dense field cannot cascade |
+| 6 | Do bots take damage? | **Not in v1**: `BotState` has no health. A bot is flung and gets up, and bot health is a wire field the day the herd is worth killing |
+| 7 | Panning | **Mono with attenuation, for v1**, and a README line about it. The mixer in `audio.rs` is the path if it ever grates (see *Sound*) |
+| 8 | A flung goat meeting a peer | **No collision** -- two airborne goats is the joke, not the problem |
+| 9 | The safe zone | **The spawn radius only**, `TUNING.explosions.safe` (8 m), no grace period, and `restart()` respawns inside it |
+| 10 | The binary size | **Measure in M19f.** If it grows past comfort: smaller atlases, then one shared atlas, then the fire and smoke as a first-party mod in the package, like `birds` |
+| 11 | A damage direction on the HUD | **No indicator.** The shake, the red pulse and the light flash already say which way |
+| 12 | Traps while asleep | **They do not fire** until the goat stands up -- sleeping is a mode, and nothing is moving |
+| 13 | Craters on the world datagram | **They stay** (see *The wire*). If the budget case fails, M16's precedent moves them out and nothing else changes |
+| 14 | How loud a session is | **4 reports a second per client**, its own bucket, shared with neither chat nor movement |
+
+**Open questions.**
+
+1. **The flung pose.** The one thing prose cannot specify. The contract (one
+   action, phase 0 at the blast, phase 1 at contact) is what lets the pose be
+   iterated on in Blender without touching the code.
+2. **The binary size.** Three atlases plus the goat. If it grows past comfort, the
+   ladder is smaller atlases, then one shared atlas, then shipping the fire and
+   smoke as a first-party mod in the release package, like `birds`.
+3. **Permanent craters.** Healing is what bounds the world datagram and keeps a
+   long session from becoming a moonscape. Longer-lived scars need a datagram of
+   their own; the blast path does not change when they get one.
+
+**Where it will live.**
+
+| Piece | Path |
+| --- | --- |
+| The devices, the blasts, the pool, the craters | `crates/goats/src/game/explosions.js` (a sixteenth scene part; every later part's `// Part N/15` banner shifts by one, and the docs' "15 parts" with it) |
+| The flung mode and arc | `crates/goats/src/game/goat.js`, and the `flung` role in `crates/goats/src/game/model.js`'s `CLIP` |
+| The herd's flung state | `crates/goats/src/game/bots.js` |
+| The crater dish and the tufts inside it | `crates/goats/src/game/world.js`, `crates/goats/src/game/food.js` |
+| The trigger stream and the seed derivation | `crates/goats/src/game/weather.js` (`sceneUseSeed`, `sceneStreams`) |
+| The light flash | `crates/goats/src/game/lighting.js` |
+| Sound slots and attenuation | `crates/goats/src/game/audio.js`, `crates/goats/src/game/core.js` (`ASSET_SLOTS`) |
+| Tuning | `crates/goats/src/game/core.js` (`TUNING`, `TUNING_CLAMP`) |
+| The console verb | `crates/goats/src/game/ctl.js` |
+| The blast messages and the crater wire encoding | `crates/proto/src/lib.rs` (+ `wire`) |
+| Relaying, rate limiting, the world datagram | `crates/session/src/lib.rs` |
+| The scene part list, `PARTS.len()` | `crates/scene/src/lib.rs` |
+| Embedded assets and the asset table test | `crates/goats/src/main.rs`, `crates/harness/tests/scene_logic.rs` |
+| The Blender clips and the atlas export | `goat.blend`, `goat_animated.glb`, `fx_*.png` (or wherever the other art lives), a new `tools/fx_atlas.py` beside `goat_states.py` |
+| The sound files | `sfx/` |
+| The asset table that embeds them | `crates/goats/src/main.rs` (`ASSETS`, `ASSET_SLOTS`) |
+| **The engine additions** (the preferred home) | `slag/crates/runtime/src/raylib.rs`: the `FUNCTIONS` table plus a wrapper per binding (`begin_blend_mode`, `draw_quad_3d`, ...), following `draw_billboard_rec`'s shape (arg helpers, the cached camera where one is needed, and a texture handle pulled from the `TEXTURES` registry) |
+| **The host route**, if a binding is not wanted upstream | `crates/goats/src/main.rs` (the `register_fn` calls, beside `sceneWasmApply`) and a wrapper module over `raylib-sys` beside `crates/goats/src/audio.rs` |
+| The headless stubs for them | `crates/scene/src/null_rl.js` (so `goatsd` runs) and `crates/scene/src/harness_rl.js` (so the suite runs, plus the counters the new tests read). The same two files serve the host route: neither `goatsd` nor the harness installs raylib, so a registered function exists there only as its stub |
+| The engine's documented surface | `README.md`'s `rl` sections -- updated with M19a, which added the texture, image and blend bindings it used to omit |
+| The mod surface's documentation | `APIv1.md` §4 (`goats.explosions`) |
 
 ---
 
