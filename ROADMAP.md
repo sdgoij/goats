@@ -2903,10 +2903,11 @@ additions):
 We own the engine, so this started as a list of *things to add* rather than a list of
 things to work around -- and the list was short because most of it was already there.
 Everything on it landed upstream as M19a (`slag` `8a4209fa`), so the scene can call
-all of it today. The audit below is taken from the engine's own binding table
-(`crates/runtime/src/raylib.rs`, the `FUNCTIONS` list), which is the authoritative
-surface list -- the README's `rl` prose summarises it and now names the texture,
-image and blend bindings it used to omit.
+all of it today; the workspace has since pinned `4e019a7d`, which is M19a plus the
+frame-cost work (open question 22). The audit below is taken from the engine's own
+binding table (`crates/runtime/src/raylib.rs`, the `FUNCTIONS` list), which is the
+authoritative surface list -- the README's `rl` prose summarises it and now names the
+texture, image and blend bindings it used to omit.
 
 **A binding has two possible homes.** The scene can call the host directly
 (`Context::register_fn`, the mechanism the wasm seams already use), so a future item
@@ -3256,3 +3257,34 @@ this milestone is a consequence of these, so they come first.
     interpreter on a realistic workload, is a self-contained task -- and it has
     already paid for itself once: naming a hot function's parameters costs ~25%
     (M15, "What the port taught us about the engine").
+22. **The engine took the frame-cost profile -- what it pushed back, and the one
+    item that is still ours.** The report (`PERF.md`) landed upstream as seven
+    commits, all of them inside the revision the workspace pins (`slag`
+    `4e019a7d`, moved by `2cc22a5`): the release profile it asked to keep (§7.1
+    item 0), the two global-read fixes (§7.1 item 1 -- the value cell now serves
+    the declarative record, so the corpus row for a top-level `const` goes
+    52.5 ms -> 2.5 ms per 1M reads, and the `clean_chain` gate is per name now,
+    which takes a read inside a nested mod body from 163 ns/iter to 2.5 ns/iter),
+    the JIT cache behind the once-per-frame body (§7.1 item 2: the cap is 1024,
+    evicting to 512, which removes a ~0.4 ms recompile per frame), and the
+    measurements that close the batched immediate-mode item (§7.1 item 3: a
+    crossing is 29-36 ns and does not grow with arity, so the ~370 grass cubes
+    are 13 us of a 16.3 ms frame, 0.08%). The engine's copy of the profile, each
+    item annotated with its resolution, is `slag/.notes/frame-cost-profile.md`;
+    the global reads have a note of their own, `slag/.notes/global-read-cells.md`.
+    **GPU skinning (§7.1 item 5) is the one that still needs the client**, and it
+    is the largest item left in the frame: `bots` 5.37-5.45 ms plus `goat_pose`
+    0.78-0.80 ms, and it is what forces one model per goat, because
+    `updateModelAnimation` deforms the mesh itself. The engine half is a raylib
+    *build* switch rather than a binding -- `gpu-skinning` in the client's `slag`
+    feature list, `rl.GPU_SKINNING` to branch on instead of assuming, and
+    `rl.setModelCpuSkinning(model, true)` as the per-model fallback for anything
+    a mod loaded or any shader that failed to compile. The scene half is written
+    up in `slag/.notes/gpu-skinning.md`: the bone inputs and a `boneMatrices[]`
+    sized for the largest rig in **three** shaders -- `LIT_VS`, the blob shadow's
+    `SHADOW_VS` and the depth pass's `DEPTH_VS` -- the plain programs kept for the
+    grass and every non-skinned model, one `setModelShader` per animated model,
+    and `half` left under the ~910-cube batch trip point. No number rides with it:
+    the engine ships no skinned model asset and the deform path needs a GL
+    context, so `bots`, `goat_pose` and `shadow_bots` have to be re-measured on
+    the client's own frame.
