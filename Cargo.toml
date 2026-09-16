@@ -47,3 +47,13 @@ postcard = { version = "1", default-features = false }
 iroh = "1.2.0"
 iroh-tickets = "1.0"
 bytes = "1"
+
+# The release profile the game is measured with. One codegen unit on purpose:
+# with the default 16, the same source lands in different codegen-unit partitions
+# (the partition hash includes a crate's metadata, which includes its source id),
+# and that alone moved native-call dispatch by 13-29% in these measurements --
+# see `PERF.md` §6. The trade is build time (~30 s -> ~2 m 35 s for the client)
+# against ~13% of every frame.
+[profile.release]
+codegen-units = 1
+lto = "thin"
