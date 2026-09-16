@@ -105,6 +105,22 @@ const ASSET_SLOTS = {
         "sfx/WE Thunder 26.ogg",
         "sfx/WE Thunder 29.ogg",
     ],
+    // Every bang picks one of these, scaled by how far away it went off.
+    "sfx.blast": [
+        "sfx/dragon-studio-explosion-sound-effect-425455.mp3",
+        "sfx/dragon-studio-loud-explosion-425457.mp3",
+        "sfx/freesound_community-medium-explosion-40472.mp3",
+        "sfx/soundreality-explosion-fx-343683.mp3",
+        "sfx/universfield-epic-cinematic-explosion-454857.mp3",
+    ],
+    // Dirt and grit coming down a beat later, which is what makes the smoke read as a
+    // hole in the ground rather than a puff over it.
+    "sfx.debris": [
+        "sfx/freesound_community-falling-rock-105396.mp3",
+        "sfx/freesound_community-gravel-stone-dirt-debris-falling-small-1-3-36216.mp3",
+        "sfx/freesound_community-stones-falling-6375.mp3",
+        "sfx/universfield-heavy-object-falling-291096.mp3",
+    ],
 };
 
 // A slot value as a list: a mod may point a list slot at a single file.
@@ -172,6 +188,36 @@ const TUNING = {
             radius: 3.2,           // metres
             damage: 45,            // at the centre, falling to 0 at the rim
             healthFloor: 1,        // a blast cannot take health below this
+            push: 13.0,            // m/s of outward velocity at the centre (M19c)
+            lift: 34.0,            // m/s of upward velocity at the centre (M19c)
+        },
+        // The flung goat's arc (M19c).
+        //
+        // The lift is steep on purpose. Height goes with `lift²/g` and the throw
+        // goes with `push * (2*lift/g)`, so a goat has to be launched *upward*
+        // harder, not outward harder, to come down in the same place from higher:
+        // the gravity below is what buys the height back out of the flight time.
+        // As they stand, a blast the goat is standing on throws it twelve metres
+        // and eight up in 0.94 s, and one it trips at arm's length (the usual case,
+        // the trigger is 0.6 m) four to five metres up, six metres out -- the same
+        // throw as before, four times the air.
+        //
+        // The gravity being several times life is also what keeps that arc from
+        // reading as a float: it is 7.3 g, so the goat leaves and lands hard.
+        fling: {
+            gravity: -72,          // m/s²
+            maxFlight: 2.5,        // seconds; a ceiling on the pose's stretch
+            // Whole turns over the arc. Negative tips the nose down first, which
+            // is what being blown from behind does. The roll is the placeholder's:
+            // a real `GoatFlung` tumbles on its own and leaves this unused. Keep it
+            // whole, because the draw is yaw-only again the moment the arc ends and
+            // a flight that runs its full ballistic time should land level -- a
+            // ground contact can still cut an arc short, with the last few degrees
+            // to snap through.
+            tumble: -1,
+            // Metres above the model's origin (its hooves) that the goat turns
+            // about. Zero would swing it around its feet; this is its barrel.
+            pivot: 0.7,
         },
         chain: 0.15,               // seconds before a blast sets off a neighbour
         chainDepth: 1,             // how far a cascade goes; 1 = neighbours only
@@ -250,12 +296,20 @@ const TUNING_CLAMP = {
     "lighting.shadow.size": [16, 8192],
     // Explosions: the clamps a mistake could make unplayable. Density sets how
     // much of the field is a minefield, the radius and the damage decide whether
-    // one bang ends a run, the floor is the promise that it cannot, and the depth
-    // bounds a cascade.
+    // one bang ends a run, the floor is the promise that it cannot, the fling's
+    // numbers are the arc and the roll (a gravity of the wrong sign or a huge push
+    // throws the goat out of the world, and a pivot away from the body spins it
+    // around a point that is not on the goat), and the depth bounds a cascade.
     "explosions.mine.density": [0, 0.1],
     "explosions.blast.radius": [0, 12],
     "explosions.blast.damage": [0, 100],
     "explosions.blast.healthFloor": [0, 100],
+    "explosions.blast.push": [0, 40],
+    "explosions.blast.lift": [0, 40],
+    "explosions.fling.gravity": [-140, -1],
+    "explosions.fling.maxFlight": [0.2, 10],
+    "explosions.fling.tumble": [-6, 6],
+    "explosions.fling.pivot": [0, 2],
     "explosions.maxActive": [0, 64],
     "explosions.chainDepth": [0, 2],
 };

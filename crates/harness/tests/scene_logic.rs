@@ -1055,6 +1055,37 @@ fn the_scene_runs_the_scripted_timeline() {
         fx.chain,
     );
     checks.check("the bang leaves an effect behind", fx.effect, fx.effect);
+    checks.check(
+        "a blast throws the goat away from it, and it lands",
+        fx.flung,
+        fx.flung,
+    );
+    checks.check(
+        "the goat is not in charge while it flies",
+        fx.flung_lock,
+        fx.flung_lock,
+    );
+    checks.check(
+        "a flung goat rolls, unless the clip is doing the rolling",
+        fx.flung_tumble,
+        fx.flung_tumble,
+    );
+    checks.check(
+        "the flung gait reads as the flung clip, or the jump without one",
+        fx.flung_clip,
+        fx.flung_clip,
+    );
+    checks.check(
+        "a restart mid-arc clears the fling",
+        fx.flung_restart,
+        fx.flung_restart,
+    );
+    checks.check("every bang is heard, once", fx.blast_sound, fx.blast_sound);
+    checks.check(
+        "the grit a bang throws comes down after it",
+        fx.blast_debris,
+        fx.blast_debris,
+    );
 
     checks.finish();
 }
@@ -1126,6 +1157,13 @@ struct Explosions {
     chain: bool,
     effect: bool,
     walk: bool,
+    flung: bool,
+    flung_lock: bool,
+    flung_tumble: bool,
+    flung_clip: bool,
+    flung_restart: bool,
+    blast_sound: bool,
+    blast_debris: bool,
 }
 
 /// The device state the scene reports: pending fuses, spent devices, blasts so
@@ -1152,6 +1190,21 @@ fn drive_burst(harness: &mut Harness, frames: u32) -> Result<bool, String> {
         }
     }
     Ok(true)
+}
+
+/// Drive until the goat is in charge of itself again. Every case here teleports
+/// with `pos`, and the modes that own the goat's position -- a meal, a jump, and now
+/// a blast's arc (M19c) -- would carry it on from wherever it was instead, so the
+/// wait is what makes a teleport stick.
+fn wait_mobile(harness: &mut Harness) -> Result<(), String> {
+    let mut waited = 0;
+    while waited < 48
+        && bool_of(harness.eval("mode === \"eat\" || mode === \"jump\" || mode === \"flung\"")?)
+    {
+        drive_burst(harness, 9)?;
+        waited += 1;
+    }
+    Ok(())
 }
 
 /// The mines the `traps` verb reports around the goat, armed ones included.
@@ -1312,7 +1365,10 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
     }
     harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
 
-    // The floor: absurd damage cannot kill through a blast.
+    // The floor: absurd damage cannot kill through a blast. The wait is for the arc
+    // the *previous* bang started: a flung goat flies on from wherever it was, so a
+    // teleport taken mid-arc would not stick.
+    wait_mobile(harness)?;
     harness.eval("goats.tuning.set(\"explosions.blast.damage\", 1000)")?;
     harness.command("heal")?;
     harness.command(&format!("pos {mx} {mz}"))?;
@@ -1325,6 +1381,7 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
 
     // The chain: a dense field, and a mine whose neighbour is also one. One level
     // deep means the first blast sets off exactly the armed devices it reaches.
+    wait_mobile(harness)?;
     harness.eval("goats.tuning.set(\"explosions.mine.density\", 0.5)")?;
     harness.command("heal")?;
     harness.command("pos 0 0")?;
@@ -1372,45 +1429,55 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
     harness.eval("SPENT.clear()")?;
     // Let any fuse still burning from the chain land, then wait for the goat to be
     // free before taking a baseline: the trap case starts a two-and-a-half-second
-    // eating clip and a goat mid-meal stays exactly where it is (`goat.js`), so an
-    // approach started now would spend most of its budget standing still. Waiting
-    // here also swallows any bang that lands while it waits.
+    // eating clip, a goat mid-meal stays exactly where it is (`goat.js`), and one
+    // mid-arc flies on -- so an approach started now would spend most of its budget
+    // somewhere else. Waiting here also swallows any bang that lands while it waits.
     drive_burst(harness, 9)?;
-    let mut waited = 0;
-    while bool_of(harness.eval("mode === \"eat\" || mode === \"jump\"")?) && waited < 32 {
-        drive_burst(harness, 9)?;
-        waited += 1;
-    }
+    wait_mobile(harness)?;
     harness.command("heal")?;
     let trigger = f64_of(harness.eval("TUNING.explosions.mine.trigger")?);
-    let (_, _, blasts_before, _) = explosion_state(harness)?;
+    // No trapped tufts on the run-up, and the goat's row put back afterwards. The
+    // tufts are the trap case's business above; here they would only be a 4% chance
+    // of being thrown off the line by something that is not the mine being tested.
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0)")?;
     if let Some((tx, tz, sx)) = approach_target(&mines) {
         harness.command(&format!("pos {sx} {tz}"))?;
         harness.command("yaw 0")?;
         harness.command("run")?;
-        let mut tripped = false;
+        let mut at_target = false;
         let mut px_end = sx;
-        for _ in 0..APPROACH_BURSTS {
-            harness.command("energy 100")?;
-            drive_burst(harness, 9)?;
+        // A frame at a time rather than in bursts: the goat is thrown the moment the
+        // bang lands (M19c), so a burst would sample its position after it had
+        // already been flung backwards. `px_end` is its last position on foot.
+        //
+        // The wait is for the *target's* bang and not for the blast counter to move,
+        // because the herd walks the same field: `checkTriggers` covers the bots too,
+        // so a bot that steps on a device ten metres away would otherwise end the
+        // approach early and read as the goat's failure. This case is about the goat
+        // arriving, so it watches the goat's own mine.
+        harness.reset_frame()?;
+        for _ in 0..(APPROACH_BURSTS * 9) {
             px_end = f64_of(harness.eval("goat.px")?);
-            if explosion_state(harness)?.2 > blasts_before {
-                tripped = true;
+            harness.command("energy 100")?;
+            if !bool_of(harness.call("sceneFrame", &[])?) {
+                break;
+            }
+            if bang_at(harness, tx, tz)? {
+                at_target = true;
                 break;
             }
         }
         // Two things make this the walking case rather than another teleport: the
         // goat is past the trigger ring because the held gait carried it there,
         // and the bang in the pool is the *target's* coordinates.
-        let at_target = bang_at(harness, tx, tz)?;
-        out.walk = tripped && px_end >= tx - trigger && at_target;
+        out.walk = at_target && px_end >= tx - trigger;
         // This case is the only one that depends on the *input* state rather than
         // on the device state, and four different overlays can silently freeze a
         // driven goat, so a failure says which part of it failed.
         if !out.walk {
             eprintln!(
-                "walk case: tripped={tripped} at_target={at_target} walked {} of {} \
-                 (target {tx}), mode={:?} uiScreen={:?} consoleOpen={:?}, effects={:?}",
+                "walk case: at_target={at_target} walked {} of {} (target {tx}), \
+                 mode={:?} uiScreen={:?} consoleOpen={:?}, effects={:?}",
                 px_end - sx,
                 APPROACH,
                 harness.eval("mode")?,
@@ -1420,6 +1487,262 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
             );
         }
         harness.command("stop")?;
+    }
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
+
+    // ---- M19c: the blast throws the goat --------------------------------------
+    //
+    // The bang owns the impulse and the goat owns the flight, and the part a player
+    // feels is the input lock: for about a second the goat is not in charge.
+    //
+    // The clip contract has two flight paths and this drives both, one pass each,
+    // because the harness can reach both: its stub model is the real clip list minus
+    // `GoatFlung`, so `CLIP.flung` is what picks the path, with the jump action
+    // standing in for the clip M19f has yet to land.
+    //
+    //   * with the clip -- the real path -- the tumble is the clip's own, so the goat
+    //     is drawn at its plain yaw and the arc is all the motion there is;
+    //   * without it -- the placeholder, and what ships today -- the scene rolls the
+    //     goat itself (`flingDraw`), because the jump action has no tumble in it.
+    //
+    // The flight itself is the same arc either way, ground contact and all: the
+    // placeholder clip's hop is 0.4 m and starts and ends at rest, so it cannot be
+    // what carries a goat thrown twelve metres -- which is the bug the second pass
+    // is here to keep caught.
+    out.flung = true;
+    out.flung_lock = true;
+    out.flung_tumble = true;
+    out.blast_debris = true;
+    for placeholder in [false, true] {
+        let label = if placeholder {
+            "the placeholder"
+        } else {
+            "the real clip"
+        };
+        harness.command("stop")?;
+        harness.command("heal")?;
+        // Two bursts before anything is measured, so a fuse the last flight set off
+        // on landing has already landed. Nine frames each, which is under the ten the
+        // scripted timeline needs before it feeds its first key, so neither move the
+        // goat.
+        drive_burst(harness, 9)?;
+        drive_burst(harness, 9)?;
+        harness.eval("SPENT.clear()")?;
+        wait_mobile(harness)?;
+        harness.eval(if placeholder {
+            "CLIP.flung = null"
+        } else {
+            "CLIP.flung = CLIP.jump"
+        })?;
+        // Half a metre to the +x side of the device: inside the trigger, and far
+        // enough off centre that "away from the blast" has a direction to check.
+        harness.command(&format!("pos {} {mz}", mx + 0.5))?;
+        // Facing -z (yaw 90): the gait the player holds runs across the blast's own
+        // axis, which is what lets a leaked gait tell itself apart from the push.
+        harness.command("yaw 90")?;
+        harness.command("wake")?;
+        harness.command("run")?;
+        harness.command("energy 100")?;
+        drive_burst(harness, 9)?; // the fuse burns
+        let vdrop = f64_of(harness.eval("V_DROP")?);
+        let x0 = f64_of(harness.eval("goat.px")?);
+        // Frame by frame until the bang, then a few frames of arc. The frames before
+        // the bang are the goat still running on the held gait, so they are not the
+        // lock's business; only the arc's own frames say whether it held. The wait is
+        // for the *goat's* fling rather than for the blast counter to move, for the
+        // reason the walk case above spells out -- the herd trips devices of its own.
+        // `mode` is set in the frame the bang lands in, before the state machine runs,
+        // so none of the arc is missed.
+        harness.reset_frame()?;
+        let mut fired = false;
+        for _ in 0..24 {
+            if !bool_of(harness.call("sceneFrame", &[])?) {
+                break;
+            }
+            if bool_of(harness.eval("mode === \"flung\"")?) {
+                fired = true;
+                break;
+            }
+        }
+        // The grit, at the bang: *queued* for later and not played with the bang,
+        // which is the whole sound -- hearing the load land is what says the smoke
+        // is a hole in the ground rather than a puff over it. The queue is only
+        // read here; whether it drained is the end of the block's business.
+        out.blast_debris &= f64_of(harness.eval("DEBRIS_QUEUE.length")?) > 0.0;
+        let x_at_bang = f64_of(harness.eval("goat.px")?);
+        // The lock, sampled *every* frame of the arc rather than once at the end of
+        // it, because a gait that leaked through would put the goat back in "run" on
+        // the very next frame (the state machine's `else` branch) and keep it there.
+        let mut held = fired;
+        for _ in 0..6 {
+            if !bool_of(harness.call("sceneFrame", &[])?) {
+                break;
+            }
+            held &= bool_of(harness.eval("mode === \"flung\"")?);
+        }
+        let flying = bool_of(harness.eval("mode === \"flung\"")?);
+        // The axis says the same thing a second way: the held gait is a `run` at yaw
+        // 90, which moves the goat in -z and never in x, so any +x at all is the
+        // blast's push, away from the device it was standing beside. Its z is not a
+        // witness -- the goat had already run into -z, so away from the blast is -z
+        // too, and the arc's push there swamps anything a leaked gait would add.
+        let pushed = f64_of(harness.eval("goat.px")?) - x_at_bang;
+        // Off the ground, and *well* off it: six frames in, a metre is what says this
+        // is a throw rather than the hop the placeholder clip does on its own. That
+        // hop is the bug this check exists for -- the arc leaning on it left a
+        // twelve-metre blast tumbling along the ground with the goat's belly on the
+        // grass. `GoatFlung` will have no root motion at all, and the arc has to be
+        // what lifts the goat either way.
+        let py = f64_of(harness.eval("goat.py")?);
+        let carries = py > 1.0;
+        let locked = fired && flying && held && pushed > 0.05 && carries;
+        if !locked {
+            eprintln!(
+                "flung lock case ({label}): fired={fired} flying={flying} held={held} \
+                 pushed={pushed} py={py} mode={:?} energy={} blasts={}",
+                harness.eval("mode")?,
+                harness.eval("stats.energy")?,
+                explosion_state(harness)?.2,
+            );
+        }
+        out.flung_lock &= locked;
+        // The roll, sampled mid-arc from the only place it is visible from outside:
+        // the axis and angle the goat was drawn with. The placeholder has no clip of
+        // its own, so the scene turns the goat itself and the axis is not the plain
+        // +Y the yaw alone would be; with the clip the yaw is all there is, because
+        // the clip *is* the tumble and rolling on top of it would double the motion.
+        let draw = harness.observe()?.goat_draw;
+        let tilted = draw.as_ref().is_some_and(|d| {
+            d.axis_x.abs() > 0.01 || d.axis_z.abs() > 0.01 || (d.axis_y - 1.0).abs() > 0.01
+        });
+        let tumble_ok = if placeholder { tilted } else { !tilted };
+        if !tumble_ok {
+            eprintln!("flung tumble case ({label}): tilted={tilted} draw={draw:?}",);
+        }
+        out.flung_tumble &= tumble_ok;
+        // Fly it out, keeping the input held the whole way.
+        let mut guard = 0;
+        while bool_of(harness.eval("mode === \"flung\"")?) && guard < 40 {
+            harness.command("energy 100")?;
+            drive_burst(harness, 9)?;
+            guard += 1;
+        }
+        let landed = !bool_of(harness.eval("mode === \"flung\"")?);
+        let down = f64_of(harness.eval("goat.py")?);
+        let x1 = f64_of(harness.eval("goat.px")?);
+        // Away from the device and back down: the travel is the blast's (+x is the
+        // impulse, since a held run at yaw 90 only moves -z), it is off the ground
+        // while it flies, and whatever ended it put it back on the ground.
+        let flew = flying && landed && x1 - x0 > 0.5 && (down - vdrop).abs() < 0.15;
+        if !flew {
+            eprintln!(
+                "flung flight case ({label}): flying={flying} landed={landed} \
+                 travelled={} down={down} vdrop={vdrop} mode={:?}",
+                x1 - x0,
+                harness.eval("mode")?,
+            );
+        }
+        out.flung &= flew;
+        harness.command("stop")?;
+    }
+    harness.eval("CLIP.flung = null")?;
+
+    // And the roll's algebra, from a phase chosen rather than from wherever the arc
+    // happened to be sampled. Half a turn has to be a half turn about the goat's own
+    // *cross* axis -- the model's local +Z, not its forward +X, which would be a
+    // barrel roll, and not +Y, which would be a spin. Turned by the yaw the axis
+    // moves with it but stays horizontal, and the half turn is still a half turn,
+    // which is what keeps the tip following the heading rather than the world.
+    //
+    // The last number is that rotation about the body's centre, which is what the
+    // pivot correction is for: upside down, the origin the model is placed by ends up
+    // two pivots above where it started, with the middle of the goat where it was.
+    let roll = harness.eval(
+        "(function () { \
+           const a = flingDraw(0, 0, 0, 0, Math.PI, 0.5); \
+           const out = { \
+             ax: a.ax, ay: a.ay, az: a.az, deg: a.deg, y: 0, yawed: 0 \
+           }; \
+           out.y = flingDraw(0, 4, 0, 0, Math.PI, 0.5).y; \
+           out.yawed = flingDraw(0, 0, 0, Math.PI / 2, Math.PI, 0.5).ay; \
+           return out; \
+         })()",
+    )?;
+    let flat = |key: &str| f64_of(roll[key].clone()).abs() < 1e-9;
+    let centred = flat("ax")
+        && flat("ay")
+        && (f64_of(roll["az"].clone()) - 1.0).abs() < 1e-9
+        && (f64_of(roll["deg"].clone()) - 180.0).abs() < 1e-6
+        && (f64_of(roll["y"].clone()) - 5.0).abs() < 1e-9
+        && flat("yawed");
+    if !centred {
+        eprintln!("flung roll case: roll={roll:?}");
+    }
+    out.flung_tumble &= centred;
+
+    // The clip contract, both paths, plus what a peer is told: the flung gait reads
+    // as the flung clip when the model has one and as the jump when it does not, it
+    // plays once, and the phase that travels is the fraction through the arc -- not
+    // `goat.phase`, which stands still for the whole flight.
+    harness.eval("mode = \"flung\"")?;
+    harness.eval("CLIP.flung = CLIP.jump")?;
+    let with_clip = harness.eval("clipRole()")?;
+    let peer_with = harness.eval("peerRole({ gait: \"flung\" })")?;
+    harness.eval("CLIP.flung = null")?;
+    let without_clip = harness.eval("clipRole()")?;
+    let peer_without = harness.eval("peerRole({ gait: \"flung\" })")?;
+    let one_shot = bool_of(harness.eval("netPeerShot(\"flung\")")?);
+    harness.eval("flingTime = 0.25")?;
+    harness.eval("flingFlight = 1")?;
+    let phase = f64_of(harness.eval("netPeerPhase()")?);
+    out.flung_clip = with_clip.as_str() == Some("flung")
+        && without_clip.as_str() == Some("jump")
+        && peer_with.as_str() == Some("flung")
+        && peer_without.as_str() == Some("jump")
+        && one_shot
+        && (phase - 0.25).abs() < 1e-9;
+
+    // And a restart mid-arc clears it, so a death (or a console restart) cannot
+    // leave the next life hovering.
+    harness.eval("startFling(9, 0, 5)")?;
+    drive_burst(harness, 3)?;
+    harness.command("restart")?;
+    out.flung_restart = bool_of(
+        harness.eval("mode === \"idle\" && flingTime === 0 && flingVX === 0 && flingVY === 0")?,
+    );
+
+    // One bang, one sound. The stub counts plays by the path that was loaded, and
+    // `blasts` is cumulative and never reset, so this is the whole run: every bang
+    // that went off played exactly one of the blast samples, wherever the goat was.
+    // The bleats are counted separately -- a flung goat bawls as well, which is the
+    // point of the whole feature.
+    let played = harness.observe()?.sound_plays;
+    let heard: u32 = played
+        .iter()
+        .filter(|(path, _)| path.contains("explosion"))
+        .map(|(_, count)| *count)
+        .sum();
+    let bangs = explosion_state(harness)?.2 as u32;
+    out.blast_sound = bangs > 0 && heard == bangs;
+    if !out.blast_sound {
+        eprintln!("blast sound case: bangs={bangs} heard={heard} plays={played:?}");
+    }
+
+    // ...and the grit it threw came down: the queue drained, the falling samples are
+    // among what was heard, and there is at most one fall per bang (every bang queues
+    // exactly one, and the queue has a cap, so it can be fewer).
+    let grit: u32 = played
+        .iter()
+        .filter(|(path, _)| path.contains("falling"))
+        .map(|(_, count)| *count)
+        .sum();
+    let drained = f64_of(harness.eval("DEBRIS_QUEUE.length")?) == 0.0;
+    out.blast_debris &= drained && grit > 0 && grit <= bangs;
+    if !out.blast_debris {
+        eprintln!(
+            "blast debris case: grit={grit} bangs={bangs} drained={drained} queue={:?}",
+            harness.eval("DEBRIS_QUEUE.length")?,
+        );
     }
 
     harness.command("heal")?;

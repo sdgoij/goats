@@ -9,7 +9,7 @@ let groundOffset = 0;
 // { index, frames, duration } or null when that clip is absent. `CLIP[role]` is
 // the default; `VARIANTS[role]` holds every clip for roles that have more than
 // one (idle/sleep/jump), so different goats can play different versions.
-const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null, eat: null };
+const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null, eat: null, flung: null };
 const VARIANTS = { idle: [], sleep: [], jump: [], eat: [] };
 const playerVariant = { idle: 0, sleep: -1, jump: -1, eat: -1 };
 
@@ -99,6 +99,13 @@ function loadGoat() {
     const trot = findClip(names, "trot");
     const walk = findClip(names, "walk");
     const death = findClip(names, "death");
+    // M19c: the blast's arc. One action, no variants, and its duration is the
+    // physics' -- the pose is stretched over the flight, exactly as `jump` does it,
+    // so the clip needs one take-off, one tumble and the first contact. Until
+    // `GoatFlung` exists in `goat.blend` this stays null, and `clipRole` (goat.js)
+    // and `peerRole` (net.js) fall back to the jump, which is the shape every other
+    // role already has.
+    const flung = findClip(names, "flung");
     CLIP.idle = idle.length > 0 ? clipInfo(idle[0]) : null;
     CLIP.jump = jump.length > 0 ? clipInfo(jump[0]) : null;
     CLIP.sleep = sleep.length > 0 ? clipInfo(sleep[0]) : null;
@@ -111,6 +118,7 @@ function loadGoat() {
     CLIP.trot = trot >= 0 ? clipInfo(trot) : null;
     CLIP.walk = walk >= 0 ? clipInfo(walk) : null;
     CLIP.death = death >= 0 ? clipInfo(death) : null;
+    CLIP.flung = flung >= 0 ? clipInfo(flung) : null;
 
     console.log("goat: model handle " + model + ", live=" + rl.isModelValid(model) +
         ", bones=" + rl.modelBoneCount(model) + ", walk " + walkSpeed().toFixed(2) +
@@ -170,11 +178,92 @@ function poseModel(role, phase) {
 
 // Draw the model: position, yaw about +Y (degrees), uniform scale, given tint.
 // The y is the ground under the goat (`goatBaseY`), so it walks up the terrain.
+//
+// A flung goat is drawn through `flingDraw` instead: its roll is the placeholder's
+// and the roll and the yaw have to be folded into the one rotation the binding
+// takes.
 function drawModelGoat(g, tint) {
-    const yawDeg = (g.yaw * 180) / Math.PI;
-    rl.drawModelEx(model, g.px, goatBaseY(g) + groundOffset, g.pz,
-        0, 1, 0, yawDeg, TUNING.movement.modelScale, TUNING.movement.modelScale,
-        TUNING.movement.modelScale, tint);
+    const scale = TUNING.movement.modelScale;
+    const y = goatBaseY(g) + groundOffset;
+    if (mode === "flung") {
+        const d = flingDraw(g.px, y, g.pz, g.yaw, flingTumble(flingProgress()),
+            TUNING.explosions.fling.pivot * scale);
+        rl.drawModelEx(model, d.x, d.y, d.z, d.ax, d.ay, d.az, d.deg,
+            scale, scale, scale, tint);
+        return;
+    }
+    rl.drawModelEx(model, g.px, y, g.pz, 0, 1, 0, (g.yaw * 180) / Math.PI,
+        scale, scale, scale, tint);
+}
+
+// ---- the flung goat's roll (M19c) ----------------------------------------
+
+// The roll the flying goat is drawn with, in radians, out of the arc's fraction.
+// It is the *placeholder's*: a real `GoatFlung` will be the tumble, exactly as the
+// jump action stands in for the clip today, and rolling on top of a clip that
+// already tumbles would double the motion. It therefore lives and dies with
+// `CLIP.flung`, and the arc underneath it is the same either way (goat.js).
+const TAU = 6.283185307179586;
+function flingTumble(phase) {
+    if (CLIP.flung) return 0;
+    return phase * TUNING.explosions.fling.tumble * TAU;
+}
+
+// One reusable record, so the frame loop allocates nothing while a goat is in the
+// air. Filled and returned by `flingDraw`, consumed immediately by its caller.
+const FLING_DRAW = { x: 0, y: 0, z: 0, ax: 0, ay: 1, az: 0, deg: 0 };
+
+// The position, axis and angle to draw a flying goat at.
+//
+// `rl.drawModelEx` takes exactly one rotation, and a tumble needs two: the goat's
+// yaw and the roll over its own length. Two rotations are still one rotation, so
+// the quaternion product of the two gives the single axis and angle to hand over --
+// which is the whole reason this is a few lines of algebra rather than a matrix
+// stack the binding does not have. The roll is about the model's local +Z, the axis
+// across the goat, which is what makes it tip end over end rather than screw along
+// its own length; the yaw is applied after it, so the tip follows the heading.
+//
+// The rotation pivots on the model's *origin*, which is at the hooves, so a goat
+// rolled without the correction below swings around its feet and puts its head
+// through the ground. Moving the draw back by the amount the pivot moved is enough
+// to turn it about `pivot` instead -- the offset of the body's centre.
+function flingDraw(x, y, z, yaw, tumble, pivot) {
+    const out = FLING_DRAW;
+    out.x = x;
+    out.y = y;
+    out.z = z;
+    out.ax = 0;
+    out.ay = 1;
+    out.az = 0;
+    out.deg = (yaw * 180) / Math.PI;
+    if (tumble === 0) return out;
+    const sy = Math.sin(yaw * 0.5);
+    const cy = Math.cos(yaw * 0.5);
+    const sz = Math.sin(tumble * 0.5);
+    const cz = Math.cos(tumble * 0.5);
+    const qx = sy * sz;
+    const qy = sy * cz;
+    const qz = cy * sz;
+    const qw = cy * cz;
+    const s = Math.sqrt(qx * qx + qy * qy + qz * qz);
+    if (s <= 1e-9) {
+        // The two rotations cancelled (a whole turn at zero yaw): the yaw and the
+        // angle already in `out` are the answer, and the correction below is zero.
+        return out;
+    }
+    out.ax = qx / s;
+    out.ay = qy / s;
+    out.az = qz / s;
+    out.deg = (2 * Math.atan2(s, qw) * 180) / Math.PI;
+    // Where the model's own +Y ends up under that rotation, by the quaternion form
+    // of Rodrigues: v + 2 * (q x (q x v + w * v)), with v = +Y.
+    const ux = 2 * (qx * qy - qz * qw);
+    const uy = 1 - 2 * (qx * qx + qz * qz);
+    const uz = 2 * (qx * qw + qy * qz);
+    out.x -= pivot * ux;
+    out.y += pivot * (1 - uy);
+    out.z -= pivot * uz;
+    return out;
 }
 
 // ---- the cube fallback ---------------------------------------------------

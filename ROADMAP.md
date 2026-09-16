@@ -2303,10 +2303,30 @@ let flingFlight = 0;    // seconds the arc will take, from the impulse
 - The mode **locks input**, like `jump`, `sleep` and `eat` do: no steering, no
   jumping out of it, no eating. The goat is not in charge for about a second, which
   is the entire feeling of the feature.
-- **Gravity** comes from `TUNING.explosions.fling.gravity` (proposed -16 m/s²,
-  heavier than real gravity: a game-y arc reads as an impact rather than as a
-  float), and the arc ends when `terrainHeight(px, pz)` catches the goat -- so a
-  blast near a crater wall, or on a slope, lands where the ground actually is.
+- **Gravity** comes from `TUNING.explosions.fling.gravity` (landed at -72 m/s²,
+  several times life), and the arc ends when `terrainHeight(px, pz)` catches the
+  goat -- so a blast near a crater wall, or on a slope, lands where the ground
+  actually is. The heavy gravity is not a taste for snappiness: height goes with
+  `lift²/g` and the throw with `push * (2*lift/g)`, so raising the lift alone would
+  have thrown the goat thirty metres instead of twelve. A steep arc is the only one
+  that comes down in the same place from higher.
+- **The arc carries the goat, always.** The tempting shortcut was to let the
+  placeholder clip lift the mesh instead -- `GoatJump`'s root does move -- but it
+  moves 0.4 m, which is a *leap*, not a launch, so a throw of twelve metres came out
+  as a goat tumbling along the ground. The clip's hop is still there, riding on top
+  of the arc, and that is a placeholder's cost: the real clip is grounded at both
+  ends and has no root motion at all. The arc is also what ends the flight, which is
+  why there is one rule and not two.
+- **It rolls as it flies**, and that roll is the placeholder's too. Nothing in the
+  model turns the goat on its own, so while a clip is not doing it the scene draws
+  the turn itself: `TUNING.explosions.fling.tumble` is whole turns over the arc and
+  `fling.pivot` is the height above the hooves it turns about (0 would swing it from
+  its feet). `rl.drawModelEx` takes a single rotation and a roll needs two, so the
+  yaw and the roll are folded into one axis and one angle before the draw
+  (`flingDraw`, model.js) -- which is also where the draw is moved back so the goat
+  turns about its barrel. A real `GoatFlung` *is* the tumble, so the roll is dropped
+  the moment the model has the clip: two rotations would fight, the same way two
+  lifts would.
 - **The clip is stretched over the arc**, exactly as `jump` already does it:
   `poseModel("flung", flingTime / flingFlight)`. One Blender action covers take-off,
   tumble and the first contact, and the *duration* is the physics', not the clip's
@@ -2329,6 +2349,9 @@ let flingFlight = 0;    // seconds the arc will take, from the impulse
   slot: `clipRole` (`goat.js`) returns the flung clip when the model has one and the
   jump variant when it does not, which is the shape every other role already has --
   and the harness asserts both paths rather than assuming the model has the clip.
+  The placeholder contributes a pose and neither of the things that matter: the arc
+  owns the height and `flingDraw` owns the roll, because `GoatJump` is a leap with
+  no tumble in it (see above).
 
 **Who applies a blast.** The rule is the one M12b already established, restated
 for explosions:
@@ -2614,21 +2637,28 @@ The user is providing the files; this is the contract they land in.
 
 | Slot | Role | Notes |
 | --- | --- | --- |
-| `sfx.blast` | the bang | 2-3 variants; distance-attenuated |
+| `sfx.blast` | the bang ✅ | **Landed**: five variants, picked with a dedicated PRNG stream and `setSoundPitch` jittered, faded by distance |
+| `sfx.debris` | dirt and grit falling after ✅ | **Landed**: four variants, queued by the bang and played 0.42-0.76 s later at the gain the bang was heard at, which ties the smoke's life to the audio |
 | `sfx.blast.close` | the same, for a blast within a few metres | Optional: a cleaner "you got hit" mix without the room |
 | `sfx.fuse` | the click/whine between the trigger and the bang | The third point below |
 | `sfx.trap` | a tuft's trap: a snap, then the bang | Eating a trapped tuft is its own joke |
-| `sfx.debris` | dirt and grit falling after | Ties the smoke's life to the audio |
+
+The files for the last three have not arrived, and neither has a *pool* per slot:
+what landed plays one handle, so two bangs inside the same sample's length restart
+it rather than overlapping. That is M19g's, with the rest of the mixing.
 
 - **Variants and pitch**, like the bleats: several files per slot, picked with a
   dedicated PRNG stream, `setSoundPitch` jittered so repeats do not sound identical,
   and *pooled copies* per slot -- two simultaneous bangs must not cut each other
-  off, and a `Sound` handle played twice restarts.
+  off, and a `Sound` handle played twice restarts. (The pick and the pitch landed;
+  the pool has not.)
 - **Distance attenuation is ours**: the `rl` surface has no listener, so the scene
-  scales `setSoundVolume(sound, sfxGain() * f(distance))` with `f = 1/(1 + (d/d0)²)`
-  and a floor. No panning (there is no per-sound position); a blast behind the
-  player sounds like one in front, which is a known cost of the surface and not
-  something to fix here.
+  scales `setSoundVolume(sound, sfxGain() * f(distance))`. As landed,
+  `f = 1/(1 + max(0, d - blast.radius)/24)`: full volume anywhere inside the blast
+  itself, half at twenty-odd metres, and it only tends to silence rather than
+  reaching it, which is the floor the proposal wanted without a special case. No
+  panning (there is no per-sound position); a blast behind the player sounds like one
+  in front, which is a known cost of the surface and not something to fix here.
 - **A fuse delay is a gift.** `TUNING.explosions.fuse` (proposed 0.12-0.25 s)
   between the trigger and the bang: it gives the art time to read, gives the player a
   beat of "oh no", gives the sound designer a click to hang the bang on, and
@@ -2641,6 +2671,7 @@ The user is providing the files; this is the contract they land in.
 
 ```js
     explosions: {
+        enabled: 1,                    // 0 turns the whole system off (a frame-cost bisect)
         safe: 8,                       // no traps within this radius of the spawn
         fuse: 0.18,                    // seconds between the trigger and the bang
         maxActive: 24,                 // effect instances; each is a draw call
@@ -2661,12 +2692,16 @@ The user is providing the files; this is the contract they land in.
             damage: 45,                // at the centre, falling to 0 at the rim
             healthFloor: 1,            // a blast cannot take health below this
             lethal: false,             // ...and cannot kill at all while this is false
-            push: 9.0,                 // m/s of outward velocity at the centre
-            lift: 4.5,                 // m/s of upward velocity at the centre
+            push: 13.0,                // m/s of outward velocity at the centre
+            lift: 34.0,                // m/s of upward velocity at the centre
         },
         fling: {
-            gravity: -16,              // m/s²; heavier than life, for a snappier arc
+            gravity: -72,              // m/s²; an arc that goes up four times as high
+                                       // as it first did, in the same throw and the
+                                       // same second, has to fall that much harder
             maxFlight: 2.5,            // seconds; a safety net for a silly impulse
+            tumble: -1,                // whole turns over the arc; negative tips the nose down
+            pivot: 0.7,                // metres above the hooves the turn is about
         },
         crater: {
             radius: 1.6,               // metres of the dish
@@ -2680,8 +2715,18 @@ The user is providing the files; this is the contract they land in.
     },
 ```
 
+`push` and `lift` as landed are a steep throw: a blast the goat is standing on puts
+it twelve metres out and eight up in 0.94 s, and the usual meeting -- the trigger
+is 0.6 m, so the goat is at arm's length -- is four to five metres up and six out.
+Height came out of the lift and the gravity together, not out of the push: the
+throw is the one it always was (the push *fell* from 14 to 13 to pay for the longer
+fall), and only the air is new. The values in the tree above are the ones in
+`core.js` today for everything M19b and M19c landed; `crater`, `maxReports` and
+`lethal` are still the proposal.
+
 with `TUNING_CLAMP` entries for the ones a mistake could make unplayable
-(`mine.density` ≤ 0.1, `blast.radius` ≤ 12, `blast.damage` ≤ 100, `crater.heal`
+(`mine.density` ≤ 0.1, `blast.radius` ≤ 12, `blast.damage` ≤ 100, the fling's
+gravity a negative, `fling.pivot` within the goat's own height, `crater.heal`
 ≥ 30, `maxActive` ≤ 64, `chainDepth` ≤ 2) -- the tuning registry already has that
 mechanism, and a bad `tuning.json` in a pulled mod should not be able to make the
 world unplayable.
@@ -2828,11 +2873,11 @@ JavaScript stubs are the only implementation either of them ever gets.
 | --- | --- | --- | --- | --- |
 | **M19a** | Engine additions | — | S | ✅ **Done** — landed upstream in `slag` (`8a4209fa`): `beginBlendMode`/`endBlendMode` with the whole `BLEND_*` set (`setBlendFactors`/`setBlendFactorsSeparate` plus `BLEND_FACTOR_*`/`BLEND_EQUATION_*` for the custom pair), `drawQuad3D`, `setTextureFilter` (+ `TEXTURE_FILTER_*`), `unloadTexture`, and the image read (`loadImage`, `imageWidth`/`imageHeight`, `imagePixel`, `unloadImage`), with the `rl` surface test and the README's surface prose (which also gains the texture bindings it never listed) |
 | **M19b** | Devices and blasts, offline, art-free | — | S–M | `explosions.js` (a sixteenth scene part): the derived layout, the triggers, `blast()`, the one-deep chain, damage and the health floor, the `traps` verb, a `tune` verb for the whole tuning tree, and the walking-onto-a-mine case. The bang reuses the weather's cloud puff, so the part adds no texture and no load step |
-| **M19c** | The flung goat | M19b | M | The `"flung"` mode and its arc, the mode lock, landing, `Gait::Flung` + the `PROTOCOL_VERSION` 9 bump, the peer/bot paths, and the clip contract -- with the jump variant as the fallback until Blender lands |
+| **M19c** | The flung goat | M19b | M | Landed except for the herd: the `"flung"` mode and its arc (integrated in absolute height, so a slope it crosses mid-air cannot drag it), the input lock, landing on the ground it actually meets, the roll the placeholder owes (`flingDraw`), `Gait::Flung` + the `PROTOCOL_VERSION` 9 bump, the peer path, `restart()` clearing it, and the clip contract -- with the jump variant as the fallback until Blender lands. A bang in `sfx/` is heard too, faded by its distance. **Open: the bots.** `blast()` only reaches the player's goat, so the herd's own arc (and its gait on the world datagram) is still to write |
 | **M19d** | Craters | M19b | M | The dish in `terrainHeight` (with the cell cache and the forced rebuild), the tufts killed inside it, healing, the cap, and the offline look (a tinted disc) |
 | **M19e** | The wire | M19b-d | M | `BlastKind`, the two messages, the rate limit, `craters`/`spent` on the world datagram with `None`-means-keep, the shed order, the budget case, and the two-window check |
-| **M19f** | The art | M19a, M19c, M19d | M–L | `GoatFlung` in `goat.blend`; the three atlases and the crater decals as PNGs in the asset table; the flipbook instances; the light-flash uniforms; the camera shake and the HUD pulse |
-| **M19g** | Sound and the mod surface | M19e, M19f | S–M | The slots and the pooling, distance attenuation, the fuse; `goats.explosions.*`, the `blast` event, the docs (`APIv1.md` §4, `README.md`) |
+| **M19f** | The art | M19a, M19c, M19d | M–L | `GoatFlung` in `goat.blend` (which retires the procedural roll and the jump-clip placeholder together); the three atlases and the crater decals as PNGs in the asset table; the flipbook instances; the light-flash uniforms; the camera shake and the HUD pulse |
+| **M19g** | Sound and the mod surface | M19e, M19f | S–M | The rest of the slots (`sfx.fuse`, `sfx.trap`, `sfx.blast.close`) and the per-slot pools, the fuse's click; `goats.explosions.*`, the `blast` event, the docs (`APIv1.md` §4, `README.md`) |
 
 Two things about the ordering. **M19a is independent of everything else**, which was
 the point of it: it landed upstream while the logic was still being designed, so
@@ -2851,13 +2896,23 @@ it:
   ground; a hop *over* one clears it and a hop *onto* one does not; a trapped
   tuft's meal is replaced (energy and satiety unchanged, the tuft gone); a blast
   never takes health below the floor; no device is derived inside `safe`; a crater
-  appears, the ground under it drops, and it heals back.
+  appears, the ground under it drops, and it heals back. M19c drives both flight
+  paths, one pass each -- with a clip and without (the placeholder that ships
+  today) -- and asserts the lock frame by frame, that the *arc* is what lifts the
+  goat in both paths, that the roll is drawn on an axis of its own only where no clip
+  is tumbling, and that `restart` mid-arc clears it. Two of the cases wait for the
+  goat's own bang rather than for the blast counter to move: `checkTriggers` runs over
+  the herd too, so a bot stepping on a device of its own used to be able to end a
+  case about the player early.
 - **`crates/harness/tests/mods.rs`** -- a mod's `goats.explosions.blast` goes
   through the report path, the `blast` event fires, and `traps` is readable.
 - **`crates/harness/tests/birds.rs`**-style -- the effect pool: instances age and
   retire, the cap holds, and the recording stub's counters (`modelsDrawn`,
   `textureBinds`, `soundsPlayed`) prove one draw per live instance and one sound
-  per blast.
+  per blast. The stub counts plays *by the path that was loaded*, so a case can name
+  the samples it expects rather than only counting -- which is how "every bang is
+  heard, once" is asserted against the scene's own cumulative blast count, and how
+  the grit is checked to be *queued* at the bang and only heard afterwards.
 - **`crates/proto`** -- the blast messages round-trip; a crater's encoding is the
   size the budget table claims; `fit_world` sheds in the documented order; and the
   vanilla world *with craters* still fits (the M16 guard, extended).

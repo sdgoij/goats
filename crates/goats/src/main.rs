@@ -107,6 +107,46 @@ static ASSETS: &[(&str, &[u8])] = &[
         "sfx/WE Thunder 29.ogg",
         include_bytes!("../../../sfx/WE Thunder 29.ogg"),
     ),
+    // The bangs, one picked per blast and faded with its distance.
+    (
+        "sfx/dragon-studio-explosion-sound-effect-425455.mp3",
+        include_bytes!("../../../sfx/dragon-studio-explosion-sound-effect-425455.mp3"),
+    ),
+    (
+        "sfx/dragon-studio-loud-explosion-425457.mp3",
+        include_bytes!("../../../sfx/dragon-studio-loud-explosion-425457.mp3"),
+    ),
+    (
+        "sfx/freesound_community-medium-explosion-40472.mp3",
+        include_bytes!("../../../sfx/freesound_community-medium-explosion-40472.mp3"),
+    ),
+    (
+        "sfx/soundreality-explosion-fx-343683.mp3",
+        include_bytes!("../../../sfx/soundreality-explosion-fx-343683.mp3"),
+    ),
+    (
+        "sfx/universfield-epic-cinematic-explosion-454857.mp3",
+        include_bytes!("../../../sfx/universfield-epic-cinematic-explosion-454857.mp3"),
+    ),
+    // The grit a bang throws, played a beat after the bang itself.
+    (
+        "sfx/freesound_community-falling-rock-105396.mp3",
+        include_bytes!("../../../sfx/freesound_community-falling-rock-105396.mp3"),
+    ),
+    (
+        "sfx/freesound_community-gravel-stone-dirt-debris-falling-small-1-3-36216.mp3",
+        include_bytes!(
+            "../../../sfx/freesound_community-gravel-stone-dirt-debris-falling-small-1-3-36216.mp3"
+        ),
+    ),
+    (
+        "sfx/freesound_community-stones-falling-6375.mp3",
+        include_bytes!("../../../sfx/freesound_community-stones-falling-6375.mp3"),
+    ),
+    (
+        "sfx/universfield-heavy-object-falling-291096.mp3",
+        include_bytes!("../../../sfx/universfield-heavy-object-falling-291096.mp3"),
+    ),
 ];
 
 /// The scene, joined from `crates/goats/src/game/` in the running order

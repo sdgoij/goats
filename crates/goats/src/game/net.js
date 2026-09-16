@@ -319,7 +319,7 @@ function updatePeers(dt) {
 // is a fraction through that clip, so it is neither eased nor wrapped the way a
 // loop phase is.
 function netPeerShot(gait) {
-    return gait === "jump" || gait === "dead" || gait === "eat";
+    return gait === "jump" || gait === "dead" || gait === "eat" || gait === "flung";
 }
 
 // The clip role a peer's gait plays, falling back like `clipRole` does.
@@ -327,6 +327,10 @@ function peerRole(p) {
     if (p.gait === "dead" && CLIP.death) return "death";
     if (p.gait === "sleep" && CLIP.sleep) return "sleep";
     if (p.gait === "eat" && CLIP.eat) return "eat";
+    // A flung peer is flown by *its own* client (M19c) and arrives here as a gait
+    // and a phase; the clip's root motion is what carries it off the ground, which
+    // is why the pose datagram needs no height. Same fallback as `clipRole`.
+    if (p.gait === "flung") return CLIP.flung ? "flung" : "jump";
     if (p.gait === "jump" && CLIP.jump) return "jump";
     if (p.gait === "run" && CLIP.run) return "run";
     if (p.gait === "trot" && CLIP.trot) return "trot";
@@ -344,8 +348,17 @@ function drawPeers(tint) {
             rl.drawCube(p.x, terrainHeight(p.x, p.z) + 0.06, p.z, 1.3, 0.012, 1.75, ambShadow);
         }
         poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);
-        rl.drawModelEx(p.model, p.x, terrainHeight(p.x, p.z) + groundOffset, p.z,
-            0, 1, 0, (p.yaw * 180) / Math.PI, 1, 1, 1, tint);
+        // A flung peer rolls like our own goat does -- `p.phase` is the fraction
+        // through the arc, and the roll is the placeholder's on the same rule.
+        const py = terrainHeight(p.x, p.z) + groundOffset;
+        if (p.gait === "flung") {
+            const d = flingDraw(p.x, py, p.z, p.yaw, flingTumble(p.phase),
+                TUNING.explosions.fling.pivot);
+            rl.drawModelEx(p.model, d.x, d.y, d.z, d.ax, d.ay, d.az, d.deg, 1, 1, 1, tint);
+        } else {
+            rl.drawModelEx(p.model, p.x, py, p.z,
+                0, 1, 0, (p.yaw * 180) / Math.PI, 1, 1, 1, tint);
+        }
     }
 }
 
@@ -359,9 +372,17 @@ function drawPeersShadow() {
         rl.setModelTexture(p.model, SHADOW_MAP_INDEX, -1);
         // No `poseModelOn` here, for the reason spelled out in `drawBotsShadow`:
         // the depth pass draws the pose `drawPeers` left in the mesh last frame,
-        // so a remote goat is skinned once a frame rather than twice.
-        rl.drawModelEx(p.model, p.x, terrainHeight(p.x, p.z) + groundOffset, p.z,
-            0, 1, 0, (p.yaw * 180) / Math.PI, 1, 1, 1, rl.WHITE);
+        // so a remote goat is skinned once a frame rather than twice. The roll is
+        // the same as the visible pass leaves it, for the same reason.
+        const py = terrainHeight(p.x, p.z) + groundOffset;
+        if (p.gait === "flung") {
+            const d = flingDraw(p.x, py, p.z, p.yaw, flingTumble(p.phase),
+                TUNING.explosions.fling.pivot);
+            rl.drawModelEx(p.model, d.x, d.y, d.z, d.ax, d.ay, d.az, d.deg, 1, 1, 1, rl.WHITE);
+        } else {
+            rl.drawModelEx(p.model, p.x, py, p.z,
+                0, 1, 0, (p.yaw * 180) / Math.PI, 1, 1, 1, rl.WHITE);
+        }
         rl.setModelTexture(p.model, SHADOW_MAP_INDEX, shadowColor);
         rl.setModelShader(p.model, litShader);
     }
@@ -373,6 +394,7 @@ function drawPeersShadow() {
 // frozen pose right through the jump. The fraction through the clip goes
 // instead, the way `netBotPhase` carries the bots'.
 function netPeerPhase() {
+    if (mode === "flung") return flingProgress();
     if (mode === "jump" && CLIP.jump) return Math.min(jumpTime / CLIP.jump.duration, 1);
     if (mode === "dead" && CLIP.death) return Math.min(deathTime / CLIP.death.duration, 1);
     if (mode === "eat" && CLIP.eat) return Math.min(eatTime / CLIP.eat.duration, 1);

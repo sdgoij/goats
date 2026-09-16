@@ -77,6 +77,9 @@
     const musicPlayed = [];
     const soundLoads = [];
     const soundsPlayed = [];
+    // Plays counted by the path that was loaded, so a check can name the sample it
+    // expects -- the handles alone cannot say whether a bang or a bleat was heard.
+    const soundPlays = {};
 
     // The scene's own `console.log` lines. The checks read some of their numbers
     // out of them (the herd size, the closest gap the bots kept, the fullest
@@ -218,9 +221,20 @@
             // else is a bot. The bots are drawn at the ground under them, so the
             // recorded y must equal `terrainHeight` there -- which is what the
             // herd check compares. The goat's whole position is kept so the
-            // console probe can show that movement stops while it is open.
-            if (model === 0) goatDraw = { x: x, y: y, z: z };
-            else if (model < 1000) drawnRows[model] = { x: x, y: y, z: z };
+            // console probe can show that movement stops while it is open, and its
+            // rotation too: the axis and angle are the one place a goat's tumble is
+            // visible from here, and a flung goat is drawn on an axis of its own.
+            if (model === 0) {
+                goatDraw = {
+                    x: x, y: y, z: z,
+                    axisX: axisX, axisY: axisY, axisZ: axisZ, angle: angle,
+                };
+            } else if (model < 1000) {
+                drawnRows[model] = {
+                    x: x, y: y, z: z,
+                    axisX: axisX, axisY: axisY, axisZ: axisZ, angle: angle,
+                };
+            }
         },
         setModelShader: (_model, shader) => { modelShaderCalls.push(shader); },
         setModelTexture: (_model, index, texture) => {
@@ -251,7 +265,11 @@
 
         // ---- audio ---------------------------------------------------------
         loadSound: (p) => { soundLoads.push(p); return soundLoads.length - 1; },
-        playSound: (s) => { soundsPlayed.push(s); },
+        playSound: (s) => {
+            soundsPlayed.push(s);
+            const path = soundLoads[s];
+            soundPlays[path] = (soundPlays[path] || 0) + 1;
+        },
         isSoundPlaying: () => false,
         loadMusic: (p) => { musicLoads.push(p); return musicLoads.length - 1; },
         playMusic: (m) => { musicPlayed.push(m); },
@@ -405,6 +423,7 @@
             modelPaths: modelPaths,
             musicLoads: musicLoads,
             soundLoads: soundLoads,
+            soundPlays: soundPlays,
             timeline: timeline,
             probes: probes,
             counters: {

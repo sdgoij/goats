@@ -145,12 +145,39 @@ function blast(kind, x, z, seed, depth) {
     const dz = goat.pz - z;
     const d2 = dx * dx + dz * dz;
     if (d2 <= r * r) {
-        const falloff = 1 - Math.sqrt(d2) / r;
+        const d = Math.sqrt(d2);
+        const falloff = 1 - d / r;
         stats.health = Math.max(e.blast.healthFloor,
             stats.health - e.blast.damage * falloff * falloff);
+        // M19c: away from the blast, up, and scaled by the same falloff as the
+        // damage, so the rim is a shove and the centre is a launch.
+        const u = flingDirection(dx, dz, d, seed);
+        startFling(u.x * e.blast.push * falloff, u.z * e.blast.push * falloff,
+            e.blast.lift * falloff);
     }
     spawnBlastFx(x, z, seed);
+    // Heard wherever the goat is, in or out of the radius (audio.js).
+    playBlast(x, z);
     if (depth < e.chainDepth) chainFrom(x, z, depth + 1);
+}
+
+// The direction a blast throws a goat in: away from the centre, turned a little off
+// that axis by the blast's own stream so two goats side by side do not fly in
+// lockstep. A goat dead on the centre has no direction to take, so the stream picks
+// one for it rather than dividing by zero. One small object per blast -- blasts are
+// rare (a few a second at most), unlike everything in the frame loop.
+function flingDirection(ox, oz, d, seed) {
+    let ux, uz;
+    if (d > 1e-3) {
+        ux = ox / d;
+        uz = oz / d;
+    } else {
+        const a = hash(seed * 9.7) * 6.283185307179586;
+        ux = Math.cos(a);
+        uz = Math.sin(a);
+    }
+    const turn = (hash(seed * 3.7 + 1.3) - 0.5) * 0.6;   // +-0.3 rad off-axis
+    return { x: ux - uz * turn, z: uz + ux * turn };
 }
 
 // A blast sets off the armed devices it reaches, `chain` seconds later. The fuse
@@ -216,6 +243,10 @@ function spawnBlastFx(x, z, seed) {
 // is the height that counts as "over it". A landing is when this stops being
 // true, which is what sets off the mine the goat came down on.
 function goatAirborne() {
+    // A flung goat owns its own height (the arc in `goat.js`), so it is airborne by
+    // construction; a jump is airborne by mode, since the clip's root motion does
+    // the hop and `goat.py` stays 0; and the cube fallback really does lift `py`.
+    if (mode === "flung") return true;
     return haveModel ? mode === "jump" : goat.py > TUNING.explosions.mine.clearance;
 }
 

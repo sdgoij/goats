@@ -3,11 +3,23 @@
 
 const goat = { px: 0, pz: 0, py: V_DROP, yaw: 0, phase: 0 };
 let paused = false;
-let mode = "idle";       // idle | walk | trot | run | jump | sleep | dead
+let mode = "idle";       // idle | walk | trot | run | jump | flung | sleep | dead
 let jumpTime = 0;        // seconds into the current jump
 let eatTime = 0;         // seconds into the current meal
 let jumpSpeed = 0;       // ground speed frozen at take-off
 let jumpDir = 0;         // travel direction (-1/0/1) frozen at take-off
+// M19c: the blast's arc. `explosions.js` owns the impulse and calls `startFling`;
+// this only flies it. `flingTime` drives the pose, the velocity is world-space,
+// `flingY` is an *absolute* height (deriving `goat.py`, which is a height above the
+// ground directly below, from it keeps a slope the goat crosses mid-air from
+// dragging it up or down), and `flingFlight` is the ballistic time the clip is
+// stretched over.
+let flingTime = 0;
+let flingVX = 0;
+let flingVZ = 0;
+let flingVY = 0;
+let flingY = 0;
+let flingFlight = 0;
 let sleepTime = 0;       // seconds slept since last awake
 let deathTime = 0;       // seconds since the death started
 let idleTimer = 0;       // seconds spent idle while exhausted
@@ -44,6 +56,10 @@ function clipRole() {
     if (mode === "dead" && CLIP.death) return "death";
     if (mode === "sleep" && CLIP.sleep) return "sleep";
     if (mode === "eat" && CLIP.eat) return "eat";
+    // The arc (M19c): the flung clip when the model has one, the jump when it does
+    // not -- which is the placeholder the clip contract was written around, and the
+    // pose below stretches whichever it got over the flight.
+    if (mode === "flung") return CLIP.flung ? "flung" : "jump";
     if (mode === "jump" && CLIP.jump) return "jump";
     if (mode === "run" && CLIP.run) return "run";
     if (mode === "trot" && CLIP.trot) return "trot";
@@ -106,6 +122,35 @@ function startJump(move, gait) {
     playBleat(0.9);
 }
 
+// Take a blast's impulse (M19c). The caller has already decided this goat is in
+// range and scaled the impulse by the falloff; this is where the goat starts being
+// flown. A second blast mid-arc *adds* to the arc rather than restarting it, which
+// is what a chain reaction through a minefield should look like.
+function startFling(vx, vz, vy) {
+    if (mode !== "flung") {
+        flingY = goatBaseY(goat);   // the arc starts where the goat is
+        flingTime = 0;
+        mode = "flung";
+        playBleat(1.0);
+    }
+    flingVX += vx;
+    flingVZ += vz;
+    flingVY += vy;
+    // The pose is stretched over the ballistic time the remaining upward impulse
+    // implies, counted from the start of the arc, so the phase keeps rising towards
+    // 1 instead of jumping back.
+    const g = TUNING.explosions.fling.gravity;
+    const air = flingVY > 0 && g < 0 ? (-2 * flingVY) / g : 0.4;
+    flingFlight = Math.max(0.3, Math.min(TUNING.explosions.fling.maxFlight, flingTime + air));
+}
+
+// How far through the arc the goat is, in [0, 1]. The pose is stretched over the
+// flight with it, the roll is driven by it, and it is the phase a peer is told, so
+// it is read from three places and written once.
+function flingProgress() {
+    return Math.min(flingTime / flingFlight, 1);
+}
+
 function startSleep() {
     mode = "sleep";
     cyclePlayerVariant("sleep");
@@ -139,6 +184,15 @@ function restart() {
     goat.phase = 0;
     satiety = 0;          // a new life starts hungry
     mode = "idle";
+    // A death (or a console `restart`) mid-arc must not leave the next life
+    // hovering: the mode, the velocities and the offset all go back to rest.
+    flingTime = 0;
+    flingVX = 0;
+    flingVZ = 0;
+    flingVY = 0;
+    flingY = 0;
+    flingFlight = 0;
+    goat.py = haveModel ? 0 : V_DROP;
 }
 
 // Advance health/energy for the current mode, once per frame. Returns "die"
@@ -571,6 +625,10 @@ function sceneFrame() {
         if (jumpTime >= jumpDuration()) {
             mode = move !== 0 ? gait : "idle";
         }
+    } else if (mode === "flung") {
+        // Not in charge until the feet touch (M19c): no steering, no jumping out of
+        // it, no eating. For about a second the goat is the blast's, which is the
+        // whole feeling of the feature. The arc itself is advanced below.
     } else if (mode === "eat") {
         eatTime += dt;
         if (eatTime >= eatDuration()) {
@@ -610,7 +668,41 @@ function sceneFrame() {
     // `step <n>` (ctl.js) unsticks this gate for a fixed number of frames even
     // while paused, so a script can advance the world deterministically.
     if (!paused || ctlStep > 0) {
-        if (mode === "jump") {
+        if (mode === "flung") {
+            // The arc (M19c), integrated in absolute height with `goat.py` (a height
+            // above the ground directly below) derived from it, so a slope the goat
+            // crosses mid-air cannot drag it along.
+            flingTime += dt;
+            goat.px += flingVX * dt;
+            goat.pz += flingVZ * dt;
+            flingVY += TUNING.explosions.fling.gravity * dt;
+            // The arc carries the goat whatever the model has. With `GoatFlung` it is
+            // the only thing lifting it; with the placeholder it has to be too, because
+            // the jump action's own hop is 0.4 m of root motion -- a leap, not a launch
+            // -- and leaning on that is what left a throw of twelve metres tumbling
+            // along the ground. The clip's hop still rides on top of the arc, which is
+            // a placeholder's cost and not a rule.
+            //
+            // `rest` is where the feet meet the ground: a model rests at 0, the cube
+            // fallback sits `V_DROP` under the plane. The arc *starts* at that height,
+            // so the descent is half of what ends the flight -- the height alone would
+            // end it on the blast's own frame. It is ground contact and not the
+            // ballistic time that ends it, which is what lands the goat on the ground
+            // it really meets: on a slope, or beside a crater wall.
+            const rest = haveModel ? 0 : V_DROP;
+            flingY += flingVY * dt;
+            goat.py = flingY - terrainHeight(goat.px, goat.pz);
+            const landed = flingVY <= 0 && goat.py <= rest;
+            if (landed) {
+                // Down. If a later version ever makes blasts lethal, this is where
+                // death would be decided instead of nothing happening.
+                goat.py = haveModel ? 0 : V_DROP;
+                flingVX = 0;
+                flingVZ = 0;
+                flingVY = 0;
+                mode = move !== 0 ? gait : "idle";
+            }
+        } else if (mode === "jump") {
             // Horizontal travel continues at the speed set at take-off; the
             // vertical arc comes from the clip (or the fallback hop).
             if (jumpDir !== 0) {
@@ -643,7 +735,14 @@ function sceneFrame() {
     perfMark("goat_sim");
 
     if (haveModel) {
-        if (mode === "jump" && CLIP.jump) {
+        if (mode === "flung") {
+            // One action, phase 0 at the blast and phase 1 at contact, stretched
+            // over the arc's own length: `CLIP.flung` when the model has it, and the
+            // jump posed the same way until Blender lands (M19c's placeholder). The
+            // placeholder's own hop is small and starts and ends at rest, so all it
+            // does is ride along on an arc that is already carrying the goat.
+            poseModel(CLIP.flung ? "flung" : "jump", flingProgress());
+        } else if (mode === "jump" && CLIP.jump) {
             poseModel("jump", Math.min(jumpTime / CLIP.jump.duration, 1));
         } else if (mode === "dead" && CLIP.death) {
             poseModel("death", Math.min(deathTime / CLIP.death.duration, 1));

@@ -53,12 +53,23 @@ pub struct Frame {
     pub weather: String,
 }
 
-/// Where a model was drawn.
+/// Where a model was drawn, and how it was turned: `axis` and `angle` are what
+/// `rl.drawModelEx` was handed, which is the one place a goat's roll is visible
+/// from outside the scene.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Draw {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+    #[serde(default)]
+    pub axis_x: f64,
+    #[serde(default)]
+    pub axis_y: f64,
+    #[serde(default)]
+    pub axis_z: f64,
+    #[serde(default)]
+    pub angle: f64,
 }
 
 /// The terrain mesh as facts. The arrays themselves are large and every check
@@ -131,6 +142,8 @@ pub struct Observations {
     pub model_paths: Vec<String>,
     pub music_loads: Vec<String>,
     pub sound_loads: Vec<String>,
+    /// How many times each loaded sound was played, keyed by asset path.
+    pub sound_plays: BTreeMap<String, u32>,
     /// The run, one row per ready frame.
     pub timeline: Vec<Frame>,
     /// The console and screen state at the probed frames, keyed by frame.

@@ -279,20 +279,22 @@ bytes. The name is never validated against a list, so a typo is not a load error
 an undeclared slot resolves to `undefined` (and an undeclared list slot to `[]`),
 which is why a mod should check `.get()` before handing the result to `rl.load*`.
 
-Built-in file-backed slots in v1:
+Built-in file-backed slots in v1 (all of them live in `ASSET_SLOTS`, core.js):
 
-| Slot | Scene constant | Used by |
-| --- | --- | --- |
-| `model.goat` | `MODEL_PATH` | `loadGoat`, `botAdd` |
-| `sfx.music` | `MUSIC_PATH` | `makeAudio` |
-| `sfx.rain` | `RAIN_PATH` | `makeAudio` |
-| `sfx.wind` | `WIND_PATH` | `makeAudio` |
-| `sfx.bleat` | `BLEAT_PATHS` | `playBleat` |
-| `sfx.thunder` | `THUNDER_PATHS` | `updateAudio` |
+| Slot | Read by |
+| --- | --- |
+| `model.goat` | `loadGoat`, `botAdd`, `netPeerState` |
+| `sfx.music` | `makeAudio` |
+| `sfx.rain` | `makeAudio` |
+| `sfx.wind` | `makeAudio` |
+| `sfx.bleat` | `playBleat` |
+| `sfx.thunder` | `updateAudio` |
+| `sfx.blast` | `playBlast` |
+| `sfx.debris` | `updateAudio` (queued by `playBlast`) |
 
-`sfx.bleat` and `sfx.thunder` are lists: the value may be a string (replace
-the one-clip list) or an array (replace the whole list). Indexed forms
-(`sfx.bleat.0`) replace a single entry.
+`sfx.bleat`, `sfx.thunder`, `sfx.blast` and `sfx.debris` are lists: the value may be
+a string (replace the one-clip list) or an array (replace the whole list). Indexed
+forms (`sfx.bleat.0`) replace a single entry.
 
 The procedural textures (`xTex`, `moonTex`, `glowTex`, `terrainDetail`,
 `cloudTex`, the per-bot fleeces) are generated in JavaScript and are **not**
@@ -1108,7 +1110,7 @@ The slots the scene itself reads, so filling one takes no mod code:
 
 ```
 model.goat        sfx.music      sfx.rain      sfx.wind
-sfx.bleat         sfx.thunder
+sfx.bleat         sfx.thunder    sfx.blast     sfx.debris
 ```
 
 Any other name a manifest declares is the mod's own slot. The host registers its

@@ -26,7 +26,10 @@ mod wire;
 ///
 /// 5 added the server-owned world; 6 added the voice datagram; 7 added the
 /// world-mod set to the handshake; 8 makes the datagram channel binary and
-/// quantized. Bumping for voice mattered because a relay built at 5 does not
+/// quantized; 9 adds `Gait::Flung` (M19c), which is a variant *inside* the pose
+/// datagram and the world snapshot rather than a new message -- a version-8 peer
+/// would read the variant index as some other gait, or fail to decode the frame.
+/// Bumping for voice mattered because a relay built at 5 does not
 /// know the variant: it decodes the datagram as an error and drops it, so
 /// without the bump a stale server accepts the join and then silently swallows
 /// every packet. The mod set rides the control stream, but it still needs the
@@ -34,7 +37,7 @@ mod wire;
 /// world mods differ, which is exactly the silent divergence the set exists to
 /// prevent. Version 8 is a stronger case still: a 7 peer would fail to decode
 /// every datagram, so the two would agree on a session and see nothing move.
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -349,6 +352,9 @@ pub enum Gait {
     Trot,
     Run,
     Jump,
+    /// Thrown by a blast (M19c): the arc is the owner's, and everyone else sees it
+    /// as this gait plus the fraction through it.
+    Flung,
     Sleep,
     Eat,
     Dead,

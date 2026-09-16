@@ -765,6 +765,7 @@ fn parse_gait(name: &str) -> session::Gait {
         "trot" => session::Gait::Trot,
         "run" => session::Gait::Run,
         "jump" => session::Gait::Jump,
+        "flung" => session::Gait::Flung,
         "sleep" => session::Gait::Sleep,
         "eat" => session::Gait::Eat,
         "dead" => session::Gait::Dead,
