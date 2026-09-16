@@ -1,0 +1,10 @@
+{
+  "id": "com.github.sdgoij.goats.fatguy",
+  "name": "Fat guy",
+  "version": "1.0.0",
+  "api": 1,
+  "side": "client",
+  "description": "A fat guy with a small guitar who runs for his life.",
+  "entry": "mod.js",
+  "assets": { "model.fatguy": "assets/fat_guy.glb" }
+}

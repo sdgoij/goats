@@ -262,12 +262,22 @@ by hiding the finished one.
 
 ### 3.3 Asset slots
 
-A slot is a **logical** name the scene already uses. A mod points a slot at a
-file; the host reads the file, registers its bytes under an opaque name, and
-the scene's asset accessor returns that opaque name. This is how a mod
-**replaces a built-in asset** while keeping the filesystem out of JavaScript.
-The reading, validation and hashing all live in the pure `crates/mods/` crate;
+A slot is a **logical** name the scene asks for. A mod points a slot at a file;
+the host reads the file, registers its bytes under an opaque name, and the
+scene's asset accessor returns that opaque name. This is how a mod **ships or
+replaces an asset** while keeping the filesystem out of JavaScript. The reading,
+validation and hashing all live in the pure `crates/mods/` crate;
 `crates/goats/src/main.rs` does the registration.
+
+A slot is **not** a closed set. The names below are the ones the scene already
+reads, so pointing a slot at a file replaces a built-in with no mod code at all.
+A mod may equally invent a slot of its own -- `model.fatguy`, say -- declare it
+in `assets`, and read it back with `goats.assets.get("model.fatguy")`; the host
+registers it exactly the same way. That is how a mod ships a model of its own
+(rather than replacing one the game already has) without the game embedding the
+bytes. The name is never validated against a list, so a typo is not a load error:
+an undeclared slot resolves to `undefined` (and an undeclared list slot to `[]`),
+which is why a mod should check `.get()` before handing the result to `rl.load*`.
 
 Built-in file-backed slots in v1:
 
@@ -422,7 +432,7 @@ goats.bots.register("com.example.giant", {
 goats.clips.register("run", { gait: { stride: 0.55, duty: 0.34 } });
 
 // Point a built-in slot at an opaque asset name from a declared asset.
-goats.assets.override("sfx.music", "mod:com.example:sfx.music");
+goats.assets.override("sfx.music", "mod:com.example:sfx.music.mp3");
 ```
 
 | Registry | Purpose |
@@ -549,7 +559,7 @@ non-leaf or unknown path throws, so a typo is loud.
 ```js
 goats.assets.slots();                 // every known slot: ["model.goat", ...]
 goats.assets.get("model.goat");       // the name to pass to rl.loadModel
-goats.assets.override("sfx.music", "mod:com.example:sfx.music");   // pre-freeze only
+goats.assets.override("sfx.music", "mod:com.example:sfx.music.mp3");   // pre-freeze only
 ```
 
 `get` prefers the mod's own declared asset for the slot, then falls back to the
@@ -557,6 +567,10 @@ built-in logical name (`"goat_animated.glb"`), which the engine already resolves
 from its embedded registry before the disk. A manifest's `assets` map is applied
 automatically when the host pushes the table, so a data-only pack (no `entry`)
 replaces a built-in just by declaring the slot.
+
+An opaque name ends in the asset file's own extension (`mod:com.example:model.fatguy.glb`)
+because the engine materialises the bytes to a temp file and raylib picks its
+decoder from that extension. A file with no extension keeps the bare name.
 
 ### 4.12 Network
 
@@ -1090,10 +1104,16 @@ spawn  despawn  session  world  tuning  shutdown
 
 ## Appendix B — asset slots (v1)
 
+The slots the scene itself reads, so filling one takes no mod code:
+
 ```
 model.goat        sfx.music      sfx.rain      sfx.wind
 sfx.bleat         sfx.thunder
 ```
+
+Any other name a manifest declares is the mod's own slot. The host registers its
+bytes and `goats.assets.get` resolves it exactly as for a built-in (§3.3), which
+is how a mod ships a model the game does not have.
 
 ## Appendix C — tuning tree (v1)
 

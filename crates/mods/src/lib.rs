@@ -225,9 +225,25 @@ impl Manifest {
     }
 
     /// Hand the asset bytes over. The host leaks them to `'static` to register
-    /// them with the engine, so the loader should not keep a second copy.
+    /// them with the engine, so the loader does not keep a second copy -- but the
+    /// slot and the opaque name are not the bytes: they are what the metadata
+    /// table ([`Manifest::json`]) is built from, and the host pushes that table
+    /// *after* the handover. Emptying the list here is what left every
+    /// boot-loaded mod with no `assets` in the table, so a slot the mod declared
+    /// resolved to nothing.
     pub fn take_assets(&mut self) -> Vec<Asset> {
-        std::mem::take(&mut self.assets)
+        let taken = std::mem::take(&mut self.assets);
+        self.assets = taken
+            .iter()
+            .map(|asset| Asset {
+                slot: asset.slot.clone(),
+                index: asset.index,
+                name: asset.name.clone(),
+                bytes: Vec::new(),
+                content_hash: asset.content_hash,
+            })
+            .collect();
+        taken
     }
 }
 
@@ -497,10 +513,21 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
                 .map_err(|message| fail(format!("asset '{slot}': {message}")))?;
             // One file fills the slot on its own; several are addressed by
             // index, so a mod can replace a whole sound list.
+            //
+            // The name ends in the source file's extension because the engine
+            // materialises the bytes to a temp file and raylib picks its decoder
+            // from that extension. A name ending in the slot (`...model.fatguy`)
+            // is handed to raylib as `.fatguy`, which no decoder claims. A file
+            // with no extension keeps the bare name.
+            let extension = std::path::Path::new(file)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .map(|extension| format!(".{extension}"))
+                .unwrap_or_default();
             let name = if files.len() == 1 {
-                format!("mod:{}:{}", raw.id, slot)
+                format!("mod:{}:{}{}", raw.id, slot, extension)
             } else {
-                format!("mod:{}:{}:{}", raw.id, slot, index)
+                format!("mod:{}:{}:{}{}", raw.id, slot, index, extension)
             };
             assets.push(Asset {
                 slot: slot.clone(),
@@ -1201,8 +1228,11 @@ mod tests {
         let manifest = &loader.mods()[0];
         assert_eq!(
             manifest.asset_map().get("model.goat").unwrap(),
-            &vec!["mod:coat:model.goat".to_string()]
+            &vec!["mod:coat:model.goat.glb".to_string()]
         );
+        // The engine reads the extension off the name to pick raylib's decoder,
+        // so the opaque name has to carry the file's own.
+        assert_eq!(manifest.assets[0].name, "mod:coat:model.goat.glb");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1220,6 +1250,32 @@ mod tests {
         assert_eq!(table[0]["side"], "world");
         assert_eq!(table[0]["api"], 1);
         assert!(table[0]["hash"].as_str().unwrap().len() == 16);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_table_still_names_the_assets_after_the_bytes_are_taken() {
+        let root = workspace("assets-table");
+        write_mod(
+            &root,
+            "pack",
+            r#"{ "id": "pack", "name": "Pack", "version": "1.0.0", "api": 1, "side": "client",
+                 "assets": { "model.fatguy": "guy.glb" } }"#,
+        );
+        write(&root.join("pack").join("guy.glb"), "not really a glb");
+        let mut loader = Loader::discover(&root);
+        // The host registers the bytes with the engine before the scene is handed
+        // the table, so the handover comes first -- and it must not cost the table
+        // the names. It did: every boot-loaded mod arrived with no `assets`, so the
+        // slots it declared resolved to nothing.
+        for manifest in loader.mods_mut() {
+            assert_eq!(manifest.take_assets().len(), 1);
+        }
+        let table: serde_json::Value = serde_json::from_str(&loader.table_json()).unwrap();
+        assert_eq!(
+            table[0]["assets"]["model.fatguy"],
+            "mod:pack:model.fatguy.glb"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1654,7 +1710,7 @@ mod tests {
             Some("goats.log('zip');\n")
         );
         assert_eq!(manifest.assets.len(), 1);
-        assert_eq!(manifest.assets[0].name, "mod:com.zip.mod:sfx.rain");
+        assert_eq!(manifest.assets[0].name, "mod:com.zip.mod:sfx.rain.ogg");
         assert_eq!(manifest.assets[0].bytes, b"not really ogg");
         assert!(matches!(manifest.source, ModSource::Zip(_)));
         let _ = std::fs::remove_dir_all(&root);

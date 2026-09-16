@@ -83,6 +83,10 @@
 // declares an asset for a slot re-points it at the host's opaque name, so the
 // loaders read the slot and never a path. Data-only packs use this to replace a
 // built-in model or sound without any code.
+//
+// A mod's own slots land here too (`sceneMods` writes every slot its manifest
+// declares, new names included), which is how a mod names its own model without
+// the host embedding it.
 const ASSET_SLOTS = {
     "model.goat": "goat_animated.glb",
     "sfx.music": "sfx/jkstudios-rage-2-187959.mp3",
