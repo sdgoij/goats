@@ -977,6 +977,29 @@ fn the_scene_runs_the_scripted_timeline() {
         clipboard_error,
     );
 
+    // The one-shot gait cases run last: they drive frames of their own, past the
+    // scripted run, and a jump is the goat's own from the reset frame.
+    let (gaits, gait_error) = match gait_block(&mut harness) {
+        Ok(gaits) => (gaits, None),
+        Err(error) => (Gaits::default(), Some(error)),
+    };
+    checks.check("no one-shot gait errors", gait_error.is_none(), gait_error);
+    checks.check(
+        "a jump publishes the fraction through the clip",
+        gaits.jump_fraction,
+        &gaits,
+    );
+    checks.check(
+        "a peer's one-shot snapshot is stepped, not eased",
+        gaits.peer_shot_snapped,
+        &gaits,
+    );
+    checks.check(
+        "a peer resumes the loop where the snapshot put it",
+        gaits.peer_loop_resent,
+        &gaits,
+    );
+
     checks.finish();
 }
 
@@ -1136,6 +1159,34 @@ fn help_block(harness: &mut Harness) -> Result<Help, String> {
 fn net_drain(harness: &mut Harness) -> Result<String, String> {
     let value = harness.call("sceneNetDrain", &[])?;
     Ok(value.as_str().unwrap_or("").to_string())
+}
+
+/// The last pose the scene published: its gait and the phase it carried.
+fn last_pose(text: &str) -> (String, f64) {
+    let mut found = (String::new(), f64::NAN);
+    for line in text.lines() {
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if value["type"] == json!("pose") {
+            found = (
+                value["gait"].as_str().unwrap_or("").to_string(),
+                f64_of(value["phase"].clone()),
+            );
+        }
+    }
+    found
+}
+
+/// One remote goat's phase, from the scene's own view of its peers.
+fn peer_phase(harness: &mut Harness, name: &str) -> Result<f64, String> {
+    let peers = harness.call("scenePeers", &[])?;
+    Ok(peers
+        .as_array()
+        .and_then(|list| list.iter().find(|peer| peer["name"] == json!(name)))
+        .map(|peer| f64_of(peer["phase"].clone()))
+        .unwrap_or(f64::NAN))
 }
 
 /// What the network bridge cases found. One field per case.
@@ -1431,4 +1482,68 @@ fn sync_block(harness: &mut Harness) -> Result<Sync, String> {
     sync.world_local_offline = bool_of(harness.call("netWorldLocal", &[])?)
         && bool_of(harness.call("netWeatherLocal", &[])?);
     Ok(sync)
+}
+
+/// What the one-shot gait cases found. One field per case.
+#[derive(Debug, Default)]
+struct Gaits {
+    jump_fraction: bool,
+    peer_shot_snapped: bool,
+    peer_loop_resent: bool,
+}
+
+/// A one-shot gait is posed from its own clock, and `goat.phase` stands still
+/// for the whole of it -- so the phase that goes on the wire has to be the
+/// fraction through that clip, not the loop phase. The bots always carried it
+/// (`netBotPhase`); the goat did not, and a remote goat held one frozen pose
+/// right through a jump, a death or a meal.
+///
+/// Both ends are driven here, with no socket and no peer: the goat's by draining
+/// between frames of its own, the peer's by feeding a snapshot.
+fn gait_block(harness: &mut Harness) -> Result<Gaits, String> {
+    let mut gaits = Gaits::default();
+
+    // Driven from frame 0, where the scripted input holds no keys, so the jump
+    // is the goat's own. The pose channel is throttled to one snapshot per
+    // window, and only a frame advances the window -- so the two samples straddle
+    // three frames each, well inside the jump.
+    net_feed(harness, r#"{"type":"hosting","name":"bob"}"#)?;
+    net_drain(harness)?;
+    harness.reset_frame()?;
+    harness.command("resume")?;
+    if harness.command("jump")? != "ok jump" {
+        return Err("the goat would not jump".to_string());
+    }
+    let (gait, early) = pose_after(harness, 3)?;
+    let (later_gait, late) = pose_after(harness, 3)?;
+    gaits.jump_fraction = gait == "jump" && later_gait == "jump" && early > 0.0 && late > early;
+
+    // A peer's one-shot snapshot is stepped straight in -- its phase is a
+    // fraction through a clip that does not loop, so there is nothing to ease
+    // toward. Leaving one snaps too: the loop resumes where the snapshot put it
+    // rather than gliding back from the end of the jump.
+    net_feed(
+        harness,
+        r#"{"type":"peer","name":"alice","state":{"x":1,"z":2,"yaw":0,"phase":0,"speed":0,"gait":"walk"}}"#,
+    )?;
+    net_feed(
+        harness,
+        r#"{"type":"peer","name":"alice","state":{"x":1,"z":2,"yaw":0,"phase":0.75,"speed":0,"gait":"jump"}}"#,
+    )?;
+    gaits.peer_shot_snapped = peer_phase(harness, "alice")? == 0.75;
+    net_feed(
+        harness,
+        r#"{"type":"peer","name":"alice","state":{"x":1,"z":2,"yaw":0,"phase":0.1,"speed":0,"gait":"walk"}}"#,
+    )?;
+    gaits.peer_loop_resent = peer_phase(harness, "alice")? == 0.1;
+
+    Ok(gaits)
+}
+
+/// Drives `frames` frames and returns the pose the scene published after them.
+fn pose_after(harness: &mut Harness, frames: u32) -> Result<(String, f64), String> {
+    for _ in 0..frames {
+        harness.call("sceneFrame", &[])?;
+    }
+    Ok(last_pose(&net_drain(harness)?))
 }

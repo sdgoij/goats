@@ -269,10 +269,18 @@ function netPeerState(name, state) {
             x: state.x, z: state.z, yaw: state.yaw, phase: state.phase,
             tx: state.x, tz: state.z, tyaw: state.yaw, tphase: state.phase,
             gait: state.gait,
+            shot: netPeerShot(state.gait),
         });
         return;
     }
     const p = PEERS[found];
+    const shot = netPeerShot(state.gait);
+    // A one-shot is stepped straight from the snapshot rather than eased into:
+    // the two phase spaces are not shared (a jump ends at 1, the loop it
+    // interrupts resumes wherever it was), so entering one and leaving it again
+    // both snap instead of gliding.
+    if (shot || shot !== p.shot) p.phase = state.phase;
+    p.shot = shot;
     p.tx = state.x;
     p.tz = state.z;
     p.tyaw = state.yaw;
@@ -293,11 +301,25 @@ function updatePeers(dt) {
         while (dy > Math.PI) dy -= 2 * Math.PI;
         while (dy < -Math.PI) dy += 2 * Math.PI;
         p.yaw += dy * k;
+        if (p.shot) {
+            // A one-shot is posed at the fraction the snapshot carried, with
+            // nothing to ease toward -- and the wrap below would read the jump
+            // from 0.9 back to 0.1 as a lap of the clip rather than a new leap.
+            p.phase = p.tphase;
+            continue;
+        }
         let dp = p.tphase - p.phase;
         if (dp > 0.5) dp -= 1;
         else if (dp < -0.5) dp += 1;
         p.phase = mod1(p.phase + dp * k);
     }
+}
+
+// Whether a gait plays once, from its own clock, rather than looping. Its phase
+// is a fraction through that clip, so it is neither eased nor wrapped the way a
+// loop phase is.
+function netPeerShot(gait) {
+    return gait === "jump" || gait === "dead" || gait === "eat";
 }
 
 // The clip role a peer's gait plays, falling back like `clipRole` does.
@@ -343,6 +365,18 @@ function drawPeersShadow() {
     }
 }
 
+// The phase to publish. A one-shot gait (a jump, the death, a meal) is posed
+// from its own clock and `goat.phase` stands still for the whole of it, so the
+// loop phase is a stale frame number there: a remote goat used to hold one
+// frozen pose right through the jump. The fraction through the clip goes
+// instead, the way `netBotPhase` carries the bots'.
+function netPeerPhase() {
+    if (mode === "jump" && CLIP.jump) return Math.min(jumpTime / CLIP.jump.duration, 1);
+    if (mode === "dead" && CLIP.death) return Math.min(deathTime / CLIP.death.duration, 1);
+    if (mode === "eat" && CLIP.eat) return Math.min(eatTime / CLIP.eat.duration, 1);
+    return goat.phase;
+}
+
 // The local goat's snapshot, queued at a fraction of the frame rate when this
 // player is in a session. Fire-and-forget: a dropped one is replaced by the
 // next, which is why the channel is a datagram.
@@ -355,7 +389,7 @@ function netMaybePublish() {
         x: netRound3(goat.px),
         z: netRound3(goat.pz),
         yaw: netRound3(goat.yaw),
-        phase: netRound3(goat.phase),
+        phase: netRound3(netPeerPhase()),
         speed: netRound3(curSpeed),
         gait: mode,
     });
@@ -475,7 +509,7 @@ function scenePeers() {
     const out = [];
     for (let i = 0; i < PEERS.length; i++) {
         const p = PEERS[i];
-        out.push({ name: p.name, x: p.x, z: p.z, tx: p.tx, tz: p.tz, gait: p.gait });
+        out.push({ name: p.name, x: p.x, z: p.z, tx: p.tx, tz: p.tz, gait: p.gait, phase: p.phase });
     }
     return out;
 }
