@@ -56,16 +56,16 @@ let lightingText = "cube shader";
 // they are separate GL programs, so a value uploaded to one is invisible to the
 // other.
 //
-// One gap, and it is in a debug view rather than in the game: `L` turns lighting
-// off by restoring the shader the model was loaded with, which is raylib's own and
-// does not skin either -- so on this build the goats hold their bind pose with the
-// lighting off. `modelShaderFor` has nothing to give for `-1`; the fix would be an
-// unlit skinned twin of the lit program, and it is deliberately not written yet.
+// `-1` -- "the shader the model was loaded with", which is how `L` turns the
+// lighting off -- has a counterpart too, because raylib's own default program does
+// not skin either: `UNLIT_VS_SKIN` is that same unlit program with the bone block
+// spliced in, so the `L` view keeps the herd animating on this build.
 let gpuSkin = false;            // the loader left the deform buffers out
 let skinnedOk = false;          // ...and every skinned program the scene needs compiled
 let litShaderSkin = -1;
 let shadowShaderSkin = -1;
 let depthShaderSkin = -1;
+let unlitShaderSkin = -1;
 const plainModels = {};         // rigs the skinned programs cannot cover, by handle
 let litPrograms = [];           // { shader, uniforms, shadow, sampler }
 let shadowPrograms = [];        // { shader, uniforms }
@@ -245,6 +245,44 @@ const LIT_FS = [
 // raised hoof casts moves with the hoof. On a CPU-skinning build that came for
 // nothing -- the mesh arrived already deformed -- and with a skinned program it is
 // the point of the edit.
+// The unlit program raylib's default shader is, which is what the `L` toggle falls
+// back to: `mvp` and the vertex colour, texture times `colDiffuse` times that
+// colour, nothing else. Only the skinned variant is compiled -- the plain case is
+// raylib's own program, which the scene never has to build.
+const UNLIT_VS_HEAD = [
+    "#version 330",
+    "in vec3 vertexPosition;",
+    "in vec2 vertexTexCoord;",
+    "in vec4 vertexColor;",
+    "uniform mat4 mvp;",
+    "out vec2 fragTexCoord;",
+    "out vec4 fragColor;",
+];
+const UNLIT_VS_BODY = [
+    "void main() {",
+    "    fragTexCoord = vertexTexCoord;",
+    "    fragColor = vertexColor;",
+    "    gl_Position = mvp * skinMatrix() * vec4(vertexPosition, 1.0);",
+    "}",
+];
+function unlitVertex(skin) {
+    return UNLIT_VS_HEAD.concat(skin ? SKIN_DECL : PLAIN_SKIN, UNLIT_VS_BODY).join("\n");
+}
+const UNLIT_VS_SKIN = unlitVertex(true);
+
+const UNLIT_FS = [
+    "#version 330",
+    "in vec2 fragTexCoord;",
+    "in vec4 fragColor;",
+    "uniform sampler2D texture0;",
+    "uniform vec4 colDiffuse;",
+    "out vec4 finalColor;",
+    "void main() {",
+    "    vec4 texelColor = texture(texture0, fragTexCoord);",
+    "    finalColor = texelColor*colDiffuse*fragColor;",
+    "}",
+].join("\n");
+
 const SHADOW_VS_HEAD = [
     "#version 330",
     "in vec3 vertexPosition;",
@@ -318,6 +356,12 @@ function makeLighting() {
         if (litShaderSkin >= 0) litPrograms.push(litProgramInfo(litShaderSkin));
         if (shadowShaderSkin >= 0) {
             shadowPrograms.push({ shader: shadowShaderSkin, uniforms: shadowLocations(shadowShaderSkin) });
+        }
+        // Not part of `skinnedOk`: this one only draws in the `L` view, so a build
+        // that cannot have it should still skin everywhere else.
+        unlitShaderSkin = loadSkinnedProgram(UNLIT_VS_SKIN, UNLIT_FS);
+        if (unlitShaderSkin < 0) {
+            console.log("lighting: the unlit skinned shader did not compile - the L toggle holds the bind pose");
         }
     }
     makeShadowMap();
@@ -403,10 +447,13 @@ function modelLoaded(handle) {
 
 // The program to route an animated model to, given the plain program for the pass:
 // the skinned counterpart, or `plain` where the model has to keep CPU skinning or
-// there is no skinned counterpart to give (-1 is the loader's own shader, and the
-// scene passes it through for the `L` toggle).
+// there is no skinned counterpart to give. `-1` says "the shader the model was
+// loaded with" -- how the `L` toggle turns the lighting off -- and that has a
+// counterpart as well: raylib's own default program does not skin, so leaving it
+// would hold every goat in its bind pose for as long as the lighting is off.
 function modelShaderFor(handle, plain) {
-    if (plain < 0 || !skinnedOk || plainModels[handle] === true) return plain;
+    if (!skinnedOk || plainModels[handle] === true) return plain;
+    if (plain < 0) return unlitShaderSkin;   // -1 as well, where that did not compile
     if (plain === litShader) return litShaderSkin;
     if (plain === shadowShader) return shadowShaderSkin;
     if (plain === depthShader) return depthShaderSkin;

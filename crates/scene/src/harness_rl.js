@@ -326,9 +326,11 @@
             // A skinned variant is the same source plus the bone block, so it is
             // told apart by the uniform it declares and gets a handle of its own
             // (4..6, one per plain family): a case has to be able to say *which*
-            // program a model was routed to.
+            // program a model was routed to. The unlit skinned program -- what `-1`
+            // becomes on this build, since raylib's own default does not skin -- is
+            // told from the lit family by its fragment shader carrying no light.
             if (vertex.indexOf('boneMatrices') >= 0) {
-                const skinned = base + 4;
+                const skinned = (base === 0 && fragment.indexOf('lightDir') < 0) ? 7 : base + 4;
                 shaderVertices[skinned] = vertex;
                 return skinned;
             }

@@ -273,7 +273,9 @@ function netPeerState(name, state) {
         const handle = rl.loadModel(ASSET_SLOTS["model.goat"]);
         if (handle < 0) return;
         modelLoaded(handle);
-        if (litShader >= 0) rl.setModelShader(handle, modelShaderFor(handle, litShader));
+        if (litShader >= 0) {
+            rl.setModelShader(handle, modelShaderFor(handle, useLighting ? litShader : -1));
+        }
         if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
         PEERS.push({
             name: name,

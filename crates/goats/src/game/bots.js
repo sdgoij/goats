@@ -79,7 +79,12 @@ function botAdd(i) {
     if (handle < 0) return false;
     const tex = BOT_TEX[i % BOT_TEX.length];
     modelLoaded(handle);
-    if (litShader >= 0) rl.setModelShader(handle, modelShaderFor(handle, litShader));
+    // The lit program, or the unlit one where the `L` toggle has the lighting off:
+    // a bot that appears while it is off (`herd.count` changes) must not come up
+    // lit, which is what naming `litShader` unconditionally did.
+    if (litShader >= 0) {
+        rl.setModelShader(handle, modelShaderFor(handle, useLighting ? litShader : -1));
+    }
     if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
     if (tex !== undefined && tex >= 0) rl.setModelTexture(handle, 0, tex);
     // A golden-angle spread rings the player evenly for any herd size.

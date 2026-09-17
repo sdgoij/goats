@@ -21,6 +21,7 @@
 mod support;
 
 use harness::{Harness, Observations};
+use serde_json::json;
 use support::Checks;
 
 /// Long enough for the load (one step per frame, then a bot per step) plus a few
@@ -77,6 +78,15 @@ fn the_skinned_paths_are_routed() {
                 .all(|row| row.get(1).copied().unwrap_or(-1) < 4),
             &obs.model_shader_routes,
         );
+        // `L` turns the lighting off by pointing the models back at the shader they
+        // were loaded with, and on this build that is the end of it.
+        harness.command("lighting off").expect("lighting off");
+        let off = harness.observe().expect("observe");
+        checks.check(
+            "...and the L toggle leaves the loader's own shader alone",
+            routes_of(&off, GOAT).last() == Some(&-1),
+            routes_of(&off, GOAT),
+        );
     }
 
     // ---- a gpu-skinning build: the rigs ride the skinned programs -----------
@@ -88,8 +98,8 @@ fn the_skinned_paths_are_routed() {
         let obs = harness.run(FRAMES).expect("run the scene");
 
         checks.check(
-            "one skinned program per family was compiled",
-            obs.skinned_shaders.len() == 3,
+            "every skinned program was compiled: three passes and the unlit one",
+            obs.skinned_shaders.len() == 4,
             obs.skinned_shaders.keys().collect::<Vec<_>>(),
         );
         checks.check(
@@ -161,6 +171,40 @@ fn the_skinned_paths_are_routed() {
             obs.cpu_skin_calls.is_empty(),
             &obs.cpu_skin_calls,
         );
+
+        // The `L` view: raylib's own default shader does not skin either, so the
+        // `-1` route has to become the unlit skinned program, or the herd would hold
+        // its bind pose for as long as the lighting is off. The run ends with
+        // `sceneShutdown`, which unloads the herd, so the lighting goes off first and
+        // a bot is added after it -- handle 8, after the goat (0) and the seven the
+        // load made -- which is the case a herd resize hits while it is off. The
+        // terrain, which has no bone data, is the control: `-1` stays `-1` for it.
+        harness.command("lighting off").expect("lighting off");
+        harness.call("botAdd", &[json!(0)]).expect("botAdd");
+        let off = harness.observe().expect("observe");
+        let goat_off = routes_of(&off, GOAT);
+        checks.check(
+            "with the lighting off the goat takes the unlit skinned program",
+            goat_off.last() == Some(&7),
+            &goat_off,
+        );
+        let bot_off = routes_of(&off, 8);
+        checks.check(
+            "...and a bot added while it is off comes up on it too",
+            !bot_off.is_empty() && bot_off.iter().all(|shader| *shader == 7),
+            &bot_off,
+        );
+        let terrain_off = off
+            .model_shader_routes
+            .iter()
+            .filter(|row| row.first().copied().unwrap_or(-1) >= 1000)
+            .map(|row| row[1])
+            .collect::<Vec<_>>();
+        checks.check(
+            "...while the terrain keeps the loader's own shader",
+            terrain_off.contains(&-1),
+            &terrain_off,
+        );
     }
 
     // ---- a rig past the array: that model keeps CPU skinning ----------------
@@ -193,7 +237,7 @@ fn the_skinned_paths_are_routed() {
         // The fallback is per model: the programs are still there for the next one.
         checks.check(
             "the skinned programs were still compiled",
-            obs.skinned_shaders.len() == 3,
+            obs.skinned_shaders.len() == 4,
             obs.skinned_shaders.keys().collect::<Vec<_>>(),
         );
         checks.check(
@@ -206,6 +250,15 @@ fn the_skinned_paths_are_routed() {
                 .find(|line| line.contains("bones"))
                 .cloned()
                 .unwrap_or_default(),
+        );
+        // Such a rig is drawn from its deformed mesh, so the loader's own shader is
+        // the right `-1` for it -- not the unlit skinned program.
+        harness.command("lighting off").expect("lighting off");
+        let off = harness.observe().expect("observe");
+        checks.check(
+            "...and the L toggle leaves it on the loader's own shader",
+            routes_of(&off, GOAT).last() == Some(&-1),
+            routes_of(&off, GOAT),
         );
     }
 

@@ -3573,8 +3573,9 @@ this milestone is a consequence of these, so they come first.
     the grass (`tufts` 2.7-2.9 plus `shadow_grass` 0.5) is now the largest phase in
     the frame, and one model per goat is no longer *required* -- one model can serve
     the herd if every instance is updated immediately before it is drawn -- which the
-    scene has not taken up yet. A third, smaller gap: the `L` toggle turns lighting
-    off by restoring raylib's *own* shader, which does not skin either, so on this
-    build the goats hold their bind pose with the lighting off. It is a debug view's
-    gap rather than a gameplay one, and the fix (an unlit skinned twin) is not
-    written yet.
+    scene has not taken up yet. The `L` toggle is closed as well: it turns the
+    lighting off by pointing a model back at the shader it was loaded with, and
+    raylib's own shader does not skin, so the scene compiles an unlit skinned twin of
+    it (`UNLIT_VS_SKIN`, raylib's default program plus the bone block) and routes
+    `-1` there on a `gpu-skinning` build. Without it the herd held its bind pose for
+    as long as the lighting was off.
