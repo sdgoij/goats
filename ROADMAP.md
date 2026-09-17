@@ -2449,9 +2449,21 @@ already simulates it, and nothing new has to be negotiated. Consequences:
   that search. A corpse has no AI and trips no device. It is the one thing in the
   herd that still does physics, and only because it may be mid-fall: **a bot killed
   in the air keeps the arc it had and lands**, so a chain on a flung bot drops a body
-  rather than teleporting one to the ground. A bot's health comes back no other way,
-  which makes the herd the field's memory -- a bot that has been through three bangs
-  of bruises dies to the next one.
+  rather than teleporting one to the ground. A bot's health otherwise comes back only by
+  grazing itself full (*A sated meal heals*, below), which is what keeps the herd's
+  memory of the field a wound a long graze can close rather than a sentence: three bangs
+  of bruises still kill it to the next one.
+- **A sated meal heals** (added after M19 landed, because the herd is mortal). The food
+  rule itself: a meal taken with the belly already at `TUNING.food.fullBelly` (85%) has
+  nothing left to *fill*, so it gives `fullBellyHeal` (3) health along with the energy --
+  `satedHeal` in food.js, one function called by `startEat` and by `botStartEat`, so the
+  player and the herd cannot drift apart on it. The belly is read *before* the meal: what
+  decides is the state the goat ate in, so grazing to fill an empty belly only feeds and
+  topping a full one up heals. A trapped tuft still gives neither, because the heal rides
+  the meal's benefit branch and not the bang. It is why `food.fullBelly` and
+  `fullBellyHeal` are clamped (a fraction outside 0..1 is not a full belly, and a
+  negative heal would make eating a way to lose health), and nothing crosses the wire for
+  it: bot health never did, and the belly and the stats are the owning process's own.
 - **A dead bot is a `Gait::Dead` bot**, so a client mirrors the pose and the fraction
   like any other one-shot and getting up is the host's business: the next snapshot
   simply says something else. `Gait::Dead` has been on the wire since the peers' goats

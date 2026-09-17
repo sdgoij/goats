@@ -101,13 +101,15 @@ page, where GitHub plays it.*
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
-- **A bot herd**: six autonomous goats wander around the player, each with its
+- **A bot herd**: seven autonomous goats wander around the player, each with its
   own procedural mottled fleece, body size and temperament. They graze, stroll,
   trot, and now and then get the zoomies — a run punctuated by jumps. Goats
   collide, so nothing walks through anything else (the player can shove bots
   aside). Nearby bots cast into the shadow map; distant ones get a contact blob.
   Their AI runs on a private PRNG so the seeded weather the harness asserts on is
-  untouched.
+  untouched. Eating with a belly that is already 85% full gives a little health
+  back with the meal (`food.fullBelly` / `fullBellyHeal`) — for the player and the
+  herd alike, which is how a bot recovers from the minefield it lives in.
 - **Landmines and boobytraps**: the field is *derived* from the session seed rather
   than stored, so every peer agrees where the devices are with nothing new on the
   wire. Walking onto a mine flings the goat and dishes a real crater into

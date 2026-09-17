@@ -406,6 +406,83 @@ fn the_scene_runs_the_scripted_timeline() {
         let regrown = command_json(&mut harness, "grass");
         eat.regrew = !regrown.is_null() && regrown["key"] == found["key"];
     }
+
+    // A sated meal heals as well as feeds (`TUNING.food.fullBelly`). The belly is read
+    // *before* the meal, so what decides is the state the goat ate in: three meals in a
+    // row take it from empty to full -- the first two only feed, and the ones from there,
+    // at the ceiling, give the health too. Through `eat`, the way the player does it, with
+    // the health set below the ceiling so that a gift is visible at all.
+    let full = f64_of(harness.eval("TUNING.food.fullBelly").expect("fullBelly"));
+    let heal = f64_of(
+        harness
+            .eval("TUNING.food.fullBellyHeal")
+            .expect("fullBellyHeal"),
+    );
+    let mut meals: Vec<(f64, f64, f64)> = Vec::new(); // belly before, health before, after
+    for _ in 0..3 {
+        let found = command_json(&mut harness, "grass");
+        if found.is_null() {
+            break;
+        }
+        let (x, z) = (f64_of(found["x"].clone()), f64_of(found["z"].clone()));
+        harness
+            .command(&format!("pos {} {}", x - 0.5, z))
+            .expect("pos");
+        harness.command("health 50").expect("health");
+        let before = command_json(&mut harness, "state");
+        harness.command("eat").expect("eat");
+        let after = command_json(&mut harness, "state");
+        meals.push((
+            f64_of(before["satiety"].clone()),
+            f64_of(before["health"].clone()),
+            f64_of(after["health"].clone()),
+        ));
+    }
+    checks.check(
+        "a meal on a half-empty belly feeds and does not heal",
+        meals
+            .iter()
+            .any(|(belly, h0, h1)| *belly < full && h1 == h0),
+        &meals,
+    );
+    checks.check(
+        "a meal on a full belly heals by `fullBellyHeal`",
+        meals
+            .iter()
+            .any(|(belly, h0, h1)| *belly >= full && (*h1 - *h0 - heal).abs() < 1e-6),
+        &meals,
+    );
+
+    // ...and the herd gets the same second helping, which is what a mortal herd needs: a
+    // bot that has grazed its belly full heals with every tuft after that. The scene's own
+    // `run()` ended with `sceneShutdown`, which empties the herd, so one is put back first.
+    // The meal is driven through `botStartEat`, on a bot whose belly is already full --
+    // `nearestTuft` may hand back a trapped tuft, so the field's traps are off for this one.
+    harness
+        .eval("goats.tuning.set(\"explosions.trap.chance\", 0)")
+        .expect("trap chance");
+    harness.call("botAdd", &[json!(0)]).expect("botAdd");
+    let herd_meal = harness
+        .eval(
+            "(function () { \
+                if (BOTS.length === 0) return { why: \"no bot\" }; \
+                const b = BOTS[0]; \
+                const t = nearestTuft(b.x, b.z, 40); \
+                if (t === null) return { why: \"no tuft in reach\", x: b.x, z: b.z }; \
+                b.health = 50; b.satiety = 1; \
+                botStartEat(b, t); \
+                return { health: b.health, belly: b.satiety }; \
+            })()",
+        )
+        .expect("botStartEat");
+    checks.check(
+        "a bot on a full belly heals from its meal too",
+        herd_meal["health"]
+            .as_f64()
+            .is_some_and(|health| (health - 50.0 - heal).abs() < 1e-6),
+        &herd_meal,
+    );
+
     let empty_belly = f64_of(
         harness
             .call("rainSlowFactor", &[json!(0.0)])

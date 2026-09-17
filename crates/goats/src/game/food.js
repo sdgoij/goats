@@ -142,6 +142,17 @@ function applyEaten(list) {
     }
 }
 
+// A meal's second helping: a goat whose belly is already nearly full has nothing left to
+// *fill*, so the grass goes into the goat instead -- `fullBellyHeal` health a meal. One
+// rule, called from both sides of the meal (`startEat` here, `botStartEat` in bots.js),
+// because the herd needs a way back from the minefield it lives in. Returns 0 below the
+// line, so a call site reads as one addition. The belly is passed in *before* the meal:
+// what decides is the state the goat ate in.
+function satedHeal(belly) {
+    if (belly < TUNING.food.fullBelly) return 0;
+    return TUNING.food.fullBellyHeal;
+}
+
 // Eat `target`: remove the tuft, turn onto it, top up energy, fill the belly,
 // and switch to the eat clip. Returns false when there is nothing to eat.
 //
@@ -155,8 +166,10 @@ function startEat(target) {
     if (trapAt(target.cx, target.cz)) {
         tripDevice("trap", target.cx, target.cz, target.x, target.z, 0);
     } else {
+        const heal = satedHeal(satiety);
         stats.energy = Math.min(TUNING.stats.max, stats.energy + TUNING.food.eatEnergy);
         satiety = Math.min(1, satiety + TUNING.food.eatSatiety);
+        stats.health = Math.min(TUNING.stats.max, stats.health + heal);
     }
     mode = "eat";
     eatTime = 0;

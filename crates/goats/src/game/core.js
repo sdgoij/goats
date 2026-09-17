@@ -176,6 +176,12 @@ const TUNING = {
         eatRange: 1.1,             // metres: a tuft closer than this is in reach
         eatEnergy: 8,              // energy per tuft
         eatSatiety: 0.55,          // belly fill per tuft, 0..1
+        // A meal taken with the belly already this full has nothing left to *fill*, so
+        // it goes into the goat instead: `fullBellyHeal` health a meal, for the player
+        // and for the herd (food.js `satedHeal`). It is what gives a bot a way back
+        // from a minefield, where its only other recovery was dying and respawning.
+        fullBelly: 0.85,
+        fullBellyHeal: 3,
         satietyDecay: 0.02,        // per second
         rainShelter: 0.6,          // a full belly removes this share of the rain slowdown
         regrowMin: 40,             // seconds before an eaten tuft comes back
@@ -407,6 +413,10 @@ const TUNING_CLAMP = {
     // A killed bot has to lie there for *some* of it: `0` would ping-pong it in and
     // out of the world, and the death is worth watching.
     "herd.deathLinger": [0.5, 120],
+    // The meal's second helping: a fraction outside 0..1 is not a full belly, and a
+    // negative heal would make eating a way to lose health.
+    "food.fullBelly": [0, 1],
+    "food.fullBellyHeal": [0, 100],
     "camera.minDist": [0.1, 1000],
     "camera.maxDist": [0.1, 1000],
     "lighting.shadow.size": [16, 8192],

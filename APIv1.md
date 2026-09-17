@@ -577,8 +577,8 @@ stats    max, energyDrain{idle,walk,trot,run}, jumpEnergyCost,
 movement turnRate, goatRadius, modelScale
 gait     {walk,trot,run}: { stride, duty }
 jump     fallbackTime, fallbackHeight, fallbackTrotMult, fallbackRunMult
-food     eatRange, eatEnergy, eatSatiety, satietyDecay, rainShelter,
-         regrowMin, regrowMax
+food     eatRange, eatEnergy, eatSatiety, fullBelly, fullBellyHeal,
+         satietyDecay, rainShelter, regrowMin, regrowMax
 weather  windBase, cloudDrift, rainMax, rainSlow, windSlow, wetDrain,
          windDrain, windNorm, hold{clear,cloudy,rain,clearing}
 terrain  relief, flat, ramp, snap, uv
@@ -1253,7 +1253,7 @@ stats.deadEyeFraction
 movement.{turnRate,goatRadius,modelScale}
 gait.{walk,trot,run}.{stride,duty}
 jump.{fallbackTime,fallbackHeight,fallbackTrotMult,fallbackRunMult}
-food.{eatRange,eatEnergy,eatSatiety,satietyDecay,rainShelter,regrowMin,regrowMax}
+food.{eatRange,eatEnergy,eatSatiety,fullBelly,fullBellyHeal,satietyDecay,rainShelter,regrowMin,regrowMax}
 weather.{windBase,cloudDrift,rainMax,rainSlow,windSlow,wetDrain,windDrain,windNorm}
 weather.hold.{clear,cloudy,rain,clearing}
 terrain.{relief,flat,ramp,snap,uv}

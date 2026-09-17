@@ -289,7 +289,12 @@ function botStartEat(b, t) {
     if (trapAt(t.cx, t.cz)) {
         tripDevice("trap", t.cx, t.cz, t.x, t.z, 0);
     } else {
+        // The herd's meals get the second helping too (food.js `satedHeal`): a bot that
+        // has grazed its belly full heals a little with every tuft after that, which is
+        // the only way back from the bruises a minefield hands it.
+        const heal = satedHeal(b.satiety);
         b.satiety = Math.min(1, b.satiety + TUNING.food.eatSatiety);
+        b.health = Math.min(TUNING.stats.max, b.health + heal);
     }
     b.mode = "eat";
     b.eatTime = 0;
