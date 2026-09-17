@@ -98,7 +98,7 @@ uses.
 | **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | ✅ **Done** — M17a (the ABI), M17b (the Rust host), M17c (the digest + determinism), M17c2 (the state surface) and M17d (the performance debt) all landed |
 | **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | ✅ **Done** — the fetch ALPN, the client's fetch/verify/install, the catalogue and the client wiring (consent, `--pull`, the one retry, and loading a mod that arrives after the freeze) |
 | **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
-| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | In progress — M19a (the engine additions), M19b (the devices and the blasts), M19c (the flung goat, the herd that dies to it, and the device that moves house) and M19d (the craters) have landed; M19e-M19g are below. The layout is derived from the seed, so nothing new on the handshake |
+| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | In progress — M19a (the engine additions), M19b (the devices and the blasts), M19c (the flung goat, the herd that dies to it, and the device that moves house), M19d (the craters) and M19e (the wire) have landed; M19f and M19g are below. The layout is derived from the seed, so nothing new on the handshake |
 
 ---
 
@@ -2475,7 +2475,7 @@ ServerMessage::Blast { kind, key, x, z, by: String } // "...and so did my bot, h
   is standing in it -- which is how a peer gets flung by a mine someone else
   stepped on.
 - **Rate-limited** the way `Consume` and chat are, and capped at
-  `TUNING.explosions.maxReports` a second per client, so a modified client cannot
+  `TUNING.explosions` a second per client (`BLAST_BURST` in `session`), so a modified client cannot
   make every peer draw a thousand explosions.
 - **The coordinates are the host's, not the reporter's**, on the way back out: the
   host owns the layout, so it is the one that can say where a key actually is. A
@@ -2491,8 +2491,14 @@ ServerMessage::Blast { kind, key, x, z, by: String } // "...and so did my bot, h
 3. every other client draws the effect, and applies the blast to the goats *it*
    simulates -- which is how a peer standing next to the blast is flung, by its own
    client, a frame or two after the reporter was;
-4. and the host **never** fires for a reported client trigger. It fires for its own
-   goats: the local player's, and the herd's.
+4. and the bang is never fired twice. A report is not a request, and it is not a
+   second bang either: the host applies it exactly as it applies any other -- its own
+   crater, its own herd, and the relay -- and the one thing it leaves out is the
+   reporter, who has already felt it. (The narrower reading, that a reported bang
+   should leave the host's goats standing, was not taken: the host's crater list *is*
+   the ground every client adopts, so the hole has to be dug here whatever happens to
+   the herd, which would mean a crater-only path through `blast`, and a mine going off
+   under the host's goat would then do nothing to it.)
 
 Which is the whole reason the report exists: not to ask permission, but so that one
 device fires once and everyone still sees it.
@@ -2525,8 +2531,9 @@ with `craters: Option<Vec<Crater>>` and `spent: Option<Vec<Spent>>`, both using
   is derived from the cell that fired, so a client that has the spent list has the
   field (`mineArmed`).
 
-**Budget arithmetic** (to be pinned against the real encoder in M19e; the numbers
-here are estimates of the same order as `EatenCell`'s six bytes):
+**Budget arithmetic** (pinned against the real encoder in M19e -- the guard is the
+case named `a_crater_costs_the_bytes_the_budget_claims`, and it asserts an upper
+bound, because postcard's varints make a real crater smaller than the table says):
 
 | Item | Size | Live in a normal session |
 | --- | --- | --- |
@@ -2543,21 +2550,24 @@ gets a craters case. If the numbers do not fit, the precedent is already set: th
 world mods got a datagram of their own so they could not evict the world, and
 craters can too.
 
-**The shed order.** `fit_world` sheds in a defined order today (the meadow first).
-With craters and spent devices, the proposed order is, least essential first:
+**The shed order.** `fit_world` sheds in a defined order, least essential first:
 
 1. the world mods' state (already on its own datagram),
 2. the **spent** list (a client that misses a trip leaves a mine standing that the
    host has moved -- noisy, survivable, and self-correcting on the next snapshot),
-3. the **craters** (see the all-or-nothing note above: shed as a whole, never
+3. the **meadow**,
+4. the **craters** (see the all-or-nothing note above: shed as a whole, never
    truncated),
-4. the meadow,
 5. and if the world itself still does not fit, the same `TooLarge` outcome as
    today.
 
-The order is a decision, not a coin toss: it is written down because a reader will
-ask why the meadow is not first any more, and the answer is that geometry outranks
-content.
+The order is a decision, not a coin toss, and the meadow going before the craters is
+the part of it that needs saying: geometry outranks content. A client that is kept
+out of the meadow sees tufts that are not there any more and simply cannot eat
+them, while a client that is kept out of the craters disagrees with the host about
+the shape of the ground under its own goat. (The list here had these two the other
+way round when it was first written; the code and its case always had it this way,
+and the reasoning above is what they follow -- M19e.)
 
 **`Gait::Flung` is a version bump.** `proto::Gait` is a closed enum that travels in
 every peer frame, and postcard decodes an unknown variant as a failure -- of the
@@ -2795,7 +2805,9 @@ it rather than overlapping. That is M19g's, with the rest of the mixing.
         safe: 8,                       // no traps within this radius of the spawn
         fuse: 0.18,                    // seconds between the trigger and the bang
         maxActive: 24,                 // effect instances; each is a draw call
-        maxReports: 4,                 // blasts a client may report per second; the host drops the rest
+        // There is deliberately no report-rate key here. The cap on how often a client may
+        // report a bang is the *host's* (`session`'s `BLAST_BURST`, four a second): a tuning
+        // entry would be a number the client itself could raise.
         mine: {
             density: 0.012,            // chance per 2-unit cell
             trigger: 0.6,              // metres; a goat closer than this sets it off
@@ -2848,8 +2860,8 @@ is 0.6 m, so the goat is at arm's length -- is four to five metres up and six ou
 Height came out of the lift and the gravity together, not out of the push: the
 throw is the one it always was (the push *fell* from 14 to 13 to pay for the longer
 fall), and only the air is new. The values in the tree above are the ones in
-`core.js` today for everything M19b, M19c, M19c2 and M19d landed; `maxReports` and
-`lethal` are still the proposal -- and `lethal`, when it lands, is a promise
+`core.js` today for everything M19b, M19c, M19c2, M19d and M19e landed; `lethal` is
+still the proposal -- and when it lands it is a promise
 about the *player*: the herd is already mortal without it. The crater's `heal`
 landed with a floor of **2 s** rather than the ≥ 30 this list used to propose, and
 the reason is the harness: a four-minute heal cannot be tested without standing in
@@ -3021,7 +3033,7 @@ JavaScript stubs are the only implementation either of them ever gets.
 | **M19c** | The flung goat | M19b | M | Landed: the `"flung"` mode and its arc (integrated in absolute height, so a slope it crosses mid-air cannot drag it), the input lock, landing on the ground it actually meets, the roll the placeholder owes (`flingDraw`), `Gait::Flung` + the `PROTOCOL_VERSION` 9 bump, the peer path, `restart()` clearing it, the clip contract -- with the jump variant as the fallback until Blender lands -- and the herd, which is flung, lands, and walks on. A bang in `sfx/` is heard too, faded by its distance. **Open, and named in *The wire*: the flung *height* does not travel**, so a bot on a client (and a peer's goat anywhere) tumbles on the ground until `py` rides on `BotState`/`PeerState` -- which M19f's rootless `GoatFlung` will force |
 | **M19c2** | The herd is mortal: bots take damage, and die | M19c | S | ✅ **Landed** — bots take the player's own blast curve without the player's floor (`health` on a bot, charged in `blast()`), a lethal bang kills instead of throwing (`botDie`, bots.js), a killed bot lies there for `herd.deathLinger` playing the death clip and then gets up 10-26 m away on ground with no armed mine under it (`botRespawn`), a corpse has no AI and trips no device but *does* land — a bot killed mid-arc keeps the arc it had. On the wire it is `Gait::Dead` plus the fraction (`netBotPhase`/`netApplyWorld`), which the enum already carried, so **no protocol version** |
 | **M19d** | Craters | M19b | M | ✅ **Landed** — the dish is a term in `terrainHeight` (`craterDipAt`, a bowl plus a raised lip, summing over the live list), so the goat, the herd, the peers, the grass and both shadows stand in it with nothing added anywhere; the list is capped at `crater.max` with the oldest retired first and heals by scaling the depth down over `crater.heal`; the grass the crater swallowed is killed through the meadow's own `EATEN`, with the heal for a regrow window, and released as the ground closes; `terrainDirty` makes a near bang's hole appear in the mesh on the frame it happens (a distant one waits for the next anchor rebuild, so a bot's bang cannot hitch the frame); the interim scorch is the mine's own tell puff scaled to the dish; `craters` is a console verb and `sceneCraters`/`sceneResetCraters` are the test surface. **Open**: craters stack (N bangs in one place dig N × `depth`, bounded by the cap and unwound by the heal), and nothing about them travels yet -- M19e's `craters` on the world datagram is what a client needs |
-| **M19e** | The wire | M19b-d | M | `BlastKind`, the two messages, the rate limit, `craters`/`spent` on the world datagram with `None`-means-keep, the shed order, the budget case, and the two-window check. The **move** needs no field of its own: a peer that knows which cell fired derives the same destination, so `spent` is the whole of it |
+| **M19e** | The wire | M19b-d | M | ✅ **Landed** — `BlastKind`; a bang as an *event* on the frame stream both ways; `craters`/`spent` as *state* on the world datagram, `None`-means-keep and all-or-nothing, with the budget case; and `Client::report_blast`, for the direction that had no sender at all. A device fires in exactly one place: the process the goat is in fires and reports it, the host spends the device and relays the bang with **its own** coordinates, and a receiver fires that receipt once — with the chain suppressed there, because the origin's own chain reports each of *its* bangs itself. The **move** needs no field of its own (the destination is derived from the cell that fired, so `spent` is the whole of it), and a mirrored crater is *reconciled* rather than rebuilt, so a 10 Hz snapshot does not drop the height cache and rebuild the mesh with it. The cap on how often a client may report is the host's (`BLAST_BURST` in `session`), not the scene's, because a tuning entry would be a number the client itself could raise. **Two notes above were brought into line with the code, and both are decisions rather than gaps:** a reported bang is applied here exactly as every client applies it, the host's own goats included (the narrower reading needs a crater-only path and would leave a mine going off under the host's goat doing nothing), and the shed order is spent → meadow → craters, which is what the justification for it always said |
 | **M19f** | The art | M19a, M19c, M19d | M–L | `GoatFlung` in `goat.blend` (which retires the procedural roll and the jump-clip placeholder together); the three atlases and the crater decals as PNGs in the asset table; the flipbook instances; the light-flash uniforms; the camera shake and the HUD pulse |
 | **M19g** | Sound and the mod surface | M19e, M19f | S–M | The rest of the slots (`sfx.fuse`, `sfx.trap`, `sfx.blast.close`) and the per-slot pools, the fuse's click; `goats.explosions.*`, the `blast` event, the docs (`APIv1.md` §4, `README.md`) |
 
@@ -3086,12 +3098,21 @@ it:
   the samples it expects rather than only counting -- which is how "every bang is
   heard, once" is asserted against the scene's own cumulative blast count, and how
   the grit is checked to be *queued* at the bang and only heard afterwards.
-- **`crates/proto`** -- the blast messages round-trip; a crater's encoding is the
-  size the budget table claims; `fit_world` sheds in the documented order; and the
-  vanilla world *with craters* still fits (the M16 guard, extended).
-- **`crates/session`** -- a client's blast reaches the host and is broadcast to the
-  others tagged with the reporter; the rate limit holds; a blast from an unknown
-  peer is ignored.
+- **`crates/proto`** -- ✅ the blast messages round-trip; a crater's encoding is the
+  size the budget table claims (an upper bound, since postcard's varints are shorter);
+  `fit_world` sheds in the order the code implements; and the vanilla world *with
+  craters* still fits (the M16 guard, extended).
+- **`crates/session`** -- ✅ a client's bang reaches the host and is relayed to the
+  others tagged with the reporter, and **not** back to the reporter; the report rate
+  limit holds. ("A blast from an unknown peer is ignored" turned out to be structural
+  rather than a case: the host stamps `by` from the connection the report arrived on,
+  so there is no such thing as a report from someone with no connection.)
+- **`crates/harness/tests/scene_logic.rs`** -- ✅ the scene's own half, on the
+  scripted timeline: a client mirrors the ground and the spent devices out of a
+  snapshot; `null` keeps the ground it has and an empty list closes it, with
+  `terrainHeight` back where it started; a relayed bang lands here once and is not
+  sent back out; and a report spends the device on the host and queues the relay with
+  the reporter's name on it.
 - **Blender-side** -- `tools/inspect_glb.py` on the re-exported `goat_animated.glb`
   (the new `GoatFlung` clip is there, and the eleven that were already there still
   are), the clip checks the goat's own clips already get (ground contact, loop

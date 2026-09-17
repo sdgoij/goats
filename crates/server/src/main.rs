@@ -386,6 +386,14 @@ async fn main() {
                         eprintln!("goatsd: could not record a bite: {error}");
                     }
                 }
+                // A device a client's goat set off (M19e). The client has already fired
+                // it, so this is a report: the scene spends the device and applies the
+                // bang here -- the ground everyone adopts is this one -- and answers with
+                // where the device was, which is what the relay puts on the wire. The
+                // reporter is left out of it, because they have already felt it.
+                Some(Event::BlastReport { kind, key, by }) => {
+                    relay_blast(&host, &mut sim, kind, key, &by).await;
+                }
                 Some(event) => report(event, &info),
                 None => {
                     println!("goatsd: session finished");
@@ -407,6 +415,51 @@ async fn main() {
         .is_err()
     {
         eprintln!("goatsd: close timed out; exiting anyway");
+    }
+}
+
+/// One answer from the scene to a blast report (M19e): where the device it names
+/// actually is, in the host's own layout.
+#[derive(serde::Deserialize)]
+struct BlastAt {
+    x: f32,
+    z: f32,
+}
+
+/// Relays a client's bang (M19e). Everything here is deliberately the host's: the scene
+/// spends the device and digs the ground because this is the world everyone mirrors, and
+/// the coordinates come from that same scene rather than from the reporter -- who is left
+/// out of the relay, having already felt the bang.
+async fn relay_blast(
+    host: &Host,
+    sim: &mut headless::Sim,
+    kind: session::BlastKind,
+    key: i64,
+    by: &str,
+) {
+    let json = match sim.blast_report(blast_kind_name(kind), key) {
+        Ok(json) => json,
+        Err(error) => {
+            eprintln!("goatsd: could not record a blast: {error}");
+            return;
+        }
+    };
+    // Empty means the scene has no device at that key: a client saying something the
+    // host cannot check out, and nothing worth relaying to everyone else.
+    if json.is_empty() {
+        return;
+    }
+    match serde_json::from_str::<BlastAt>(&json) {
+        Ok(at) => host.blast(kind, key, at.x, at.z, by, Some(by)).await,
+        Err(error) => eprintln!("goatsd: bad blast report: {error}"),
+    }
+}
+
+/// The scene spells a device's kind the way `BlastKind` serialises it.
+fn blast_kind_name(kind: session::BlastKind) -> &'static str {
+    match kind {
+        session::BlastKind::Mine => "mine",
+        session::BlastKind::Trap => "trap",
     }
 }
 
@@ -470,13 +523,17 @@ fn report(event: Event, info: &web::Info) {
         Event::Notice(text) => format!("notice {text}"),
         // Positions arrive many times a second; logging each would bury the
         // session log, so they are not reported. The world and the mods are the
-        // server's own, a bite is handled by the sim above, and a headless host
-        // has no audio, so a voice packet is relayed and forgotten.
+        // server's own, a bite and a blast are handled by the sim above, and a
+        // headless host has no audio, so a voice packet is relayed and forgotten.
+        // `Blast` is the *relayed* bang, which a host never receives: it is what the
+        // clients get, and this server is the one that sends it.
         Event::Peer { .. }
         | Event::World { .. }
         | Event::Mods { .. }
         | Event::Consume { .. }
-        | Event::Voice { .. } => {
+        | Event::Voice { .. }
+        | Event::Blast { .. }
+        | Event::BlastReport { .. } => {
             return;
         }
         Event::Disconnected => "disconnected".to_string(),

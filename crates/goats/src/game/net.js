@@ -172,7 +172,8 @@ function sceneNetEvent(line) {
             break;
         case "world":
             // The server's world. Not printed either.
-            netApplyWorld(event.bots, event.weather, event.streams, event.eaten);
+            netApplyWorld(event.bots, event.weather, event.streams, event.eaten,
+                event.craters, event.spent);
             break;
         case "mods":
             // Every world mod's state, on the server's own datagram. Not printed.
@@ -182,6 +183,16 @@ function sceneNetEvent(line) {
             // A client's bite, on the host: record it in this meadow. The next
             // world snapshot carries it back to everyone.
             sceneConsume(event.key);
+            break;
+        case "blast":
+            // A bang the host relayed (M19e). The fire, the crater, and the goat this end
+            // simulates -- a peer's mine flings *this* goat, here, and not on the host.
+            applyRemoteBlast(String(event.kind), event.key, event.x, event.z);
+            break;
+        case "blast_report":
+            // A client's device went off (M19e), on the host: spend it, dig it here, and
+            // hand the relay back to the host bridge with the reporter named.
+            netBlastReport(String(event.kind), event.key, String(event.by));
             break;
         case "chat":
             consoleNet("net: " + (event.direct ? "dm " : "") +
@@ -482,6 +493,11 @@ function netMaybePublishWorld() {
         weather: sceneWeatherState(),
         streams: sceneStreams(),
         eaten: sceneEaten(),
+        // The ground and the devices that have gone off (M19e). The host is the authority
+        // on both, so an empty list is a statement -- flat ground, nothing spent -- and the
+        // `null` that means "keep yours" is the wire's, not the scene's.
+        craters: netWorldCraters(),
+        spent: netWorldSpent(),
     });
     // A world mod's state rides its own datagram, beside the world: it may be
     // bigger than the world's budget, and losing it costs a mod rather than
@@ -489,14 +505,20 @@ function netMaybePublishWorld() {
     if (modWorldActive()) netQueue({ type: "mods", mods: sceneWorldMods() });
 }
 
-// Mirror the server's world: its sky, its streams, its meadow and its bots. A
-// client runs neither the weather state machine nor the bot AI, and does not
-// count its meadow down, so this is the whole of all of it.
-function netApplyWorld(bots, weather, streams, eaten) {
+// Mirror the server's world: its sky, its streams, its meadow, its bots, its ground and the
+// devices it has seen go off. A client runs neither the weather state machine nor the bot AI,
+// does not count its meadow down, and does not heal its craters, so this is the whole of all
+// of it.
+function netApplyWorld(bots, weather, streams, eaten, craters, spent) {
     applyWeatherState(weather);
     sceneUseStreams(streams);
     applyEaten(eaten);
-    modEmit("world", { bots: bots, weather: weather, streams: streams, eaten: eaten });
+    // The two that are *state* rather than events (M19e): the ground the goat is standing on
+    // and the field of devices. `null` in either keeps what this end has, the meadow's contract.
+    applyCraters(craters);
+    applySpent(spent);
+    modEmit("world", { bots: bots, weather: weather, streams: streams, eaten: eaten,
+        craters: craters, spent: spent });
     if (!Array.isArray(bots)) return;
     if (BOTS.length !== bots.length) setHerdSize(bots.length);
     for (let i = 0; i < bots.length && i < BOTS.length; i++) {
@@ -548,6 +570,65 @@ function netApplyWorld(bots, weather, streams, eaten) {
 function netApplyMods(mods) {
     sceneApplyWorldMods(mods);
     modEmit("mods", mods);
+}
+
+// ---- blasts (M19e) ---------------------------------------------------------
+//
+// A bang is an *event*, not state: small, infrequent, and on the channel that already carries
+// a bite and a notice. The rule under all of it is that a device fires in exactly one place:
+// the process that simulates the goat that tripped it fires it locally and reports it, the
+// host spends the device and relays the bang to everyone else, and every other client draws
+// it and applies it to the goats *it* simulates. Nobody waits for the host to fire it back.
+
+// A device this process has just set off, at the end of its fuse (`blast` in
+// explosions.js). Offline there is nobody to tell and the bang is already local. The
+// coordinates ride along because a *host* relays with them; a client's are dropped on the way
+// up, where the host derives them from the key rather than believing a peer.
+function netBlastFired(kind, key, x, z) {
+    if (!netInSession()) return;
+    netQueue({ type: "blast", kind: kind, key: key, x: netRound3(x), z: netRound3(z) });
+}
+
+// A client's device went off, on the host: spend it and dig it here (`sceneBlastReport`),
+// then hand the relay to the host bridge with the reporter named, so the relay can leave them
+// out -- they have already felt this one.
+function netBlastReport(kind, key, by) {
+    const at = sceneBlastReport(kind, key);
+    if (at === null) return;
+    netQueue({
+        type: "blast",
+        kind: kind,
+        key: key,
+        x: netRound3(at.x),
+        z: netRound3(at.z),
+        by: by,
+    });
+}
+
+// The craters as the wire sees them: where, how wide, and how deep *now* -- the host heals,
+// and every snapshot carries the dish as it stands.
+function netWorldCraters() {
+    const out = [];
+    for (let i = 0; i < CRATERS.length; i++) {
+        const c = CRATERS[i];
+        out.push({
+            x: netRound3(c.x),
+            z: netRound3(c.z),
+            r: netRound3(c.r),
+            depth: netRound3(c.dip),
+        });
+    }
+    return out;
+}
+
+// The devices that have gone off, by key and kind. Where each one moved to is deliberately
+// absent: the destination is derived from the key that fired, so a client that has the key
+// has the whole field.
+function netWorldSpent() {
+    const out = [];
+    SPENT.forEach(function (key) { out.push({ key: key, trap: false }); });
+    TRAP_SPENT.forEach(function (key) { out.push({ key: key, trap: true }); });
+    return out;
 }
 
 // The remote goats as the harness sees them: names, render and target positions,

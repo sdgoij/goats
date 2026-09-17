@@ -42,9 +42,9 @@ use tokio::sync::{Mutex, mpsc};
 // `proto` directly. `ModMismatch` and `compare_world_mods` ride along because a
 // refused join hands one back.
 pub use proto::{
-    BotState, Datagram, EatenCell, Gait, ModMismatch, ModRef, ModsOutcome, ModsState, PeerFrame,
-    PeerState, Streams, VoiceFrame, WeatherKind, WeatherState, WorldOutcome, WorldState,
-    compare_world_mods, describe_mods,
+    BlastKind, BotState, Crater, Datagram, EatenCell, Gait, ModMismatch, ModRef, ModsOutcome,
+    ModsState, PeerFrame, PeerState, Spent, Streams, VoiceFrame, WeatherKind, WeatherState,
+    WorldOutcome, WorldState, compare_world_mods, describe_mods,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a
@@ -74,9 +74,9 @@ pub enum Event {
     /// A remote goat moved. `name` is the server's canonical name, not whatever
     /// the datagram claimed.
     Peer { name: String, state: PeerState },
-    /// The server's world -- its bots, its sky, its streams and its meadow -- for
-    /// a client to mirror instead of simulating. World-mod state arrives
-    /// separately, as [`Event::Mods`].
+    /// The server's world -- its bots, its sky, its streams, its meadow, its craters
+    /// and the devices that have gone off -- for a client to mirror instead of
+    /// simulating. World-mod state arrives separately, as [`Event::Mods`].
     World {
         bots: Vec<BotState>,
         weather: WeatherState,
@@ -85,6 +85,14 @@ pub enum Event {
         /// over the datagram budget). A client keeps the meadow it has: an empty
         /// list would put back every tuft the host has eaten.
         eaten: Option<Vec<EatenCell>>,
+        /// The craters on the ground, and the same `None` means "keep the ones you
+        /// have". These are the *last* thing a snapshot gives up, because a client
+        /// missing one disagrees with the host about the ground under the goat.
+        craters: Option<Vec<Crater>>,
+        /// The devices the host has seen go off. The first thing to go when the world is
+        /// over budget: a client that misses one leaves a mine standing that the host has
+        /// moved, which is noisy and survivable.
+        spent: Option<Vec<Spent>>,
     },
     /// Every world mod's state, on its own datagram: `{ streams, data }`, opaque
     /// to this layer. A client keeps the last one it got and eases on.
@@ -92,6 +100,29 @@ pub enum Event {
     /// A client ate a grass cell, for the host's scene to record. Only the host
     /// sees this; the next world snapshot carries the result to everyone.
     Consume { key: i64 },
+    /// A device went off (M19e): `x`/`z` are the host's own coordinates for it and not
+    /// the reporter's, and `by` is the goat that tripped it -- the herd's name when a
+    /// bot did, or the host's name when it was its own goat. The scene draws the fire
+    /// and applies the blast to the goats *it* simulates; a client therefore feels a
+    /// peer's mine through this, on its own goat.
+    Blast {
+        kind: BlastKind,
+        key: i64,
+        x: f32,
+        z: f32,
+        by: String,
+    },
+    /// A client's goat tripped a device (M19e). **Only the host sees this**, because it
+    /// is a report rather than a request: the client has already fired the blast
+    /// locally, and this is so the host can mark the device spent -- the neighbours must
+    /// not trip it again -- and relay it to the others. `by` is the reporter's canonical
+    /// name, which the relay uses to leave the reporter out: firing it back would land
+    /// the bang twice on the one goat that has already felt it.
+    BlastReport {
+        kind: BlastKind,
+        key: i64,
+        by: String,
+    },
     /// One voice packet from a speaker. `from` is the server's canonical name;
     /// `payload` is the encoded frame, opaque to this layer.
     Voice {
@@ -405,6 +436,16 @@ const CHAT_WINDOW: Duration = Duration::from_secs(3);
 /// keys, so reports get their own budget.
 const CONSUME_BURST: u32 = 8;
 const CONSUME_WINDOW: Duration = Duration::from_secs(1);
+
+/// A device going off is reported on the same principle and with its own budget, sized
+/// to `TUNING.explosions.maxReports`: four a second is more bangs than a goat can
+/// produce by walking, and a client that says more than that is flooding rather than
+/// playing. What it drops is the *report*, not the bang: the reporter's own world fired
+/// it either way, and the host's copy of the field keeps that cell armed until the
+/// reporter says it again -- noisy and survivable, which is the right failure for a
+/// mine nobody can see any more.
+const BLAST_BURST: u32 = 4;
+const BLAST_WINDOW: Duration = Duration::from_secs(1);
 
 /// Voice runs at ~50 packets a second, so the cap is double that: a real talker
 /// is never throttled, but a flood is, since every packet is relayed to every
@@ -745,6 +786,40 @@ impl Host {
         self.broadcast(Datagram::Voice(frame)).await;
     }
 
+    /// Tells everyone that a device went off (M19e), with the host's own coordinates for
+    /// it -- never the reporter's, because the host is the one that owns the layout and
+    /// can say where a key actually is. `except` is the client that reported it: it has
+    /// already fired the blast locally, and sending it back would land the bang twice on
+    /// the one goat that has already felt it.
+    ///
+    /// A frame rather than a datagram: a bang is an event, and a lost one is a bang
+    /// nobody else saw, which the craters in the next snapshot would then contradict.
+    pub async fn blast(
+        &self,
+        kind: BlastKind,
+        key: i64,
+        x: f32,
+        z: f32,
+        by: &str,
+        except: Option<&str>,
+    ) {
+        // The same guard the pose and the world carry: a non-finite coordinate would
+        // poison every peer's own arithmetic when it applies the blast.
+        if !x.is_finite() || !z.is_finite() {
+            return;
+        }
+        let message = ServerMessage::Blast {
+            kind,
+            key,
+            x,
+            z,
+            by: by.to_string(),
+        };
+        for connection in self.server.lock().await.targets(except) {
+            let _ = send_to(&connection, &message).await;
+        }
+    }
+
     /// Sends one datagram to every connected player. Fire-and-forget, and
     /// silently dropped when it exceeds the datagram budget.
     async fn broadcast(&self, datagram: Datagram) {
@@ -957,6 +1032,8 @@ async fn handle_connection(
     let mut count = 0u32;
     let mut eat_window = Instant::now();
     let mut eat_count = 0u32;
+    let mut blast_window = Instant::now();
+    let mut blast_count = 0u32;
     while let Ok(mut recv) = connection.accept_uni().await {
         match read_message::<ClientMessage>(&mut recv).await {
             Ok(ClientMessage::Chat { text }) => {
@@ -971,6 +1048,26 @@ async fn handle_connection(
                     continue;
                 }
                 route_chat(&state, &events, &assigned, &text).await;
+            }
+            // A device went off on a client's goat. The host does not fire it -- the
+            // client already did, and firing it again would land the bang twice -- so
+            // this goes up to the host's scene to mark it spent and to the relay below
+            // to tell everyone else. It shares the meadow's budget idea but not its
+            // window: a blast is rarer than a bite, and a client that floods the
+            // channel with them gets four a second and then silence.
+            Ok(ClientMessage::Blast { kind, key }) => {
+                if within_burst(
+                    &mut blast_window,
+                    &mut blast_count,
+                    BLAST_BURST,
+                    BLAST_WINDOW,
+                ) {
+                    let _ = events.send(Event::BlastReport {
+                        kind,
+                        key,
+                        by: assigned.clone(),
+                    });
+                }
             }
             // A bite is the host's to record: the scene there owns the meadow, so
             // the report is handed up rather than answered here.
@@ -1132,6 +1229,8 @@ impl Client {
                             weather: world.weather,
                             streams: world.streams,
                             eaten: world.eaten,
+                            craters: world.craters,
+                            spent: world.spent,
                         }
                     }
                     Datagram::Mods(mods) => Event::Mods { mods },
@@ -1184,6 +1283,26 @@ impl Client {
                     }
                     Ok(ServerMessage::Notice { text }) => {
                         if events.send(Event::Notice(text)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(ServerMessage::Blast {
+                        kind,
+                        key,
+                        x,
+                        z,
+                        by,
+                    }) => {
+                        if events
+                            .send(Event::Blast {
+                                kind,
+                                key,
+                                x,
+                                z,
+                                by,
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -1260,6 +1379,23 @@ impl Client {
             .await
             .map_err(|error| Error::Stream(error.to_string()))?;
         write_message(&mut send, &ClientMessage::Consume { key }).await
+    }
+
+    /// Reports a device this client's goat has just set off (M19e). It is a report
+    /// and not a request: the bang has already happened here, and the host is told
+    /// so that it can mark the device spent -- the neighbours must not trip it
+    /// again -- and relay it to the others.
+    ///
+    /// **No coordinates.** The host owns the layout, so it says where the key
+    /// actually is; a client that lies about a key gets a blast where the host
+    /// believes the device is, rather than every peer believing the reporter.
+    pub async fn report_blast(&self, kind: BlastKind, key: i64) -> Result<(), Error> {
+        let mut send = self
+            .connection
+            .open_uni()
+            .await
+            .map_err(|error| Error::Stream(error.to_string()))?;
+        write_message(&mut send, &ClientMessage::Blast { kind, key }).await
     }
 
     /// Sends one voice packet. The host re-tags it with the canonical name and
@@ -1908,6 +2044,8 @@ mod tests {
                     audio: 10,
                 },
                 eaten: meadow(40),
+                craters: None,
+                spent: None,
             };
             let greedy = WorldState {
                 eaten: meadow(400),
@@ -1919,7 +2057,15 @@ mod tests {
                 outcome = host.publish_world(&greedy).await;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            assert_eq!(outcome, WorldOutcome::MeadowShed);
+            assert_eq!(
+                outcome,
+                WorldOutcome::Shed {
+                    spent: false,
+                    meadow: true,
+                    craters: false
+                },
+                "the meadow is the only thing this world has to give up"
+            );
             assert!(
                 outcome
                     .describe()
@@ -1991,6 +2137,8 @@ mod tests {
                     key: 4242,
                     left: 12.5,
                 }]),
+                craters: None,
+                spent: None,
             };
 
             let mut outcome = ModsOutcome::Sent;
@@ -2058,6 +2206,32 @@ mod tests {
                     key: 4242,
                     left: 12.5,
                 }]),
+                // The two new lists travel with the world (M19e), and the craters are the
+                // last thing a snapshot gives up: this is the round trip of both.
+                craters: Some(vec![
+                    Crater {
+                        x: 1.5,
+                        z: -2.25,
+                        r: 1.6,
+                        depth: 0.45,
+                    },
+                    Crater {
+                        x: -8.75,
+                        z: 3.5,
+                        r: 1.35,
+                        depth: 0.2,
+                    },
+                ]),
+                spent: Some(vec![
+                    Spent {
+                        key: 33_570_816,
+                        trap: false,
+                    },
+                    Spent {
+                        key: 33_578_008,
+                        trap: true,
+                    },
+                ]),
             };
             for _ in 0..10 {
                 host.publish_world(&world).await;
@@ -2069,6 +2243,8 @@ mod tests {
                     weather,
                     streams,
                     eaten,
+                    craters,
+                    spent,
                 } => {
                     assert_eq!(bots.len(), world.bots.len());
                     for (got, want) in bots.iter().zip(&world.bots) {
@@ -2097,6 +2273,21 @@ mod tests {
                         assert_eq!(got.key, want.key);
                         assert!((got.left - want.left).abs() <= 0.25);
                     }
+                    // ...and the craters and the spent devices, to the same 1 cm grid.
+                    let got = craters.expect("craters");
+                    let want = world.craters.clone().expect("craters");
+                    assert_eq!(got.len(), want.len());
+                    for (got, want) in got.iter().zip(&want) {
+                        assert!((got.x - want.x).abs() <= 0.01, "{got:?} against {want:?}");
+                        assert!((got.z - want.z).abs() <= 0.01, "{got:?} against {want:?}");
+                        assert!((got.r - want.r).abs() <= 0.01, "{got:?} against {want:?}");
+                        assert!(
+                            (got.depth - want.depth).abs() <= 0.01,
+                            "{got:?} against {want:?}"
+                        );
+                    }
+                    let got = spent.expect("spent devices");
+                    assert_eq!(got, world.spent.clone().expect("spent devices"));
                 }
                 other => panic!("expected a world, got {other:?}"),
             }
@@ -2174,6 +2365,157 @@ mod tests {
 
             alice.close().await;
             bob.close().await;
+            host.close().await;
+        })
+        .await;
+    }
+
+    /// A device fires in exactly one place (M19e). The client whose goat set it off has
+    /// already fired the bang itself and *reports* it -- a notification, not a request --
+    /// and the host spends the device and relays the bang on with its own coordinates,
+    /// leaving the reporter out of the relay because they have already felt it.
+    #[tokio::test]
+    async fn a_clients_bang_is_relayed_to_the_others_and_not_back_to_them() {
+        within(async {
+            let mut host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+            let mut bob = Client::join(host.ticket(), "bob").await.expect("bob");
+
+            alice
+                .report_blast(BlastKind::Mine, 4242)
+                .await
+                .expect("the report goes up");
+
+            // The host hears it tagged with the name *it* assigned her, which is what
+            // stops a peer reporting a bang as somebody else.
+            let (kind, key, by) = loop {
+                match host.next_event().await.expect("an event") {
+                    Event::BlastReport { kind, key, by } => break (kind, key, by),
+                    Event::Session { .. } | Event::Roster { .. } | Event::Joined { .. } => {}
+                    other => panic!("unexpected {other:?}"),
+                }
+            };
+            assert_eq!((kind, key), (BlastKind::Mine, 4242));
+            assert_eq!(by, "alice");
+
+            // And relays it with its own coordinates, which is the whole reason the report
+            // carried a key rather than a position.
+            host.blast(kind, key, 3.5, -7.25, &by, Some(&by)).await;
+
+            loop {
+                match bob.next_event().await.expect("an event") {
+                    Event::Blast {
+                        kind: seen,
+                        key: seen_key,
+                        x,
+                        z,
+                        by: from,
+                    } => {
+                        assert_eq!((seen, seen_key), (BlastKind::Mine, 4242));
+                        assert_eq!((x, z), (3.5, -7.25));
+                        assert_eq!(from, "alice");
+                        break;
+                    }
+                    Event::Session { .. } | Event::Roster { .. } | Event::Joined { .. } => {}
+                    // A peer frame is a client's own goat moving, which is not what this
+                    // test is waiting for.
+                    Event::Peer { .. } => {}
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+
+            // Alice does not get it back. The blast channel is a frame, so a bang that was
+            // going to arrive would have arrived long before this deadline.
+            let echoed = tokio::time::timeout(Duration::from_millis(300), async {
+                loop {
+                    if let Event::Blast { .. } = alice.next_event().await.expect("an event") {
+                        return true;
+                    }
+                }
+            })
+            .await;
+            assert!(echoed.is_err(), "the reporter was sent their own bang back");
+
+            alice.close().await;
+            bob.close().await;
+            host.close().await;
+        })
+        .await;
+    }
+
+    /// The other half of the same rule: a bang the *host's* own goat or herd sets off goes to
+    /// everybody, and nothing is excluded -- there is no reporter to leave out. It is the same
+    /// `Host::blast`, so the difference is entirely in who is named as `except`.
+    #[tokio::test]
+    async fn the_hosts_own_bang_reaches_every_client() {
+        within(async {
+            let host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("alice");
+            let mut bob = Client::join(host.ticket(), "bob").await.expect("bob");
+
+            host.blast(BlastKind::Trap, 77, -1.25, 8.5, host.name(), None)
+                .await;
+
+            for client in [&mut alice, &mut bob] {
+                loop {
+                    match client.next_event().await.expect("an event") {
+                        Event::Blast {
+                            kind,
+                            key,
+                            x,
+                            z,
+                            by,
+                        } => {
+                            assert_eq!((kind, key), (BlastKind::Trap, 77));
+                            assert_eq!((x, z), (-1.25, 8.5));
+                            assert_eq!(by, "host");
+                            break;
+                        }
+                        Event::Session { .. }
+                        | Event::Roster { .. }
+                        | Event::Joined { .. }
+                        | Event::Peer { .. } => {}
+                        other => panic!("unexpected {other:?}"),
+                    }
+                }
+            }
+
+            alice.close().await;
+            bob.close().await;
+            host.close().await;
+        })
+        .await;
+    }
+
+    /// Reporting a bang is rate-limited like a chat line and a bite: four in a window and
+    /// then silence, because the point of the limit is that one modified client cannot make
+    /// every peer draw a thousand explosions (M19e).
+    #[tokio::test]
+    async fn blast_reports_are_rate_limited() {
+        within(async {
+            let mut host = Host::start("host").await.expect("host");
+            let alice = Client::join(host.ticket(), "alice").await.expect("alice");
+
+            for key in 1..=6 {
+                alice
+                    .report_blast(BlastKind::Trap, key)
+                    .await
+                    .expect("the report goes up");
+            }
+
+            let mut seen = 0;
+            let quiet = tokio::time::timeout(Duration::from_millis(300), async {
+                loop {
+                    if let Event::BlastReport { .. } = host.next_event().await.expect("an event") {
+                        seen += 1;
+                    }
+                }
+            })
+            .await;
+            assert!(quiet.is_err(), "the host was still reporting bangs");
+            assert_eq!(seen, BLAST_BURST, "{seen} reports came through");
+
+            alice.close().await;
             host.close().await;
         })
         .await;

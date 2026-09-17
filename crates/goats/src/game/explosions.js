@@ -34,7 +34,7 @@ const MOVED = new Set();        // ...and mine cells a replacement was placed in
 const TRAP_SPENT = new Set();   // the same two, for trapped tufts
 const TRAP_MOVED = new Set();
 const PENDING = [];             // { kind, x, z, seed, depth, left }
-let tripCount = 0;              // devices tripped this session (the tell cache's key)
+let tripCount = 0;              // devices taken out of the field, for the tell cache's key
 
 // The effect pool. Fixed capacity, built once: nothing allocates while the game
 // runs, and `TUNING.explosions.maxActive` selects how much of it is live, so a
@@ -215,11 +215,15 @@ function mineInCell(x, z, cx, cz) {
     return { cx: cx, cz: cz, x: mx, z: mz };
 }
 
-// Put a device on a fuse: it leaves the world from this moment -- it cannot be
-// tripped again while it waits, and its replacement has already been placed
-// elsewhere -- and the bang lands when the fuse runs out. Returns false when there
-// is nothing armed at that cell (a spent cell, or one whose replacement is gone too).
-function tripDevice(kind, cx, cz, x, z, depth) {
+// Take a device out of the field: it has gone off, so it is spent -- a derived cell stays
+// empty for the session -- and a replacement is placed elsewhere (`relocateDevice`).
+// False when there is nothing armed at that cell, which is what makes it safe to call
+// for a device that has already gone off.
+//
+// This is the *whole* of what a process has to do when it hears that a key fired (M19e):
+// the move follows from the cell that fired, so the wire carries the key and nothing
+// about where the device went.
+function spendDevice(kind, cx, cz) {
     const key = tuftKey(cx, cz);
     const mine = kind !== "trap";
     if (mine) {
@@ -233,8 +237,19 @@ function tripDevice(kind, cx, cz, x, z, depth) {
     }
     tripCount += 1;
     relocateDevice(kind, cx, cz);
+    return true;
+}
+
+// Put a device on a fuse: it leaves the world from this moment -- it cannot be
+// tripped again while it waits, and its replacement has already been placed
+// elsewhere -- and the bang lands when the fuse runs out. Returns false when there
+// is nothing armed at that cell (a spent cell, or one whose replacement is gone too).
+function tripDevice(kind, cx, cz, x, z, depth) {
+    if (!spendDevice(kind, cx, cz)) return false;
+    const key = tuftKey(cx, cz);
     PENDING.push({
         kind: kind,
+        key: key,
         x: x,
         z: z,
         seed: hash(key * 0.0001),
@@ -463,10 +478,106 @@ function sceneResetCraters() {
     CRATERS.length = 0;
 }
 
+// The host's craters (M19e): state rather than events, because a joiner has to see the
+// ground as it is. `null` keeps what we have -- the snapshot could not carry them -- and a
+// list is adopted whole.
+//
+// Reconciled in place rather than rebuilt: the world arrives ten times a second, and
+// retiring and re-adding every crater each time would drop the height cache and rebuild the
+// mesh with it, which is exactly the cost M19d spent its time removing.
+function applyCraters(list) {
+    if (!Array.isArray(list)) return;
+    for (let i = 0; i < list.length; i++) {
+        const s = list[i];
+        const c = craterNear(s.x, s.z);
+        if (c === null) mirrorCrater(s);
+        else adoptCrater(c, s);
+    }
+    // Whatever the host no longer has is gone -- it healed, or the cap retired it. Walked
+    // backwards because retiring splices.
+    for (let i = CRATERS.length - 1; i >= 0; i--) {
+        const c = CRATERS[i];
+        if (!craterListed(list, c)) {
+            CRATERS.splice(i, 1);
+            retireCrater(c);
+        }
+    }
+}
+
+// A mirrored crater, built from the host's numbers rather than from the tuning: `r` varies a
+// little per bang and only the host knows which way it went, and `depth` is the dish as it
+// stands. The seed does not travel and nothing on the ground reads it -- it is the tint's
+// jitter, and a client is allowed its own.
+function mirrorCrater(s) {
+    const c = {
+        x: s.x,
+        z: s.z,
+        r: s.r,
+        reach2: (s.r * CRATER_LIP_OUT) * (s.r * CRATER_LIP_OUT),
+        depth: s.depth,
+        dip: s.depth,
+        lip: TUNING.explosions.crater.lip,
+        seed: hash(s.x * 7.1 + s.z * 3.3),
+        age: 0,
+        // The host heals; this end mirrors. A dish that aged here would disagree with the
+        // ground the host is telling everyone about, so a mirrored crater never closes over
+        // on its own -- the snapshot that drops it is what retires it.
+        heal: Infinity,
+        drop: Math.floor(s.depth / CRATER_STEP) * CRATER_STEP,
+    };
+    CRATERS.push(c);
+    markCraterTufts(c, true);
+    craterDropCells(c);
+    return c;
+}
+
+// Take the host's numbers for a crater we already have. The mesh and the height cache hear
+// about it only when the *quantized* dish actually moves, which is the rule the heal follows
+// too -- so a snapshot of an unchanged crater costs a handful of compares.
+function adoptCrater(c, s) {
+    const next = Math.floor(s.depth / CRATER_STEP) * CRATER_STEP;
+    const wider = c.r !== s.r;
+    c.depth = s.depth;
+    c.r = s.r;
+    c.reach2 = (s.r * CRATER_LIP_OUT) * (s.r * CRATER_LIP_OUT);
+    if (!wider && next === c.drop) return;
+    c.drop = next;
+    c.dip = next;
+    craterDropCells(c);
+}
+
+// The crater at (x, z), or null. A metre: the position is the host's and could be a
+// centimetre off the one this end mirrored, while a crater is metres wide -- two craters
+// closer than that are the same hole.
+function craterNear(x, z) {
+    for (let i = 0; i < CRATERS.length; i++) {
+        const c = CRATERS[i];
+        const dx = c.x - x;
+        const dz = c.z - z;
+        if (dx * dx + dz * dz <= 1) return c;
+    }
+    return null;
+}
+
+// Whether the host's list still carries `c`.
+function craterListed(list, c) {
+    for (let i = 0; i < list.length; i++) {
+        const dx = list[i].x - c.x;
+        const dz = list[i].z - c.z;
+        if (dx * dx + dz * dz <= 1) return true;
+    }
+    return false;
+}
+
 // A bang at (x, z): leave a crater, damage every goat this process simulates, and
 // set off the neighbours if there is chain budget left. One level deep by default,
 // so a dense field cannot cascade into a frame-long loop.
-function blast(kind, x, z, seed, depth) {
+//
+// `key` is the device that made it, and only a bang a *device* made has one (M19e): a
+// chained bang is another device going off and reports itself when its own fuse ends,
+// while the harness's own `blast(...)` and a bang that arrived over the wire pass none
+// and are never handed back out.
+function blast(kind, x, z, seed, depth, key) {
     const e = TUNING.explosions;
     blastCount += 1;
     // The hole the bang makes (M19d). It is the *ground* that is everyone's, so every
@@ -525,6 +636,60 @@ function blast(kind, x, z, seed, depth) {
     // Heard wherever the goat is, in or out of the radius (audio.js).
     playBlast(x, z);
     if (depth < e.chainDepth) chainFrom(x, z, depth + 1);
+    // And told to the others (M19e), by the process that fired it -- the reporter does
+    // not wait for the host to fire it back.
+    if (key !== undefined) netBlastFired(kind, key, x, z);
+}
+
+// Where the device in a cell is, as { x, z }, or null when the cell holds none. A mine
+// sits at its cell's centre; a trap sits on the tuft it trapped, which `tuftInCell`
+// already derives. The host answers with this, because it owns the layout and is therefore
+// the one that can say where a key actually is (M19e).
+function deviceAt(kind, cx, cz) {
+    if (kind !== "trap") return { x: cx * 2 + 1, z: cz * 2 + 1 };
+    const t = tuftInCell(cx, cz);
+    return t === null ? null : { x: t.x, z: t.z };
+}
+
+// A bang somebody else's process fired (M19e): ours to see and ours to feel, but not ours
+// to fire again. The device leaves the field from the key alone, and the bang is the same
+// `blast` with the same seed -- it is derived from the key, so a chained crater is the same
+// size here as there. The chain stops at this depth: the devices a chain sets off are the
+// origin's to report, and each of them fires exactly once.
+function applyRemoteBlast(kind, key, x, z) {
+    const cell = tuftCell(key);
+    spendDevice(kind, cell.cx, cell.cz);
+    blast(kind, x, z, hash(key * 0.0001), TUNING.explosions.chainDepth);
+}
+
+// A client's device went off (M19e), on the host. The device leaves the field here too --
+// the neighbours must not trip it -- and the bang is applied the way this process applies
+// any other: the ground is everyone's, and the host's crater list is the state every client
+// adopts, so a bang the host did not dig would be erased by the host's own next snapshot.
+//
+// The return is the *answer*, not an input: where the device actually was, from this
+// scene's own layout (`deviceAt`). `null` when the cell holds a trap with no tuft in it -- a
+// key that is not a device here -- and then nothing is relayed. The host bridge is what
+// turns this into the relay, and `headless.rs` wraps it in the JSON the server reads back.
+function sceneBlastReport(kind, key) {
+    const cell = tuftCell(key);
+    const at = deviceAt(kind, cell.cx, cell.cz);
+    if (at === null) return null;
+    applyRemoteBlast(kind, key, at.x, at.z);
+    return { x: at.x, z: at.z };
+}
+
+// The devices the host has seen go off (M19e): world state, beside the meadow, so that a
+// joiner sees the field as it stands. `null` means the snapshot could not carry it and
+// keeps the field we have -- the meadow's own contract -- and spending is idempotent, so a
+// device this process fired itself is already spent and costs nothing here.
+function applySpent(list) {
+    if (!Array.isArray(list)) return;
+    for (let i = 0; i < list.length; i++) {
+        const entry = list[i];
+        const cell = tuftCell(entry.key);
+        spendDevice(entry.trap ? "trap" : "mine", cell.cx, cell.cz);
+    }
 }
 
 // The direction a blast throws a goat in: away from the centre, turned a little off
@@ -673,7 +838,7 @@ function updateExplosions(dt) {
         pending.left -= dt;
         if (pending.left > 0) continue;
         PENDING.splice(i, 1);
-        blast(pending.kind, pending.x, pending.z, pending.seed, pending.depth);
+        blast(pending.kind, pending.x, pending.z, pending.seed, pending.depth, pending.key);
     }
 
     for (let i = 0; i < fxTop; i++) {

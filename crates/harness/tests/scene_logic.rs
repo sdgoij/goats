@@ -815,6 +815,36 @@ fn the_scene_runs_the_scripted_timeline() {
         sync.eaten_mirror,
         &sync,
     );
+    checks.check(
+        "a client mirrors the server ground",
+        sync.craters_mirror,
+        &sync,
+    );
+    checks.check(
+        "a snapshot that could not carry the ground keeps it",
+        sync.craters_kept,
+        &sync,
+    );
+    checks.check(
+        "an empty crater list closes the ground",
+        sync.craters_retired,
+        &sync,
+    );
+    checks.check(
+        "a mirror spends the devices the host has fired",
+        sync.spent_mirror,
+        &sync,
+    );
+    checks.check(
+        "a relayed bang lands here once and is not sent back",
+        sync.blast_mirror,
+        &sync,
+    );
+    checks.check(
+        "the host relays a client's bang and leaves them out",
+        sync.reports_blast,
+        &sync,
+    );
     checks.check("a client reports its own bite", sync.reports_eat, &sync);
     checks.check(
         "a client does not simulate or publish the bots",
@@ -2498,6 +2528,12 @@ struct Sync {
     weather_mirror: bool,
     streams_mirror: bool,
     eaten_mirror: bool,
+    craters_mirror: bool,
+    craters_kept: bool,
+    craters_retired: bool,
+    spent_mirror: bool,
+    blast_mirror: bool,
+    reports_blast: bool,
     reports_eat: bool,
     client_not_local: bool,
     client_is_not_authority: bool,
@@ -2506,6 +2542,40 @@ struct Sync {
 
 /// The snapshot a hosting server sends a client, verbatim.
 const WORLD_EVENT: &str = r#"{"type":"world","weather":{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5},"streams":{"weather":111,"bots":222,"food":333,"audio":444},"eaten":[{"key":4242,"left":12.5}],"bots":[{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0},{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2}]}"#;
+
+/// The same snapshot with only the two parts M19e added: the ground the host has cratered and
+/// the devices it has seen go off. The bots are the same two `WORLD_EVENT` carries -- a case
+/// is not allowed to resize the herd on its way past -- and the meadow is empty, because what
+/// these cases say about it is `null`, `[]` or a value.
+fn world_wire(craters: &str, spent: &str) -> String {
+    format!(
+        r#"{{"type":"world","weather":{{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5}},"streams":{{"weather":111,"bots":222,"food":333,"audio":444}},"eaten":[],"bots":[{{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0}},{{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2}}],"craters":{craters},"spent":{spent}}}"#
+    )
+}
+
+/// The first armed mine far from the origin, as `{ cx, cz, key }`. Far out because a bang on
+/// it must not reach the goat any case here is measuring, and scanned rather than assumed
+/// because the field is a hash of the session seed.
+const MINE_PROBE: &str = r#"(function () {
+    for (let cx = 40; cx < 140; cx++) {
+        for (let cz = 40; cz < 140; cz++) {
+            if (mineArmed(cx, cz)) return { cx: cx, cz: cz, key: tuftKey(cx, cz) };
+        }
+    }
+    return null;
+})()"#;
+
+fn mine_probe(harness: &mut Harness) -> Result<Option<(i64, i64, i64)>, String> {
+    let found = harness.eval(MINE_PROBE)?;
+    if found.is_null() {
+        return Ok(None);
+    }
+    Ok(Some((
+        found["cx"].as_i64().unwrap_or(0),
+        found["cz"].as_i64().unwrap_or(0),
+        found["key"].as_i64().unwrap_or(0),
+    )))
+}
 
 /// Drives the seed handshake, the snapshot channel and the mirroring rules.
 fn sync_block(harness: &mut Harness) -> Result<Sync, String> {
@@ -2537,6 +2607,25 @@ fn sync_block(harness: &mut Harness) -> Result<Sync, String> {
     sync.world = first.contains("\"type\":\"world\"")
         && first.contains("\"bots\"")
         && first.contains("\"weather\"");
+    // The ground and the fired devices go with it (M19e): a joiner has to see the field as it
+    // stands, so a host that published a world without them would be telling every client its
+    // ground is flat.
+    sync.world = sync.world && first.contains("\"craters\"") && first.contains("\"spent\"");
+
+    // A client's device went off, reported to the host (M19e). The host spends it -- the
+    // neighbours must not trip it -- and queues the relay with the reporter's name, so the
+    // bridge can leave them out: they have already felt this bang.
+    if let Some((cx, cz, key)) = mine_probe(harness)? {
+        net_feed(
+            harness,
+            &format!(r#"{{"type":"blast_report","kind":"mine","key":{key},"by":"alice"}}"#),
+        )?;
+        let relayed = net_drain(harness)?;
+        sync.reports_blast = !bool_of(harness.eval(&format!("mineArmed({cx}, {cz})"))?)
+            && relayed.contains("\"type\":\"blast\"")
+            && relayed.contains("\"by\":\"alice\"")
+            && relayed.contains(&format!("\"key\":{key}"));
+    }
 
     // A snapshot becomes a goat; a later one moves it; leaving removes it.
     net_feed(
@@ -2587,6 +2676,79 @@ fn sync_block(harness: &mut Harness) -> Result<Sync, String> {
         .as_array()
         .is_some_and(|list| list.len() == 1 && f64_of(list[0]["key"].clone()) == 4242.0);
     sync.client_is_not_authority = !net_drain(harness)?.contains("\"type\":\"world\"");
+
+    // The ground is state, not an event (M19e), so it arrives with the world: a client mirrors
+    // the host's craters, and `terrainHeight` -- which the goat, the herd, the grass and both
+    // shadows all read -- is the ground the host is standing on.
+    let (hole_x, hole_z) = (40.0, 41.5);
+    let flat = f64_of(harness.call("terrainHeight", &[json!(hole_x), json!(hole_z)])?);
+    // The device whose key the snapshot carries, and the one thing about it this end cannot
+    // derive from the key alone: that it was armed to begin with.
+    let spent_mine = mine_probe(harness)?;
+    let spent_json = match spent_mine {
+        Some((_, _, key)) => format!(r#"[{{"key":{key},"trap":false}}]"#),
+        None => "[]".to_string(),
+    };
+    net_feed(
+        harness,
+        &world_wire(r#"[{"x":40.0,"z":41.5,"r":1.6,"depth":0.4}]"#, &spent_json),
+    )?;
+    let dished = f64_of(harness.call("terrainHeight", &[json!(hole_x), json!(hole_z)])?);
+    let listed = harness.call("sceneCraters", &[])?;
+    sync.craters_mirror = listed
+        .as_array()
+        .is_some_and(|list| list.len() == 1 && f64_of(list[0]["depth"].clone()) == 0.4)
+        && dished < flat - 0.2;
+    // A device the host says has fired leaves the field here too, and its replacement arrives
+    // where the cell it left says it should -- so nothing about the move has to travel.
+    // A device the host says has fired leaves the field here too. Not *where its replacement
+    // went*: a device needs an empty cell on its ring and is simply not replaced when the draws
+    // are taken, so the invariant is the one the field's own book-keeping promises -- the cell
+    // is not armed and not a replacement's, either way.
+    sync.spent_mirror = match spent_mine {
+        Some((cx, cz, key)) => {
+            !bool_of(harness.eval(&format!("mineArmed({cx}, {cz})"))?)
+                && !bool_of(harness.eval(&format!("MOVED.has({key})"))?)
+        }
+        None => false,
+    };
+
+    // `null` is "keep yours": the snapshot could not carry the ground, and clearing it would
+    // drop every client into a hole it no longer knows about -- the meadow's own rule.
+    net_feed(harness, &world_wire("null", "null"))?;
+    sync.craters_kept = harness
+        .call("sceneCraters", &[])?
+        .as_array()
+        .is_some_and(|list| list.len() == 1);
+
+    // An empty list is the opposite claim -- there is no crater here -- and the ground closes.
+    net_feed(harness, &world_wire("[]", "[]"))?;
+    let closed = f64_of(harness.call("terrainHeight", &[json!(hole_x), json!(hole_z)])?);
+    sync.craters_retired = harness
+        .call("sceneCraters", &[])?
+        .as_array()
+        .is_some_and(|list| list.is_empty())
+        && (closed - flat).abs() < 0.001;
+
+    // A bang the host relayed (M19e): the hole is dug here, the device is spent here, and
+    // nothing is reported back out -- this end did not fire it, and a device fires once.
+    net_drain(harness)?;
+    let bangs_before = f64_of(harness.call("sceneExplosions", &[])?["blasts"].clone());
+    if let Some((cx, cz, key)) = mine_probe(harness)? {
+        net_feed(
+            harness,
+            &format!(
+                r#"{{"type":"blast","kind":"mine","key":{key},"x":{},"z":{},"by":"alice"}}"#,
+                cx * 2 + 1,
+                cz * 2 + 1
+            ),
+        )?;
+        let after = net_drain(harness)?;
+        sync.blast_mirror = !after.contains("\"type\":\"blast\"")
+            && !bool_of(harness.eval(&format!("mineArmed({cx}, {cz})"))?)
+            && f64_of(harness.call("sceneExplosions", &[])?["blasts"].clone())
+                == bangs_before + 1.0;
+    }
 
     // A client reports its bite rather than recording it; the meadow is the
     // host's. The world above cleared the meadow, so a tuft is there to eat.

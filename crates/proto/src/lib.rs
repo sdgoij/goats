@@ -294,10 +294,20 @@ pub enum ClientMessage {
     /// it back in the world. A client owns its own goat, so its bites arrive as
     /// reports rather than being simulated by the server.
     Consume { key: i64 },
+    /// A device this client's goat has just tripped (M19e). It is a *report*, not a
+    /// permission slip: the client has already fired it locally, and this is so the
+    /// host can mark the device spent -- the neighbours must not trip it again -- and
+    /// tell the others. Deliberately no coordinates: the host owns the layout, so it
+    /// is the one that can say where a key actually is, and a client that lies about a
+    /// key gets a blast where the host believes the device is.
+    Blast { kind: BlastKind, key: i64 },
 }
 
 /// What the server sends.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq` any more, since `Blast` carries the host's coordinates (M19e): the world's
+/// float fields were always the reason `WorldState` is only `PartialEq`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerMessage {
     /// The handshake succeeded, with the canonical name the server assigned,
@@ -334,11 +344,32 @@ pub enum ServerMessage {
     Notice {
         text: String,
     },
+    /// A device went off somewhere in the session (M19e). The host's coordinates for
+    /// it, not the reporter's, and the goat that tripped it -- `by` is the herd's name
+    /// when a bot did. A client draws the fire and the smoke, hears the bang at the
+    /// right distance, and applies the blast to the goats *it* simulates (its own,
+    /// whoever it is): that is how a peer gets flung by a mine someone else stepped on.
+    Blast {
+        kind: BlastKind,
+        key: i64,
+        x: f32,
+        z: f32,
+        by: String,
+    },
     /// The handshake or a later message was refused. The text goes to the
     /// console.
     Error {
         message: String,
     },
+}
+
+/// Which device went off. The scene's own two kinds, and the only two a client may
+/// report: a mod's own device has its own channel to invent (M19g).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlastKind {
+    Mine,
+    Trap,
 }
 
 /// How a goat is moving, mirroring the scene's `mode`. An enum rather than a
@@ -471,6 +502,40 @@ pub struct Streams {
     pub audio: u32,
 }
 
+/// One crater on the ground (M19d/M19e): where, how wide, and how deep it is *right
+/// now*. `depth` is the live value rather than the depth it was dug at, because a
+/// client mirrors the ground instead of healing it -- the host heals, and every
+/// snapshot carries the dish as it stands. The raised lip is not here: it is
+/// `TUNING.explosions.crater.lip`, which both ends share (a world mod's tuning is part
+/// of its hash).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Crater {
+    pub x: f32,
+    pub z: f32,
+    pub r: f32,
+    /// Metres deep at the centre, now: it eases to zero as the crater heals.
+    pub depth: f32,
+}
+
+impl Crater {
+    pub fn is_finite(&self) -> bool {
+        self.x.is_finite() && self.z.is_finite() && self.r.is_finite() && self.depth.is_finite()
+    }
+}
+
+/// A device that has gone off: its packed cell key and which kind it was. The scene
+/// keeps mines and trapped tufts in separate sets (a device that fires *moves*, and a
+/// trap moves to a tuft), and so does this.
+///
+/// Where the device moved to is deliberately absent: the destination is derived from
+/// the key that fired, so a client that has the key has the whole field -- which is
+/// what keeps the move off the wire (see the device notes in ROADMAP.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spent {
+    pub key: i64,
+    pub trap: bool,
+}
+
 /// One eaten grass cell: its packed key and the seconds before it returns. The
 /// meadow is mutated by everyone, so unlike the procedural world it cannot be
 /// rebuilt from a stream -- it travels as state.
@@ -507,6 +572,20 @@ pub struct WorldState {
     /// tuft is there cannot eat it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eaten: Option<Vec<EatenCell>>,
+    /// The craters on the ground. `None` means the snapshot could not carry them -- the
+    /// world was over its datagram budget and this is a part that goes (see
+    /// [`fit_world`]) -- and a client reads that as "keep the craters you have".
+    /// All-or-nothing, never truncated: a crater is *geometry*, so a client missing one
+    /// disagrees with the host about the ground under the goat and visibly stands in the
+    /// air (or in the floor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub craters: Option<Vec<Crater>>,
+    /// The devices that have gone off, for the same reason and with the same `None`
+    /// meaning. This is the part that goes *first* when the world is over budget: a
+    /// client that misses one leaves a mine standing that the host has moved, which is
+    /// noisy and survivable, and the next snapshot settles it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent: Option<Vec<Spent>>,
 }
 
 impl WorldState {
@@ -519,6 +598,12 @@ impl WorldState {
                 .unwrap_or_default()
                 .iter()
                 .all(EatenCell::is_finite)
+            && self
+                .craters
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .all(Crater::is_finite)
     }
 }
 
@@ -579,9 +664,15 @@ pub fn fit_mods(mods: &ModsState) -> ModsOutcome {
 pub enum WorldOutcome {
     /// Sent whole.
     Whole,
-    /// Sent without the eaten meadow.
-    MeadowShed,
-    /// Not sent: it does not fit even without the meadow. `size` is what the bots,
+    /// Sent without some of the parts that can be given up. Each flag says whether that
+    /// part was left out -- the parts go in one order, least essential first (see
+    /// [`fit_world`]), so this is a prefix of `spent`, `meadow`, `craters`.
+    Shed {
+        spent: bool,
+        meadow: bool,
+        craters: bool,
+    },
+    /// Not sent: it does not fit even with all three gone. `size` is what the bots,
     /// the sky and the streams alone come to.
     TooLarge { size: usize },
     /// Not sent: a number in it is not finite, which would poison every peer's
@@ -596,10 +687,27 @@ impl WorldOutcome {
     pub fn describe(&self) -> Option<String> {
         match self {
             WorldOutcome::Whole => None,
-            WorldOutcome::MeadowShed => Some(format!(
-                "the world is over the {MAX_DATAGRAM_BYTES}-byte datagram budget: \
-                 the meadow was left out"
-            )),
+            WorldOutcome::Shed {
+                spent,
+                meadow,
+                craters,
+            } => {
+                let mut parts = Vec::new();
+                if *spent {
+                    parts.push("the spent devices");
+                }
+                if *meadow {
+                    parts.push("the meadow");
+                }
+                if *craters {
+                    parts.push("the craters");
+                }
+                Some(format!(
+                    "the world is over the {MAX_DATAGRAM_BYTES}-byte datagram budget: {} \
+                     left out",
+                    parts.join(" and ")
+                ))
+            }
             WorldOutcome::TooLarge { size } => Some(format!(
                 "the world does not fit a {MAX_DATAGRAM_BYTES}-byte datagram: the bots, \
                  sky and streams alone are {size} bytes"
@@ -613,15 +721,24 @@ impl WorldOutcome {
 
 /// Trims `world` until it fits `budget`, and says whether it can go out at all.
 ///
-/// The meadow is the only thing that can be given up: the bots, the sky and the
-/// streams are the world itself -- a client that stops receiving them freezes at
-/// the last snapshot it got -- and a world mod's state is not on this datagram at
-/// all (see [`ModsState`]).
+/// The bots, the sky and the streams are the world itself -- a client that stops
+/// receiving them freezes at the last snapshot it got -- and a world mod's state is not
+/// on this datagram at all (see [`ModsState`]). Everything else can be given up, and it
+/// goes in one order, **least essential first**:
 ///
-/// The meadow is all-or-nothing rather than truncated: a client's `applyEaten`
-/// replaces its whole map, so a short list would resurrect every cell left out of
-/// it. A refused world is handed back untouched, so the reported `TooLarge` size
-/// is what the parts that can never be shed come to on their own.
+/// 1. the spent devices -- a client that misses one leaves a mine standing that the
+///    host has moved: noisy, survivable, and self-correcting on the next snapshot;
+/// 2. the meadow -- content: a client with a tuft the host has eaten can eat it, report
+///    it, and be corrected;
+/// 3. the craters -- which go last of the three because a crater is *geometry*: a client
+///    missing one disagrees with the host about the ground under the goat, and the goat
+///    visibly stands in the air or in the floor.
+///
+/// Each of the three is all-or-nothing rather than truncated. A client's `applyEaten`
+/// replaces its whole map and its crate list replaces its whole list, so a short one
+/// would resurrect every cell left out of it. A refused world is handed back untouched,
+/// so the reported `TooLarge` size is what the parts that can never be shed come to on
+/// their own.
 pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
     if !world.is_finite() {
         return WorldOutcome::NotFinite;
@@ -630,13 +747,37 @@ pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
         return WorldOutcome::Whole;
     }
 
-    let eaten = world.eaten.take();
-    let bare = datagram_size(world);
-    if bare <= budget {
-        return WorldOutcome::MeadowShed;
+    let spent = world.spent.take();
+    if datagram_size(world) <= budget {
+        return WorldOutcome::Shed {
+            spent: spent.is_some(),
+            meadow: false,
+            craters: false,
+        };
     }
 
-    world.eaten = eaten;
+    let meadow = world.eaten.take();
+    if datagram_size(world) <= budget {
+        return WorldOutcome::Shed {
+            spent: spent.is_some(),
+            meadow: meadow.is_some(),
+            craters: false,
+        };
+    }
+
+    let craters = world.craters.take();
+    let bare = datagram_size(world);
+    if bare <= budget {
+        return WorldOutcome::Shed {
+            spent: spent.is_some(),
+            meadow: meadow.is_some(),
+            craters: craters.is_some(),
+        };
+    }
+
+    world.spent = spent;
+    world.eaten = meadow;
+    world.craters = craters;
     WorldOutcome::TooLarge { size: bare }
 }
 
@@ -1142,6 +1283,30 @@ mod tests {
                 },
                 EatenCell { key: -7, left: 3.0 },
             ]),
+            craters: Some(vec![
+                Crater {
+                    x: 1.23,
+                    z: -4.56,
+                    r: 1.6,
+                    depth: 0.45,
+                },
+                Crater {
+                    x: -7.0,
+                    z: 2.0,
+                    r: 1.4,
+                    depth: 0.2,
+                },
+            ]),
+            spent: Some(vec![
+                Spent {
+                    key: 33_570_816,
+                    trap: false,
+                },
+                Spent {
+                    key: 33_570_817,
+                    trap: true,
+                },
+            ]),
         };
         let datagram = Datagram::World(world.clone());
         let bytes = encode_datagram(&datagram).expect("encode");
@@ -1190,9 +1355,10 @@ mod tests {
     }
 
     /// A world shaped like a session that has been running for a couple of
-    /// minutes: the default herd, a settled sky, the streams and `eaten` meadow
-    /// cells. The sizes are the real ones -- this is the fixture the datagram
-    /// budget is argued about with.
+    /// minutes: the default herd, a settled sky, the streams, `eaten` meadow
+    /// cells, a handful of craters and the devices that have gone off. The sizes
+    /// are the real ones -- this is the fixture the datagram budget is argued
+    /// about with.
     fn a_running_world(eaten: usize) -> WorldState {
         WorldState {
             bots: (0..7).map(bot).collect(),
@@ -1219,7 +1385,33 @@ mod tests {
                     })
                     .collect(),
             ),
+            craters: Some(craters(8)),
+            spent: Some(spent_devices(6)),
         }
+    }
+
+    /// Eight craters, spread over the field the way a few minutes of walking a
+    /// minefield leaves them.
+    fn craters(count: usize) -> Vec<Crater> {
+        (0..count)
+            .map(|i| Crater {
+                x: -12.0 + i as f32 * 3.25,
+                z: 6.5 - i as f32 * 2.0,
+                r: 1.4 + 0.05 * (i % 6) as f32,
+                depth: 0.45 - 0.1 * (i % 4) as f32,
+            })
+            .collect()
+    }
+
+    /// The devices a session has set off so far: four-byte keys, which is what a
+    /// packed cell key costs as a `postcard` varint.
+    fn spent_devices(count: usize) -> Vec<Spent> {
+        (0..count as i64)
+            .map(|i| Spent {
+                key: 33_570_816 + i * 8192,
+                trap: i % 3 == 0,
+            })
+            .collect()
     }
 
     /// What a world mod publishes: the `birds` flock, as `sceneWorldMods()`
@@ -1248,35 +1440,145 @@ mod tests {
     }
 
     #[test]
-    fn an_over_budget_world_sheds_the_meadow_first() {
-        let mut world = a_running_world(10);
-        let full = datagram_size(&world);
-        let budget = full - 1;
-        let outcome = fit_world(&mut world, budget);
-        assert_eq!(outcome, WorldOutcome::MeadowShed);
-        assert!(world.eaten.is_none(), "the meadow goes first");
+    fn an_over_budget_world_sheds_in_the_documented_order() {
+        // Least essential first, and each step is met by a budget only that step can
+        // reach: the spent devices, then the meadow, then the craters.
+        let full = a_running_world(10);
+
+        let spent_only = {
+            let mut probe = full.clone();
+            probe.spent = None;
+            datagram_size(&probe)
+        };
+        let mut world = full.clone();
+        let outcome = fit_world(&mut world, spent_only);
+        assert_eq!(
+            outcome,
+            WorldOutcome::Shed {
+                spent: true,
+                meadow: false,
+                craters: false
+            }
+        );
+        assert!(world.spent.is_none(), "the spent devices go first");
+        assert!(world.eaten.is_some(), "the meadow is still there");
+        assert!(world.craters.is_some(), "and so are the craters");
+        assert!(outcome.describe().is_some_and(|t| t.contains("spent")));
+
+        let meadow_too = {
+            let mut probe = full.clone();
+            probe.spent = None;
+            probe.eaten = None;
+            datagram_size(&probe)
+        };
+        let mut world = full.clone();
+        let outcome = fit_world(&mut world, meadow_too);
+        assert_eq!(
+            outcome,
+            WorldOutcome::Shed {
+                spent: true,
+                meadow: true,
+                craters: false
+            }
+        );
+        assert!(world.eaten.is_none(), "then the meadow");
+        assert!(
+            world.craters.is_some(),
+            "the craters are geometry, so they go last of the three"
+        );
+        assert!(outcome.describe().is_some_and(|t| t.contains("meadow")));
+
+        let everything = {
+            let mut probe = full.clone();
+            probe.spent = None;
+            probe.eaten = None;
+            probe.craters = None;
+            datagram_size(&probe)
+        };
+        let mut world = full.clone();
+        let outcome = fit_world(&mut world, everything);
+        assert_eq!(
+            outcome,
+            WorldOutcome::Shed {
+                spent: true,
+                meadow: true,
+                craters: true
+            }
+        );
+        assert!(world.craters.is_none(), "and the craters, at the last");
         assert_eq!(world.bots.len(), 7, "the bots are never shed");
-        assert!(datagram_size(&world) <= budget);
-        assert!(outcome.describe().is_some());
+        assert!(datagram_size(&world) <= everything);
     }
 
     #[test]
     fn a_big_meadow_is_what_makes_the_snapshot_shed() {
         // The shed path is still the safety net, and a long session with several
-        // players eating is how it is reached: 260 cells is a meadow well past
-        // the point where the world fits. The meadow is all that can go, and it
-        // is enough -- the bots, the sky and the streams keep arriving.
+        // players eating is how it is reached: 260 cells is a meadow well past the
+        // point where the world fits. The spent devices and the meadow are enough
+        // to get under the budget, which is what the order is for -- the craters
+        // stay, because a client missing one stands in the air.
         let world = a_running_world(260);
         let full = datagram_size(&world);
         assert!(full > MAX_DATAGRAM_BYTES, "{full} bytes");
 
         let mut world = world;
         let outcome = fit_world(&mut world, MAX_DATAGRAM_BYTES);
-        assert_eq!(outcome, WorldOutcome::MeadowShed);
-        assert!(world.eaten.is_none(), "the meadow goes first");
+        assert!(matches!(outcome, WorldOutcome::Shed { .. }), "{outcome:?}");
+        assert!(world.spent.is_none(), "the spent devices go first");
+        assert!(world.eaten.is_none(), "then the meadow");
         assert_eq!(world.bots.len(), 7, "the bots are never shed");
         assert!(datagram_size(&world) <= MAX_DATAGRAM_BYTES);
         assert!(outcome.describe().is_some());
+    }
+
+    #[test]
+    fn a_world_with_the_herd_at_its_clamp_still_fits() {
+        // The M16 guard, extended to the two new lists: a session at its worst -- ten
+        // bots, sixteen craters, twelve spent devices and a meadow -- has to fit one
+        // datagram, or the craters need a datagram of their own.
+        let mut world = a_running_world(10);
+        world.bots = (0..10).map(bot).collect();
+        world.craters = Some(craters(16));
+        world.spent = Some(spent_devices(12));
+        let size = datagram_size(&world);
+        assert!(
+            size <= MAX_DATAGRAM_BYTES,
+            "a full session is {size} bytes, over the {MAX_DATAGRAM_BYTES} budget"
+        );
+        assert_eq!(
+            fit_world(&mut world, MAX_DATAGRAM_BYTES),
+            WorldOutcome::Whole
+        );
+    }
+
+    #[test]
+    fn a_crater_costs_the_bytes_the_budget_claims() {
+        // `postcard` varints its integers, so a crater is *at most* its four `i16`
+        // fields (eight bytes) and a spent device at most a four-byte key plus a bool
+        // -- and in practice less, because a 45 cm depth and a 1.4 m radius are small
+        // numbers. This is the upper bound the budget table in ROADMAP.md argues about,
+        // asserted so the table cannot quietly become wrong.
+        let mut world = a_running_world(10);
+        world.craters = Some(Vec::new());
+        world.spent = Some(Vec::new());
+        let empty = datagram_size(&world);
+
+        world.craters = Some(craters(16));
+        let with_craters = datagram_size(&world) - empty;
+        assert!(
+            with_craters <= 16 * 8,
+            "16 craters cost {with_craters} bytes, over the {}-byte bound",
+            16 * 8
+        );
+
+        world.craters = Some(Vec::new());
+        world.spent = Some(spent_devices(12));
+        let with_spent = datagram_size(&world) - empty;
+        assert!(
+            with_spent <= 12 * 5,
+            "12 spent devices cost {with_spent} bytes, over the {}-byte bound",
+            12 * 5
+        );
     }
 
     #[test]
@@ -1285,7 +1587,9 @@ mod tests {
         let before = world.clone();
         let bare = {
             let mut probe = world.clone();
+            probe.spent = None;
             probe.eaten = None;
+            probe.craters = None;
             datagram_size(&probe)
         };
         let outcome = fit_world(&mut world, bare - 1);
@@ -1388,10 +1692,19 @@ mod tests {
                 .expect("decode");
         assert_eq!(round_tripped, Datagram::Mods(mods));
 
-        // A world that is at its limit still leaves the mods alone.
+        // A world that is at its limit still leaves the mods alone. A byte over the
+        // budget sheds the spent devices (they are the cheapest thing to lose) and
+        // nothing else.
         let mut tight = world;
         let budget = datagram_size(&tight) - 1;
-        assert_eq!(fit_world(&mut tight, budget), WorldOutcome::MeadowShed);
+        assert_eq!(
+            fit_world(&mut tight, budget),
+            WorldOutcome::Shed {
+                spent: true,
+                meadow: false,
+                craters: false
+            }
+        );
         assert_eq!(fit_mods(&a_mods_state()), ModsOutcome::Sent);
     }
 

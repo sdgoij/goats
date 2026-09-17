@@ -63,6 +63,14 @@ enum Command {
         weather: session::WeatherState,
         streams: session::Streams,
         eaten: Vec<session::EatenCell>,
+        /// The craters the ground has, and the devices that have gone off (M19e).
+        /// Absent is a weaker claim than an empty list: it travels as the wire's own
+        /// "keep the list you have", while `[]` says the ground is flat -- and a client
+        /// that believed *that* stands in the air where a crater used to be.
+        #[serde(default)]
+        craters: Option<Vec<session::Crater>>,
+        #[serde(default)]
+        spent: Option<Vec<session::Spent>>,
     },
     /// Every world mod's state, queued beside the world and only when one is
     /// loaded. It travels on a datagram of its own, so a mod may publish more
@@ -70,6 +78,22 @@ enum Command {
     Mods { mods: serde_json::Value },
     /// A grass cell this client just ate, for the host's scene to record.
     Consume { key: i64 },
+    /// A device went off (M19e). Absent `by` means it was this process's own goat or one
+    /// of its herd -- the common case, and the only thing a client ever sends. A `by`
+    /// names the reporter, and only the host produces one: it is relaying a client's
+    /// bang, and leaves that player out, because it has already felt it.
+    ///
+    /// `x`/`z` are the coordinates *this* process derives for the device. A client's are
+    /// not sent anywhere (the host owns the layout, see `Client::report_blast`), and on
+    /// the host they are what every other client is told.
+    Blast {
+        kind: String,
+        key: i64,
+        x: f32,
+        z: f32,
+        #[serde(default)]
+        by: Option<String>,
+    },
     /// A captured voice frame, queued by the audio module rather than by the
     /// scene. The scene never sends this: it carries the sender's own sequence
     /// number and an Opus payload the JSON bridge has no business seeing.
@@ -134,12 +158,37 @@ enum Event {
         weather: session::WeatherState,
         streams: session::Streams,
         eaten: Option<Vec<session::EatenCell>>,
+        /// The craters and the spent devices, `null` when the host's snapshot could
+        /// not carry them (M19e): the scene keeps the list it has, the same way it
+        /// does for the meadow.
+        craters: Option<Vec<session::Crater>>,
+        spent: Option<Vec<session::Spent>>,
     },
     /// Every world mod's state, on its own datagram: `{ streams, data }`, opaque
     /// here and to the transport. A client keeps the last one it got.
     Mods { mods: serde_json::Value },
     /// A client's bite, for the host's scene (host side only).
     Consume { key: i64 },
+    /// A bang the host relayed (M19e), with the host's own coordinates for the device.
+    /// The scene draws the fire, hears the bang at the right distance, digs the same
+    /// crater, and applies the blast to the goats *it* simulates -- which is how a peer
+    /// gets flung by a mine someone else stepped on.
+    Blast {
+        kind: session::BlastKind,
+        key: i64,
+        x: f32,
+        z: f32,
+        by: String,
+    },
+    /// A client's device went off (M19e), on the host. The client has already fired it,
+    /// so this is a report rather than a request: the host spends the device -- the
+    /// neighbours must not trip it -- applies the bang to the ground and to its own
+    /// goats, and relays it to everyone else.
+    BlastReport {
+        kind: session::BlastKind,
+        key: i64,
+        by: String,
+    },
     /// A voice packet. The audio module consumes it; the scene never sees one,
     /// so `emit` drops it rather than encoding Opus bytes as a JSON line.
     Voice {
@@ -325,6 +374,8 @@ impl Live {
         weather: &session::WeatherState,
         streams: session::Streams,
         eaten: &[session::EatenCell],
+        craters: Option<&[session::Crater]>,
+        spent: Option<&[session::Spent]>,
     ) -> Option<session::WorldOutcome> {
         match self {
             Live::Host(host) => Some(
@@ -336,6 +387,12 @@ impl Live {
                     // it always has a meadow to send: a `None` here is Rust's,
                     // not the scene's.
                     eaten: Some(eaten.to_vec()),
+                    // A list the scene did not send stays `None`, which the wire reads
+                    // as "keep the one you have". Sending an empty one instead would
+                    // tell every client its ground is flat, which is a worse lie than
+                    // saying nothing.
+                    craters: craters.map(|list| list.to_vec()),
+                    spent: spent.map(|list| list.to_vec()),
                 })
                 .await,
             ),
@@ -364,12 +421,48 @@ impl Live {
         }
     }
 
-    /// Sends one captured voice frame. A client sends it up to the host to be
+    /// Says one captured voice frame. A client sends it up to the host to be
     /// re-tagged and relayed; the host sends its own straight out.
     async fn publish_voice(&self, seq: u32, payload: &[u8]) {
         match self {
             Live::Host(host) => host.publish_voice(seq, payload).await,
             Live::Client(client) => client.publish_voice(seq, payload),
+        }
+    }
+
+    /// A device went off (M19e): this process's own goat or herd, or -- on the host,
+    /// when `by` names somebody else -- a bang a client reported.
+    ///
+    /// Only a host relays, and a reported bang is not fired again here: the reporter
+    /// fired it, this process fires *its* copy of it (the ground, the herd), and
+    /// `except` is what keeps the bang from landing twice on the one goat that has
+    /// already felt it.
+    async fn blast(
+        &self,
+        kind: session::BlastKind,
+        key: i64,
+        x: f32,
+        z: f32,
+        by: Option<&str>,
+    ) -> Option<String> {
+        match (self, by) {
+            (Live::Host(host), Some(reporter)) => {
+                host.blast(kind, key, x, z, reporter, Some(reporter)).await;
+                None
+            }
+            (Live::Host(host), None) => {
+                host.blast(kind, key, x, z, host.name(), None).await;
+                None
+            }
+            // A client's own bang: report it and let the host say where the device is.
+            // `x`/`z` stay behind for exactly that reason.
+            (Live::Client(client), None) => client
+                .report_blast(kind, key)
+                .await
+                .err()
+                .map(|error| error.to_string()),
+            // A client never relays, and nothing that is not its own bang reaches it.
+            (Live::Client(_), Some(_)) => None,
         }
     }
 }
@@ -471,10 +564,19 @@ async fn run(
                     weather,
                     streams,
                     eaten,
+                    craters,
+                    spent,
                 } => {
                     if let Some(session) = live.as_ref()
                         && let Some(outcome) = session
-                            .publish_world(&bots, &weather, streams, &eaten)
+                            .publish_world(
+                                &bots,
+                                &weather,
+                                streams,
+                                &eaten,
+                                craters.as_deref(),
+                                spent.as_deref(),
+                            )
                             .await
                         && outcome != last_world
                     {
@@ -514,6 +616,23 @@ async fn run(
                         session.publish_voice(seq, &payload).await;
                     }
                 }
+                // A device went off, here or somewhere else (M19e). Silent while
+                // offline: the bang is already local and there is nobody to tell.
+                Command::Blast {
+                    kind,
+                    key,
+                    x,
+                    z,
+                    by,
+                } => {
+                    if let Some(session) = live.as_ref()
+                        && let Some(error) = session
+                            .blast(parse_blast_kind(&kind), key, x, z, by.as_deref())
+                            .await
+                    {
+                        emit(&events, Event::Notice { text: error });
+                    }
+                }
                 other => live = start(other, live.take(), &events, &mut world_mods, &pull).await,
             },
             Outcome::Command(None) => break,
@@ -543,7 +662,8 @@ async fn start(
         | Command::World { .. }
         | Command::Mods { .. }
         | Command::Consume { .. }
-        | Command::Voice { .. } => None,
+        | Command::Voice { .. }
+        | Command::Blast { .. } => None,
         Command::Host { name } => {
             // A host serves what it runs, so a joiner missing a world mod can
             // fetch it here rather than from a status page (M18d). The packaging
@@ -739,16 +859,34 @@ fn bridge(event: session::Event) -> Event {
             weather,
             streams,
             eaten,
+            craters,
+            spent,
         } => Event::World {
             bots,
             weather,
             streams,
             eaten,
+            craters,
+            spent,
         },
         // The transport carries a mod's state opaquely; the scene is what has a
         // schema for it.
         session::Event::Mods { mods } => Event::Mods { mods: mods.0 },
         session::Event::Consume { key } => Event::Consume { key },
+        session::Event::Blast {
+            kind,
+            key,
+            x,
+            z,
+            by,
+        } => Event::Blast {
+            kind,
+            key,
+            x,
+            z,
+            by,
+        },
+        session::Event::BlastReport { kind, key, by } => Event::BlastReport { kind, key, by },
         session::Event::Voice { from, seq, payload } => Event::Voice { from, seq, payload },
         session::Event::Roster { names } => Event::Roster { names },
         session::Event::Notice(text) => Event::Notice { text },
@@ -770,6 +908,16 @@ fn parse_gait(name: &str) -> session::Gait {
         "eat" => session::Gait::Eat,
         "dead" => session::Gait::Dead,
         _ => session::Gait::Idle,
+    }
+}
+
+/// The scene spells a device's kind with a string -- `BlastKind`'s own serialisation,
+/// so the two agree by construction -- and anything else reads as a mine rather than
+/// being an error, the way an unknown gait reads as idle.
+fn parse_blast_kind(name: &str) -> session::BlastKind {
+    match name {
+        "trap" => session::BlastKind::Trap,
+        _ => session::BlastKind::Mine,
     }
 }
 
@@ -880,6 +1028,8 @@ mod tests {
                 weather,
                 streams,
                 eaten,
+                craters,
+                spent,
             } => {
                 assert_eq!(bots.len(), 1);
                 assert_eq!(bots[0].index, 0);
@@ -890,6 +1040,10 @@ mod tests {
                 assert_eq!(streams.food, 3);
                 assert_eq!(eaten.len(), 1);
                 assert_eq!(eaten[0].key, 99);
+                // A scene that does not carry the craters or the spent devices says
+                // nothing about them rather than "there are none" (M19e).
+                assert_eq!(craters, None);
+                assert_eq!(spent, None);
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -906,6 +1060,35 @@ mod tests {
         }
         match serde_json::from_str::<Command>(r#"{"type":"consume","key":123}"#).expect("consume") {
             Command::Consume { key } => assert_eq!(key, 123),
+            other => panic!("unexpected {other:?}"),
+        }
+        // A bang this process fired: no `by`, so the bridge knows it is the scene's own
+        // (`net.rs`'s `Live::blast`), and the kind arrives in the scene's own spelling.
+        match serde_json::from_str::<Command>(
+            r#"{"type":"blast","kind":"trap","key":42,"x":1.5,"z":-2.5}"#,
+        )
+        .expect("blast")
+        {
+            Command::Blast {
+                kind,
+                key,
+                x,
+                z,
+                by,
+            } => {
+                assert_eq!((kind.as_str(), key, x, z), ("trap", 42, 1.5, -2.5));
+                assert_eq!(by, None);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // A bang a client reported, which only the host relays: `by` is the reporter, and
+        // the relay is what leaves them out.
+        match serde_json::from_str::<Command>(
+            r#"{"type":"blast","kind":"mine","key":7,"x":0.0,"z":0.0,"by":"alice"}"#,
+        )
+        .expect("reported blast")
+        {
+            Command::Blast { by, .. } => assert_eq!(by.as_deref(), Some("alice")),
             other => panic!("unexpected {other:?}"),
         }
         // An unknown intent is rejected, not silently ignored.
@@ -986,7 +1169,7 @@ mod tests {
         assert!(line.contains(r#""name":"alice""#), "{line}");
         assert!(line.contains(r#""gait":"idle""#), "{line}");
 
-        let world_event = |eaten| session::Event::World {
+        let world_event = |eaten, craters, spent| session::Event::World {
             bots: vec![session::BotState {
                 index: 0,
                 x: 1.0,
@@ -1012,23 +1195,41 @@ mod tests {
                 audio: 4,
             },
             eaten,
+            craters,
+            spent,
         };
-        let line = serde_json::to_string(&bridge(world_event(Some(vec![session::EatenCell {
-            key: 5,
-            left: 6.0,
-        }]))))
+        let line = serde_json::to_string(&bridge(world_event(
+            Some(vec![session::EatenCell { key: 5, left: 6.0 }]),
+            Some(vec![session::Crater {
+                x: 1.0,
+                z: 2.0,
+                r: 1.6,
+                depth: 0.45,
+            }]),
+            Some(vec![session::Spent {
+                key: 11,
+                trap: false,
+            }]),
+        )))
         .expect("encode");
         assert!(line.contains(r#""type":"world""#), "{line}");
         assert!(line.contains(r#""index":0"#), "{line}");
         assert!(line.contains(r#""kind":"cloudy""#), "{line}");
         assert!(line.contains(r#""food":3"#), "{line}");
         assert!(line.contains(r#""key":5"#), "{line}");
+        // The craters and the spent devices travel as they are, floats and all
+        // (M19e): the ground a client stands on is the host's.
+        assert!(line.contains(r#""depth":0.45"#), "{line}");
+        assert!(line.contains(r#""trap":false"#), "{line}");
 
         // A meadow the host could not send reaches the scene as `null`, which is
         // what tells it to keep the one it has rather than clearing it -- see
-        // `applyEaten` in `food.js`.
-        let line = serde_json::to_string(&bridge(world_event(None))).expect("encode");
+        // `applyEaten` in `food.js`. The craters and the spent devices read the same
+        // way, for the same reason.
+        let line = serde_json::to_string(&bridge(world_event(None, None, None))).expect("encode");
         assert!(line.contains(r#""eaten":null"#), "{line}");
+        assert!(line.contains(r#""craters":null"#), "{line}");
+        assert!(line.contains(r#""spent":null"#), "{line}");
 
         // The mods are an event of their own, carrying the scene's own JSON
         // through untouched.
@@ -1044,6 +1245,35 @@ mod tests {
         let line =
             serde_json::to_string(&bridge(session::Event::Consume { key: 7 })).expect("encode");
         assert_eq!(line, r#"{"type":"consume","key":7}"#);
+
+        // A bang the host relayed (M19e) reaches the scene whole, coordinates and all:
+        // they are the host's, and they are what the receiver's own crater and own goat
+        // are made of.
+        let line = serde_json::to_string(&bridge(session::Event::Blast {
+            kind: session::BlastKind::Mine,
+            key: 11,
+            x: 1.5,
+            z: -2.5,
+            by: "alice".to_string(),
+        }))
+        .expect("encode");
+        assert_eq!(
+            line,
+            r#"{"type":"blast","kind":"mine","key":11,"x":1.5,"z":-2.5,"by":"alice"}"#
+        );
+
+        // A report is the other direction and the host's alone; `by` is the reporter,
+        // and the scene hands it back with the coordinates so the relay can exclude them.
+        let line = serde_json::to_string(&bridge(session::Event::BlastReport {
+            kind: session::BlastKind::Trap,
+            key: 12,
+            by: "alice".to_string(),
+        }))
+        .expect("encode");
+        assert_eq!(
+            line,
+            r#"{"type":"blast_report","kind":"trap","key":12,"by":"alice"}"#
+        );
     }
 
     /// Waits for the next event containing `wanted`. Events that do not match

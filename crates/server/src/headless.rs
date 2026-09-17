@@ -18,19 +18,27 @@ use std::rc::Rc;
 use plugin::{PluginSet, Side as PluginSide};
 use slag::{Context, HostCallbacks, JsValue};
 
-/// Appended to the scene: the seam the server needs, JSON views of what the
-/// session broadcasts. They can be one-liners because the scene already has
-/// `sceneWorldBots`, `sceneWeatherState`, `sceneStreams`, `sceneEaten`,
-/// `sceneWorldMods`, `modWorldActive` and `JSON`.
+/// Appended to the scene: the seams this server needs, JSON views of what the
+/// session broadcasts and of what it has to answer. They can be one-liners
+/// because the scene already has `sceneWorldBots`, `sceneWeatherState`,
+/// `sceneStreams`, `sceneEaten`, `netWorldCraters`, `netWorldSpent`,
+/// `sceneBlastReport`, `sceneWorldMods`, `modWorldActive` and `JSON`.
 ///
 /// Two views, because they travel on two datagrams: the world has a budget the
-/// herd and the meadow share, and the world mods have one of their own.
+/// herd, the meadow, the ground and the fired devices share, and the world mods
+/// have one of their own. The third is not a view but an answer: a device a client
+/// reported went off, and the relay needs the coordinates the *host* derives for it
+/// (M19e), which only the scene's own layout can say.
 const GLUE: &str = concat!(
     "\nfunction sceneWorldJson() { return JSON.stringify({",
     " bots: sceneWorldBots(), weather: sceneWeatherState(),",
-    " streams: sceneStreams(), eaten: sceneEaten() }); }\n",
+    " streams: sceneStreams(), eaten: sceneEaten(),",
+    " craters: netWorldCraters(), spent: netWorldSpent() }); }\n",
     "\nfunction sceneModsJson() {",
     " return modWorldActive() ? JSON.stringify(sceneWorldMods()) : \"\"; }\n",
+    "\nfunction sceneBlastJson(kind, key) {",
+    " const at = sceneBlastReport(kind, key);",
+    " return at === null ? \"\" : JSON.stringify(at); }\n",
 );
 
 /// A running headless scene.
@@ -40,6 +48,7 @@ pub struct Sim {
     world: JsValue,
     mods: JsValue,
     consume: JsValue,
+    blast_json: JsValue,
     plugins: Rc<RefCell<PluginSet>>,
     set_published: JsValue,
 }
@@ -74,6 +83,7 @@ impl Sim {
         let world = scene_function(&context, "sceneWorldJson")?;
         let mods = scene_function(&context, "sceneModsJson")?;
         let consume = scene_function(&context, "sceneConsume")?;
+        let blast_json = scene_function(&context, "sceneBlastJson")?;
         let set_published = scene_function(&context, "sceneSetWasmPublished")?;
 
         context
@@ -96,6 +106,7 @@ impl Sim {
             world,
             mods,
             consume,
+            blast_json,
             plugins,
             set_published,
         })
@@ -132,6 +143,29 @@ impl Sim {
             )
             .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    /// Records a device a client reported has gone off (M19e): the scene spends it,
+    /// applies the bang to the ground and to the herd -- the server's ground is the
+    /// ground every client adopts, and its herd is what its snapshots carry -- and
+    /// answers with where the device actually was, as JSON.
+    ///
+    /// The answer is the *host's* reading of the key, never the reporter's, which is
+    /// the whole reason a report carries a key: a client that lies about one gets a
+    /// bang where the host believes the device is. An empty string means the key is not
+    /// a device here, and then there is nothing to relay.
+    pub fn blast_report(&mut self, kind: &str, key: i64) -> Result<String, String> {
+        let value = self
+            .context
+            .call(
+                &self.blast_json,
+                &JsValue::undefined(),
+                &[JsValue::string(kind), JsValue::number(key as f64)],
+            )
+            .map_err(|error| error.to_string())?;
+        value
+            .as_string()
+            .ok_or_else(|| "sceneBlastJson did not return a string".to_string())
     }
 
     /// The bots, as a JSON array. The caller decides how often to take it.

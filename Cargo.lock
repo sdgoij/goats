@@ -3432,6 +3432,7 @@ dependencies = [
  "plugin",
  "proto",
  "scene",
+ "serde",
  "serde_json",
  "session",
  "slag",

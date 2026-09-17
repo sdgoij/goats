@@ -27,5 +27,6 @@ proto = { workspace = true }
 # rules. No `raylib` feature: the server has no window, and `src/headless_rl.js`
 # supplies the null `rl` the scene is evaluated against instead.
 slag = { workspace = true, features = ["jit"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }

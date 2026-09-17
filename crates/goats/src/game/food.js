@@ -39,6 +39,16 @@ function tuftKey(cx, cz) {
     return (cx + 4096) * 8192 + (cz + 4096);
 }
 
+// The cell a key names, as { cx, cz } -- the inverse of `tuftKey`, and the reason a key
+// is all a device needs to travel (M19e): a process that is told which cell fired knows
+// where it was, and the move that follows is derived from that same cell.
+function tuftCell(key) {
+    return {
+        cx: Math.floor(key / 8192) - 4096,
+        cz: key % 8192 - 4096,
+    };
+}
+
 // The nearest tuft within `range` of (x, z), as { x, z, cx, cz, d2 }, or null.
 // With `trappedOnly`, only trapped tufts count -- the walk-over trigger for a
 // boobytrap (explosions.js) and the `traps` verb both want the tuft itself, and

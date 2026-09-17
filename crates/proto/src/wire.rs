@@ -23,8 +23,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BotState, Datagram, EatenCell, Error, Gait, ModsState, PeerFrame, PeerState, Streams,
-    VoiceFrame, WeatherState, WorldState,
+    BotState, Crater, Datagram, EatenCell, Error, Gait, ModsState, PeerFrame, PeerState, Spent,
+    Streams, VoiceFrame, WeatherState, WorldState,
 };
 
 // ---- the quantization grid -------------------------------------------------
@@ -134,6 +134,10 @@ pub(crate) struct WireWorld {
     /// `None` when the snapshot could not carry the meadow -- see
     /// [`WorldState::eaten`].
     eaten: Option<Vec<WireEaten>>,
+    /// `None` when the snapshot could not carry the craters, and the same for
+    /// `spent`: see [`WorldState::craters`] and [`fit_world`].
+    craters: Option<Vec<WireCrater>>,
+    spent: Option<Vec<WireSpent>>,
 }
 
 /// The world mods' state, packed. One field, because the transport has no schema
@@ -159,6 +163,26 @@ pub(crate) struct WireBot {
 pub(crate) struct WireEaten {
     key: i64,
     left: u16,
+}
+
+/// One crater, on the same 1 cm grid everything else uses: `x`, `z`, the dish's radius
+/// and the depth it has *right now* (which steps down as the host heals it, ten
+/// centimetres at a time). Eight bytes a crater, against the ten the budget table
+/// guessed.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WireCrater {
+    x: i16,
+    z: i16,
+    r: i16,
+    depth: i16,
+}
+
+/// One device that has gone off. The key is a packed cell key -- a `postcard` varint,
+/// so three or four bytes for anything in the field -- and `trap` says which kind.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WireSpent {
+    key: i64,
+    trap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,6 +262,14 @@ impl WireWorld {
                 .eaten
                 .as_deref()
                 .map(|cells| cells.iter().map(WireEaten::pack).collect()),
+            craters: world
+                .craters
+                .as_deref()
+                .map(|list| list.iter().map(WireCrater::pack).collect()),
+            spent: world
+                .spent
+                .as_deref()
+                .map(|list| list.iter().map(WireSpent::pack).collect()),
         }
     }
 
@@ -249,6 +281,48 @@ impl WireWorld {
             eaten: self
                 .eaten
                 .map(|cells| cells.into_iter().map(WireEaten::unpack).collect()),
+            craters: self
+                .craters
+                .map(|list| list.into_iter().map(WireCrater::unpack).collect()),
+            spent: self
+                .spent
+                .map(|list| list.into_iter().map(WireSpent::unpack).collect()),
+        }
+    }
+}
+
+impl WireCrater {
+    fn pack(crater: &Crater) -> WireCrater {
+        WireCrater {
+            x: centimetres(crater.x),
+            z: centimetres(crater.z),
+            r: centimetres(crater.r),
+            depth: centimetres(crater.depth),
+        }
+    }
+
+    fn unpack(self) -> Crater {
+        Crater {
+            x: metres(self.x),
+            z: metres(self.z),
+            r: metres(self.r),
+            depth: metres(self.depth),
+        }
+    }
+}
+
+impl WireSpent {
+    fn pack(spent: &Spent) -> WireSpent {
+        WireSpent {
+            key: spent.key,
+            trap: spent.trap,
+        }
+    }
+
+    fn unpack(self) -> Spent {
+        Spent {
+            key: self.key,
+            trap: self.trap,
         }
     }
 }
