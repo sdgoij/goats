@@ -1,10 +1,12 @@
 //! The ported `birds` mod cases: `tools/birds_mod_test.js`, on the engine.
 //!
-//! The birds mod is the worked example of a mod that adds an entity of its own:
-//! it builds its meshes and bakes a texture, runs five animation states with boid
-//! flocking, and publishes the flock through the world extension. Nothing here
-//! needs the frame loop -- the cases drive `modEmit("update")` and
-//! `modEmit("draw3d")` themselves, the way the Node harness did.
+//! The birds mod is the worked example of a mod that adds an entity of its own: it
+//! builds its meshes and bakes a texture, runs six animation states with boid
+//! flocking, publishes the flock through the world extension, and uses the surface
+//! M19g added (`goats.explosions`) to set devices off and to give the goat a little
+//! back while a bird sits on it. Nothing here needs the frame loop -- the cases drive
+//! `modEmit("update")` and `modEmit("draw3d")` themselves, the way the Node harness
+//! did.
 //!
 //! **One live world at a time, deliberately.** Two live engine contexts with one
 //! of them being stepped aborts the process (STATUS_ACCESS_VIOLATION, reliably
@@ -56,6 +58,15 @@ impl World {
                 .expect("the birds manifest");
         let id = manifest["id"].as_str().expect("the birds id").to_string();
 
+        // The asset map the host builds for this mod: its own squawk slot, under opaque
+        // names (`read_slot` uses `mod:<id>:<slot>:<index><ext>`; the loader test in
+        // `crates/mods` is what checks the declared files are really on disk). The
+        // recording `rl` resolves any name it is handed, so these stand in for the bytes
+        // the host would register.
+        let assets = json!({ "sfx.squawk": [
+            format!("mod:{id}:sfx.squawk:0.mp3"),
+            format!("mod:{id}:sfx.squawk:1.mp3"),
+        ] });
         let table = json!([{
             "id": manifest["id"],
             "name": manifest["name"],
@@ -64,7 +75,7 @@ impl World {
             "side": manifest["side"],
             "enabled": true,
             "hash": "0",
-            "assets": {},
+            "assets": assets,
             "tuning": null,
         }]);
         harness
@@ -132,12 +143,56 @@ impl World {
             .eval(&format!("goats.player.teleport({x:.2}, {z:.2})"))
             .expect("teleport");
     }
+
+    /// The player's energy and health: what a bird on the goat's back moves.
+    fn stats(&mut self) -> (f64, f64) {
+        let energy = self
+            .harness
+            .eval("goats.player.state().energy")
+            .expect("energy");
+        let health = self
+            .harness
+            .eval("goats.player.state().health")
+            .expect("health");
+        (f64_of(energy), f64_of(health))
+    }
+
+    /// Empties the herd, so a bot cannot trip a device of its own into a case that is
+    /// counting bangs. Called before the load steps run, so no bot is ever created.
+    fn no_herd(&mut self) {
+        self.harness.eval("goats.bots.setCount(0)").expect("herd");
+    }
 }
 
 /// A state's count, or zero when the flock is not in it: the Node harness wrote
 /// `s.idle || 0`, and a missing key must read as none rather than as a NaN.
 fn count(states: &serde_json::Value, name: &str) -> f64 {
     states[name].as_f64().unwrap_or(0.0)
+}
+
+/// The first bird's height above the ground under the player: the perch's own height
+/// when the goat is standing, plus whatever the goat has climbed.
+fn bird_lift(world: &mut World) -> f64 {
+    let ground = f64_of(
+        world
+            .harness
+            .eval("goats.world.terrainHeight(goat.px, goat.pz)")
+            .expect("ground"),
+    );
+    f64_of(world.flock()[0][1].clone()) - ground
+}
+
+/// How many times the flock's squawk has been heard. The mod declares two files for one
+/// slot and picks between them at random, so either opaque name counts.
+fn squawks(world: &mut World) -> u32 {
+    let id = world.id.clone();
+    let obs = world.harness.observe().expect("observe");
+    let mut plays = 0;
+    for index in 0..2 {
+        let name = format!("mod:{id}:sfx.squawk:{index}.mp3");
+        plays += obs.sound_plays.get(&name).copied().unwrap_or(0);
+    }
+    plays
 }
 
 #[test]
@@ -298,6 +353,28 @@ fn the_cases(checks: &mut Checks) {
         );
     }
 
+    // ---- a flung bird is published as flung -----------------------------------
+    // The state is the whole of what travels: the arc, the tumble and the flap are the
+    // state clock's, which both ends derive, so a client gets a flung bird out of the
+    // same five numbers as any other.
+    {
+        let mut client = World::new();
+        net_feed(&mut client.harness, r#"{"type":"welcome","name":"eve"}"#).expect("welcome");
+        let mut data = serde_json::Map::new();
+        data.insert(client.id.clone(), json!([[10, 4, 10, 0.0, 6]]));
+        client
+            .harness
+            .call("sceneApplyWorldMods", &[json!({ "data": data })])
+            .expect("sceneApplyWorldMods");
+        client.step(30);
+        let states = client.status()["states"].clone();
+        checks.check(
+            "a client mirrors a flung bird as flung",
+            count(&states, "flung") == 1.0,
+            &states,
+        );
+    }
+
     // ---- perching ------------------------------------------------------------
     // Birds may land on the player's goat; over two minutes at least one should.
     {
@@ -311,6 +388,222 @@ fn the_cases(checks: &mut Checks) {
             }
         }
         checks.check("a bird perches on a goat", perched, perched);
+    }
+
+    // ---- a bird sets off a device, and is thrown by it ------------------------
+    // The M19g surface, in the mod that motivated it: a bird walking over a device
+    // trips it through the core's own blast path and is flung away. The herd is
+    // emptied first, because a bot trips devices of its own and this case counts bangs.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(120);
+        let trips_before = f64_of(world.status()["trips"].clone());
+        let mines_before = f64_of(world.status()["mineTrips"].clone());
+        let traps_before = f64_of(world.status()["trapTrips"].clone());
+        let squawks_before = squawks(&mut world);
+        let blasts_before = f64_of(
+            world
+                .harness
+                .eval("sceneExplosions().blasts")
+                .expect("blasts"),
+        );
+        let moved_before = f64_of(
+            world
+                .harness
+                .eval("sceneExplosions().moved")
+                .expect("moved"),
+        );
+
+        let sent = world.harness.command("birds boom mine").expect("boom");
+        let accepted = sent == "ok bird sent to the mine";
+        world.step(1);
+        let flung = world.status();
+        checks.check("`birds boom` sends a bird to a mine", accepted, sent);
+        checks.check(
+            "a bird on a mine trips it, and is flung",
+            count(&flung["states"], "flung") >= 1.0
+                && f64_of(flung["trips"].clone()) == trips_before + 1.0
+                && f64_of(flung["mineTrips"].clone()) == mines_before + 1.0
+                && f64_of(flung["trapTrips"].clone()) == traps_before,
+            &flung,
+        );
+        // ...and it goes out with a squawk: one of the two macaw calls its manifest
+        // declares, played on the mod's own handle rather than through the core's effects.
+        let heard = squawks(&mut world) - squawks_before;
+        checks.check("a flung bird squawks once", heard == 1, heard);
+        checks.check(
+            "the bang goes through the core's own blast path",
+            f64_of(
+                world
+                    .harness
+                    .eval("sceneExplosions().blasts")
+                    .expect("blasts"),
+            ) > blasts_before,
+            blasts_before,
+        );
+        // The device is spent where the bang happened, and its replacement moves in:
+        // without that (`modBlast` spends the cell, M19g) the bird would land on the
+        // same armed mine and be thrown by it again, and the field would never drift.
+        checks.check(
+            "the device is spent and its replacement moves in",
+            f64_of(
+                world
+                    .harness
+                    .eval("sceneExplosions().moved")
+                    .expect("moved"),
+            ) > moved_before,
+            moved_before,
+        );
+
+        // ...and it comes down, and goes back to being a bird.
+        world.step(300);
+        let landed = world.status();
+        checks.check(
+            "a flung bird lands and walks on",
+            count(&landed["states"], "flung") == 0.0,
+            &landed["states"],
+        );
+    }
+
+    // ---- a query finds the trap it is standing on -----------------------------
+    // `sceneTraps` is the surface a mod asks "what is near me" with (`goats.explosions.traps`),
+    // and a trap is **not** at its cell's centre: it is on the tuft, which sits at the
+    // cell's even corner -- up to 1.4 m away -- plus its own jitter. Filtering the *cell*
+    // by that centre (which is where a mine is, and how the mines are found) hides every
+    // tuft jittered away from the middle, and a query from right on top of one comes back
+    // empty. That is what made "birds trigger mines but not traps" true for most traps.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(120);
+        let field = try_command_json(&mut world.harness, "traps 40").expect("traps");
+        let traps = field["traps"].as_array().cloned().unwrap_or_default();
+        let mut found = 0;
+        for trap in &traps {
+            let tx = f64_of(trap["x"].clone());
+            let tz = f64_of(trap["z"].clone());
+            let at = world
+                .harness
+                .eval(&format!("sceneTraps({tx:.3}, {tz:.3}, 0.6).traps.length"))
+                .expect("sceneTraps");
+            if f64_of(at) >= 1.0 {
+                found += 1;
+            }
+        }
+        checks.check(
+            "a trap is reported from its own tuft",
+            !traps.is_empty() && found == traps.len(),
+            (found, traps.len()),
+        );
+    }
+
+    // ---- a bird sets off a trapped tuft ---------------------------------------
+    // The kind matters as much as the bang: a trap sits on the *tuft*, which is not at
+    // its cell's centre, so a bird sent to one is the case that tells a query which
+    // reports the trap at its own position but filters the cell by the centre.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(120);
+        let trips_before = f64_of(world.status()["trips"].clone());
+        let mines_before = f64_of(world.status()["mineTrips"].clone());
+        let traps_before = f64_of(world.status()["trapTrips"].clone());
+        let sent = world.harness.command("birds boom trap").expect("boom");
+        let accepted = sent == "ok bird sent to the trap";
+        world.step(1);
+        let flung = world.status();
+        checks.check(
+            "`birds boom trap` sends a bird to a trapped tuft",
+            accepted,
+            sent,
+        );
+        checks.check(
+            "a bird on a trapped tuft sets it off, and is flung",
+            count(&flung["states"], "flung") >= 1.0
+                && f64_of(flung["trips"].clone()) == trips_before + 1.0
+                && f64_of(flung["trapTrips"].clone()) == traps_before + 1.0
+                && f64_of(flung["mineTrips"].clone()) == mines_before,
+            &flung,
+        );
+    }
+
+    // ---- a bird on the goat's back --------------------------------------------
+    // The friends: while a bird sits on the player, the goat's energy and health
+    // climb. Below the ceiling, because both are clamped at `stats.max` and a goat at
+    // full health gives nothing to show; and with the field emptied, so no bird's own
+    // bang can take the health back while the case is watching it.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(120);
+        world
+            .harness
+            .eval("goats.tuning.set(\"explosions.mine.density\", 0)")
+            .expect("density");
+        world
+            .harness
+            .eval("goats.tuning.set(\"explosions.trap.chance\", 0)")
+            .expect("chance");
+        world.harness.eval("sceneResetDevices()").expect("reset");
+        world
+            .harness
+            .eval("stats.energy = 40; stats.health = 40")
+            .expect("stats");
+
+        // The control: with no bird aboard, the two numbers must not move at all.
+        // `harnessStep` drives the mods' update rather than the scene's own frame, so
+        // the goat's idle drain is not in this loop -- which makes the gift the only
+        // thing that can move it, and that is what the next two checks read.
+        let (e0, h0) = world.stats();
+        world.step(300);
+        let (e1, h1) = world.stats();
+        checks.check(
+            "nothing moves the goat with no bird on it",
+            (e1 - e0).abs() < 0.01 && (h1 - h0).abs() < 0.01,
+            (e0, e1, h0, h1),
+        );
+
+        let sat = world.harness.command("birds sit").expect("sit") == "ok birds sitting";
+        world.step(2);
+        let perched = world.status();
+        let (e2, h2) = world.stats();
+        world.step(300);
+        let (e3, h3) = world.stats();
+        checks.check(
+            "`birds sit` puts a bird on the goat",
+            sat && count(&perched["states"], "perch") >= 1.0,
+            &perched["states"],
+        );
+        checks.check(
+            "a bird on the goat gives its energy back",
+            e3 > e2 + 10.0,
+            (e2, e3),
+        );
+        checks.check("...and its health", h3 > h2 + 5.0, (h2, h3));
+    }
+
+    // ---- a bird rides its goat up ---------------------------------------------
+    // The perch sits on the goat's *back*, so a goat that leaves the ground takes the
+    // bird with it -- a blasted goat, in the game (M19c's arc), which is why the perch
+    // reads the goat's own height. The arc itself cannot be flown here: `harnessStep`
+    // drives the mods' update rather than the scene's frame, so the height is set and
+    // the case reads what the perch does with it.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(120);
+        let sat = world.harness.command("birds sit").expect("sit") == "ok birds sitting";
+        world.step(2);
+        let perched_at = bird_lift(&mut world);
+        world.harness.eval("goat.py = 2.4").expect("py");
+        world.step(1);
+        let flying_at = bird_lift(&mut world);
+        checks.check(
+            "a bird on a goat that leaves the ground goes with it",
+            sat && (flying_at - perched_at - 2.4).abs() < 0.06,
+            (perched_at, flying_at),
+        );
     }
 
     // ---- a moving player -----------------------------------------------------

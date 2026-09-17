@@ -1183,11 +1183,12 @@ decisions behind it and the constraints that shape it.
   startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
   diagnosis one look rather than a guess. Opaque assets are still compared byte
   for byte, since the loader cannot know what they are. `mods/birds` itself is
-  pinned at `37415a1ffcafa331` by a test, because a release ships it and an
-  older client refuses a server whose birds differs. That pin has moved once, when
-  the mod's arithmetic was rewritten to stop naming `Math` (PERF.md §4b) -- a
-  deliberate change, and a compatibility boundary: a peer on the older birds
-  cannot join a host on the newer one.
+  pinned at `7a5e28e2d985e3d6` by a test, because a release ships it and an
+  older client refuses a server whose birds differs. That pin has moved twice: once
+  when the mod's arithmetic was rewritten to stop naming `Math` (PERF.md §4b), and
+  again when the flock learned to set devices off, to sit on the goat and to squawk
+  (M19's surface, below) -- deliberate changes both, and a compatibility boundary: a
+  peer on the older birds cannot join a host on the newer one.
 - **M14d2 — World-mod simulation. ✅ Done.** `goats.world.registerStream` and
   `goats.rng` own a seeded PRNG stream per `side: "world"` mod; `sceneUseSeed`
   re-derives them from the session seed, and their state travels in the
@@ -2819,6 +2820,18 @@ Each frame: age the instances, retire the dead ones, and draw the live ones.
    verb and the trap half of `relocateDevice` both had this, and both looked fine --
    they only missed *some* tufts.
 
+   **It survived in the one place a mod reads it** (found by `mods/birds` in M19g, and
+   the reason the flock set off mines but not traps): `sceneTraps` -- which is
+   `goats.explosions.traps` -- judged *every* cell by its centre, which is right for a
+   mine (its position **is** the centre) and wrong for a trap, and then reported the
+   trap with a `dist` measured from the tuft. So the filter and the number it handed
+   back disagreed, and a query from on top of a trap came back empty unless the tuft
+   happened to sit near the middle of its cell: measured on the harness's own field,
+   **19 of 23 traps** were invisible to `sceneTraps(t.x, t.z, 0.6)` from their own
+   tuft's position. The fix is one line of intent -- each device is filtered where it
+   sits -- and the case is now `birds.rs`'s `a trap is reported from its own tuft`,
+   swept over the whole field rather than left to the geometry of one seed.
+
 **A new crater forces a terrain rebuild.** The mesh otherwise rebuilds only when
 the goat has moved `TUNING.terrain.snap` (`terrainEnsure`), which is fine for a
 field that changes slowly and wrong for the one case that matters: the crater the
@@ -3030,6 +3043,26 @@ All five are on the global `goats` handle *and* on every mod's own handle. `trap
 derivation the core itself uses rather than a copy of it, so a detector and the mine the
 detector found cannot disagree; and `armed` is per-mod, with an empty `CORE_OFF` as the
 fast path, so a game with no explosives mods pays nothing for the gate.
+
+- **`mods/birds` is the worked example** of the surface, and it is what found the one
+  thing `modBlast` was missing: a bird walking over a device sets it off and is thrown
+  by it, a bird perched on the player's goat gives the goat energy and health back
+  while it sits, and both are `goats.explosions` plus `goats.player`. The bang *spends
+  the device in the process that fired it* -- as every other process already did, from
+  the key on the report -- because without that the cell stayed armed where the bang
+  happened and the bird was thrown by the same mine again the moment it landed, an
+  infinite retrigger that no goat can produce. The bird's fling is its own (the mod's
+  arc, at a bird's weight) and its state is the whole of what travels: `flung` is a
+  sixth state on the same five-number row, and the arc, the tumble and the flap are
+  derived from its clock at both ends. It is also the first mod to **ship a sound**:
+  two macaw calls declared under a slot of its own, played on the throw. That is what
+  turned up the two gaps a sound-firing mod still has -- there is no `unloadSound` to
+  free it with, and `goats.settings` has no master-mute flag, so a mod's squawk goes on
+  while `M` has the rest of the game silent -- and the one bug in the surface itself:
+  `goats.explosions.traps` judged a trap by its cell's **centre** and reported it at the
+  tuft, so a query from on top of one came back empty and the flock set off mines but
+  not traps. Each device is now filtered where it sits (see *The look*, and the case in
+  `birds.rs`).
 
 - A mod's **own** device type cannot be a new `BlastKind` on the wire in v1 (the
   enum is closed, see *The wire*), but a world mod's device state can ride its own

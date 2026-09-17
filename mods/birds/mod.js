@@ -1,11 +1,17 @@
-// The `birds` mod: a flock of procedural birds with generated textures, five
-// animations and boids flocking, shared in multiplayer.
+// The `birds` mod: a flock of procedural birds with generated textures, seven
+// animation states and boids flocking, shared in multiplayer.
 //
 // It is a `side: "world"` mod, so the host simulates the flock and every peer
 // renders the same birds (the join handshake requires the same set). The model
 // is built in JavaScript -- `rl.makeModel` for the meshes, `rl.makeTexture` for
-// the feather pattern -- so the mod ships no binary assets. See APIv1.md §5.4
-// for the walk-through.
+// the feather pattern -- and the only files it ships are the two macaw calls its
+// manifest declares for the squawk. See APIv1.md §5.4 for the walk-through.
+//
+// Two of its behaviours reach into the world rather than only drawing in it, both
+// through the surface M19g added for mods (`goats.explosions`, APIv1.md §4.15): a
+// bird walking over a device sets it off and is flung away by it -- with a squawk,
+// the only sound this mod ships -- and a bird perched on the player's goat gives the
+// goat energy and health back while it sits there.
 //
 // Two engine facts shape the code:
 //
@@ -38,8 +44,28 @@ const COH = 11;
 const CULL = 150;                // no draw beyond this distance
 const MIN_GAP = 1.2;             // airborne birds are pushed apart to this
 
-const ST = { IDLE: 0, WALK: 1, TAKEOFF: 2, FLY: 3, LAND: 4, PERCH: 5 };
-const ST_NAME = ["idle", "walk", "takeoff", "fly", "land", "perch"];
+const ST = { IDLE: 0, WALK: 1, TAKEOFF: 2, FLY: 3, LAND: 4, PERCH: 5, FLUNG: 6 };
+const ST_NAME = ["idle", "walk", "takeoff", "fly", "land", "perch", "flung"];
+
+// ---- the goat's friends ---------------------------------------------------
+//
+// Two things the flock does to the world around it, both through the surface M19g
+// added for mods (`goats.explosions`, `APIv1.md` §4.15): a bird walking over a device
+// sets it off and is thrown by it, and a bird sitting on the player's back gives the
+// goat a little of its energy and health back while it stays.
+
+const TRIP_R = 0.6;              // metres; the core's own `explosions.mine.trigger`
+const FLUNG_PUSH = 16;           // m/s away from the device -- a bird weighs less than a goat
+const FLUNG_LIFT = 40;           // m/s up
+const FLUNG_GRAVITY = -72;       // the goat's own gravity, so the arc comes down hard
+const FLUNG_MAX = 2.5;           // seconds; a ceiling, so a bird cannot hang in the air
+const FLUNG_SPIN = 1.5;          // whole turns over the arc
+const BLESS_ENERGY = 4;          // energy a second, while a bird sits on the goat
+const BLESS_HEALTH = 2;          // ...and health, which is the sleep rate
+const BLESS_R2 = 1.0;            // metres^2: how close a mirroring client counts as "aboard"
+
+const SQUAWK_VOLUME = 0.9;       // the squawk, over the sfx slider's own volume
+const SQUAWK_FADE = 24;          // metres past which it is effectively silent
 
 const BODY_COL = [122, 92, 60];
 const HEAD_COL = [140, 110, 74];
@@ -294,6 +320,11 @@ function featherHex(n) {
 let BIRDS = [];
 let built = false;
 let bodyModel = -1, wingR = -1, wingL = -1, featherTex = -1;
+let trips = 0;      // devices the flock has set off (M19g's surface, below)
+let mineTrips = 0;  // ...and which kind they were: a case can tell a trap from a mine
+let trapTrips = 0;
+let blessed = 0;    // seconds a bird has spent on the player's back
+let SQUAWKS = [];   // the two macaw calls the manifest declares, loaded at build
 
 function newBird() {
     return {
@@ -301,6 +332,7 @@ function newBird() {
         vx: 0, vy: 0, vz: 0, flap: 0, pitch: 0, roll: 0, yawRate: 0, prevYaw: 0,
         cruise: 9, perch: -1, size: 1, // client mirror targets
         tx: 0, ty: 0, tz: 0, tyaw: 0,
+        trip: -1, sent: false,         // the device bucket, and a bird on an errand
     };
 }
 
@@ -333,6 +365,8 @@ function placeBird(b, i) {
     b.vx = b.vz = b.vy = 0;
     b.pitch = b.roll = b.yawRate = 0;
     b.perch = -1;
+    b.trip = -1;
+    b.sent = false;
 }
 
 function ensureBuilt() {
@@ -350,6 +384,16 @@ function ensureBuilt() {
         }
         goats.log("birds: models " + bodyModel + "/" + wingR + "/" + wingL +
             " tex " + featherTex);
+        // The squawk: the two files the manifest declares under one slot of the mod's
+        // own, which the host registered with the engine before this entry ran -- so
+        // what comes back here is an opaque name and `rl.loadSound` finds the bytes.
+        // The `rl` surface has no `unloadSound`, so these live until the process ends,
+        // the way the scene's own effects do when a mod is switched off.
+        const squawkNames = goats.assets.all("sfx.squawk");
+        for (let i = 0; i < squawkNames.length; i++) {
+            const sound = rl.loadSound(squawkNames[i]);
+            if (sound >= 0) SQUAWKS.push(sound);
+        }
     }
     seedFlockIfEmpty();
 }
@@ -412,16 +456,92 @@ function gatherBirds() {
         b.vx = b.vz = b.vy = 0;
         b.pitch = b.roll = b.yawRate = 0;
         b.perch = -1;
+        b.sent = false;
         setSt(b, ST.IDLE, 2);
         // A client mirrors the host, so its own move is only a target update.
         b.tx = b.x; b.ty = b.y; b.tz = b.z; b.tyaw = b.yaw;
     }
 }
 
+// Put a bird on the player's back, in the perch the landing path would have given it.
+// `birds sit` uses it, which is the friend mechanic at its most literal and the way
+// the suite drives it without waiting for a landing to pick the player.
+function perchOnGoat(b) {
+    const p = goats.player.state();
+    b.perch = PERCH_PLAYER;
+    b.x = p.x;
+    b.z = p.z;
+    b.y = groundAt(p.x, p.z) + PERCH_H;
+    b.yaw = p.yaw;
+    b.prevYaw = b.yaw;
+    b.vx = b.vz = b.vy = 0;
+    b.pitch = b.roll = b.yawRate = 0;
+    b.sent = false;
+    b.tx = b.x; b.ty = b.y; b.tz = b.z; b.tyaw = b.yaw;
+    setSt(b, ST.PERCH, 600);   // long enough to watch the goat fill up
+}
+
+// The nearest armed device to the player, of one kind or either (`birds boom [mine|
+// trap]`). Null when the field is empty in reach, which the command reports rather
+// than teleporting a bird into a meadow and pretending something happened.
+function nearestDevice(want) {
+    const p = goats.player.state();
+    const near = goats.explosions.traps(p.x, p.z, 40);
+    const pools = want === "trap" ? [["trap", near.traps]] :
+        want === "mine" ? [["mine", near.mines]] :
+            [["mine", near.mines], ["trap", near.traps]];
+    let best = null, bd = Infinity;
+    for (let i = 0; i < pools.length; i++) {
+        const list = pools[i][1];
+        for (let j = 0; j < list.length; j++) {
+            if (list[j].dist < bd) {
+                bd = list[j].dist;
+                best = { kind: pools[i][0], x: list[j].x, z: list[j].z };
+            }
+        }
+    }
+    return best;
+}
+
+// Birds and goats are friends: a bird sitting on the player's back gives the goat back
+// a little energy and health for as long as it stays. It is read from the perch's own
+// owner on the process that made the landing, and from the *position* on a client -- a
+// mirroring client is never told which goat a bird chose, but it can see one on its own
+// goat's back, and the player's stats are the one thing every process owns locally.
+// A dead goat is left alone: a bird is not a resurrection.
+function blessGoat(dt, exact) {
+    let sitting = 0;
+    let px = 0, pz = 0, have = false;
+    for (let i = 0; i < BIRDS.length; i++) {
+        const b = BIRDS[i];
+        if (b.st !== ST.PERCH) continue;
+        if (exact) {
+            if (b.perch === PERCH_PLAYER) sitting += 1;
+            continue;
+        }
+        // A client is not told which goat a bird chose, so it reads the bird against
+        // its own goat's position -- which is where the host put it.
+        if (!have) {
+            const p = goats.player.state();
+            px = p.x; pz = p.z; have = true;
+        }
+        const dx = b.x - px, dz = b.z - pz;
+        if (dx * dx + dz * dz <= BLESS_R2) sitting += 1;
+    }
+    if (sitting === 0) return;   // the usual frame: no flock query, no state at all
+    // A dead goat is left alone: a bird is not a resurrection.
+    const p = goats.player.state();
+    if (p.mode === "dead") return;
+    goats.player.giveEnergy(BLESS_ENERGY * sitting * dt);
+    goats.player.giveHealth(BLESS_HEALTH * sitting * dt);
+    blessed += sitting * dt;
+}
+
 function startTakeoff(b) {
     setSt(b, ST.TAKEOFF, TAKEOFF_TIME);
     b.cruise = rand(CRUISE_MIN, CRUISE_MAX);
     b.perch = -1;   // chosen again when this flight decides to land
+    b.sent = false; // any errand is over the moment the bird leaves the ground
     b.vx = COS(b.yaw) * 2;
     b.vz = -SIN(b.yaw) * 2;
 }
@@ -450,7 +570,13 @@ function pickPerch(b) {
 function perchTarget(b) {
     if (b.perch === PERCH_PLAYER) {
         const p = goats.player.state();
-        return { x: p.x, z: p.z, y: groundAt(p.x, p.z) + PERCH_H, yaw: p.yaw, speed: p.speed || 0 };
+        // `p.y` is the goat's own height above the ground under it: zero standing,
+        // positive through a blast's arc (M19c). A bird on the back of a blasted goat
+        // has to go up with it, or it glides along the ground beneath its friend until
+        // the goat lands on top of it.
+        const lift = p.y > 0 ? p.y : 0;
+        return { x: p.x, z: p.z, y: groundAt(p.x, p.z) + PERCH_H + lift, yaw: p.yaw,
+            speed: p.speed || 0 };
     }
     const bot = goats.bots.list()[b.perch];
     if (bot === undefined) return null;
@@ -464,6 +590,9 @@ function flapWave(t, amp, hz) { return amp * (0.5 - 0.5 * COS(t * hz * PI * 2));
 // m/s cannot keep pace with a running player, and a bird stranded far away is
 // culled and looks like it vanished.
 function tooFar(b) {
+    // A bird sent to a device (`birds boom`) is on an errand, and the errand is out
+    // past the flock's home by definition -- turning back would defeat it.
+    if (b.sent) return false;
     const dx = HOME.x - b.x, dz = HOME.z - b.z;
     const r = HOME_R + 6;
     return dx * dx + dz * dz > r * r;
@@ -479,6 +608,7 @@ function flapFor(b) {
         case ST.LAND: return flapWave(b.t, 0.7, 1.2) * (1 - 0.6 * clamp(b.t / LAND_TIME, 0, 1));
         case ST.WALK: return 0.06 * (1 + SIN(b.t * 8));
         case ST.PERCH: return 0.04 * (1 + SIN(b.t * 5));
+        case ST.FLUNG: return flapWave(b.t, 0.95, 3.2);   // frantic, and getting nowhere
         default: return 0;
     }
 }
@@ -557,6 +687,94 @@ function stepPerch(b, dt) {
     if (b.t >= b.dur) startTakeoff(b);
 }
 
+// Thrown by a device it set off (`tripDevices`). The goat's arc, in a lighter body:
+// the same gravity, its own push and lift, and it ends where the ground is -- crater
+// or slope or neither, because the ground is `terrainHeight` for a bird too.
+function stepFlung(b, dt) {
+    b.vy += FLUNG_GRAVITY * dt;
+    b.x += b.vx * dt;
+    b.z += b.vz * dt;
+    b.y += b.vy * dt;
+    b.yaw = ATAN2(-b.vz, b.vx);
+    const rest = groundAt(b.x, b.z) + LEG;
+    if ((b.vy < 0 && b.y <= rest) || b.t >= FLUNG_MAX) {
+        b.y = rest;
+        b.vx = b.vz = b.vy = 0;
+        b.pitch = b.roll = 0;
+        setSt(b, flockRnd() < 0.5 ? ST.WALK : ST.IDLE, rand(2, 5));
+    }
+}
+
+// A bird walking over a device sets it off, and is thrown by it. Both halves are the
+// mod surface M19g added: `goats.explosions.traps` is the field, read-only and the
+// same derivation the core uses (so a device a mod has switched off is not a device
+// here either), and `goats.explosions.blast` is the bang. Only the process that
+// simulates the flock asks -- a mirroring client is told, like every other state.
+function tripDevices(b) {
+    // The half-metre bucket, the core's own trick in `checkTriggers`: a bird standing
+    // still would otherwise ask the field the same question sixty times a second.
+    const stamp = ((((b.x * 2) | 0) + 4096) * 8192 + (((b.z * 2) | 0) + 4096));
+    if (b.trip === stamp) return;
+    b.trip = stamp;
+    // `traps` is already filtered to `range` of the bird's feet, which is the whole
+    // trigger test at the core's own radius -- `mine.trigger` is what a goat walks
+    // within, and a bird is no wider. Of either kind, the *nearest* is what goes off: a
+    // bird standing on a trap with a mine half a metre away sets off what it is on.
+    const near = goats.explosions.traps(b.x, b.z, TRIP_R);
+    let kind = null, dev = null, best = Infinity;
+    const pools = [["mine", near.mines], ["trap", near.traps]];
+    for (let i = 0; i < pools.length; i++) {
+        const list = pools[i][1];
+        for (let j = 0; j < list.length; j++) {
+            if (list[j].dist < best) {
+                best = list[j].dist;
+                kind = pools[i][0];
+                dev = list[j];
+            }
+        }
+    }
+    if (dev === null) return;
+    // The core's own blast path, so the crater, the damage, the light, the sound, the
+    // event and -- in a session -- the report are the ones a goat's bang gets. It also
+    // spends the device in that cell and moves its replacement, which is what keeps the
+    // bird from setting the same one off on landing and keeps the field drifting.
+    goats.explosions.blast(dev.x, dev.z, kind);
+    flingBird(b, dev);
+    trips += 1;
+    if (kind === "trap") trapTrips += 1;
+    else mineTrips += 1;
+}
+
+// A bird thrown by a device squawks on the way out: one of the two calls, picked and
+// pitched like the goat's own bleats so a field of birds does not sound like a button,
+// faded by how far the goat is. The volume rides the sfx slider; the master mute (`M`)
+// is not on the mod surface, which is the one place a mod's sound cannot follow the
+// game's -- a `muted` on `goats.settings` would close it.
+function playSquawk(x, z) {
+    if (SQUAWKS.length === 0) return;
+    const p = goats.player.state();
+    const att = 1 / (1 + HYPOT(x - p.x, z - p.z) / SQUAWK_FADE);
+    const sound = SQUAWKS[FLOOR(flockRnd() * SQUAWKS.length) % SQUAWKS.length];
+    rl.setSoundVolume(sound, goats.settings.get().sfx * SQUAWK_VOLUME * att);
+    rl.setSoundPitch(sound, 0.9 + flockRnd() * 0.25);
+    rl.playSound(sound);
+}
+
+function flingBird(b, dev) {
+    let dx = b.x - dev.x, dz = b.z - dev.z;
+    let d = HYPOT(dx, dz);
+    // Standing right on it: blown back the way it came in.
+    if (d < 0.05) { dx = -COS(b.yaw); dz = SIN(b.yaw); d = 1; }
+    b.vx = (dx / d) * FLUNG_PUSH;
+    b.vz = (dz / d) * FLUNG_PUSH;
+    b.vy = FLUNG_LIFT;
+    b.perch = -1;
+    b.sent = false;
+    b.roll = 0;
+    setSt(b, ST.FLUNG, FLUNG_MAX);
+    playSquawk(b.x, b.z);
+}
+
 // Boids: separation, alignment, cohesion, a pull home and a soft altitude hold.
 function stepFly(b, dt) {
     let aliX = 0, aliZ = 0, cohX = 0, cohZ = 0, sepX = 0, sepZ = 0, nA = 0, nC = 0, nS = 0;
@@ -633,6 +851,15 @@ function poseTargets(b) {
     if (b.st === ST.TAKEOFF) pitch = 0.5 * clamp(b.t / TAKEOFF_TIME, 0, 1);
     else if (b.st === ST.LAND) pitch = -0.25 + 0.4 * clamp(b.t / LAND_TIME, 0, 1);
     else if (b.st === ST.FLY) pitch = clamp(b.vy * 0.05, -0.18, 0.18);
+    else if (b.st === ST.FLUNG) pitch = clamp(b.vy * 0.06, -0.7, 0.7);
+    // A flung bird tumbles on the *state clock* rather than easing toward a target: a
+    // mirroring client resets that clock when the state arrives, so both ends spin at
+    // the same rate without the angle being sent, and the whole turns land it level.
+    if (b.st === ST.FLUNG) {
+        b.pitch = pitch;
+        b.roll = -b.t * FLUNG_SPIN * PI * 2;
+        return;
+    }
     b.pitch += (pitch - b.pitch) * 0.12;
     const roll = clamp(b.yawRate * 0.5, -0.55, 0.55);
     b.roll += (roll - b.roll) * 0.12;
@@ -682,8 +909,13 @@ function simulate(dt) {
             case ST.FLY: stepFly(b, dt); break;
             case ST.LAND: stepLand(b, dt); break;
             case ST.PERCH: stepPerch(b, dt); break;
+            case ST.FLUNG: stepFlung(b, dt); break;
             default: stepIdle(b, dt); break;
         }
+        // On the ground is where a device can be tripped. A bird on a goat's back is
+        // 1.15 m up, over the `clearance` a mine needs -- the goat it is riding trips
+        // that one, if anything does.
+        if (b.st === ST.IDLE || b.st === ST.WALK) tripDevices(b);
         b.yawRate = angleDelta(b.yaw, b.prevYaw) / dt;
         poseTargets(b);
     }
@@ -698,7 +930,10 @@ function mirror(dt) {
         const b = BIRDS[i];
         b.prevYaw = b.yaw;
         b.t += dt;
-        const k = MIN(1, dt * MIRROR_K);
+        // A flung bird is moving at the arc's speed rather than at a boid's, so it
+        // gets a stiffer ease: the snapshot arrives at the world datagram's cadence and
+        // a first-order lag would leave it gliding a dozen metres behind the host's.
+        const k = MIN(1, dt * (b.st === ST.FLUNG ? 14 : MIRROR_K));
         b.x += (b.tx - b.x) * k;
         b.y += (b.ty - b.y) * k;
         b.z += (b.tz - b.z) * k;
@@ -775,8 +1010,12 @@ function drawFlock(cam) {
 goats.on("update", function (dt) {
     if (!(dt > 0)) return;
     ensureBuilt();
-    if (goats.net.localWorld()) simulate(dt);
+    const local = goats.net.localWorld();
+    if (local) simulate(dt);
     else mirror(dt);
+    // Both ends: a bird on the back of *this* process's goat is this process's gift,
+    // whoever simulated the landing.
+    blessGoat(dt, local);
 });
 
 goats.on("draw3d", function (cam) {
@@ -793,6 +1032,8 @@ goats.on("shutdown", function () {
     bodyModel = wingR = wingL = -1;
     built = false;
     BIRDS = [];
+    // The sounds are dropped rather than freed: there is no `unloadSound` to call.
+    SQUAWKS = [];
 });
 
 goats.command("birds", function (parts) {
@@ -810,6 +1051,29 @@ goats.command("birds", function (parts) {
         }
         return "ok birds landing";
     }
+    if (verb === "sit") {
+        // A bird on the goat's back, and the rest of the flock on the ground beside it.
+        gatherBirds();
+        if (BIRDS.length > 0) perchOnGoat(BIRDS[0]);
+        return "ok birds sitting";
+    }
+    if (verb === "boom") {
+        // Send a bird onto the nearest device and let the next update trip it, so the
+        // command exercises the same path a wandering bird does rather than a shortcut.
+        const dev = nearestDevice(parts[2]);
+        if (dev === null) return "ok no device in reach";
+        if (BIRDS.length === 0) return "ok no birds";
+        const b = BIRDS[0];
+        b.x = dev.x;
+        b.z = dev.z;
+        b.y = groundAt(dev.x, dev.z) + LEG;
+        b.vx = b.vz = b.vy = 0;
+        b.perch = -1;
+        b.trip = -1;      // the bucket must not swallow the move
+        b.sent = true;    // the errand is deliberately outside the flock's home
+        setSt(b, ST.IDLE, 1);
+        return "ok bird sent to the " + dev.kind;
+    }
     const counts = {};
     let near = Infinity, far = 0;
     const p = goats.player.state();
@@ -822,7 +1086,8 @@ goats.command("birds", function (parts) {
     }
     return "ok " + JSON.stringify({ count: BIRDS.length, local: goats.net.localWorld(),
         anchor: anchorPlayer ? "player" : "herd", near: BIRDS.length ? r1(near) : null,
-        far: BIRDS.length ? r1(far) : null, states: counts });
+        far: BIRDS.length ? r1(far) : null, states: counts,
+        trips: trips, mineTrips: mineTrips, trapTrips: trapTrips, blessed: r1(blessed) });
 });
 
 goats.log("birds: " + COUNT + " procedural birds ready");

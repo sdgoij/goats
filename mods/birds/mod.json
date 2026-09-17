@@ -4,6 +4,12 @@
   "version": "1.0.0",
   "api": 1,
   "side": "world",
-  "description": "A flock of procedural birds: generated textures, five animations, boids flocking, synced in multiplayer.",
-  "entry": "mod.js"
+  "description": "A flock of procedural birds: generated meshes and textures, seven states, boids flocking, a squawk of its own, synced in multiplayer.",
+  "entry": "mod.js",
+  "assets": {
+    "sfx.squawk": [
+      "assets/dragon-studio-macaw-call-382715.mp3",
+      "assets/dragon-studio-macaw-sound-382721.mp3"
+    ]
+  }
 }

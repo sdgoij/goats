@@ -1636,32 +1636,39 @@ function sceneTraps(x, z, range) {
     const cz0 = Math.floor(z / 2);
     for (let cx = cx0 - r; cx <= cx0 + r; cx++) {
         for (let cz = cz0 - r; cz <= cz0 + r; cz++) {
+            // A mine sits at its cell's centre, so that centre *is* its position -- which
+            // is why filtering the cell by this distance is right for a mine.
             const mx = cx * 2 + 1;
             const mz = cz * 2 + 1;
             const dx = mx - x;
             const dz = mz - z;
-            if (dx * dx + dz * dz > range2) continue;
-            const key = tuftKey(cx, cz);
-            if (mineArmed(cx, cz)) {
+            if (dx * dx + dz * dz <= range2 && mineArmed(cx, cz)) {
+                const key = tuftKey(cx, cz);
                 out.mines.push({
                     x: mx, z: mz, key: key, dist: Math.sqrt(dx * dx + dz * dz),
                     moved: MOVED.has(key),
                 });
             }
-            // A trapped tuft is reported at the tuft, which is where the bang would
-            // land -- the tuft's own hash is `tuftInCell`'s.
-            if (trapAt(cx, cz) && !EATEN.has(key)) {
-                const t = tuftInCell(cx, cz);
-                if (t !== null) {
-                    out.traps.push({
-                        x: t.x,
-                        z: t.z,
-                        key: key,
-                        dist: Math.sqrt((t.x - x) * (t.x - x) + (t.z - z) * (t.z - z)),
-                        moved: TRAP_MOVED.has(key),
-                    });
-                }
-            }
+            if (!trapAt(cx, cz)) continue;
+            const key = tuftKey(cx, cz);
+            if (EATEN.has(key)) continue;
+            // A trapped tuft is reported at the tuft -- and *judged* at the tuft. It sits
+            // at the cell's even corner (up to 1.4 m from the centre above) plus its own
+            // jitter, so a cell the centre keeps out of range can hold a tuft that is
+            // right under the query. Filtering the cell by the centre hid every tuft
+            // jittered away from the middle: a query from on top of a trap came back
+            // empty, which is the one thing its own `dist` was there to say. (M19d's
+            // trap, in the one place it survived -- see *The mechanics* in ROADMAP.md.)
+            const t = tuftInCell(cx, cz);
+            if (t === null) continue;
+            const tdx = t.x - x;
+            const tdz = t.z - z;
+            if (tdx * tdx + tdz * tdz > range2) continue;
+            out.traps.push({
+                x: t.x, z: t.z, key: key,
+                dist: Math.sqrt(tdx * tdx + tdz * tdz),
+                moved: TRAP_MOVED.has(key),
+            });
         }
     }
     return out;

@@ -398,8 +398,12 @@ field, and hook the `"blast"` event -- `APIv1.md` §4.15.
 Two examples ship in `mods/`. `example/` is the small one: a console command, a
 HUD clock, a generated `sfx.bleat` override and a `tuning.json`. `birds/` is the
 large one: a `side: "world"` flock with a procedural body and wings, a generated
-feather texture, five animation states (idle, walk, take-off, fly, land), boids
-flocking while flying, and multiplayer sync through `world.extend`. Both are
+feather texture, seven states (idle, walk, take-off, fly, land, perch, flung), boids
+flocking while flying, and multiplayer sync through `world.extend`. It also ships two
+macaw calls (its only files) and reaches into the world through the surface M19g added
+for mods: a bird sets off the device it walks over, is thrown by it with a squawk, and
+one sitting on the goat's back gives the goat
+energy and health back. Both are
 exercised without a window by the scene suite (`crates/harness/tests/mods.rs`
 and `birds.rs`).
 

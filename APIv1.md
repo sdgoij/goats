@@ -720,7 +720,7 @@ goats.explosions.armed(false);   // my own devices rule the field for now
 
 | Member | Description |
 | --- | --- |
-| `goats.explosions.traps(x, z, range)` | The derived devices near `(x, z)`: `{ mines: [...], traps: [...] }`, each `{ x, z, key, dist, moved }`. **Read-only**, and the same derivation the core uses -- so a mine detector is a mod, and so is a "clear the field" tool. |
+| `goats.explosions.traps(x, z, range)` | The derived devices near `(x, z)`: `{ mines: [...], traps: [...] }`, each `{ x, z, key, dist, moved }`. **Read-only**, and the same derivation the core uses -- so a mine detector is a mod, and so is a "clear the field" tool. `range` is measured to the **device itself** -- a mine is at its cell's centre, a trap is on the tuft -- so `traps(x, z, 0.6)` at a point something is standing on answers the core's own trigger question, and the returned `dist` is the number the range filtered on. |
 | `goats.explosions.blast(x, z, kind)` | Set a bang off. `kind` is `"mine"` or `"trap"` (which is only which core behaviour it follows). It goes through the *core* blast path: the crater, the damage, the flash, the camera knock, the sound, the `"blast"` event and -- in a session -- the report, so a world mod's bang is the host's and everyone sees it. |
 | `goats.explosions.armed(on)` | With no argument, whether the core devices are in the field. `armed(false)` takes them out of it (the derivation only: a bang already in flight still lands), and `armed(true)` hands them back. The request belongs to the mod that made it, so unloading or reloading that mod restores the field, and two mods cannot cancel each other by load order. |
 
@@ -869,10 +869,10 @@ with the same `Goat*` action names just works.
 ### 5.4 A world mod with its own entity: `birds`
 
 The checked-in `mods/birds/` is the worked example of a mod that is more than a
-patch: it adds a flock of birds nobody else knows about. It ships no binary
-assets -- the meshes come from `rl.makeModel` and the feather texture from
-`rl.makeTexture` -- and it is `side: "world"`, so every peer sees the same
-birds.
+patch: it adds a flock of birds nobody else knows about. Its meshes come from
+`rl.makeModel` and its feather texture from `rl.makeTexture`, so the only files it
+ships are the two macaw calls its manifest declares for the squawk (§3.3) -- and it
+is `side: "world"`, so every peer sees the same birds.
 
 Tools a mod already has, without new API:
 
@@ -887,6 +887,29 @@ Tools a mod already has, without new API:
 - **Its own shared state.** `world.registerStream` seeds a PRNG,
   `world.extend(id, { publish, apply })` rides the mods datagram, beside the
   world's.
+- **Its own sound.** A sound is an asset like any other: declare it in the
+  manifest (`assets: { "sfx.squawk": ["assets/call-a.mp3", "assets/call-b.mp3"] }`),
+  and the host registers the bytes under an opaque name before the entry runs. The
+  mod reads them back with `goats.assets.all(slot)` and hands them to
+  `rl.loadSound` -- no path, no filesystem. A slot of the mod's own is the way to
+  keep its audio out of the game's own slots, and the name must keep the file's
+  extension, because that is the decoder hint the engine materialises it with.
+
+**Reaching into the world.** The flock does more than draw itself: a bird walking over
+a device sets it off, is flung away by it and squawks about it, and a bird perched on
+the player's goat gives the goat its energy and health back while it sits there. All of
+it is built out of surface that already exists -- `goats.explosions.traps` to read the
+field (§4.15), `goats.explosions.blast` to fire through the core's own blast path,
+`goats.player.giveEnergy`/`giveHealth` (§4.5) for the gift, and `goats.settings.get().sfx`
+for the squawk's volume. Nothing needs anything new on the wire: a flung bird publishes
+the same five numbers as any other, because the arc and the tumble are derived from the
+state and its clock rather than sent. All of it is a console verb away if you want to
+watch: `birds boom [mine|trap]` sends a bird onto the nearest device, and `birds sit`
+puts one on the goat.
+
+**The one gap a sound-firing mod has:** there is no `unloadSound` in the `rl` surface
+and no master-mute flag on `goats.settings`, so a mod's own sound lives until the
+process ends and plays on while `M` has everything else silent.
 
 Two things are worth knowing before writing one.
 
@@ -1162,8 +1185,12 @@ Landed with the implementation, and Rust on the engine since M15:
   freeze still refuses everything else and a duplicate id is refused outright.
 - `crates/harness/tests/birds.rs` — drives the `birds` fixture (§5.4) with a
   recording `rl` and asserts its meshes build lazily, every animation state is
-  reached, boid separation holds, a client mirrors rather than simulates, and two
-  fresh worlds with the same seed agree. It is `#[ignore]`d for a release build:
+  reached (the flung one included, and mirrored on a client), boid separation
+  holds, a bird trips a *mine* and a *trap* -- each with the kind asserted, the
+  device spent and its replacement moved in -- and one of its own two squawks
+  played, that a query finds a trap from its own tuft (swept over the whole field),
+  a bird on the goat's back moves the goat's energy and health, a client mirrors
+  rather than simulates, and two fresh worlds with the same seed agree. It is `#[ignore]`d for a release build:
   in debug the flock's `update` runs the interpreter out of stack.
 - `crates/mods` — discovery, manifest validation, ordering, zips, reload and the
   watcher (18 tests, pure Rust). A `server` test loads the real birds fixture

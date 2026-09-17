@@ -1012,6 +1012,12 @@ function modBlast(id, x, z, kind) {
     const blastKind = kind === "trap" ? "trap" : "mine";
     const cx = Math.floor(fx / 2);
     const cz = Math.floor(fz / 2);
+    // The device in this cell is spent *here* as well (M19g). Every other process spends
+    // it from the key in the report, so the origin has to do the same or the cell stays
+    // armed where the bang happened -- and whatever the mod sent over it trips the same
+    // device again on the way back. `spendDevice` is also what moves the replacement in,
+    // so the field drifts for a mod's bang exactly as it does for a goat's.
+    spendDevice(blastKind, cx, cz);
     blast(blastKind, fx, fz, hash(fx * 7.1 + fz * 3.3), 0, tuftKey(cx, cz));
     return true;
 }
