@@ -271,6 +271,58 @@ fn the_mod_surface_works() {
         &boom,
     );
 
+    // ---- one mod's entities, seen by another -------------------------------
+    let pair = staged("the entities block", entities_block(&mut harness));
+    checks.check(
+        "a mod sees another mod's offered entities, in range and live",
+        pair.seen && pair.filtered,
+        &pair,
+    );
+    checks.check(
+        "a malformed row is skipped, and a throwing offer costs only itself",
+        pair.validated && pair.survived,
+        &pair,
+    );
+    checks.check(
+        "disabling the owner takes its entities out of the field",
+        pair.dropped,
+        &pair,
+    );
+
+    // ---- the fat guy -------------------------------------------------------
+    let guy = staged("the fatguy block", fatguy_block(&mut harness));
+    checks.check(
+        "the guy trips the device under him and is thrown by it",
+        guy.tripped && guy.flung,
+        &guy,
+    );
+    checks.check(
+        "the throw is aimed at the next device, and the ladder holds",
+        guy.aimed && guy.ladder,
+        &guy,
+    );
+    checks.check(
+        "...so he lands on it, and only a second bang lands him",
+        guy.chained,
+        &guy,
+    );
+    checks.check(
+        "a couple of seconds on his feet restores the whole ladder",
+        guy.reset,
+        &guy,
+    );
+    checks.check(
+        "a bird on the ground shoves him, and one in the air does not",
+        guy.bird && guy.airborne,
+        &guy,
+    );
+    checks.check("a goat that walks into him shoves him", guy.goat, &guy);
+    checks.check(
+        "the sound slots are read: both yell variants and the landing are heard",
+        guy.voice,
+        &guy,
+    );
+
     checks.finish();
 }
 
@@ -1128,4 +1180,338 @@ fn added_block(harness: &mut Harness) -> Result<ModAdded, String> {
     added.unreadable = harness.call("sceneModAdd", &[json!("not json")])?
         == json!("error unreadable mod metadata");
     Ok(added)
+}
+
+// ---- one mod's entities, seen by another -------------------------------------
+
+/// What `goats.entities` (APIv1.md §4.16) let one mod see of another's.
+#[derive(Debug, Default)]
+struct ModPair {
+    seen: bool,
+    filtered: bool,
+    validated: bool,
+    survived: bool,
+    dropped: bool,
+}
+
+const TABLE_ENTITIES: &str = r#"[
+    {"id":"com.offer","name":"Offer","version":"1","api":1,"side":"client","enabled":true,"hash":"0"},
+    {"id":"com.ask","name":"Ask","version":"1","api":1,"side":"client","enabled":true,"hash":"0"},
+    {"id":"com.broken","name":"Broken","version":"1","api":1,"side":"client","enabled":true,"hash":"0"}
+]"#;
+
+/// The owner: three rows, one of them malformed, in a table the case could move.
+const OFFER_ENTRY: &str = r#"(function (goats) {
+    globalThis.__things = [[3, 0.5, 0, 0.2], [5, 0.5, 0, 0.2], ["x", 0, 0, 0]];
+    goats.entities.offer("things", function () { return globalThis.__things; });
+})(goats.begin("com.offer"))"#;
+
+/// The asker: one query in range, and one that a check asks again itself.
+const ASK_ENTRY: &str = r#"(function (goats) {
+    globalThis.__near = goats.entities.near(0, 0, 4);
+})(goats.begin("com.ask"))"#;
+
+/// A mod whose offer throws: the asker must not be the one who pays for it.
+const BROKEN_ENTRY: &str = r#"(function (goats) {
+    goats.entities.offer("junk", function () { throw new Error("no"); });
+})(goats.begin("com.broken"))"#;
+
+fn entities_block(harness: &mut Harness) -> Result<ModPair, String> {
+    let mut pair = ModPair::default();
+    harness.call("sceneMods", &[json!(TABLE_ENTITIES)])?;
+    harness.eval(BROKEN_ENTRY)?;
+    harness.call(
+        "sceneModResult",
+        &[json!("com.broken"), json!(true), json!("")],
+    )?;
+    harness.eval(OFFER_ENTRY)?;
+    harness.call(
+        "sceneModResult",
+        &[json!("com.offer"), json!(true), json!("")],
+    )?;
+    harness.eval(ASK_ENTRY)?;
+    harness.call(
+        "sceneModResult",
+        &[json!("com.ask"), json!(true), json!("")],
+    )?;
+
+    // In range: one row, its `from` naming the offer that owns it, and the position,
+    // radius and distance the owner's own numbers.
+    pair.seen = bool_of(harness.eval(
+        "globalThis.__near.length === 1 && globalThis.__near[0].from === \"com.offer:things\" \
+         && globalThis.__near[0].x === 3 && globalThis.__near[0].r === 0.2 \
+         && globalThis.__near[0].d === 3",
+    )?);
+    // Out of range: the offer's other real row is not there, and the row that is not
+    // four numbers is skipped rather than handed over.
+    pair.filtered = bool_of(harness.eval(
+        "goats.entities.near(0, 0, 10).length === 2 && \
+         goats.entities.near(0, 0, 10).every(function (e) { \
+             return e.from === \"com.offer:things\"; })",
+    )?);
+    // A bad range is loud rather than an empty list, and the mod whose callback throws
+    // costs only itself: the asker still gets everybody else's entities, and the log
+    // names the mod it could not ask.
+    pair.validated = throws(harness, "goats.entities.near(0, 0, -1)");
+    let obs = harness.observe()?;
+    pair.survived = obs
+        .logs
+        .iter()
+        .any(|line| line.contains("entities.offer threw") && line.contains("com.broken"));
+    // And a mod that has been unloaded takes its entities with it, the way its handlers
+    // go: `mod disable` reaches this through the host, which is what `sceneModEnd` is.
+    harness.call("sceneModEnd", &[json!("com.offer")])?;
+    pair.dropped = bool_of(harness.eval("goats.entities.near(0, 0, 10).length === 0")?);
+    harness.eval("goats.end(\"com.ask\")")?;
+    harness.eval("goats.end(\"com.broken\")")?;
+    Ok(pair)
+}
+
+// ---- the shipped fat guy -----------------------------------------------------
+
+/// The fat guy, as his own console verb reports him and as the run observed him.
+#[derive(Debug, Default)]
+struct FatGuy {
+    tripped: bool,
+    flung: bool,
+    aimed: bool,
+    ladder: bool,
+    chained: bool,
+    reset: bool,
+    bird: bool,
+    airborne: bool,
+    goat: bool,
+    voice: bool,
+}
+
+/// A test flock: one row, moved by the case. The birds ship this themselves
+/// (`mods/birds/mod.js`), which is the pair the surface was added for.
+const TABLE_FLOCK: &str = r#"[{"id":"com.flock","name":"Flock","version":"1","api":1,"side":"client","enabled":true,"hash":"0"}]"#;
+
+const FLOCK_ENTRY: &str = r#"(function (goats) {
+    globalThis.__flock = [];
+    goats.entities.offer("flock", function () { return globalThis.__flock; });
+})(goats.begin("com.flock"))"#;
+
+/// The mod's own manifest as the host would push it, plus the voices its `assetAdds`
+/// declares -- which is the whole of what a sound file needs. Two variants of the yell
+/// and one landing, named the way the loader names them (`:index` once a slot holds more
+/// than one file), so the case can see the variant pick and not only the slot.
+fn fatguy_table() -> Result<String, String> {
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../mods/fatguy/mod.json"))
+            .map_err(|error| error.to_string())?;
+    let row = json!({
+        "id": manifest["id"].clone(),
+        "name": manifest["name"].clone(),
+        "version": manifest["version"].clone(),
+        "api": manifest["api"].clone(),
+        "side": manifest["side"].clone(),
+        "enabled": true,
+        "hash": "0",
+        "assets": {
+            "model.fatguy": "mod:fatguy:model.fatguy.glb",
+        },
+        "assetAdds": {
+            "sfx.fatguy.yell": [
+                "mod:fatguy:sfx.fatguy.yell:0.wav",
+                "mod:fatguy:sfx.fatguy.yell:1.wav",
+            ],
+            "sfx.fatguy.land": ["mod:fatguy:sfx.fatguy.land.wav"],
+        },
+    });
+    serde_json::to_string(&json!([row])).map_err(|error| error.to_string())
+}
+
+/// His state, as the `fatguy` verb reports it.
+fn fatguy_state(harness: &mut Harness) -> Result<serde_json::Value, String> {
+    let reply = harness.command("fatguy")?;
+    serde_json::from_str(reply.strip_prefix("ok ").unwrap_or("")).map_err(|error| error.to_string())
+}
+
+/// One frame, with the frame counter held open first: `windowShouldClose` is the stub's
+/// own clock, so a case that wants a fixed number of frames has to reset it, and frame
+/// zero is the one frame the scripted timeline holds no keys on.
+fn fatguy_frame(harness: &mut Harness) -> Result<serde_json::Value, String> {
+    harness.reset_frame()?;
+    harness.call("sceneFrame", &[])?;
+    fatguy_state(harness)
+}
+
+/// Holds the frame still until the shove he is carrying has bled off, so the next phase
+/// measures what it is meant to rather than the last one's decay. A bird that keeps
+/// touching him ratchets the shove to its ceiling and the fade is exponential, so this
+/// is a wait rather than a couple of frames. The report rounds to two places, which is
+/// also what "zero" means here.
+fn fatguy_settled(harness: &mut Harness, frames: u32) -> Result<(), String> {
+    for _ in 0..frames {
+        if fatguy_frame(harness)?["knock"].as_f64().unwrap_or(-1.0) <= 0.0 {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn fatguy_row(harness: &mut Harness, state: &serde_json::Value, lift: f64) -> Result<(), String> {
+    let gx = state["x"].as_f64().unwrap_or(0.0);
+    let gz = state["z"].as_f64().unwrap_or(0.0);
+    // The ground under the row is the scene's own height, so the row is a bird standing
+    // half a metre to his side -- or, with a lift, one flying over him.
+    harness
+        .eval(&format!(
+            "globalThis.__flock = [[{}, terrainHeight({}, {}) + {}, {}, 0.35]]",
+            gx + 0.5,
+            gx + 0.5,
+            gz,
+            lift,
+            gz
+        ))
+        .map(|_| ())
+}
+
+/// The shipped `fatguy` mod, driven through its own console verb.
+///
+/// It is the checked-in file, compiled in with `include_str!`, so the case cannot drift
+/// from what ships; his model is never loaded (the slot points at a name the stub
+/// answers) and nothing he does needs it -- the run, the trip and the throw are all in
+/// `update`. The scene is deterministic, so a chain either happens in this run or it does
+/// not, and the case says which.
+fn fatguy_block(harness: &mut Harness) -> Result<FatGuy, String> {
+    let mut guy = FatGuy::default();
+    let id = "com.github.sdgoij.goats.fatguy";
+    let entry = format!(
+        "(function (goats) {{\n{}\n}})(goats.begin({:?}))",
+        include_str!("../../../mods/fatguy/mod.js"),
+        id
+    );
+    harness.call("sceneMods", &[json!(fatguy_table()?)])?;
+    harness.eval(&entry)?;
+    harness.call("sceneModResult", &[json!(id), json!(true), json!("")])?;
+
+    // Standing on a device, through his own verb: the trip that follows is the core's own
+    // trigger test on the next frame, not the verb's.
+    guy.tripped = harness.command("fatguy boom mine")? == "ok fatguy boom mine";
+
+    // The fuse, the throw, the landing, and the trip after it -- sampled every frame,
+    // because the arc and the ladder are both transients.
+    let mut flew = false;
+    let mut ladder = true;
+    let mut most = 0i64;
+    for _ in 0..420 {
+        let state = fatguy_frame(harness)?;
+        if state["flung"] == json!(true) {
+            flew = true;
+        }
+        if state["aimed"] == json!(true) {
+            guy.aimed = true;
+        }
+        let blasts = state["blasts"].as_i64().unwrap_or(-1);
+        let chance = state["chance"].as_f64().unwrap_or(-1.0);
+        if blasts > most {
+            most = blasts;
+        }
+        // The ladder, at whatever count he is on: the throw after one bang carries a 75%
+        // chance of finding another device, then 50, then 25, then none.
+        let want = match blasts {
+            0 => 1.0,
+            1 => 0.75,
+            2 => 0.5,
+            3 => 0.25,
+            _ => 0.0,
+        };
+        if blasts < 0 || (chance - want).abs() > 1e-9 {
+            ladder = false;
+        }
+    }
+    guy.flung = flew;
+    guy.ladder = ladder && most >= 1;
+    guy.chained = most >= 2;
+
+    // Two seconds on his feet is what restores the ladder, so the episode has to end on
+    // its own before it can be read. Bounded: a chain still running would only be more
+    // proof, and this case is already long.
+    let mut settled = false;
+    for _ in 0..420 {
+        let state = fatguy_frame(harness)?;
+        if state["flung"] == json!(false) && state["blasts"] == json!(0) {
+            settled = true;
+            break;
+        }
+    }
+    guy.reset = settled;
+
+    // A bird, offered by a mod the case controls and tracking him, so the contact is the
+    // collision rather than the two of them happening to meet. The herd goes home first,
+    // and the player's goat stands well outside the meadow: with the flock the only
+    // thing within reach, a shove is the bird's.
+    harness.eval("unloadBots()")?;
+    harness.command("pos 60 60")?;
+    // ...and the devices are out of the field for these frames: he runs over the meadow
+    // while they are being measured, and a bang would throw him mid-shove.
+    harness.eval("goats.explosions.armed(false)")?;
+    harness.call("sceneMods", &[json!(TABLE_FLOCK)])?;
+    harness.eval(FLOCK_ENTRY)?;
+    harness.call(
+        "sceneModResult",
+        &[json!("com.flock"), json!(true), json!("")],
+    )?;
+    let mut hit = 0.0f64;
+    // The shove his last goat contact left is waited out first, or its decay would be
+    // read as the bird's.
+    fatguy_settled(harness, 300)?;
+    for _ in 0..30 {
+        let state = fatguy_frame(harness)?;
+        fatguy_row(harness, &state, 0.1)?;
+        let knock = fatguy_frame(harness)?["knock"].as_f64().unwrap_or(0.0);
+        if knock > hit {
+            hit = knock;
+        }
+    }
+    guy.bird = hit > 0.0;
+
+    // ...while the same row in the air is not a bird he can walk into. The row moves up
+    // first and the shove it left behind is waited out, for the same reason -- and this
+    // is the one he ratcheted to its ceiling, so the wait is a long one.
+    let lifted = fatguy_frame(harness)?;
+    fatguy_row(harness, &lifted, 5.0)?;
+    fatguy_settled(harness, 300)?;
+    let mut clear = 0.0f64;
+    for _ in 0..30 {
+        let state = fatguy_frame(harness)?;
+        fatguy_row(harness, &state, 5.0)?;
+        let knock = fatguy_frame(harness)?["knock"].as_f64().unwrap_or(-1.0);
+        if knock > clear {
+            clear = knock;
+        }
+    }
+    guy.airborne = guy.bird && clear == 0.0;
+
+    // The player's goat, put on top of him and kept there: the deepest contact of a frame
+    // is a goat's, and a goat shoves him hardest.
+    let mut goat = 0.0f64;
+    for _ in 0..20 {
+        let state = fatguy_frame(harness)?;
+        harness.command(&format!(
+            "pos {} {}",
+            state["x"].as_f64().unwrap_or(0.0),
+            state["z"].as_f64().unwrap_or(0.0)
+        ))?;
+        let knock = fatguy_frame(harness)?["knock"].as_f64().unwrap_or(0.0);
+        if knock > goat {
+            goat = knock;
+        }
+    }
+    guy.goat = goat > 0.0;
+
+    // The sound slots, played by path: both variants of the yell as he goes up, and the
+    // landing when he comes down -- which is the whole of what a sound file needs to be
+    // heard, and, for the yell, the pick between them.
+    let obs = harness.observe()?;
+    let played = |needle: &str| obs.sound_plays.keys().any(|path| path.contains(needle));
+    guy.voice = played("fatguy.yell:0") && played("fatguy.yell:1") && played("fatguy.land");
+    // The field the case took out is handed back, so the scene is left as it was found.
+    harness.eval("goats.explosions.armed(true)")?;
+    harness.eval(&format!("goats.end({id:?})"))?;
+    harness.eval("goats.end(\"com.flock\")")?;
+    Ok(guy)
 }

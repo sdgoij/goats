@@ -43,6 +43,10 @@ const ALIGN = 8;
 const COH = 11;
 const CULL = 150;                // no draw beyond this distance
 const MIN_GAP = 1.2;             // airborne birds are pushed apart to this
+// A bird's own width, for anything outside the flock that wants to collide with one
+// -- the fatguy's run, through `goats.entities` (APIv1.md §4.16). The body is drawn
+// at `SCALE` with `LEG` off the ground, and this is the radius around it.
+const BODY_R = 0.35;
 
 const ST = { IDLE: 0, WALK: 1, TAKEOFF: 2, FLY: 3, LAND: 4, PERCH: 5, FLUNG: 6 };
 const ST_NAME = ["idle", "walk", "takeoff", "fly", "land", "perch", "flung"];
@@ -1006,6 +1010,19 @@ function drawFlock(cam) {
 }
 
 // ---- lifecycle and surface ------------------------------------------------
+
+// The flock is offered to other mods, which is the whole of the fatguy's bird
+// collision: a row is `[x, y, z, r]` and it is read live, because the flock moves
+// every frame (APIv1.md §4.16). Nothing is published for this -- it is a client's
+// own view of the birds it is drawing.
+
+goats.entities.offer("flock", function () {
+    const rows = [];
+    for (let i = 0; i < BIRDS.length; i++) {
+        rows.push([BIRDS[i].x, BIRDS[i].y, BIRDS[i].z, BODY_R]);
+    }
+    return rows;
+});
 
 goats.on("update", function (dt) {
     if (!(dt > 0)) return;

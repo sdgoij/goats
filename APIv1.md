@@ -369,6 +369,10 @@ reported, not silently ignored).
 > **Added in M19g:** `goats.explosions` (`blast`, `traps`, `armed`, §4.15) and the
 > `"blast"` event. The three M19g sound slots (`sfx.fuse`, `sfx.trap`,
 > `sfx.blast.close`) are documented in §3.3 and empty in the shipped game.
+>
+> **Added with the fatguy:** `goats.entities` (`offer`, `near`, §4.16), so one mod
+> can collide with another's -- the birds' flock and the fat guy's run are the pair
+> it was added for.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
@@ -587,6 +591,8 @@ herd     count, spec[]              (spec is the archetype pool)
 camera   yaw, pitch, dist, minDist, maxDist
 sky      cloudBase, cloudTop, scale, detail, absorb, cirrusLevel, speed, steps[]
 lighting shadow{size, half, dist, near, far, bias, strength}
+explosions enabled, safe, fuse, maxActive, mine{...}, trap{...}, blast{...},
+         crater{...}, fx{...}, relocate{...}, chain, chainDepth
 ```
 
 Every name is one the scene reads today (`ENERGY_DRAIN`, `GAIT`,
@@ -609,10 +615,12 @@ from its embedded registry before the disk. A manifest's `assets` map is applied
 automatically when the host pushes the table, so a data-only pack (no `entry`)
 replaces a built-in just by declaring the slot. `assetAdds` -- and `assets.add`,
 which is the same statement made from code -- joins the slot's list instead: the
-game's own files stay and the mod's go on the end. A slot that holds a single file
-(a track, a bed, a model) has no list to join, and an addition to one is a warning
-from a manifest and a `throw` from code. One slot cannot be both filled and joined,
-which the host refuses at load.
+game's own files stay and the mod's go on the end. A slot the game does not have at
+all is created as a list, which is how a mod builds a multi-file slot of its own --
+`mods/fatguy`'s three screams, say. A slot that holds a single file (a track, a
+bed, a model) has no list to join, and an addition to one is a warning from a
+manifest and a `throw` from code. One slot cannot be both filled and joined, which
+the host refuses at load.
 
 An opaque name ends in the asset file's own extension (`mod:com.example:model.fatguy.glb`)
 because the engine materialises the bytes to a temp file and raylib picks its
@@ -753,6 +761,46 @@ close mix when the goat is inside it. The mixer's own side of M19g is the pool:
 every slot is loaded as `SFX_POOL` (three) copies of each of its variants, and a
 play takes a variant at random and a copy that is not already in the air, so two
 bangs inside one sample's length are a chord rather than a restart.
+
+### 4.16 Entities (one mod's, seen by another)
+
+> **Implemented.** The seabird flock offers its birds and the fatguy's run asks
+> for what is near it, which is the whole of "the guy collides with birds".
+
+```js
+// The owner: the entities it simulates, as rows of [x, y, z, r] -- a position and
+// a radius. Called on every query, so it has to read the live state.
+goats.entities.offer("flock", () => BIRDS.map((b) => [b.x, b.y, b.z, BODY_R]));
+
+// The asker: whatever is within `range` of a point in the ground plane.
+for (const e of goats.entities.near(x, z, 2.0)) {
+    // e = { from: "com.example.birds:flock", x, y, z, r, d }
+}
+```
+
+| Member | Description |
+| --- | --- |
+| `goats.entities.offer(name, fn)` | Offers the entities this mod simulates, under a name of its own. The name is namespaced to the mod (`<id>:<name>`), an offer made twice under one name replaces the first, and every offer is dropped when the mod is reloaded or disabled -- there is nothing to unsubscribe. |
+| `goats.entities.near(x, z, range)` | Every offered entity within `range` of `(x, z)`, from *any* mod, as `{ from, x, y, z, r, d }`. `from` is the `<id>:<name>` of the offer, `d` is the distance in the ground plane. |
+
+Rules that fall out of the shape:
+
+- **The row is the whole contract.** `[x, y, z, r]` is a position and a radius, in
+  the world's own units -- nothing says *what* the entity is, which is what keeps
+  this from being a scene-level entity system. A mod that wants to be avoidable
+  publishes where it is and how wide, and nothing else.
+- **The ground plane is the query's, the height is the asker's.** `range` is
+  measured in `x`/`z`, the plane the scene resolves its own collisions in; `y`
+  comes back so the asker can tell a bird standing on the ground from one in the
+  air, or a goat's back from its hooves. A collide-only-with-grounded-things test
+  is a comparison against `goats.world.terrainHeight`.
+- **Rows are validated, not trusted.** A row that is not four finite numbers is
+  skipped, a callback that throws costs that mod's entities for that query (and is
+  logged with its id), and a mod that never offers anything simply is not found.
+- **It is live, so it is not published.** Nothing here goes on the wire: what
+  travels is what a mod chooses to publish through `world.extend` (§4.13). A
+  `side: "client"` mod's entities exist on that client, so two clients can
+  disagree about where the fat guy is -- which is the same thing they already do.
 
 ---
 

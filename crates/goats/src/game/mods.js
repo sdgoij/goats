@@ -999,6 +999,85 @@ function modExplosionsFor(id) {
     };
 }
 
+// ---- entities -------------------------------------------------------------
+//
+// What one mod may know about another's: a mod *offers* the entities it simulates
+// as a live callback, and any mod may ask what is near a point. It is the one seam
+// that lets two mods collide with each other -- the birds' flock and the fatguy's
+// run are the pair it was added for -- and it is deliberately not a scene-level
+// entity system: nothing here knows what a bird is, and a mod that wants to be
+// avoidable does not have to declare what it is beyond where it is.
+//
+// A row is `[x, y, z, r]`: a position and a radius, in the world's units. The
+// callback runs on every query (the flock moves), so a mod that caches the rows it
+// offers collides with where things *were*. Rows that are not four finite numbers
+// are skipped rather than throwing at the asker, and a callback that throws costs
+// its own mod's entities for that query only.
+
+const modEntityOffers = new Map();   // "<mod id>:<name>" -> { id, fn }
+
+function modOfferEntities(id, name, fn) {
+    if (typeof fn !== "function") {
+        throw new Error("goats.entities.offer: a callback returning rows is required");
+    }
+    modEntityOffers.set(id + ":" + String(name), { id: id, fn: fn });
+}
+
+function modDropEntities(id) {
+    for (const key of Array.from(modEntityOffers.keys())) {
+        if (key.indexOf(id + ":") === 0) modEntityOffers.delete(key);
+    }
+}
+
+// Every offered entity within `range` of `(x, z)`, as `{ from, x, y, z, r, d }`.
+// The range is measured in the ground plane, which is the plane the scene resolves
+// its own collisions in; `y` comes back so the asker can tell a bird standing on
+// the ground from one in the air.
+function modEntitiesNear(x, z, range) {
+    const found = [];
+    const r2 = range * range;
+    for (const [key, offer] of modEntityOffers) {
+        let rows;
+        try {
+            rows = offer.fn();
+        } catch (error) {
+            console.log("mods: '" + offer.id + "' entities.offer threw: " + String(error));
+            continue;
+        }
+        if (!Array.isArray(rows)) continue;
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            if (!Array.isArray(row) || row.length < 4) continue;
+            const ex = Number(row[0]);
+            const ey = Number(row[1]);
+            const ez = Number(row[2]);
+            const er = Number(row[3]);
+            if (!isFinite(ex) || !isFinite(ey) || !isFinite(ez) || !isFinite(er)) continue;
+            const dx = ex - x;
+            const dz = ez - z;
+            const d2 = dx * dx + dz * dz;
+            if (d2 > r2) continue;
+            found.push({ from: key, x: ex, y: ey, z: ez, r: er, d: Math.sqrt(d2) });
+        }
+    }
+    return found;
+}
+
+function modEntitiesFor(id) {
+    return {
+        offer: function (name, fn) { return modOfferEntities(id, name, fn); },
+        near: function (x, z, range) {
+            const fx = Number(x);
+            const fz = Number(z);
+            const fr = Number(range);
+            if (!isFinite(fx) || !isFinite(fz) || !isFinite(fr) || fr < 0) {
+                throw new Error("goats.entities.near: x, z and a range are required");
+            }
+            return modEntitiesNear(fx, fz, fr);
+        },
+    };
+}
+
 // Where a mod's bang lands on the wire: the *cell* it happened in, which is the key
 // space every other device uses (`tuftKey`). A bang in a cell that holds a core device
 // therefore spends it on every peer as well -- the same rule a core bang follows, and
@@ -1030,6 +1109,7 @@ function goatsBegin(id) {
     // A reload re-enters here: clear what the previous instance left behind.
     modDropHooks(id);
     modDropCommands(id);
+    modDropEntities(id);
     modOpenFor = id;
     const handle = {
         api: MOD_API,
@@ -1055,6 +1135,7 @@ function goatsBegin(id) {
         net: goatsNet,
         assets: modAssetsFor(id, meta),
         explosions: modExplosionsFor(id),
+        entities: modEntitiesFor(id),
     };
     modInstances.set(id, handle);
     meta.enabled = true;
@@ -1070,6 +1151,10 @@ function goatsEnd(id) {
     modDropHooks(id);
     modDropCommands(id);
     modDropWorld(id);
+    // Its offered entities go with it, for the same reason its handlers do: nothing
+    // outside the mod is allowed to keep asking a body that has been unloaded where it
+    // is (APIv1.md §4.16).
+    modDropEntities(id);
     // And the field, if this mod had taken the core devices out of it (M19g).
     modCoreArmed(id, true);
     modInstances.delete(id);
@@ -1134,6 +1219,7 @@ const goats = {
     net: goatsNet,
     assets: modAssetsFor("-", { assets: {} }),
     explosions: modExplosionsFor("-"),
+    entities: modEntitiesFor("-"),
 };
 
 // ---- the `mod` console verb ----------------------------------------------

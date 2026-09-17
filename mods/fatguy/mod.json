@@ -6,5 +6,15 @@
   "side": "client",
   "description": "A fat guy with a small guitar who runs for his life.",
   "entry": "mod.js",
-  "assets": { "model.fatguy": "assets/fat_guy.glb" }
+  "assets": { "model.fatguy": "assets/fat_guy.glb" },
+  "assetAdds": {
+    "sfx.fatguy.yell": [
+      "assets/universfield-man-scream-011-278818.mp3",
+      "assets/universfield-man-scream-259682.mp3",
+      "assets/scottishperson-sound-effects-man-screaming-02-247128.mp3"
+    ],
+    "sfx.fatguy.land": [
+      "assets/freesound_community-object-dropped-on-plastic-bag-81895.mp3"
+    ]
+  }
 }

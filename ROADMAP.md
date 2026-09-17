@@ -93,6 +93,7 @@ uses.
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, the mod smoke test, CI syntax-check, a world-mod determinism test |
 | **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; the birds fixture test |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
+| **M14h** | Example: a second sample mod, `fatguy` (his own model, and his bad luck) | M14f, M19 | S–M | ✅ **Done** — a `side: "client"` mod whose model rides in a slot of its own; contact with goats *and* the birds' flock through the new `goats.entities`, device trips through `goats.explosions`, and an aimed chain that lands him on the next device |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
 | **M16** | The world datagram: binary, quantized, bounded; world mods on their own | M12b, M15 | M–L | ✅ **Done** — binary and quantized, shed in a defined order, the mods on their own datagram, and a guard so the budget cannot erode again (M16c deferred on the numbers) |
 | **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | ✅ **Done** — M17a (the ABI), M17b (the Rust host), M17c (the digest + determinism), M17c2 (the state surface) and M17d (the performance debt) all landed |
@@ -1208,12 +1209,14 @@ decisions behind it and the constraints that shape it.
   startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
   diagnosis one look rather than a guess. Opaque assets are still compared byte
   for byte, since the loader cannot know what they are. `mods/birds` itself is
-  pinned at `7a5e28e2d985e3d6` by a test, because a release ships it and an
-  older client refuses a server whose birds differs. That pin has moved twice: once
-  when the mod's arithmetic was rewritten to stop naming `Math` (PERF.md §4b), and
-  again when the flock learned to set devices off, to sit on the goat and to squawk
-  (M19's surface, below) -- deliberate changes both, and a compatibility boundary: a
-  peer on the older birds cannot join a host on the newer one.
+  pinned at `de6ce23124a07ca4` by a test, because a release ships it and an
+  older client refuses a server whose birds differs. That pin has moved three
+  times: once when the mod's arithmetic was rewritten to stop naming `Math`
+  (PERF.md §4b), again when the flock learned to set devices off, to sit on the
+  goat and to squawk (M19's surface, below), and now because it offers the flock
+  to other mods so the fat guy can collide with a bird (APIv1.md §4.16) --
+  deliberate changes all three, and a compatibility boundary: a peer on the older
+  birds cannot join a host on the newer one.
 - **M14d2 — World-mod simulation. ✅ Done.** `goats.world.registerStream` and
   `goats.rng` own a seeded PRNG stream per `side: "world"` mod; `sceneUseSeed`
   re-derives them from the session seed, and their state travels in the
@@ -1277,9 +1280,96 @@ decisions behind it and the constraints that shape it.
   may ship as a single `.zip` with `mod.json` at its root: `ModSource { Dir |
   Zip }` is what discovery records, and entry, tuning and assets are read
   through it, so a zip hashes identically to the equivalent directory. Only the
-  zip crate's `deflate` feature is enabled, which keeps the new dependency tree
+  `zip` crate's `deflate` feature is enabled, which keeps the new dependency tree
   to `flate2`/`miniz_oxide`. `--watch` is client-only: a `side: "world"` mod is
   fixed at join, so a server must not change it under its peers.
+- **M14h — A second example mod: the fat guy. ✅ Done.** `mods/fatguy/` is the
+  counterpart to the birds: `side: "client"`, one model, no world state, and an
+  asset slot of its own -- `"assets": { "model.fatguy": "assets/fat_guy.glb" }` --
+  which is what proved a mod may name a slot the scene does not already use. A fat
+  guy with a small guitar runs in the meadow and runs for his life when a goat
+  closes in. Shipping his model shook out two loader bugs, both of which had to
+  fall out before the asset arrived: `take_assets()` emptied the manifest list that
+  `table_json` is built from (the pull path built its table before that handover,
+  which is what hid it), so every boot-loaded mod arrived with no slots at all; and
+  an opaque name ended in the *slot* (`...:model.fatguy`) where the engine's temp
+  file needs the source's own extension, so raylib picked no decoder. `APIv1.md`
+  §3.3 and §4.11 say what is true now.
+  What he did *not* do was touch the field, and nothing but a goat's shoulder ever
+  touched him. Two additions closed both gaps -- and the second turned out to be a
+  joke at his expense:
+  - **`goats.entities`, one mod's entities seen by another (§4.16).** The mods are
+    separate scripts with no handle on each other's state and the scene has no
+    entity system, so a mod *offers* the entities it simulates as a live callback
+    of `[x, y, z, r]` rows and any mod asks what is near a point in the ground
+    plane. The row is the whole contract -- nothing here knows what a bird is --
+    the query is in the plane the scene resolves its own collisions in, `y` comes
+    back so the asker can tell a standing bird from a flying one, rows are
+    validated rather than trusted, a throwing offer costs only its own mod (and is
+    logged with its id), every offer goes when its mod reloads or unloads, and
+    nothing here is published: it is one client's own view of what it is already
+    drawing, so two clients may disagree about where the fat guy is.
+  - **Contact.** Goats as before (the player and every bot), and now the birds: the
+    flock offers itself at `BODY_R = 0.35` and this asks. A bird is worth
+    `BIRD_BUMP` (0.45) of a goat, so it nudges him rather than flooring him, and
+    one perched on a goat that then walks into him counts -- the incident that
+    prompted the collision. A bird more than `BIRD_AIRBORNE` above the ground does
+    not, and the row's `y` is the whole of telling those two apart. Only the deepest
+    contact of a frame counts, so being crowded is never worse than the closest of
+    them. (He is still not solid: contact is read, and he is the one who moves -- a
+    goat genuinely blocked by him would fight the player's own movement.)
+  - **Devices, and the throw that follows.** He asks the core's own derivation at
+    the core's own trigger radius (`goats.explosions.traps`,
+    `explosions.mine.trigger`), at half-metre buckets -- the core's trick in
+    `checkTriggers`, by way of the birds -- and fires through
+    `goats.explosions.blast`, so the crater, the damage, the flash, the sound and
+    the device's spend-and-relocate are the ones a goat gets. The `"blast"`
+    *event*, not his own trip, is what throws him, so every bang near him does:
+    `explosions.blast.lift` up and `push` out, scaled by the same falloff as the
+    damage -- so the rim is a shove and the centre is the twelve metres and eight
+    up the tuning's own comment quotes -- on his own gravity, with `y` as height
+    above the ground. Thrown, he somersaults over a level axis perpendicular to his
+    facing: one axis-angle, where the birds had to compose a quaternion.
+  - **The chain, which is the joke.** With a device within `CHAIN_RANGE` and the
+    ladder saying yes, the arc is *aimed* at it: the flight time from the bang's
+    own lift and the drop to that device's ground, then the horizontal speed that
+    covers the span in it. `CHAIN_CHANCE` is 1, 0.75, 0.5, 0.25 by blast number and
+    then none, so the first bang of an episode always finds one and he escalates
+    until he runs out of luck; `CHAIN_RESET` seconds on his feet restores the
+    ladder, which is what makes the next episode's first bang a certainty. The
+    aim's one guard is `CHAIN_REACH` (the bang's own push, doubled): a throw too
+    weak to carry him lands short, and that is the only thing that ever ends a
+    chain early. `CHAIN_RANGE` is the field's own arithmetic -- one device per
+    ~330 m² is a neighbour about nine metres away, so a shorter reach would make
+    "another device nearby" a coin toss on the layout as well as on his luck. The
+    roll is the mod's own xorshift32, because a `side: "client"` mod may not
+    register a seeded stream and `Math.random` would make a run unreproducible.
+  - **His two voices.** `sfx.fatguy.yell` as he goes up and `sfx.fatguy.land` when
+    he comes down: slots of the mod's own, declared with `assetAdds` -- the door for a
+    *list* slot, which is what both are, so the yell is three screams and the landing
+    one thud. Every variant is loaded once through `assets.all` and one is picked per
+    play, because a chain of yells should not be one file three times over; the pick
+    and the pitch come out of one roll, which is what leaves the ladder's own sequence
+    exactly where it was. The volume is `goats.settings.get().sfx`, faded by his
+    distance to the player. An undeclared slot is the empty list -- silence, not an
+    error -- and only a *declared* file that is missing is a load error, which is the
+    difference between the mod shipping without a voice and pointing a slot at the
+    wrong file.
+  - **Tests.** `crates/harness/tests/mods.rs` gained ten checks in two blocks.
+    `entities_block` stages two mods and asserts the seam itself: a row found in
+    range and a query filtered by range, a malformed row skipped, an offer that
+    throws survived and logged with its id, and the rows gone when their owner is
+    unloaded. `fatguy_block` drives the shipped `mods/fatguy/mod.js` (compiled in
+    with `include_str!`, so it cannot drift from what ships) through his own
+    `fatguy state|boom` verb: the trip and the throw, the ladder asserted every
+    frame of the arc, the landing and the second bang, the reset after two seconds
+    on his feet, a shove from a bird on the ground and none from one in the air, a
+    shove from a goat, and the sound slots played by path, both yell variants
+    included. (The loader's own discovery cases read every shipped mod's assets, so
+    a manifest pointing at a file that is not there fails the suite, not the ear.)
+    The birds' own digest moved with this -- the flock is part of that file -- which
+    is the third move of the pin written up in M14d: the compatibility boundary
+    working, not a bug.
 
 **Constraints to respect.** The scene is one flat global scope joined by
 `concat!`, so `goats.freeze()`, not the loader, is what keeps registrations
