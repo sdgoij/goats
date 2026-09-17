@@ -90,7 +90,14 @@ page, where GitHub plays it.*
   thunder rumbles once the rain is heavy, and the goat bleats on jump, sleep,
   waking and death. Press `M` to mute. Every clip is embedded in the binary (the
   long ambience beds are shipped as Ogg Vorbis), so the game needs no files on
-  disk.
+  disk. The explosives are `Sound`s too: the bang is picked and pitched, faded by
+  distance, pooled three deep so two bangs overlap rather than one restarting the
+  other, and a chain is quieter at every link. `sfx.fuse`, `sfx.trap` and
+  `sfx.blast.close` are declared slots -- read by the trigger and the close-range mix
+  -- that ship empty until samples arrive, and a mod can fill any of them like any
+  other slot. There is no panning: the engine's `rl` surface has no listener and no
+  per-sound position, so a bang behind the goat sounds like one in front -- the mixer
+  in `crates/goats/src/audio.rs` is where that would change.
 - **No foot skating**: each gait's ground speed is derived from the clip's
   authored stride and stance fraction rather than hand-tuned
   (`speed = stride / (duty * clipDuration)`).
@@ -101,6 +108,15 @@ page, where GitHub plays it.*
   aside). Nearby bots cast into the shadow map; distant ones get a contact blob.
   Their AI runs on a private PRNG so the seeded weather the harness asserts on is
   untouched.
+- **Landmines and boobytraps**: the field is *derived* from the session seed rather
+  than stored, so every peer agrees where the devices are with nothing new on the
+  wire. Walking onto a mine flings the goat and dishes a real crater into
+  `terrainHeight` -- bowl, lip and all -- which swallows the grass inside it and
+  heals back over; a trapped tuft looks like a meal and replaces it, for the herd as
+  much as for the player. The bang throws grit and smoke drawn from a boot-generated
+  flipbook, knocks the camera, lights the ground and chains one level to the next
+  device. A spent device moves house rather than re-arming, so the field drifts, and
+  the bots take the same damage and die to it.
 - Orbit + zoom camera, a procedural grass field that follows the goat so it never
   runs out, and a health/energy HUD.
 - A cube-skeleton fallback (voxel body + 2-bone-IK legs) if the model cannot be
@@ -287,7 +303,7 @@ gets on the free plan.
 | `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
 | `crates/proto/` | The session protocol: message types, framing and name rules (no iroh or tokio) |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
-| `goat_animated.glb` | Exported model (11 clips, textures embedded) — embedded into the binary |
+| `goat_animated.glb` | Exported model (14 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials (its `.blend1` auto-backup is git-ignored) |
 | `goats.mp4` | The demo clip for the README (22 s, 1280×720, H.264) |
 | `tex/` | Knitted-fleece textures (diffuse / normal / roughness / displacement / AO) |
@@ -374,7 +390,10 @@ scene already loaded stays as it was.
 Mods are trusted code with one wall: no filesystem. All I/O is the Rust host's,
 and the scene sees only opaque asset names. A mod gets the hook API `goats`
 (events, commands, accessors, registries, world extension) plus the engine's
-`rl` surface, so it can build geometry and textures in JavaScript.
+`rl` surface, so it can build geometry and textures in JavaScript. `goats.explosions`
+is part of that surface: a mod can read the derived device field (a mine detector is
+a mod), set a bang off through the core blast path, take the core devices out of the
+field, and hook the `"blast"` event -- `APIv1.md` §4.15.
 
 Two examples ship in `mods/`. `example/` is the small one: a console command, a
 HUD clock, a generated `sfx.bleat` override and a `tuning.json`. `birds/` is the

@@ -25,6 +25,16 @@ const WIND_VOLUME = 0.8;     // scaled by the wind gust
 // still audible, which is the whole reason to look up.
 const BLAST_VOLUME = 1.0;
 const BLAST_FALLOFF = 24;
+// How far from a bang the optional `sfx.blast.close` mix takes over from the roomier
+// one: the slot is the cleaner "you got hit" version of the same sample (M19g).
+const BLAST_CLOSE_RANGE = 6;
+// The trigger's click and a trapped tuft's snap, under the bang they promise.
+const FUSE_VOLUME = 0.5;
+const TRAP_VOLUME = 0.6;
+// How many copies of each effect are loaded per slot (M19g). A `Sound` handle played
+// twice *restarts*, so a bang inside the tail of the last one used to cut it off; three
+// copies is what lets two bangs sound like two bangs rather than like one that hiccuped.
+const SFX_POOL = 3;
 // The grit comes down under the bang it came from, a beat later: `DEBRIS_DELAY` is
 // where it starts and `DEBRIS_SPREAD` is the jitter on top, so two bangs in a chain
 // do not land their dirt in lockstep. The puff lasts 0.9 s (explosions.js), so this
@@ -62,9 +72,15 @@ let muted = false;
 let musicMain = -1;
 let rainLoop = -1;
 let windLoop = -1;
+// Each slot is a list of *variants*, and each variant a list of copies (M19g): the
+// variant is picked so a field does not sound like a button, the copy so two of them
+// can be in the air at once.
 const BLEATS = [];
 const THUNDERS = [];
 const BLASTS = [];
+const BLASTS_CLOSE = [];
+const FUSES = [];
+const TRAPS = [];
 const DEBRIS = [];
 // The bangs whose dirt has not come down yet. A bang is an instant; the load it
 // throws is not, and the delay is the whole point of the sound -- without it the
@@ -93,28 +109,45 @@ function loadSfx() {
     BLEATS.length = 0;
     THUNDERS.length = 0;
     BLASTS.length = 0;
+    BLASTS_CLOSE.length = 0;
+    FUSES.length = 0;
+    TRAPS.length = 0;
     DEBRIS.length = 0;
     DEBRIS_QUEUE.length = 0;   // a fall queued for a handle that is going away
-    const bleatPaths = assetList("sfx.bleat");
-    for (let i = 0; i < bleatPaths.length; i++) {
-        const sound = rl.loadSound(bleatPaths[i]);
-        if (sound >= 0) BLEATS.push(sound);
+    loadSlot(BLEATS, assetList("sfx.bleat"));
+    loadSlot(THUNDERS, assetList("sfx.thunder"));
+    loadSlot(BLASTS, assetList("sfx.blast"));
+    loadSlot(BLASTS_CLOSE, assetList("sfx.blast.close"));
+    loadSlot(FUSES, assetList("sfx.fuse"));
+    loadSlot(TRAPS, assetList("sfx.trap"));
+    loadSlot(DEBRIS, assetList("sfx.debris"));
+}
+
+// One slot's variants into `out`, each with `SFX_POOL` copies. A slot with no files is
+// simply empty -- the three M19g slots start that way, because the samples have not
+// arrived: silence is the degradation, exactly like a missing texture.
+function loadSlot(out, paths) {
+    for (let i = 0; i < paths.length; i++) {
+        const copies = [];
+        for (let c = 0; c < SFX_POOL; c++) {
+            const sound = rl.loadSound(paths[i]);
+            if (sound >= 0) copies.push(sound);
+        }
+        if (copies.length > 0) out.push(copies);
     }
-    const thunderPaths = assetList("sfx.thunder");
-    for (let i = 0; i < thunderPaths.length; i++) {
-        const sound = rl.loadSound(thunderPaths[i]);
-        if (sound >= 0) THUNDERS.push(sound);
+}
+
+// One play out of a slot: a variant at random, and inside it a copy that is not already
+// in the air. `isSoundPlaying` is the only clock the audio side has, and it is the right
+// one -- what matters is whether *this* handle is busy, not how long it has been.
+function sfxPick(slot) {
+    const variant = slot[Math.floor(arnd() * slot.length) % slot.length];
+    for (let i = 0; i < variant.length; i++) {
+        if (typeof rl.isSoundPlaying !== "function" || !rl.isSoundPlaying(variant[i])) {
+            return variant[i];
+        }
     }
-    const blastPaths = assetList("sfx.blast");
-    for (let i = 0; i < blastPaths.length; i++) {
-        const sound = rl.loadSound(blastPaths[i]);
-        if (sound >= 0) BLASTS.push(sound);
-    }
-    const debrisPaths = assetList("sfx.debris");
-    for (let i = 0; i < debrisPaths.length; i++) {
-        const sound = rl.loadSound(debrisPaths[i]);
-        if (sound >= 0) DEBRIS.push(sound);
-    }
+    return variant[0];
 }
 
 // Re-read the effects because the slot table moved. A `Sound` that has already been
@@ -162,9 +195,34 @@ function makeAudio() {
 // Fire a random bleat. `gain` scales the base sfx volume for the situation.
 function playBleat(gain) {
     if (!audioReady || muted || BLEATS.length === 0) return;
-    const sound = BLEATS[Math.floor(arnd() * BLEATS.length) % BLEATS.length];
+    const sound = sfxPick(BLEATS);
     rl.setSoundVolume(sound, sfxGain() * gain);
     rl.setSoundPitch(sound, 0.9 + arnd() * 0.25);
+    rl.playSound(sound);
+}
+
+// How loud a bang at (x, z) is from where the goat is: full volume anywhere inside the
+// blast itself, half at twenty-odd metres, and tending to silence rather than reaching it.
+function blastAttenuation(x, z) {
+    const dx = x - goat.px;
+    const dz = z - goat.pz;
+    const near = TUNING.explosions.blast.radius;
+    const d = Math.max(0, Math.sqrt(dx * dx + dz * dz) - near);
+    return 1 / (1 + d / BLAST_FALLOFF);
+}
+
+// The click between the trigger and the bang (M19g): `sfx.trap` for a trapped tuft, which
+// is a snap, and `sfx.fuse` for a mine, which is a click and a whine. Played at the
+// *trigger*, so a device the goat walks away from still ticks behind it -- and silent when
+// the slot is empty, which is where the samples have not arrived yet.
+function playTrigger(kind, x, z) {
+    if (!audioReady || muted) return;
+    const slot = kind === "trap" ? TRAPS : FUSES;
+    if (slot.length === 0) return;
+    const sound = sfxPick(slot);
+    rl.setSoundVolume(sound, sfxGain() * (kind === "trap" ? TRAP_VOLUME : FUSE_VOLUME) *
+        blastAttenuation(x, z));
+    rl.setSoundPitch(sound, 0.95 + arnd() * 0.1);
     rl.playSound(sound);
 }
 
@@ -174,15 +232,23 @@ function playBleat(gain) {
 // across the meadow are not the same event -- and it is picked and pitched at
 // random, since a minefield that fires the same sample twice in a row stops sounding
 // like a place and starts sounding like a button.
-function playBlast(x, z) {
-    if (!audioReady || muted || BLASTS.length === 0) return;
+function playBlast(x, z, depth) {
+    if (!audioReady || muted) return;
+    const att = blastAttenuation(x, z);
+    // A chained bang is a beat rather than a bang (M19g): quieter with every link, so a
+    // five-device cascade reads as a sequence instead of five times the peak. `depth` is
+    // the chain's own, and a first bang has none.
+    const chain = 1 / (1 + 0.6 * (depth > 0 ? depth : 0));
+    // The close mix, when there is one and the goat is in it (M19g): the same bang
+    // without the room, which is the "you got hit" version rather than the "that went off
+    // over there" one. A slot nobody has filled is the ordinary bang.
     const dx = x - goat.px;
     const dz = z - goat.pz;
-    const near = TUNING.explosions.blast.radius;
-    const d = Math.max(0, Math.sqrt(dx * dx + dz * dz) - near);
-    const att = 1 / (1 + d / BLAST_FALLOFF);
-    const sound = BLASTS[Math.floor(arnd() * BLASTS.length) % BLASTS.length];
-    rl.setSoundVolume(sound, sfxGain() * BLAST_VOLUME * att);
+    const near = BLASTS_CLOSE.length > 0 && dx * dx + dz * dz <= BLAST_CLOSE_RANGE * BLAST_CLOSE_RANGE;
+    const slot = near ? BLASTS_CLOSE : BLASTS;
+    if (slot.length === 0) return;
+    const sound = sfxPick(slot);
+    rl.setSoundVolume(sound, sfxGain() * BLAST_VOLUME * att * chain);
     rl.setSoundPitch(sound, 0.92 + arnd() * 0.16);
     rl.playSound(sound);
     // ...and its grit, later (`updateAudio` plays it). What is queued is the
@@ -193,8 +259,8 @@ function playBlast(x, z) {
         if (DEBRIS_QUEUE.length >= DEBRIS_CAPACITY) DEBRIS_QUEUE.shift();
         DEBRIS_QUEUE.push({
             left: DEBRIS_DELAY + arnd() * DEBRIS_SPREAD,
-            sound: DEBRIS[Math.floor(arnd() * DEBRIS.length) % DEBRIS.length],
-            att: att,
+            sound: sfxPick(DEBRIS),
+            att: att * chain,
         });
     }
 }
@@ -213,7 +279,7 @@ function updateAudio(dt) {
     }
     thunderCooldown -= dt;
     if (rainAmount > 0.55 && thunderCooldown <= 0 && THUNDERS.length > 0) {
-        const sound = THUNDERS[Math.floor(arnd() * THUNDERS.length) % THUNDERS.length];
+        const sound = sfxPick(THUNDERS);
         if (!muted) {
             rl.setSoundVolume(sound, sfxGain() * 0.8);
             rl.playSound(sound);

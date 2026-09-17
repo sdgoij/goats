@@ -296,6 +296,16 @@ Built-in file-backed slots in v1 (all of them live in `ASSET_SLOTS`, core.js):
 | `sfx.blast` | `playBlast` |
 | `sfx.debris` | `updateAudio` (queued by `playBlast`) |
 
+Slots the scene reads but the shipped game does **not** fill, because the samples
+had not arrived (M19g). An empty slot is silence, not an error, and a mod that
+ships one of these files fills it with `assets.override` or `assetAdds` today:
+
+| Slot | Read by | Role |
+| --- | --- | --- |
+| `sfx.fuse` | `playTrigger` | The click between a mine's trigger and its bang |
+| `sfx.trap` | `playTrigger` | A trapped tuft's snap, before its bang |
+| `sfx.blast.close` | `playBlast` | A cleaner "you got hit" mix, for a bang within 6 m of the goat |
+
 `sfx.bleat`, `sfx.thunder`, `sfx.blast` and `sfx.debris` are lists: the value may be
 a string (replace the one-clip list) or an array (replace the whole list). Indexed
 forms (`sfx.bleat.0`) replace a single entry.
@@ -355,6 +365,10 @@ reported, not silently ignored).
 > applies `gait` only for now -- a clip's `asset` is refused with a message,
 > since swapping one clip's source needs the model work; point the `model.goat`
 > slot at the file instead.
+>
+> **Added in M19g:** `goats.explosions` (`blast`, `traps`, `armed`, §4.15) and the
+> `"blast"` event. The three M19g sound slots (`sfx.fuse`, `sfx.trap`,
+> `sfx.blast.close`) are documented in §3.3 and empty in the shipped game.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
@@ -403,6 +417,7 @@ handlers.
 | `"session"` | A net event (`session`, `joined`, `left`, `roster`, `chat`, …) | `(event)` |
 | `"world"` | A server world snapshot was applied (client side) | `(world)` |
 | `"mods"` | The world mods' state was applied (client side) | `(mods)` |
+| `"blast"` | A bang went off, core or a mod's (§4.15) | `(blast)` -> `{ kind, x, z, seed, radius, depth, player, bots, killed }` |
 | `"tuning"` | A tuning value changed | `(path, value)` |
 | `"shutdown"` | The game is closing, or this mod is being reloaded | *(none)* |
 
@@ -693,6 +708,51 @@ goats.fail("...");               // mark this mod failed and stop calling its ho
 or another mod's command. Re-entrancy from a `"command"` handler into
 `goats.command` is depth-limited (a small guard; a cycle is logged and
 dropped), so a mod cannot hang the frame.
+
+### 4.15 Explosions
+
+```js
+const field = goats.explosions.traps(goat.px, goat.pz, 40);   // read the derived field
+if (field.mines.length > 0) goats.explosions.blast(mine.x, mine.z, "mine");
+
+goats.explosions.armed(false);   // my own devices rule the field for now
+```
+
+| Member | Description |
+| --- | --- |
+| `goats.explosions.traps(x, z, range)` | The derived devices near `(x, z)`: `{ mines: [...], traps: [...] }`, each `{ x, z, key, dist, moved }`. **Read-only**, and the same derivation the core uses -- so a mine detector is a mod, and so is a "clear the field" tool. |
+| `goats.explosions.blast(x, z, kind)` | Set a bang off. `kind` is `"mine"` or `"trap"` (which is only which core behaviour it follows). It goes through the *core* blast path: the crater, the damage, the flash, the camera knock, the sound, the `"blast"` event and -- in a session -- the report, so a world mod's bang is the host's and everyone sees it. |
+| `goats.explosions.armed(on)` | With no argument, whether the core devices are in the field. `armed(false)` takes them out of it (the derivation only: a bang already in flight still lands), and `armed(true)` hands them back. The request belongs to the mod that made it, so unloading or reloading that mod restores the field, and two mods cannot cancel each other by load order. |
+
+**A mod's own device is not a new kind of bang on the wire.** `BlastKind` is a
+closed enum (see *The wire* in `ROADMAP.md`), so `blast` reports as the core kind
+whose behaviour it wants; anything else a mod's device *is* rides
+`goats.world.extend`, which is the surface the world mods already publish their own
+state through (§4.13). The v1 wall is unchanged: no filesystem, no sockets, and the
+layout is readable because the client derives it.
+
+**The `"blast"` event** fires after any bang, core or a mod's -- the world has
+already taken it, so a handler sees the crater, the damage and the herd as they
+stand. It is also what makes a mod's own bang tell itself apart from the core ones:
+it fires for both, with the same args.
+
+The three sounds the explosions still owe samples for are asset slots like any
+other (§3.3):
+
+| Slot | Role |
+| --- | --- |
+| `sfx.fuse` | The click between a mine's trigger and its bang |
+| `sfx.trap` | A trapped tuft's snap -- eating one is its own joke |
+| `sfx.blast.close` | A cleaner "you got hit" mix of a bang within `6 m` of the goat |
+
+They are **empty in the shipped game** (the samples had not arrived when the
+surface did), and an empty slot is silence rather than an error: a mod that ships
+its own can fill one with `assets.override` or `assetAdds`, and the code path is
+already there -- the click fires at the trigger, the snap at the tuft, and the
+close mix when the goat is inside it. The mixer's own side of M19g is the pool:
+every slot is loaded as `SFX_POOL` (three) copies of each of its variants, and a
+play takes a variant at random and a copy that is not already in the air, so two
+bangs inside one sample's length are a chord rather than a restart.
 
 ---
 

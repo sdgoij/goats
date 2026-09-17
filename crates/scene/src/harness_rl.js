@@ -98,6 +98,8 @@
     // Plays counted by the path that was loaded, so a check can name the sample it
     // expects -- the handles alone cannot say whether a bang or a bleat was heard.
     const soundPlays = {};
+    // Which handles were played since the last frame boundary, for `isSoundPlaying`.
+    const playing = {};
 
     // The scene's own `console.log` lines. The checks read some of their numbers
     // out of them (the herd size, the closest gap the bots kept, the fullest
@@ -174,6 +176,9 @@
             return false;
         },
         endDrawing: () => {
+            // A frame boundary is the stub's only clock: a handle that was played is
+            // "still playing" until the next one (see `isSoundPlaying`).
+            for (const handle in playing) delete playing[handle];
             if (!sceneReady()) {
                 counters.loadingFrames += 1;
                 return;
@@ -318,10 +323,15 @@
         loadSound: (p) => { soundLoads.push(p); return soundLoads.length - 1; },
         playSound: (s) => {
             soundsPlayed.push(s);
+            playing[s] = true;
             const path = soundLoads[s];
             soundPlays[path] = (soundPlays[path] || 0) + 1;
         },
-        isSoundPlaying: () => false,
+        // The stub has no clock, so "playing" can only mean "started since the last frame
+        // boundary" -- which is exactly enough for the one thing the scene asks it
+        // (M19g's pools: two bangs in one frame must not take the same copy).
+        isSoundPlaying: (s) => playing[s] === true,
+        stopSound: (s) => { playing[s] = false; },
         loadMusic: (p) => { musicLoads.push(p); return musicLoads.length - 1; },
         playMusic: (m) => { musicPlayed.push(m); },
         updateMusic: () => { counters.musicUpdates += 1; },
@@ -480,6 +490,10 @@
             musicLoads: musicLoads,
             soundLoads: soundLoads,
             soundPlays: soundPlays,
+            // The handles, in order: a slot's pool can only be checked by asking whether
+            // two plays used two different ones (M19g) -- the counts by path cannot tell
+            // a second copy from a restart.
+            soundHandles: soundsPlayed,
             timeline: timeline,
             probes: probes,
             counters: {

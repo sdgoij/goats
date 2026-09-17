@@ -369,9 +369,28 @@ function mineAt(cx, cz) {
     return trapNoise(cx, cz, trapSalt) < TUNING.explosions.mine.density;
 }
 
+// Whether the *core* devices are in the field at all (M19g). A mod that brings its own
+// devices can turn these off with `goats.explosions.armed(false)`, and the request is
+// held per mod so unloading one hands the field back. What is gated is the derivation
+// (`mineArmed`/`trapAt`) rather than the book-keeping: a mod's own devices are its own
+// business, and a bang reported from the wire still lands whatever this says.
+const CORE_OFF = new Set();
+
+// `goats.explosions.armed(on)` (M19g). Called with no argument it *asks*; called with
+// `false` it takes the core devices out of the field, and `true` hands them back. The
+// request is the mod's, so two mods cannot cancel each other by load order, and the
+// return is whether the change took (which is what a console or a script reads).
+function modCoreArmed(id, on) {
+    if (on === undefined) return CORE_OFF.size === 0;
+    if (on) CORE_OFF.delete(id);
+    else CORE_OFF.add(id);
+    return true;
+}
+
 // Whether cell (cx, cz) holds an armed mine *now*: the derived field, minus the
 // mines that have gone off, plus the replacements that have moved in.
 function mineArmed(cx, cz) {
+    if (CORE_OFF.size > 0) return false;
     const key = tuftKey(cx, cz);
     if (SPENT.has(key)) return false;
     return MOVED.has(key) || mineAt(cx, cz);
@@ -382,6 +401,7 @@ function mineArmed(cx, cz) {
 // that is there -- `nearestTuft` is what finds those, and it is also what carries the
 // `trappedOnly` filter this is used through.
 function trapAt(cx, cz) {
+    if (CORE_OFF.size > 0) return false;
     const key = tuftKey(cx, cz);
     if (TRAP_SPENT.has(key)) return false;
     return TRAP_MOVED.has(key) ||
@@ -520,6 +540,9 @@ function spendDevice(kind, cx, cz) {
 function tripDevice(kind, cx, cz, x, z, depth) {
     if (!spendDevice(kind, cx, cz)) return false;
     const key = tuftKey(cx, cz);
+    // The click between the trigger and the bang (M19g), at the device rather than at the
+    // goat: a mine underfoot ticks, and one the goat walks away from ticks behind it.
+    playTrigger(kind, x, z);
     PENDING.push({
         kind: kind,
         key: key,
@@ -853,6 +876,10 @@ function craterListed(list, c) {
 function blast(kind, x, z, seed, depth, key) {
     const e = TUNING.explosions;
     blastCount += 1;
+    // What this bang touched, for the `blast` event a mod may be listening to (M19g).
+    let took = 0;            // damage this goat took; 0 when it was outside the radius
+    let touched = 0;         // bots inside the radius
+    let killed = 0;          // ...and how many of those it killed
     // The hole the bang makes (M19d). It is the *ground* that is everyone's, so every
     // process that applies a blast digs one -- which is why a client's own bang is a
     // crater for its player and the host's world snapshot is where the others will
@@ -868,11 +895,11 @@ function blast(kind, x, z, seed, depth, key) {
     if (d2 <= r * r) {
         const d = Math.sqrt(d2);
         const falloff = 1 - d / r;
-        const taken = e.blast.damage * falloff * falloff;
-        stats.health = Math.max(e.blast.healthFloor, stats.health - taken);
+        took = e.blast.damage * falloff * falloff;
+        stats.health = Math.max(e.blast.healthFloor, stats.health - took);
         // The player's own reaction (M19f): the knock and the flash are this process's,
         // and both are scaled by what the blast actually took.
-        if (taken > 0) hurtBy(taken);
+        if (took > 0) hurtBy(took);
         // M19c: away from the blast, up, and scaled by the same falloff as the
         // damage, so the rim is a shove and the centre is a launch.
         const u = flingDirection(dx, dz, d, seed);
@@ -890,6 +917,7 @@ function blast(kind, x, z, seed, depth, key) {
             const bz = b.z - z;
             const bd2 = bx * bx + bz * bz;
             if (bd2 > r * r) continue;
+            touched += 1;
             const bd = Math.sqrt(bd2);
             const bfalloff = 1 - bd / r;
             // The player's own curve, off the player's radius and damage -- but not
@@ -901,6 +929,7 @@ function blast(kind, x, z, seed, depth, key) {
             b.health = Math.max(0, b.health - e.blast.damage * bfalloff * bfalloff);
             if (b.health <= 0) {
                 botDie(b);
+                killed += 1;
                 continue;
             }
             const bu = flingDirection(bx, bz, bd, seed);
@@ -915,7 +944,24 @@ function blast(kind, x, z, seed, depth, key) {
     // radius on purpose: a bang just past the goat's feet is a shove with no bruise.
     blastShake(x, z, seed);
     // Heard wherever the goat is, in or out of the radius (audio.js).
-    playBlast(x, z);
+    playBlast(x, z, depth);
+    // Told to the mods (M19g), *after* the world has taken it: a handler sees the
+    // damage, the herd and the hole as they stand, which is what makes "add scorch,
+    // a scoreboard, a smell of gunpowder" a callback rather than a re-implementation.
+    // It fires for a mod's own blast too -- `goats.explosions.blast` comes through
+    // here -- so a mod cannot tell its own bangs apart from the core ones by the event
+    // alone, which is deliberate: the event is about the bang, not about who made it.
+    modEmit("blast", {
+        kind: kind,
+        x: x,
+        z: z,
+        seed: seed,
+        radius: r,
+        depth: depth,
+        player: took,
+        bots: touched,
+        killed: killed,
+    });
     if (depth < e.chainDepth) chainFrom(x, z, depth + 1);
     // And told to the others (M19e), by the process that fired it -- the reporter does
     // not wait for the host to fire it back.
@@ -1642,6 +1688,9 @@ function sceneExplosions() {
         // ...and the player's own two reactions, which are read the same way.
         shake: shakeEnergy,
         hurt: hurtPulse,
+        // Whether the core devices are in the field at all (M19g): false while a mod has
+        // asked for its own devices to be the only ones.
+        armed: CORE_OFF.size === 0,
         safe: TUNING.explosions.safe,
     };
 }

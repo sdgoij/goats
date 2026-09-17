@@ -98,7 +98,7 @@ uses.
 | **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | ✅ **Done** — M17a (the ABI), M17b (the Rust host), M17c (the digest + determinism), M17c2 (the state surface) and M17d (the performance debt) all landed |
 | **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | ✅ **Done** — the fetch ALPN, the client's fetch/verify/install, the catalogue and the client wiring (consent, `--pull`, the one retry, and loading a mod that arrives after the freeze) |
 | **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
-| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | In progress — M19a (the engine additions), M19b (the devices and the blasts), M19c (the flung goat, the herd that dies to it, and the device that moves house), M19d (the craters), M19e (the wire) and M19f (the look: the flipbook atlases, the light flash, the camera knock, the `GoatFlung` clip and the `py` field that finally puts a mirrored leap where it belongs) have landed; M19g is below. The layout is derived from the seed, so nothing new on the handshake |
+| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | ✅ **Done** — M19a (the engine additions), M19b (the devices and the blasts), M19c (the flung goat, the herd that dies to it, and the device that moves house), M19d (the craters), M19e (the wire), M19f (the look: the flipbook atlases, the light flash, the camera knock, the `GoatFlung` clip and the `py` field that finally puts a mirrored leap where it belongs) and M19g (the per-slot pools, the trigger's click, and the `goats.explosions` surface) have landed. The layout is derived from the seed, so nothing new on the handshake |
 
 ---
 
@@ -2172,11 +2172,14 @@ when the client has a mod the host lacks or a shared id at another version, or
 
 ## M19 — Landmines and boobytraps: blasts, craters, a flung goat
 
-**Status:** M19a (the engine additions), M19b (the devices, the blasts and the
-flung goat's damage) and M19c (the flung goat, the peer path and the herd that now
-dies to it) are landed; M19d (craters) is next. The mechanics, the wire, the Blender
-contract, the tuning tree, the calls and the file list are all below -- this section
-is the whole design, not a summary of one.
+**Status:** ✅ **Done** -- all eight slices landed: M19a (the engine additions), M19b
+(the devices and the blasts), M19c (the flung goat), M19c2 (the herd is mortal), M19d
+(the craters), M19e (the wire), M19f (the look) and M19g (the sound pools and the mod
+surface). **Still open, gathered at the end of this section:** the flung pose (the
+artist's, on a contract that does not move), permanent craters (a datagram of their
+own) and the three sound slots, which ship declared and empty until the samples
+arrive. The mechanics, the wire, the Blender contract, the tuning tree, the calls and
+the file list are all below -- this section is the whole design, not a summary of one.
 
 **Why.** The field has things to eat and things to bump into, and nothing that
 punishes a goat for walking where it was going anyway. Step on a mine, or eat a
@@ -2852,29 +2855,42 @@ The user is providing the files; this is the contract they land in.
 | `sfx.fuse` | the click/whine between the trigger and the bang | The third point below |
 | `sfx.trap` | a tuft's trap: a snap, then the bang | Eating a trapped tuft is its own joke |
 
-The files for the last three have not arrived, and neither has a *pool* per slot:
-what landed plays one handle, so two bangs inside the same sample's length restart
-it rather than overlapping. That is M19g's, with the rest of the mixing.
+**As landed (M19g).** Every slot is a list of *variants*, and each variant a pool of
+`SFX_POOL` (3) copies of the same file, so a bang inside the tail of the last one
+overlaps it instead of restarting it -- that is the whole of the fix, and `sfxPick`
+takes a random variant and, inside it, a copy that is not `isSoundPlaying`. The three
+files in the table above never arrived, so those slots **ship declared and empty**:
+`loadSlot` on an empty list is a no-op and `playTrigger` returns early, which makes
+silence the degradation rather than a failure -- the same ladder a missing texture
+gets, and the slots are still asset slots a mod can fill (§3.3 of `APIv1.md` says
+so). The `sfx.trap`/`sfx.fuse` split is the other call worth naming: a trapped tuft's
+*snap* is a different sound from a mine's click-and-whine, and both play at the
+**trigger**, a beat before the bang they promise, so a device the goat walks away
+from still ticks behind it.
 
 - **Variants and pitch**, like the bleats: several files per slot, picked with a
   dedicated PRNG stream, `setSoundPitch` jittered so repeats do not sound identical,
-  and *pooled copies* per slot -- two simultaneous bangs must not cut each other
-  off, and a `Sound` handle played twice restarts. (The pick and the pitch landed;
-  the pool has not.)
+  and *pooled copies* per slot -- ✅ **landed in M19g**: three copies each, picked
+  with `isSoundPlaying`, so two simultaneous bangs no longer cut each other off.
 - **Distance attenuation is ours**: the `rl` surface has no listener, so the scene
   scales `setSoundVolume(sound, sfxGain() * f(distance))`. As landed,
   `f = 1/(1 + max(0, d - blast.radius)/24)`: full volume anywhere inside the blast
   itself, half at twenty-odd metres, and it only tends to silence rather than
-  reaching it, which is the floor the proposal wanted without a special case. No
+  reaching it, which is the floor the proposal wanted without a special case. A
+  chained bang then scales again by the chain's own depth
+  (`1/(1 + 0.6·depth)`, and the grit it queues gets the same factor), so a
+  five-device cascade reads as a sequence rather than five times the peak; and a bang
+  inside `BLAST_CLOSE_RANGE` (6 m) plays the close mix when that slot has one. No
   panning (there is no per-sound position); a blast behind the player sounds like one
   in front, which is a known cost of the surface and not something to fix here.
 - **A fuse delay is a gift.** `TUNING.explosions.fuse` (proposed 0.12-0.25 s)
   between the trigger and the bang: it gives the art time to read, gives the player a
   beat of "oh no", gives the sound designer a click to hang the bang on, and
   collapses the code to one path (a fuse is an instance in `FX`, not a special
-  case).
+  case). The click landed in M19g (`playTrigger`) and the delay was M19b's.
 - Respect `muted` and `SETTINGS.sfx`, the way every other sound does, and note that
-  `M` (master mute) must silence the boom.
+  `M` (master mute) must silence the boom -- ✅ the new slots go through the same
+  `sfxGain()` gate, so muting takes the trigger, the bang and the grit together.
 
 ### Tuning: the proposed tree
 
@@ -2989,9 +3005,9 @@ world unplayable.
 - **The herd** is flung by the host and mirrored (`Gait::Flung` in `BotState`), with
   `botRole` mapping the gait to the flung clip and the fraction posing and rolling it;
   it also takes damage and dies (*The herd is mortal*), mirrored as `Gait::Dead` plus
-  the fraction through the death clip. Neither the height nor the health travels yet:
-  the height is M19c's named gap below, and the health never needs to, because only
-  the host ever acts on it.
+  the fraction through the death clip. The health never travels, because only the
+  host ever acts on it; the height does, as `py` (M19f), which is what the flung
+  clip's own pivot turned out to need.
 - **A goat asleep on a mine** is a delicious edge case: sleeping is a mode, so the
   goat is not moving, so nothing triggers -- until it wakes and steps. A mine placed
   under a sleeping goat does nothing until it stands up, which is consistent and
@@ -3004,11 +3020,16 @@ additions):
 
 | Surface | Why |
 | --- | --- |
-| `goats.explosions.blast(x, z, kind)` | A mod's own trap: it reports through the same path as a core blast, so a world mod's blast is the host's and everyone sees it |
-| `goats.on("blast", fn)` | Fired after any blast (core or mod), with the position, kind and the goat it touched -- a mod can add scorch, a smell of gunpowder, a scoreboard |
-| `goats.explosions.traps(x, z, range)` | The derived devices nearby, read-only: **a mine detector is then a mod**, and so is a "clear the field" tool |
-| `goats.explosions.armed(bool)` | A mod that adds its own devices can turn the core ones off |
-| `TUNING.explosions.*` | Densities, radii, damage, heal: retuned per mod, with the clamps above |
+| `goats.explosions.blast(x, z, kind)` ✅ | A mod's own trap: it goes through the *core* blast path -- the crater, the damage, the flash, the camera knock, the sound, the event, and in a session the report -- so a world mod's blast is the host's and everyone sees it. `kind` is `"mine"` or `"trap"`: which core behaviour it follows, **not** a new `BlastKind` on the wire |
+| `goats.on("blast", fn)` ✅ | Fired after any blast (core or mod), as `{ kind, x, z, seed, radius, depth, player, bots, killed }`. The world has already taken it, so a handler sees the crater, the damage and the herd as they stand -- a mod can add scorch, a smell of gunpowder, a scoreboard |
+| `goats.explosions.traps(x, z, range)` ✅ | The derived devices nearby, read-only (`{ mines, traps }`, each `{ x, z, key, dist, moved }`): **a mine detector is then a mod**, and so is a "clear the field" tool |
+| `goats.explosions.armed(bool)` ✅ | With no argument, whether the core devices are in the field. `armed(false)` takes them out of the derivation (a bang already in flight still lands) and `armed(true)` hands them back. The request belongs to the mod that made it, so unloading or reloading that mod restores the field and two mods cannot cancel each other by load order |
+| `TUNING.explosions.*` ✅ | Densities, radii, damage, heal: retuned per mod, with the clamps above (`tune <path> [value]` reaches every leaf) |
+
+All five are on the global `goats` handle *and* on every mod's own handle. `traps` is the
+derivation the core itself uses rather than a copy of it, so a detector and the mine the
+detector found cannot disagree; and `armed` is per-mod, with an empty `CORE_OFF` as the
+fast path, so a game with no explosives mods pays nothing for the gate.
 
 - A mod's **own** device type cannot be a new `BlastKind` on the wire in v1 (the
   enum is closed, see *The wire*), but a world mod's device state can ride its own
@@ -3115,7 +3136,7 @@ either of them ever gets.
 | **M19d** | Craters | M19b | M | ✅ **Landed** — the dish is a term in `terrainHeight` (`craterDipAt`, a bowl plus a raised lip, summing over the live list), so the goat, the herd, the peers, the grass and both shadows stand in it with nothing added anywhere; the list is capped at `crater.max` with the oldest retired first and heals by scaling the depth down over `crater.heal`; the grass the crater swallowed is killed through the meadow's own `EATEN`, with the heal for a regrow window, and released as the ground closes; `terrainDirty` makes a near bang's hole appear in the mesh on the frame it happens (a distant one waits for the next anchor rebuild, so a bot's bang cannot hitch the frame); the interim scorch is the mine's own tell puff scaled to the dish; `craters` is a console verb and `sceneCraters`/`sceneResetCraters` are the test surface. **Open**: craters stack (N bangs in one place dig N × `depth`, bounded by the cap and unwound by the heal), and nothing about them travels yet -- M19e's `craters` on the world datagram is what a client needs |
 | **M19e** | The wire | M19b-d | M | ✅ **Landed** — `BlastKind`; a bang as an *event* on the frame stream both ways; `craters`/`spent` as *state* on the world datagram, `None`-means-keep and all-or-nothing, with the budget case; and `Client::report_blast`, for the direction that had no sender at all. A device fires in exactly one place: the process the goat is in fires and reports it, the host spends the device and relays the bang with **its own** coordinates, and a receiver fires that receipt once — with the chain suppressed there, because the origin's own chain reports each of *its* bangs itself. The **move** needs no field of its own (the destination is derived from the cell that fired, so `spent` is the whole of it), and a mirrored crater is *reconciled* rather than rebuilt, so a 10 Hz snapshot does not drop the height cache and rebuild the mesh with it. The cap on how often a client may report is the host's (`BLAST_BURST` in `session`), not the scene's, because a tuning entry would be a number the client itself could raise. **Two notes above were brought into line with the code, and both are decisions rather than gaps:** a reported bang is applied here exactly as every client applies it, the host's own goats included (the narrower reading needs a crater-only path and would leave a mine going off under the host's goat doing nothing), and the shed order is spent → meadow → craters, which is what the justification for it always said |
 | **M19f** | The art | M19a, M19c, M19d | M–L | ✅ **Landed** — the flipbook effect pool with a **procedural atlas** per kind, so the art is built at boot and a mod's PNG can replace it; the bang's light as three uniforms on the lit shader; the crater's scorch as a ground **decal** instead of a billboard, which is *cheaper* than the interim it replaces; the camera's knock and the HUD's pulse; **`GoatFlung` in `goat.blend`** (`tools/goat_flung.py`), re-exported into `goat_animated.glb`, which retires the placeholder's procedural roll; and **`py` on `BotState`/`PeerState`** with `PROTOCOL_VERSION` 10, so the flung height travels at last |
-| **M19g** | Sound and the mod surface | M19e, M19f | S–M | The rest of the slots (`sfx.fuse`, `sfx.trap`, `sfx.blast.close`) and the per-slot pools, the fuse's click; `goats.explosions.*`, the `blast` event, the docs (`APIv1.md` §4, `README.md`) |
+| **M19g** | Sound and the mod surface | M19e, M19f | S–M | ✅ **Landed** — the per-slot pools (`SFX_POOL` copies of every variant, picked with `isSoundPlaying`), `playTrigger`'s click at the *trigger* (a mine's `sfx.fuse` against a trapped tuft's `sfx.trap` snap), the close mix inside 6 m (`sfx.blast.close`), and the chain's own attenuation (`1/(1 + 0.6·depth)`, which the grit gets too); `goats.explosions` (`blast`, `traps`, `armed`) on every mod handle and globally, the `"blast"` event, `armed` handed back when the mod that asked is unloaded; and the docs (`APIv1.md` §3.3, §4.2, §4.15, `README.md`). **One decision on contact:** the three samples never arrived, so the slots ship **declared and empty** -- `loadSlot` on an empty list is a no-op and `playTrigger` returns early, so silence is the degradation, as a missing texture is, and a mod can still fill any of them. The pool, the split and the event are the parts that had to land regardless |
 
 Two things about the ordering. **M19a is independent of everything else**, which was
 the point of it: it landed upstream while the logic was still being designed, so
@@ -3169,8 +3190,14 @@ it:
   goat's own bang rather than for the blast counter to move: `checkTriggers` runs over
   the herd too, so a bot stepping on a device of its own used to be able to end a case
   about the player early.
-- **`crates/harness/tests/mods.rs`** -- a mod's `goats.explosions.blast` goes
-  through the report path, the `blast` event fires, and `traps` is readable.
+- **`crates/harness/tests/mods.rs`** -- ✅ **landed in M19g** as `boom_block`, four
+  checks on top of the surface that was already there (53 in the file): the field a
+  mod reads is the core's own (`mines === sceneTraps(0, 0, 40).mines.length`),
+  `armed(false)` empties it and `armed(true)` hands it back with `sceneExplosions()`
+  agreeing, the `"blast"` event carries the bang's own numbers rather than the
+  caller's, and -- the one only the wire can show -- a mod's bang goes out on the
+  report path (`"type":"blast"`, `"kind":"mine"`), because a bang nobody else hears
+  is a bang that did not happen.
 - **`crates/harness/tests/scene_logic.rs`**, the effect pool -- ✅ **landed in M19f**
   as `art_block`, which drives `drawExplosions` directly with the pool emptied
   (`fxTop = 0`), so the counts are exact rather than "at least". What is asserted:
@@ -3192,11 +3219,19 @@ it:
   off, giving themselves back over half a second, and a bang thirty metres out a
   fraction of the same. The block clears the field first (`density 0`) so no device --
   the herd's included -- can add a bang while the two numbers are being compared.
-- **`crates/harness/tests/birds.rs`**-style -- one sound per blast: the stub counts
-  plays *by the path that was loaded*, so a case can name the samples it expects
-  rather than only counting, which is how "every bang is heard, once" is asserted
-  against the scene's own cumulative blast count, and how the grit is checked to be
-  *queued* at the bang and only heard afterwards.
+- **The audio** -- ✅ **landed in M19g**, in `scene_logic.rs`'s `explosions_block`:
+  one sound per blast, with the stub counting plays *by the path that was loaded*, so
+  a case can name the samples it expects rather than only counting -- which is how
+  "every bang is heard, once" is asserted against the scene's own cumulative blast
+  count, and how the grit is checked to be *queued* at the bang and only heard
+  afterwards. Two cases came with the pools: two bangs fired back to back take two
+  *different* handles (read out of `soundHandles`, which exist because the stub's
+  `isSoundPlaying` is real now -- a `playing` map cleared at each `endDrawing`, since
+  a stub with no clock has no other frame boundary), and a trigger is heard before
+  its bang with a trapped tuft *snapping*: three marker files stand in for `sfx.fuse`,
+  `sfx.trap` and `sfx.blast`, so "the click landed and the bang had not" is a
+  subtraction rather than a guess. The pool is what the first case is for: two bangs
+  one frame apart are two handles, not one restart.
 - **`crates/proto`** -- ✅ the blast messages round-trip; a crater's encoding is the
   size the budget table claims (an upper bound, since postcard's varints are shorter);
   `fit_world` sheds in the order the code implements; and the vanilla world *with

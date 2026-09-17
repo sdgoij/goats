@@ -981,6 +981,41 @@ function modWorldFor(id) {
     };
 }
 
+// The explosives a mod can see and set off (M19g). Per mod, because `armed` is a
+// request the mod owns: it is handed back when the mod is unloaded, and two mods can
+// want different things without one of them winning by being loaded last.
+//
+// `blast` goes through the scene's own `blast`, which means the same things happen as
+// for a mine -- the crater, the damage, the flash, the sound, the mod event and, in a
+// session, the report (M19e's path). It is deliberately not a *new* kind of bang on the
+// wire: `BlastKind` is a closed enum, so a mod's device reports as the core kind it
+// behaves like, and a mod that wants its own state on the wire rides `world.extend`
+// instead (which is what the birds' flock already does).
+function modExplosionsFor(id) {
+    return {
+        blast: function (x, z, kind) { return modBlast(id, x, z, kind); },
+        traps: function (x, z, range) { return sceneTraps(x, z, range); },
+        armed: function (on) { return modCoreArmed(id, on); },
+    };
+}
+
+// Where a mod's bang lands on the wire: the *cell* it happened in, which is the key
+// space every other device uses (`tuftKey`). A bang in a cell that holds a core device
+// therefore spends it on every peer as well -- the same rule a core bang follows, and
+// the reason a mod's bang is worth reporting rather than applied locally: the ground,
+// the devices and the herd are the host's, so a bang nobody else hears is a bang that
+// did not happen.
+function modBlast(id, x, z, kind) {
+    const fx = Number(x);
+    const fz = Number(z);
+    if (!isFinite(fx) || !isFinite(fz)) throw new Error("goats.explosions.blast: x and z are required");
+    const blastKind = kind === "trap" ? "trap" : "mine";
+    const cx = Math.floor(fx / 2);
+    const cz = Math.floor(fz / 2);
+    blast(blastKind, fx, fz, hash(fx * 7.1 + fz * 3.3), 0, tuftKey(cx, cz));
+    return true;
+}
+
 // ---- lifecycle ------------------------------------------------------------
 
 function goatsBegin(id) {
@@ -1013,6 +1048,7 @@ function goatsBegin(id) {
         tuning: goatsTuning,
         net: goatsNet,
         assets: modAssetsFor(id, meta),
+        explosions: modExplosionsFor(id),
     };
     modInstances.set(id, handle);
     meta.enabled = true;
@@ -1028,6 +1064,8 @@ function goatsEnd(id) {
     modDropHooks(id);
     modDropCommands(id);
     modDropWorld(id);
+    // And the field, if this mod had taken the core devices out of it (M19g).
+    modCoreArmed(id, true);
     modInstances.delete(id);
     const meta = modFind(id);
     if (meta !== null) meta.loaded = false;
@@ -1089,6 +1127,7 @@ const goats = {
     tuning: goatsTuning,
     net: goatsNet,
     assets: modAssetsFor("-", { assets: {} }),
+    explosions: modExplosionsFor("-"),
 };
 
 // ---- the `mod` console verb ----------------------------------------------

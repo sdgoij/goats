@@ -1172,6 +1172,12 @@ fn the_scene_runs_the_scripted_timeline() {
         fx.flash,
         fx.flash,
     );
+    checks.check("two bangs do not restart the same handle", fx.sfx_pool, &fx);
+    checks.check(
+        "a trigger clicks before the bang, and a trapped tuft snaps",
+        fx.sfx_click && fx.sfx_snap,
+        &fx,
+    );
 
     // ---- M19f: the look ------------------------------------------------------
     // The flipbook atlases, the draws they come to, and the two rungs below them
@@ -1293,7 +1299,18 @@ struct Explosions {
     blast_sound: bool,
     blast_debris: bool,
     flash: bool,
+    sfx_pool: bool,
+    sfx_click: bool,
+    sfx_snap: bool,
 }
+
+/// Marker files for the M19g sound cases: the weather beds and the music track. The core
+/// loads those three with `loadMusic`, so a `playSound` of one of them can only be the
+/// slot a case filled -- which is what makes the counts unambiguous without muting
+/// anything.
+const FUSE_MARKER: &str = "sfx/WE Light Wind Whistle 1.ogg";
+const TRAP_MARKER: &str = "sfx/WE Heavy Outside Rain 1.ogg";
+const BLAST_MARKER: &str = "sfx/soundreality-explosion-fx-343683.mp3";
 
 /// The device state the scene reports: pending fuses, spent devices, blasts so
 /// far and live effect instances.
@@ -2284,9 +2301,108 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
     }
     harness.eval("goats.tuning.set(\"explosions.chainDepth\", 1)")?;
 
+    // ---- M19g: the sound pool, the click and the snap -------------------------
+    //
+    // A `Sound` handle played twice *restarts*, so a bang inside the tail of the last one
+    // used to cut it off. With one variant in the slot, two bangs therefore have to come
+    // out on two different handles -- which the recording stub can see and the counts by
+    // path cannot.
+    harness.eval(&format!(
+        "ASSET_SLOTS[\"sfx.blast\"] = [\"{BLAST_MARKER}\"]; loadSfx()"
+    ))?;
+    let before_pool = harness.observe()?.sound_handles.len();
+    harness.eval("blast(\"mine\", goat.px + 14, goat.pz + 6, 1.5, 0)")?;
+    harness.eval("blast(\"mine\", goat.px + 15, goat.pz + 6, 2.5, 0)")?;
+    let played = harness.observe()?.sound_handles;
+    out.sfx_pool =
+        played.len() >= before_pool + 2 && played[before_pool] != played[before_pool + 1];
+    if !out.sfx_pool {
+        eprintln!(
+            "sfx pool case: before={before_pool} after={} tail={:?}",
+            played.len(),
+            &played[before_pool.min(played.len())..],
+        );
+    }
+
+    // The trigger's own sound, out of the slots the samples have not arrived in yet. The
+    // click comes *before* the bang, which is the whole point of it: `fuse` is 0.18 s and
+    // six frames is 0.1, so a burst that plays the click and no bang is the beat the
+    // player hears, and the next burst is where the bang lands. The two slots are filled
+    // with marker files (see `FUSE_MARKER`) so the counts cannot be anything else.
+    harness.eval(&format!(
+        "ASSET_SLOTS[\"sfx.fuse\"] = [\"{FUSE_MARKER}\"]; \
+         ASSET_SLOTS[\"sfx.trap\"] = [\"{TRAP_MARKER}\"]; \
+         ASSET_SLOTS[\"sfx.blast\"] = [\"{BLAST_MARKER}\"]; loadSfx()"
+    ))?;
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0)")?;
+    harness.command("heal")?;
+    if let Some(mine) = explosion_mines(harness, 40.0)?.first() {
+        let (mx, mz) = (f64_of(mine["x"].clone()), f64_of(mine["z"].clone()));
+        let clicks = sound_plays_of(harness, FUSE_MARKER)?;
+        let bangs = sound_plays_of(harness, BLAST_MARKER)?;
+        harness.command(&format!("pos {mx} {mz}"))?;
+        drive_burst(harness, 6)?;
+        let clicked = sound_plays_of(harness, FUSE_MARKER)? - clicks;
+        let early = sound_plays_of(harness, BLAST_MARKER)? - bangs;
+        drive_burst(harness, 9)?;
+        let landed = sound_plays_of(harness, BLAST_MARKER)? - bangs;
+        out.sfx_click = clicked == 1 && early == 0 && landed >= 1;
+        if !out.sfx_click {
+            eprintln!(
+                "sfx click case: clicked={clicked} early={early} landed={landed} pending={}",
+                explosion_state(harness)?.0,
+            );
+        }
+    }
+
+    // ...and a trapped tuft's snap, on the same rule and its own slot: eating one is its
+    // own joke, so the snap is what the *tuft* sounds like before the bang.
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 1)")?;
+    harness.command("heal")?;
+    // A goat mid-arc is airborne, and an airborne goat trips nothing -- the mine above
+    // threw it, so the snap needs it back on its feet first.
+    wait_mobile(harness)?;
+    let tuft = try_command_json(harness, "grass 40")?;
+    if !tuft.is_null() {
+        let (tx, tz) = (f64_of(tuft["x"].clone()), f64_of(tuft["z"].clone()));
+        let snaps = sound_plays_of(harness, TRAP_MARKER)?;
+        harness.command(&format!("pos {tx} {tz}"))?;
+        drive_burst(harness, 6)?;
+        out.sfx_snap = sound_plays_of(harness, TRAP_MARKER)? - snaps == 1;
+        if !out.sfx_snap {
+            eprintln!(
+                "sfx snap case: snaps={} pending={}",
+                sound_plays_of(harness, TRAP_MARKER)? - snaps,
+                explosion_state(harness)?.0,
+            );
+        }
+    }
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
+    // The slots go back to their built-ins: the samples for the three M19g slots have not
+    // arrived, and a later case measuring the ordinary bang must not find a marker file
+    // standing in for one.
+    harness.eval(
+        "ASSET_SLOTS[\"sfx.blast\"] = ASSET_DEFAULTS[\"sfx.blast\"]; \
+         delete ASSET_SLOTS[\"sfx.fuse\"]; delete ASSET_SLOTS[\"sfx.trap\"]; loadSfx()",
+    )?;
+
     harness.command("heal")?;
     harness.command("pos 0 0")?;
     Ok(out)
+}
+
+/// How many times a slot's marker file was played, from the recording stub's counts by
+/// path. The marker files are the weather beds and the music track, which the core loads
+/// with `loadMusic`, so a `playSound` of one is the slot a case filled. For a slot the
+/// scene *is* allowed to play (an explosion sample), the count is a delta around the
+/// burst being measured.
+fn sound_plays_of(harness: &mut Harness, path: &str) -> Result<u32, String> {
+    Ok(harness
+        .observe()?
+        .sound_plays
+        .get(path)
+        .copied()
+        .unwrap_or(0))
 }
 
 /// The two atlas kinds, by the numbers the scene gives them (`FX_FIRE`/`FX_SMOKE` in
@@ -2294,6 +2410,13 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
 /// as an argument.
 const FX_FIRE: f64 = 0.0;
 const FX_SMOKE: f64 = 1.0;
+
+/// Empties the effect pool for a case that counts draws. `fxTop = 0` only stops the
+/// sweep: an instance from an earlier case is still `live`, and the count would include
+/// it while the draw would not -- so the flags are what has to go.
+const FX_CLEAR: &str = "(function () { \
+     for (let i = 0; i < FX_CAPACITY; i++) FX[i].live = false; \
+     fxTop = 0; return fxTop; })()";
 
 /// The effect pool as counts: live fire quads, live smoke quads and live grit
 /// bodies. The draw counts are checked against this rather than against the tuning's
@@ -2390,10 +2513,11 @@ fn art_block(harness: &mut Harness) -> Result<Art, String> {
     }
 
     // ---- one draw per live instance -----------------------------------------
-    // The pool is emptied *after* the frames above, so what is in it is the one bang
-    // below and nothing the herd tripped on the way here: every instance is at the
-    // start of its life, which is what makes the counts exact rather than "at least".
-    harness.eval("fxTop = 0")?;
+    // The pool is emptied *after* the frames above -- and emptied properly, flags and
+    // all -- so what is in it is the one bang below and nothing the herd tripped on the
+    // way here: every instance is at the start of its life, which is what makes the
+    // counts exact rather than "at least".
+    harness.eval(FX_CLEAR)?;
     harness.eval("blast(\"mine\", goat.px + 14, goat.pz + 6, 3.7, 0)")?;
     let live = harness.eval(FX_LIVE)?;
     let fire = f64_of(live["fire"].clone());
@@ -2476,11 +2600,26 @@ fn art_block(harness: &mut Harness) -> Result<Art, String> {
     harness.reset_counters(&["quadDraws", "billboards"])?;
     harness.call("drawExplosions", &[])?;
     let decal = harness.observe()?.counters;
-    let craters = f64_of(harness.eval("sceneCraters().length")?);
-    out.decals = craters == 1.0 && decal.quad_draws == 1 && decal.billboards == 0;
+    // One quad per crater *in range* and no billboard. A crater the herd's own bang left
+    // somewhere out in the meadow is not drawn -- `scorchRange` is what keeps a field of
+    // them from being fill rate nobody can read -- so the count is the range's.
+    let in_range = f64_of(harness.eval(
+        "(function () { \
+           let n = 0; \
+           const rows = sceneCraters(); \
+           const r = TUNING.explosions.crater.scorchRange; \
+           for (let i = 0; i < rows.length; i++) { \
+             const dx = rows[i].x - goat.px; \
+             const dz = rows[i].z - goat.pz; \
+             if (dx * dx + dz * dz <= r * r) n += 1; \
+           } \
+           return n; })()",
+    )?);
+    out.decals =
+        in_range >= 1.0 && f64::from(decal.quad_draws) == in_range && decal.billboards == 0;
     if !out.decals {
         eprintln!(
-            "art decal case: craters={craters} quads={} billboards={}",
+            "art decal case: in_range={in_range} quads={} billboards={}",
             decal.quad_draws, decal.billboards,
         );
     }

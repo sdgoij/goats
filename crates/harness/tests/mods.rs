@@ -250,6 +250,27 @@ fn the_mod_surface_works() {
         &added,
     );
 
+    // ---- M19g: the explosions surface --------------------------------------
+    // What a mod can see, set off and turn off, on a scene that is hosting so that a
+    // mod's bang has the wire to go out on.
+    let boom = staged("the explosions block", boom_block(&mut harness));
+    checks.check("a mod reads the derived device field", boom.traps, &boom);
+    checks.check(
+        "a mod can take the core devices out of the field, and give them back",
+        boom.disarmed,
+        &boom,
+    );
+    checks.check(
+        "the blast event fires with the bang's own numbers",
+        boom.event,
+        &boom,
+    );
+    checks.check(
+        "a mod's bang goes out on the report path",
+        boom.reported,
+        &boom,
+    );
+
     checks.finish();
 }
 
@@ -489,6 +510,86 @@ fn api_block(harness: &mut Harness) -> Result<ModApi, String> {
         &[json!("com.hooks"), json!(false), json!("reserved")],
     )?;
     Ok(api)
+}
+
+/// What the M19g explosions surface found: what a mod can read, set off and turn off.
+#[derive(Debug, Default)]
+struct ModBoom {
+    traps: bool,
+    disarmed: bool,
+    event: bool,
+    reported: bool,
+}
+
+/// A mod's own devices, through the surface M19g added: it listens for the `blast`
+/// event, reads the derived field, takes the core devices out of it and puts them back,
+/// and sets off a bang of its own. The bang is placed far from the goat so nothing it
+/// does has to be undone -- this is about the surface, not the damage.
+const BOOM_ENTRY: &str = r#"(function (goats) {
+    globalThis.__boom = null;
+    goats.on("blast", function (e) { globalThis.__boom = e; });
+    globalThis.__mines = goats.explosions.traps(0, 0, 40).mines.length;
+    globalThis.__armedBefore = goats.explosions.armed();
+    goats.explosions.armed(false);
+    globalThis.__armedAfter = goats.explosions.armed();
+    globalThis.__minesOff = goats.explosions.traps(0, 0, 40).mines.length;
+    globalThis.__sceneOff = sceneExplosions().armed;
+    goats.explosions.armed(true);
+    globalThis.__minesBack = goats.explosions.traps(0, 0, 40).mines.length;
+    goats.explosions.blast(12.5, -7.5, "mine");
+})(goats.begin("com.boom"))"#;
+
+const TABLE_BOOM: &str = r#"[{"id":"com.boom","name":"Boom","version":"1","api":1,"side":"world","enabled":true,"hash":"0"}]"#;
+
+fn boom_block(harness: &mut Harness) -> Result<ModBoom, String> {
+    let mut boom = ModBoom::default();
+    // Hosting, so the mod's bang has somebody to report to: a bang nobody else hears is a
+    // bang that did not happen, which is the whole reason `goats.explosions.blast` goes
+    // through the report path rather than applying locally.
+    net_feed(harness, r#"{"type":"hosting","name":"bob"}"#)?;
+    harness.call("sceneNetDrain", &[])?;
+    harness.call("sceneMods", &[json!(TABLE_BOOM)])?;
+    harness.eval(BOOM_ENTRY)?;
+    harness.call(
+        "sceneModResult",
+        &[json!("com.boom"), json!(true), json!("")],
+    )?;
+
+    // The derived field is readable, and the same field the core uses: the mines the mod
+    // can see are the ones a goat would trip on.
+    let mines = f64_of(harness.eval("globalThis.__mines")?);
+    boom.traps = mines > 0.0
+        && bool_of(harness.eval("globalThis.__mines === sceneTraps(0, 0, 40).mines.length")?);
+
+    // `armed(false)` empties the field and `armed(true)` hands it back, and the request
+    // is visible from the scene's own report (`sceneExplosions().armed`).
+    boom.disarmed = bool_of(harness.eval(
+        "globalThis.__armedBefore === true && globalThis.__armedAfter === false && \
+         globalThis.__minesOff === 0 && globalThis.__sceneOff === false && \
+         globalThis.__minesBack === globalThis.__mines",
+    )?);
+
+    // The event fired with the bang's own numbers, and after the world took it -- the
+    // radius and the depth are the blast's, not the caller's.
+    let event = harness.eval("JSON.stringify(globalThis.__boom)")?;
+    boom.event = event.as_str().is_some_and(|text| {
+        text.contains(r#""kind":"mine""#)
+            && text.contains(r#""x":12.5"#)
+            && text.contains(r#""z":-7.5"#)
+            && text.contains(r#""radius""#)
+            && text.contains(r#""killed":0"#)
+    });
+
+    // ...and the bang went out over the wire, from the cell it happened in -- the same
+    // report a mine's own trigger sends.
+    let drain = harness.call("sceneNetDrain", &[])?;
+    let text = drain.as_str().unwrap_or("");
+    boom.reported = text.contains(r#""type":"blast""#) && text.contains(r#""kind":"mine""#);
+    harness.eval("goats.end(\"com.boom\")")?;
+    // Leaving the session is what the rest of the file expects to find the scene in.
+    net_feed(harness, r#"{"type":"disconnected"}"#)?;
+    harness.call("sceneNetDrain", &[])?;
+    Ok(boom)
 }
 
 /// What the content-registry cases found.

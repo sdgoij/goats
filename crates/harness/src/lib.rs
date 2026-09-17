@@ -156,6 +156,9 @@ pub struct Observations {
     pub sound_loads: Vec<String>,
     /// How many times each loaded sound was played, keyed by asset path.
     pub sound_plays: BTreeMap<String, u32>,
+    /// Every `playSound` handle, in order, so a check can tell a pooled second copy from a
+    /// restart of the first (M19g).
+    pub sound_handles: Vec<i64>,
     /// The run, one row per ready frame.
     pub timeline: Vec<Frame>,
     /// The console and screen state at the probed frames, keyed by frame.
