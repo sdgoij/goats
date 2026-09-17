@@ -549,7 +549,7 @@ function sceneCommand(line) {
         case "lighting": {
             if (litShader < 0) return "error lighting unavailable";
             useLighting = ctlToggle(useLighting, parts[1]);
-            if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+            if (haveModel) rl.setModelShader(model, modelShaderFor(model, useLighting ? litShader : -1));
             setBotsShader(useLighting ? litShader : -1);
             setTerrainShader(useLighting ? litShader : -1);
             return "ok lighting " + (useLighting ? "on" : "off");

@@ -1,9 +1,9 @@
 // Part 9/16 of the goat scene: the bot herd.
 //
-// Each bot owns its own model handle. That is not wasteful book-keeping: this is
-// a CPU-skinning build, so `updateModelAnimation` deforms the vertices *inside
-// the model's meshes*, which means two goats can only hold different poses if
-// they have different models. The handles also let every bot carry its own
+// Each bot owns its own model handle. That is not wasteful book-keeping: the pose
+// lives in the model -- in the meshes a CPU-skinning build deforms, in the bone
+// matrices a `gpu-skinning` build uploads -- so two goats can only hold different
+// poses if they have different models. The handles also let every bot carry its own
 // procedural fleece texture applied to its material's diffuse map.
 //
 // The bots roam on a small state machine -- graze, stroll, trot, occasionally
@@ -78,7 +78,8 @@ function botAdd(i) {
     const handle = rl.loadModel(ASSET_SLOTS["model.goat"]);
     if (handle < 0) return false;
     const tex = BOT_TEX[i % BOT_TEX.length];
-    if (litShader >= 0) rl.setModelShader(handle, litShader);
+    modelLoaded(handle);
+    if (litShader >= 0) rl.setModelShader(handle, modelShaderFor(handle, litShader));
     if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
     if (tex !== undefined && tex >= 0) rl.setModelTexture(handle, 0, tex);
     // A golden-angle spread rings the player evenly for any herd size.
@@ -157,9 +158,12 @@ function unloadBots() {
 }
 
 // Point every bot's materials at `shader` (or restore the originals for -1),
-// mirroring the player's `L` toggle.
+// mirroring the player's `L` toggle. `modelShaderFor` maps the plain program the
+// caller names to the skinned one a `gpu-skinning` build draws them with.
 function setBotsShader(shader) {
-    for (let i = 0; i < BOTS.length; i++) rl.setModelShader(BOTS[i].model, shader);
+    for (let i = 0; i < BOTS.length; i++) {
+        rl.setModelShader(BOTS[i].model, modelShaderFor(BOTS[i].model, shader));
+    }
 }
 
 // The clip role a bot is currently playing, falling back like the player does.
@@ -646,19 +650,20 @@ function drawBots(tint) {
 
 // Depth pass: draw the bots that fall inside the light's box. Called from
 // `renderShadowMap` while the goat's own depth draw is set up.
-// The herd in the depth pass. It does **not** pose: the mesh still carries the
-// pose the previous frame's lit pass left in it, and CPU skinning is the single
-// most expensive thing this scene does per bot (updateModelAnimation rewrites the
-// deformed vertices), so posing twice per frame -- once here, once in `drawBots`
-// -- was paying for the same deformation twice. A shadow map drawn from a pose one
-// frame old is not something anyone can see.
+// The herd in the depth pass. It does **not** pose: the model still carries the
+// pose the previous frame's lit pass left in it -- the deformed mesh on a
+// CPU-skinning build, the bone matrices on a `gpu-skinning` one -- and that deform
+// is the most expensive thing this scene does per bot (on the CPU build),
+// so posing twice per frame -- once here, once in `drawBots` -- was paying for
+// the same work twice. A shadow map drawn from a pose one frame old is not
+// something anyone can see.
 function drawBotsShadow() {
     for (let i = 0; i < BOTS.length; i++) {
         const b = BOTS[i];
         const dx = b.x - goat.px;
         const dz = b.z - goat.pz;
         if (dx * dx + dz * dz > shadowGrassCull2()) continue;
-        rl.setModelShader(b.model, depthShader);
+        rl.setModelShader(b.model, modelShaderFor(b.model, depthShader));
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, -1);
         // No pose here, but the transform is free: a thrown bot is in the air in
         // the depth pass too (the roll comes from the fraction the pose already
@@ -674,7 +679,7 @@ function drawBotsShadow() {
                 b.spec.scale, b.spec.scale, b.spec.scale, rl.WHITE);
         }
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, shadowColor);
-        rl.setModelShader(b.model, litShader);
+        rl.setModelShader(b.model, modelShaderFor(b.model, litShader));
     }
 }
 

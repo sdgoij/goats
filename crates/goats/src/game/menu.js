@@ -52,7 +52,7 @@ function applySettings() {
     applyAudioSettings();
     if (litShader >= 0) {
         useLighting = SETTINGS.light;
-        if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+        if (haveModel) rl.setModelShader(model, modelShaderFor(model, useLighting ? litShader : -1));
         setBotsShader(useLighting ? litShader : -1);
     }
     if (SETTINGS.shadow === 2 && !shadowMapReady) SETTINGS.shadow = 0;
@@ -72,7 +72,7 @@ function applySettings() {
 function applyStartupSettings() {
     applyAudioSettings();
     useLighting = SETTINGS.light;
-    if (litShader >= 0 && haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+    if (litShader >= 0 && haveModel) rl.setModelShader(model, modelShaderFor(model, useLighting ? litShader : -1));
     setBotsShader(useLighting ? litShader : -1);
     if (skyShader >= 0) useSkyShader = SETTINGS.sky;
     shadowMode = SETTINGS.shadow;

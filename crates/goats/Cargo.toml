@@ -20,7 +20,12 @@ pull = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
-slag = { workspace = true, features = ["jit", "raylib", "raygui"] }
+# The engine. `gpu-skinning` changes raylib's own build: a skinned mesh is loaded
+# without its deform buffers and the *shader* skins it, which is what takes
+# `bots`/`goat_pose`/`shadow_bots` out of the frame (PERF.md section 7.1 item 5).
+# The scene branches on `rl.GPU_SKINNING`, so dropping the word below is the whole
+# way back to CPU skinning -- keep the flag in both builds measurable.
+slag = { workspace = true, features = ["jit", "raylib", "raygui", "gpu-skinning"] }
 
 # Voice chat, client only (M13b). `cpal` opens the microphone, `libopus_sys`
 # with `bundled` compiles libopus from source, so there is no system codec to

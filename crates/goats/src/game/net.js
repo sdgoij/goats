@@ -272,7 +272,8 @@ function netPeerState(name, state) {
         if (typeof rl.loadModel !== "function" || !haveModel) return;
         const handle = rl.loadModel(ASSET_SLOTS["model.goat"]);
         if (handle < 0) return;
-        if (litShader >= 0) rl.setModelShader(handle, litShader);
+        modelLoaded(handle);
+        if (litShader >= 0) rl.setModelShader(handle, modelShaderFor(handle, litShader));
         if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
         PEERS.push({
             name: name,
@@ -394,7 +395,7 @@ function drawPeersShadow() {
         const dx = p.x - goat.px;
         const dz = p.z - goat.pz;
         if (dx * dx + dz * dz > shadowGrassCull2()) continue;
-        rl.setModelShader(p.model, depthShader);
+        rl.setModelShader(p.model, modelShaderFor(p.model, depthShader));
         rl.setModelTexture(p.model, SHADOW_MAP_INDEX, -1);
         // No `poseModelOn` here, for the reason spelled out in `drawBotsShadow`:
         // the depth pass draws the pose `drawPeers` left in the mesh last frame,
@@ -410,7 +411,7 @@ function drawPeersShadow() {
                 0, 1, 0, (p.yaw * 180) / Math.PI, 1, 1, 1, rl.WHITE);
         }
         rl.setModelTexture(p.model, SHADOW_MAP_INDEX, shadowColor);
-        rl.setModelShader(p.model, litShader);
+        rl.setModelShader(p.model, modelShaderFor(p.model, litShader));
     }
 }
 

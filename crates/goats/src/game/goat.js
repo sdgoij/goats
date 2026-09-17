@@ -580,7 +580,7 @@ function sceneFrame() {
     if (press(rl.KEY_L) && litShader >= 0) {
         useLighting = !useLighting;
         SETTINGS.light = useLighting;
-        if (haveModel) rl.setModelShader(model, useLighting ? litShader : -1);
+        if (haveModel) rl.setModelShader(model, modelShaderFor(model, useLighting ? litShader : -1));
         setBotsShader(useLighting ? litShader : -1);
         setTerrainShader(useLighting ? litShader : -1);
     }
@@ -837,10 +837,10 @@ function sceneFrame() {
             // The planar fallback is drawn first, under the goat; the shadow
             // map is sampled by the lit shader during the goat's own draw.
             if (shadowMode === SHADOW_PLANAR && shadowShader >= 0 && LIGHT_DIR[1] > 0.06) {
-                rl.setModelShader(model, shadowShader);
+                rl.setModelShader(model, modelShaderFor(model, shadowShader));
                 setShadowUniforms();
                 drawModelGoat(goat, rl.WHITE);
-                rl.setModelShader(model, litShader);
+                rl.setModelShader(model, modelShaderFor(model, litShader));
             }
             drawModelGoat(goat, rl.WHITE);
             drawEyes();

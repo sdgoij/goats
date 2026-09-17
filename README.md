@@ -240,7 +240,7 @@ belly is. `C` (force weather) and `T` (fast-forward) are host/offline only.
 The client's manifest, `crates/goats/Cargo.toml`, pins Slag from GitHub:
 
 ```toml
-slag = { git = "https://github.com/sdgoij/slag", features = ["jit", "raylib", "raygui"] }
+slag = { git = "https://github.com/sdgoij/slag", features = ["jit", "raylib", "raygui", "gpu-skinning"] }
 ```
 
 To build against a local checkout of the engine instead, swap in the commented
@@ -248,8 +248,14 @@ path dependency (the `slag/` directory in this repo is ignored by git and is
 exactly such a checkout):
 
 ```toml
-slag = { path = "../../slag/crates/slag", features = ["jit", "raylib", "raygui"] }
+slag = { path = "../../slag/crates/slag", features = ["jit", "raylib", "raygui", "gpu-skinning"] }
 ```
+
+`gpu-skinning` is the one feature that changes what you *see*: it makes raylib
+skin an animated model in the material's shader instead of on the CPU, which takes
+the herd off the frame's critical path (`PERF.md` §7b: `bots` 5.5 → 0.5 ms with
+7 goats). Dropping the word builds the CPU-skinning client the scene also supports,
+which is how those two columns were measured.
 
 Then:
 
@@ -464,11 +470,20 @@ module (committed upstream in `sdgoij/slag`):
 ```
 loadModel  makeModel  isModelValid  unloadModel
 setModelShader  setModelTexture
+setModelCpuSkinning
 drawModel  drawModelEx   modelBounds
 modelAnimationCount  modelBoneCount
 modelAnimationName   modelAnimationFrameCount  modelAnimationDuration
 updateModelAnimation
+GPU_SKINNING
 ```
+
+`rl.GPU_SKINNING` is not a call: it says which way raylib was built (a build
+switch, since it also decides the mesh layout at load), and the scene branches on it
+rather than assuming. On a `gpu-skinning` build an animated model can only be drawn
+through a shader that declares the bone inputs and `boneMatrices`, and
+`rl.setModelCpuSkinning(model, true)` is the per-model way back to the CPU pass for
+one that cannot be.
 
 `rl.makeModel(vertices[, indices[, normals[, colors[, texcoords]]]])` builds a
 model from flat number arrays and returns a handle in the same registry as
@@ -508,9 +523,11 @@ Two consequences shape the scene. raylib's default shader is unlit and
 goat and the terrain are routed through the lit program with `setModelShader`,
 while the grass and the cube fallback use `beginShaderMode`. (A model draw also
 resets the batch shader when it finishes, which is why the terrain is drawn
-outside the grass's shader-mode block.) And because this is a
-CPU-skinning build, raylib already deforms positions *and* normals on the CPU
-before upload, so the lit shader needs no bone matrices.
+outside the grass's shader-mode block.) And the lit program depends on who skins:
+on the default build raylib deforms positions *and* normals on the CPU before
+upload, so the shader needs no bone data, while a `gpu-skinning` build hands the
+same job to the shader — which is why each of the three vertex shader families is
+compiled twice and the goat is routed to the skinned one (`PERF.md` §7b).
 
 The shadow is a depth pass rendered in the light's view, compared in the lit
 shader with a 3x3 PCF kernel. Depth is packed across the render texture's RGB

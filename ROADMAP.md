@@ -345,9 +345,11 @@ Shipped in the scene (`crates/goats/src/game/`):
   `beginShaderMode`. `L` toggles the whole thing; a missing-binding check falls
   back to the M2/M3 ambient-tint look.
 - **CPU skinning needed no bone matrices.** raylib deforms positions *and*
-  normals on the CPU in this build and uploads them, so the lit shader works on
-  the animated goat with plain `vertexPosition`/`vertexNormal` — the roadmap's
-  bone-matrix risk did not materialise.
+  normals on the CPU in the default build and uploads them, so the lit shader works
+  on the animated goat with plain `vertexPosition`/`vertexNormal` — the roadmap's
+  bone-matrix risk did not materialise. (The client has since moved to a
+  `gpu-skinning` build, where each of these three shaders has a skinned twin: see
+  “The engine took the frame-cost profile”, item 22 below.)
 - **Cast shadows.** A depth pass renders the goat from the light's point of view
   into a render texture, and the lit shader compares depths with a 3x3 PCF
   kernel, so the goat self-shadows and the terrain takes a perspective-correct
@@ -520,10 +522,14 @@ about. Goats also collide — every pair is pushed apart (bots yield fully to th
 player, and split the push with each other), so nothing can walk through
 anything else.
 
-Each bot owns a model handle rather than sharing one. That is forced by this
-CPU-skinning build: `updateModelAnimation` writes the deformed vertices into the
+Each bot owns a model handle rather than sharing one, which the CPU-skinning build
+this started on forced: `updateModelAnimation` writes the deformed vertices into the
 model's own meshes, so two goats can only hold different poses if they have
-different models. Bots inside the shadow map's box are drawn into the depth pass
+different models. (A `gpu-skinning` build lifts that -- the pose is bone matrices,
+and one model can serve the whole herd as long as each instance is updated
+immediately before it is drawn -- but the scene still loads one per bot for now:
+sharing them would save the extra mesh copies and their load time, not frame time.)
+Bots inside the shadow map's box are drawn into the depth pass
 and cast real shadows; the rest get a small contact blob so distant goats stay
 grounded. The bots use a private PRNG, so they cannot shift the seeded weather
 stream the harness asserts on.
@@ -3530,8 +3536,8 @@ this milestone is a consequence of these, so they come first.
     interpreter on a realistic workload, is a self-contained task -- and it has
     already paid for itself once: naming a hot function's parameters costs ~25%
     (M15, "What the port taught us about the engine").
-22. **The engine took the frame-cost profile -- what it pushed back, and the one
-    item that is still ours.** The report (`PERF.md`) landed upstream as seven
+22. **The engine took the frame-cost profile, and the client has since taken the
+    last item.** The report (`PERF.md`) landed upstream as seven
     commits, all of them inside the revision the workspace pins (`slag`
     `4e019a7d`, moved by `2cc22a5`): the release profile it asked to keep (§7.1
     item 0), the two global-read fixes (§7.1 item 1 -- the value cell now serves
@@ -3545,19 +3551,30 @@ this milestone is a consequence of these, so they come first.
     are 13 us of a 16.3 ms frame, 0.08%). The engine's copy of the profile, each
     item annotated with its resolution, is `slag/.notes/frame-cost-profile.md`;
     the global reads have a note of their own, `slag/.notes/global-read-cells.md`.
-    **GPU skinning (§7.1 item 5) is the one that still needs the client**, and it
-    is the largest item left in the frame: `bots` 5.37-5.45 ms plus `goat_pose`
-    0.78-0.80 ms, and it is what forces one model per goat, because
-    `updateModelAnimation` deforms the mesh itself. The engine half is a raylib
+    **GPU skinning (§7.1 item 5), the largest item left in the frame, has now
+    landed on the client**: `bots` 5.49-5.90 ms and `goat_pose` 0.78-0.80 become
+    0.27-0.83 and 0.04 ms -- ~6 ms of a 16.6 ms budget with 7 goats, and no fps
+    change, because the frame was at vsync either way. The engine half is a raylib
     *build* switch rather than a binding -- `gpu-skinning` in the client's `slag`
     feature list, `rl.GPU_SKINNING` to branch on instead of assuming, and
-    `rl.setModelCpuSkinning(model, true)` as the per-model fallback for anything
-    a mod loaded or any shader that failed to compile. The scene half is written
-    up in `slag/.notes/gpu-skinning.md`: the bone inputs and a `boneMatrices[]`
-    sized for the largest rig in **three** shaders -- `LIT_VS`, the blob shadow's
-    `SHADOW_VS` and the depth pass's `DEPTH_VS` -- the plain programs kept for the
-    grass and every non-skinned model, one `setModelShader` per animated model,
-    and `half` left under the ~910-cube batch trip point. No number rides with it:
-    the engine ships no skinned model asset and the deform path needs a GL
-    context, so `bots`, `goat_pose` and `shadow_bots` have to be re-measured on
-    the client's own frame.
+    `rl.setModelCpuSkinning(model, true)` as the per-model fallback for a rig the
+    skinned programs cannot cover -- and the client builds with it (`crates/goats`
+    `Cargo.toml`; one word is the whole way back, and the scene branches on the flag
+    rather than on behaviour, so both builds work). The scene half is the three
+    vertex shader families compiled twice (`LIT_VS`, the blob shadow's `SHADOW_VS`
+    and the depth pass's `DEPTH_VS`), a `boneMatrices[32]` and the bone inputs per
+    family, one routing call per animated model as it loads, and the **plain**
+    programs kept for the grass and the terrain mesh -- the sharpest trap, since
+    neither carries bone data and a skinned program would deform it by the last
+    model's matrix. `slag/.notes/gpu-skinning.md` is the engine's write-up,
+    `PERF.md` §7b the before/after table, and `crates/harness/tests/skinning.rs`
+    pins the routing (17 checks, with `rl.GPU_SKINNING` as a stub flag so both sides
+    of the branch are reachable without a GL context). Two things it does not do:
+    the grass (`tufts` 2.7-2.9 plus `shadow_grass` 0.5) is now the largest phase in
+    the frame, and one model per goat is no longer *required* -- one model can serve
+    the herd if every instance is updated immediately before it is drawn -- which the
+    scene has not taken up yet. A third, smaller gap: the `L` toggle turns lighting
+    off by restoring raylib's *own* shader, which does not skin either, so on this
+    build the goats hold their bind pose with the lighting off. It is a debug view's
+    gap rather than a gameplay one, and the fix (an unlit skinned twin) is not
+    written yet.

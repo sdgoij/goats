@@ -91,6 +91,18 @@
     const botClipNames = {};
     const modelShaderCalls = [];
     const modelTextureCalls = [];
+    // Which program each *model* was routed to, `[model, shader]`. The flat
+    // `modelShaderCalls` above cannot tell the goat's route from the terrain
+    // mesh's, and the `gpu-skinning` cases need exactly that: rigs to the skinned
+    // program, everything without bone data to the plain one.
+    const modelShaderRoutes = [];
+    // Every `setModelCpuSkinning` the scene asked for, `[model, enabled]`: the
+    // per-model fallback back to raylib's CPU deform pass.
+    const cpuSkinCalls = [];
+    // The vertex source of each *skinned* program the scene compiled, by handle.
+    // A shader is only really tested by what it contains, and these are the ones
+    // whose contents decide whether a model draws or collapses.
+    const shaderVertices = {};
     const musicLoads = [];
     const musicPlayed = [];
     const soundLoads = [];
@@ -223,7 +235,10 @@
             return 1000 + counters.terrainMeshesBuilt;
         },
         modelBounds: () => ({ minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 1.47, maxZ: 0 }),
-        modelBoneCount: () => 15,   // 13 body bones + LidL/LidR
+        // The goat's rig: 13 body bones + LidL/LidR. A `gpu-skinning` case raises
+        // `rl.MODEL_BONES` to drive a rig past the skinned programs' `boneMatrices`
+        // array, which is the one rig the programs cannot cover.
+        modelBoneCount: () => (typeof rl.MODEL_BONES === 'number' ? rl.MODEL_BONES : 15),
         updateModelAnimation: (model, clip, frame) => {
             // Only the player's model (handle 0) drives the state-machine
             // checks; the bots animate their own handles and would clobber them.
@@ -264,7 +279,15 @@
                 };
             }
         },
-        setModelShader: (_model, shader) => { modelShaderCalls.push(shader); },
+        setModelShader: (model, shader) => {
+            modelShaderCalls.push(shader);
+            modelShaderRoutes.push([model, shader]);
+        },
+        // The way back to CPU skinning for one model, which a `gpu-skinning` build
+        // needs for a rig its skinned programs cannot cover.
+        setModelCpuSkinning: (model, enabled) => {
+            cpuSkinCalls.push([model, enabled ? 1 : 0]);
+        },
         setModelTexture: (_model, index, texture) => {
             counters.textureBinds += 1;
             modelTextureCalls.push([index, texture]);
@@ -288,13 +311,28 @@
         unloadModel: () => { counters.modelsUnloaded += 1; },
 
         // ---- shaders and render targets ------------------------------------
+        // Which raylib the scene is running on: the real engine reports a boolean
+        // (`rl.GPU_SKINNING`, off in a CPU-skinning build). A case flips it before
+        // the run, which is the only way to exercise the skinned path without a GL
+        // context -- the scene branches on it rather than on behaviour.
+        GPU_SKINNING: false,
         // The handle identifies which shader the scene compiled, so the checks
         // can tell the lit pass from the depth pass. The sky's fragment source is
         // kept, because a shader is only really tested by what it contains.
         loadShaderFromMemory: (vertex, fragment) => {
             if (fragment.indexOf('cloudiness') >= 0) skyFs = fragment;
-            return vertex.indexOf('shadowOn') >= 0 ? 1
+            const base = vertex.indexOf('shadowOn') >= 0 ? 1
                 : (vertex.indexOf('vClip') >= 0 ? 2 : (fragment.indexOf('cloudiness') >= 0 ? 3 : 0));
+            // A skinned variant is the same source plus the bone block, so it is
+            // told apart by the uniform it declares and gets a handle of its own
+            // (4..6, one per plain family): a case has to be able to say *which*
+            // program a model was routed to.
+            if (vertex.indexOf('boneMatrices') >= 0) {
+                const skinned = base + 4;
+                shaderVertices[skinned] = vertex;
+                return skinned;
+            }
+            return base;
         },
         isShaderValid: () => true,
         getShaderLocation: (_shader, name) => {
@@ -517,6 +555,9 @@
                 quadDraws: counters.quadDraws,
             },
             modelShaderCalls: modelShaderCalls,
+            modelShaderRoutes: modelShaderRoutes,
+            skinnedShaders: shaderVertices,
+            cpuSkinCalls: cpuSkinCalls,
             modelTextureCalls: modelTextureCalls,
             musicPlayed: musicPlayed,
             botClipNames: Object.keys(botClipNames),

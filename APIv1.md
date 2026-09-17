@@ -882,6 +882,14 @@ Tools a mod already has, without new API:
 - **Its own draw.** The `draw3d` event fires inside the scene's `beginMode3D`,
   after the world is drawn, and hands the camera position. `drawModelEx` draws a
   handle with an axis, an angle, a scale and a tint.
+- **Its own models.** `rl.loadModel(name)` takes an asset name the same way the
+  game's own goat does. One warning: on a `gpu-skinning` build (`rl.GPU_SKINNING`)
+  raylib leaves the deform to the material's shader, so a model the mod *animates
+  itself* needs a shader that declares `vertexBoneIndices`/`vertexBoneWeights` and
+  `boneMatrices` — or one call, `rl.setModelCpuSkinning(model, true)`, to hand that
+  model back to raylib's CPU deform pass, which is what the scene does for a rig its
+  own skinned programs cannot cover. A model drawn at a fixed pose (the `fatguy`
+  mod's) needs neither.
 - **Its own simulation.** `update` fires once a frame with `dt` (and `dt` is 0
   while the menu or console is open, so birds freeze with the world).
 - **Its own shared state.** `world.registerStream` seeds a PRNG,

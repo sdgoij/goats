@@ -187,7 +187,9 @@ function terrainBuild() {
     terrainTris = TERRAIN_QUADS * TERRAIN_QUADS * 2;
     rl.setModelTexture(terrainMesh, 0, terrainDetail);
     // A fresh model starts on raylib's default shader, so re-apply the lit
-    // program and the shadow map the same way the goat's material gets them.
+    // program and the shadow map the same way the goat's material gets them. The
+    // terrain is a `makeModel` mesh with no bone data, so it takes the *plain*
+    // program on every build (never `modelShaderFor`).
     if (litShader >= 0) rl.setModelShader(terrainMesh, useLighting ? litShader : -1);
     if (shadowColor >= 0) rl.setModelTexture(terrainMesh, SHADOW_MAP_INDEX, shadowColor);
     terrainBuilt = true;
@@ -242,6 +244,10 @@ function drawTerrain(tint) {
 
 // Point the terrain material at the lit program, or back at raylib's default
 // when lighting is off -- the same toggle `setModelShader` does for the goat.
+// Deliberately not `modelShaderFor`: the terrain is a `makeModel` mesh with no
+// bone data, so on a `gpu-skinning` build a skinned program would read the generic
+// bone attributes (indices 0, weights 1) and deform the whole grid by whichever
+// model was drawn last (`slag/.notes/gpu-skinning.md`, section 1b).
 function setTerrainShader(shader) {
     if (terrainMesh >= 0) rl.setModelShader(terrainMesh, shader);
 }

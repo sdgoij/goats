@@ -166,6 +166,19 @@ pub struct Observations {
     pub counters: Counters,
     /// Which shader handle each model was set to, in order.
     pub model_shader_calls: Vec<i64>,
+    /// The same, per model: `[model, shader]`. The flat list above cannot tell a
+    /// rig's route from the terrain mesh's, and the `gpu-skinning` cases need to
+    /// (the handles are the stub's: 0 lit, 1 planar shadow, 2 depth, 3 sky, and
+    /// 4/5/6 for their skinned variants).
+    #[serde(default)]
+    pub model_shader_routes: Vec<Vec<i64>>,
+    /// The vertex source of every skinned program the scene compiled, by handle.
+    #[serde(default)]
+    pub skinned_shaders: BTreeMap<String, String>,
+    /// Every `setModelCpuSkinning` the scene asked for, `[model, enabled]` -- the
+    /// per-model fallback to raylib's CPU deform pass.
+    #[serde(default)]
+    pub cpu_skin_calls: Vec<Vec<i64>>,
     /// `[index, texture]` per `setModelTexture`, in order.
     pub model_texture_calls: Vec<Vec<i64>>,
     pub music_played: Vec<i64>,

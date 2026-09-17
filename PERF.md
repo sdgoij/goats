@@ -11,7 +11,8 @@ build rather than the revision, which is itself the most actionable finding here
   (`boundary`) costs 0.07–0.08 ms. There is no hidden GPU wait to find.
 - **The biggest single cost is the herd: 5.4 ms/frame for 7 goats.** It is
   per-bot CPU skinning (`updateModelAnimation` deforms the mesh) plus one model
-  draw per bot. No other phase is close.
+  draw per bot. No other phase is close. *(0.5 ms once the client ran on a
+  `gpu-skinning` build — §7b.)*
 - **The grass is second: ~2.0 ms/frame** (1.76 visible + 0.28 in the shadow pass,
   down from 5.0) for ~370 immediate-mode cube draws — and the shadow pass draws the
   same grass again.
@@ -55,8 +56,13 @@ build rather than the revision, which is itself the most actionable finding here
   it.** Every hot loop that could be moved into a parameter-only body has been
   (§5b, “what is left”). The remaining phases are counts of engine crossings — 670
   `drawLine` in rain, ~370 `drawCube` of grass, ~10 key reads a frame — or engine
-  cost inside one call (`bots` 5.5). The levers are a batched submission path, a
-  batched key read, and GPU skinning (§7.1).
+  cost inside one call. The levers that are left are a batched submission path and a
+  batched key read (§7.1).
+- **The herd's 5.4 ms was CPU skinning, and it is gone.** With the engine's
+  `gpu-skinning` build the scene routes every animated model through a skinned
+  shader: `bots` 5.5–5.9 → 0.3–0.8 ms and `goat_pose` 0.79 → 0.04, ~6 ms of a
+  16.6 ms budget for 7 goats, with the frame still at vsync (§7b). The grass is now
+  the largest phase in the frame, by a wide margin.
 - **The lever for the engine is the compile gate, then the crossing.** A frame
   here is also thousands of `rl.*` calls, but the microsecond figures §4 read off
   the probe were mostly the interpreter, not the crossing (§4b): fix the gate and
@@ -483,11 +489,11 @@ by measured cost:
 | `light` | 0.15 | `updateAmbient`/`updateLight`/`updateShadow` + two `lerpColor` |
 | `input` | 0.12 | camera and action key reads |
 | `rain2d` | 0.62 in rain | one `drawLine` per drop |
-| `goat_pose` + `bots` | 0.8 + 5.5 | CPU skinning and one model draw per goat |
+| `goat_pose` + `bots` | 0.8 + 5.5 | CPU skinning and one model draw per goat (0.04 + 0.5 on a `gpu-skinning` build, §7b) |
 
 Every one of those is a count of engine crossings or an engine-side cost, not
-arithmetic that can be moved. The lever is submission: a batched line/cube call, a
-batched key-state read, GPU skinning (§7.1). Optimising the scene further would now
+arithmetic that can be moved. The lever is submission: a batched line/cube call and
+a batched key-state read (§7.1). Optimising the scene further would now
 be optimising the engine's interface to it.
 
 ## 6. The `8a4209f` "regression" is a build artifact
@@ -657,10 +663,11 @@ rewrote would go to ~0.01 ms each instead of 0.22 and ~0.9.
 4. **A batched key-state read.** `goat_sim` (0.26) and `input` (0.12) are ~10
    `rl.isKeyDown` crossings a frame between them. One call returning the state of
    the keys the scene cares about (or a bitmask) would collapse that to one or two.
-5. **GPU skinning.** CPU skinning is what makes the herd cost 5.5 ms and what
-   forces one model per goat (`updateModelAnimation` deforms the mesh itself, so
-   two goats cannot share one). Bone matrices as uniforms would collapse both the
-   cost and the memory, and it is the single largest item left in the frame.
+5. **GPU skinning. ✅ Landed (§7b).** CPU skinning is what makes the herd cost
+   5.5 ms and what forces one model per goat (`updateModelAnimation` deforms the
+   mesh itself, so two goats cannot share one). Bone matrices as uniforms collapse
+   the first outright -- 5.5 ms becomes 0.5 -- and leave the second as a separate
+   step; it was the single largest item left in the frame.
 6. **Then the per-crossing cost.** A frame is thousands of `rl.*` reads and calls;
    the two items above remove a large fraction of them by construction, and what is
    left is worth attacking one crossing at a time (argument marshalling, the texture
@@ -697,6 +704,56 @@ rewrote would go to ~0.01 ms each instead of 0.22 and ~0.9.
    only parameters work, because a script-level `const` is a global binding.
    Everything still above the floor is a crossing or an engine cost (§5b), so the
    next move is §7.1, not another scene edit.
+
+### 7b. GPU skinning: the client half, measured
+
+Item 5 above is done. The engine half is a raylib *build* switch (`gpu-skinning` in
+`slag`'s feature list, `rl.GPU_SKINNING` to branch on rather than assume, and
+`rl.setModelCpuSkinning(model, true)` as the per-model way back for a rig a skinned
+program cannot cover). The scene half is each of the three vertex shader families
+compiled twice, one routing call per animated model as it loads, and the *plain*
+programs kept for the grass and the terrain mesh, which carry no bone data to read
+(`slag/.notes/gpu-skinning.md`; the code is `crates/goats/src/game/lighting.js`).
+
+Two release builds of the client differing in that one feature word, the protocol of
+§1 (7 bots, 4 mods, `perf on`, 240-frame windows, dry), and the windows compared by
+index — the scene's own state makes `bots` drift *within* a run in both builds
+(0.39 → 0.83 skinned, 5.61 → 5.90 CPU), so only like-for-like windows are quoted:
+
+| phase | CPU skinning | `gpu-skinning` | Δ |
+| --- | ---: | ---: | ---: |
+| `bots` (7 goats, lit pass) | 5.49–5.90 | 0.27–0.83 | **−5.2** |
+| `goat_pose` (the player) | 0.78–0.80 | 0.04 | **−0.75** |
+| `shadow_goat` | 0.10–0.14 | 0.10–0.14 | 0 |
+| `shadow_bots` | 0.07–0.18 | 0.02–0.19 | 0 |
+| `bots_ai` (the same state machine) | 0.11–0.14 | 0.10–0.14 | 0 |
+| `cubes/frame` | 354–367 | 360–367 | 0 |
+| fps | 59–60 | 59–60 | 0 |
+
+Three things to read off it:
+
+- **The herd's cost was the deform, not the draw.** `bots` falls 91% while `bots_ai`
+  and the drawn volume do not move: what left the frame is
+  `updateModelAnimation`'s per-vertex pass over every goat's mesh, which this build
+  replaces with a bone-matrix fill.
+- **The shadow pass never paid for skinning** — `shadow_bots` does not change either
+  way: it draws the pose the lit pass left in the model, which on this path is the
+  bone matrices rather than deformed vertices.
+- **~6 ms of a 16.6 ms budget, and no fps.** The frame sits at vsync before and
+  after (§0), so the win is headroom: it is what lets the *sum* fall further under
+  the budget, exactly as the earlier scene-side rounds did.
+
+What it does not fix: the grass (`tufts` + `shadow_grass`, 2.7 + 0.5 ms in these
+runs -- this session's grass is above §0's 2.0, in *both* columns, so read those two
+together rather than as a delta) is now the largest phase in the frame by a wide
+margin, and one model per goat is no longer *required* — one model can serve the whole
+herd as long as each instance is updated immediately before it is drawn (the notes'
+§3) — though the scene keeps one per bot for now, which on this path only costs the
+extra mesh copies and their load time.
+
+The routing rules are pinned by `crates/harness/tests/skinning.rs` (17 checks): the
+stub reports `rl.GPU_SKINNING` as a flag, so a case can drive each side of the branch,
+and the fallback, without a GL context.
 
 ## 8. Caveats
 

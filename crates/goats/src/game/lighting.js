@@ -3,12 +3,16 @@
 // ---- lighting (M4): directional light and projected cast shadows ---------
 //
 // raylib's default shader is unlit, so the scene is lit by a small custom
-// program. The goat is a CPU-skinned model: raylib deforms its positions *and*
-// normals on the CPU and uploads them, so a normal shader lit per-fragment works
-// without the bone matrices a GPU-skinning build would need. `DrawMesh` binds
-// the material shader and ignores `beginShaderMode`, so `setModelShader` points
-// the goat's materials at the lit program; the terrain (immediate-mode cubes)
-// goes through `beginShaderMode`.
+// program. `DrawMesh` binds the material shader and ignores `beginShaderMode`, so
+// `setModelShader` points the goat's materials at the lit program; the terrain
+// (immediate-mode cubes) goes through `beginShaderMode`.
+//
+// Who deforms an animated mesh is the *engine's* choice, not the scene's: on the
+// default build raylib deforms the goat's positions and normals on the CPU and
+// uploads them, and a shader lit per-fragment works with no bone data at all. A
+// `gpu-skinning` build leaves the deform to the material's shader instead, which
+// is why each of the three vertex shader families below exists twice -- see "GPU
+// skinning" under the lit programs.
 //
 // Shadows are a planar projection rather than a shadow map: the goat is drawn a
 // second time with a vertex shader that squashes every vertex onto the ground
@@ -27,10 +31,45 @@ const LIGHT_AMBIENT = [0.2, 0.22, 0.3];
 
 let litShader = -1;
 let shadowShader = -1;
-let litUniforms = null;
-let shadowUniforms = null;
 let useLighting = true;         // toggled with L
 let lightingText = "cube shader";
+
+// ---- GPU skinning (the engine's `gpu-skinning` build) ---------------------
+//
+// A `gpu-skinning` build loads an animated mesh without its deform buffers, so
+// `updateModelAnimation` no longer deforms anything: it fills the bone matrices
+// and the *material's shader* has to skin. `rl.GPU_SKINNING` reports which way
+// the engine was built (it is a raylib build switch, not a setting), and the
+// mechanism is written up in `slag/.notes/gpu-skinning.md`.
+//
+// Each of the three vertex shader families is therefore compiled twice. The plain
+// program is not merely the other build's path: it is the one the grass
+// (immediate mode) and the terrain mesh must keep drawing through, because
+// neither carries bone data, and a skinned program reads whatever the generic
+// attributes hold -- indices 0, weights 1 -- and would deform them by a bone
+// matrix left over from the last model drawn.
+//
+// So: one routing call per animated model as it loads (`modelLoaded`), the
+// skinned counterpart of the wanted program at every `setModelShader`
+// (`modelShaderFor`, which passes a model that had to keep CPU skinning straight
+// through), and every per-frame uniform pushed to each program of the family --
+// they are separate GL programs, so a value uploaded to one is invisible to the
+// other.
+//
+// One gap, and it is in a debug view rather than in the game: `L` turns lighting
+// off by restoring the shader the model was loaded with, which is raylib's own and
+// does not skin either -- so on this build the goats hold their bind pose with the
+// lighting off. `modelShaderFor` has nothing to give for `-1`; the fix would be an
+// unlit skinned twin of the lit program, and it is deliberately not written yet.
+let gpuSkin = false;            // the loader left the deform buffers out
+let skinnedOk = false;          // ...and every skinned program the scene needs compiled
+let litShaderSkin = -1;
+let shadowShaderSkin = -1;
+let depthShaderSkin = -1;
+const plainModels = {};         // rigs the skinned programs cannot cover, by handle
+let litPrograms = [];           // { shader, uniforms, shadow, sampler }
+let shadowPrograms = [];        // { shader, uniforms }
+let depthPrograms = [];         // { shader, lightVP }
 
 // The blast light's current state, written by the explosion system
 // (`setBlastLight`) and pushed to the shader every frame by `setLitUniforms`. The
@@ -47,12 +86,58 @@ function setBlastLight(x, y, z, energy) {
     BLAST_POS[3] = energy;
 }
 
-const LIT_VS = [
+// The bone inputs and the matrices `DrawModelEx` uploads. `boneMatrices` has to
+// be spelled exactly that -- raylib looks the uniform up by name into
+// `SHADER_LOC_MATRIX_BONETRANSFORMS` and feeds it `model.skeleton.boneCount`
+// entries -- and the declared size is a ceiling `modelLoaded` checks a rig
+// against: a count above it is `GL_INVALID_OPERATION` on the upload, which is not
+// an error GL reports to us at draw time but every vertex of the mesh drawn
+// through the zero matrix. The goat's rig is 15 bones; 32 mat4s is 512 of the
+// 1024 vertex-uniform components GL 3.3 guarantees, which leaves room for the
+// scene's own uniforms.
+const BONE_MATRICES = 32;
+
+// The inputs are raylib's own names, bound to fixed locations (7 and 8) before it
+// links any program. The indices arrive as four *unnormalised* unsigned bytes
+// widened to floats -- raylib sets the attribute up with `glVertexAttribPointer`,
+// not `glVertexAttribIPointer` -- so they are read as `vec4` and cast with
+// `int()`; an `ivec4` here reads garbage.
+const SKIN_DECL = [
+    "in vec4 vertexBoneIndices;",
+    "in vec4 vertexBoneWeights;",
+    "uniform mat4 boneMatrices[" + BONE_MATRICES + "];",
+    "mat4 skinMatrix() {",
+    "    return boneMatrices[int(vertexBoneIndices.x)] * vertexBoneWeights.x",
+    "         + boneMatrices[int(vertexBoneIndices.y)] * vertexBoneWeights.y",
+    "         + boneMatrices[int(vertexBoneIndices.z)] * vertexBoneWeights.z",
+    "         + boneMatrices[int(vertexBoneIndices.w)] * vertexBoneWeights.w;",
+    "}",
+].join("\n");
+
+// The plain variant's skin matrix is the identity, so the bodies below are one
+// text for both programs: `matModel * skin * v` is `matModel * v` exactly as the
+// scene drew it before -- a multiply by 1.0 is exact in IEEE 754 -- and only a
+// skinned build pays for the weighted sum (the identity is a compile-time fold for
+// the shader compiler, and even unfolded it is a few flops per vertex). Skinning
+// happens in model space, which is why it lands between `matModel` and the vertex
+// and leaves every transform the shader already applied untouched.
+const PLAIN_SKIN = "mat4 skinMatrix() { return mat4(1.0); }";
+
+// The lit program, in both builds. The normal is skinned by `mat3(skin)` rather
+// than by an inverse transpose: the CPU pass uses
+// `transpose(invert(boneMatrices[i]))`, and for a rigid bone matrix the 3x3 of
+// that transpose-inverse *is* the 3x3 of the matrix, so the two agree exactly and
+// the shading matches a CPU-skinning build. They diverge only if a bone's bind and
+// current pose differ by a non-uniform scale; a uniform one cancels in
+// `invert(bind) * current`.
+const LIT_VS_HEAD = [
     "#version 330",
     "in vec3 vertexPosition;",
     "in vec2 vertexTexCoord;",
     "in vec3 vertexNormal;",
     "in vec4 vertexColor;",
+];
+const LIT_VS_MID = [
     "uniform mat4 mvp;",
     "uniform mat4 matModel;",
     "uniform mat4 matNormal;",
@@ -60,15 +145,24 @@ const LIT_VS = [
     "out vec4 fragColor;",
     "out vec3 fragWorldPos;",
     "out vec3 fragNormal;",
+];
+const LIT_VS_BODY = [
     "void main() {",
-    "    vec4 world = matModel * vec4(vertexPosition, 1.0);",
+    "    mat4 skin = skinMatrix();",
+    "    vec4 world = matModel * skin * vec4(vertexPosition, 1.0);",
     "    fragWorldPos = world.xyz;",
-    "    fragNormal = normalize(mat3(matNormal) * vertexNormal);",
+    "    fragNormal = normalize(mat3(matNormal) * mat3(skin) * vertexNormal);",
     "    fragTexCoord = vertexTexCoord;",
     "    fragColor = vertexColor;",
-    "    gl_Position = mvp * vec4(vertexPosition, 1.0);",
+    "    gl_Position = mvp * skin * vec4(vertexPosition, 1.0);",
     "}",
-].join("\n");
+];
+// One source, the variant spliced in: the two programs cannot drift.
+function litVertex(skin) {
+    return LIT_VS_HEAD.concat(skin ? SKIN_DECL : PLAIN_SKIN, LIT_VS_MID, LIT_VS_BODY).join("\n");
+}
+const LIT_VS = litVertex(false);
+const LIT_VS_SKIN = litVertex(true);
 
 const LIT_FS = [
     "#version 330",
@@ -146,7 +240,12 @@ const LIT_FS = [
     "}",
 ].join("\n");
 
-const SHADOW_VS = [
+// The planar blob shadow. The world position carries the pose, so the ground
+// projection and the `world.y > groundY` test follow it for free: the blob a
+// raised hoof casts moves with the hoof. On a CPU-skinning build that came for
+// nothing -- the mesh arrived already deformed -- and with a skinned program it is
+// the point of the edit.
+const SHADOW_VS_HEAD = [
     "#version 330",
     "in vec3 vertexPosition;",
     "uniform mat4 matModel;",
@@ -155,8 +254,10 @@ const SHADOW_VS = [
     "uniform vec3 lightDir;",
     "uniform float groundY;",
     "uniform float shadowOn;",
+];
+const SHADOW_VS_BODY = [
     "void main() {",
-    "    vec3 world = (matModel * vec4(vertexPosition, 1.0)).xyz;",
+    "    vec3 world = (matModel * skinMatrix() * vec4(vertexPosition, 1.0)).xyz;",
     "    if (shadowOn > 0.5 && lightDir.y > 0.06 && world.y > groundY) {",
     "        float t = (world.y - groundY) / lightDir.y;",
     "        vec3 projected = vec3(world.x - lightDir.x*t, groundY, world.z - lightDir.z*t);",
@@ -165,7 +266,12 @@ const SHADOW_VS = [
     "        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);",
     "    }",
     "}",
-].join("\n");
+];
+function shadowVertex(skin) {
+    return SHADOW_VS_HEAD.concat(skin ? SKIN_DECL : PLAIN_SKIN, SHADOW_VS_BODY).join("\n");
+}
+const SHADOW_VS = shadowVertex(false);
+const SHADOW_VS_SKIN = shadowVertex(true);
 
 const SHADOW_FS = [
     "#version 330",
@@ -197,26 +303,114 @@ function makeLighting() {
     }
     shadowShader = rl.loadShaderFromMemory(SHADOW_VS, SHADOW_FS);
     if (shadowShader < 0 || !rl.isShaderValid(shadowShader)) shadowShader = -1;
-    litUniforms = {
-        lightDir: rl.getShaderLocation(litShader, "lightDir"),
-        lightColor: rl.getShaderLocation(litShader, "lightColor"),
-        ambientColor: rl.getShaderLocation(litShader, "ambientColor"),
-        camPos: rl.getShaderLocation(litShader, "camPos"),
-        blastPos: rl.getShaderLocation(litShader, "blastPos"),
-        blastColor: rl.getShaderLocation(litShader, "blastColor"),
-        blastEnergy: rl.getShaderLocation(litShader, "blastEnergy"),
-    };
-    shadowUniforms = shadowShader >= 0 ? {
-        lightDir: rl.getShaderLocation(shadowShader, "lightDir"),
-        groundY: rl.getShaderLocation(shadowShader, "groundY"),
-        shadowOn: rl.getShaderLocation(shadowShader, "shadowOn"),
-        shadowAlpha: rl.getShaderLocation(shadowShader, "shadowAlpha"),
-    } : null;
-    if (haveModel) rl.setModelShader(model, litShader);
-    // The terrain is a model too, so it takes the lit program the same way.
-    if (terrainMesh >= 0) rl.setModelShader(terrainMesh, litShader);
+    litPrograms = [litProgramInfo(litShader)];
+    shadowPrograms = shadowShader >= 0
+        ? [{ shader: shadowShader, uniforms: shadowLocations(shadowShader) }] : [];
+    // The skinned twins, compiled only where the engine's build needs them. Both
+    // families are settled before `makeShadowMap` adds the third, because whether
+    // the scene can use GPU skinning at all has to be a load-time answer: a build
+    // that has it and a program that does not compile means every animated model
+    // needs its CPU pass back, which `modelLoaded` does per model.
+    gpuSkin = rl.GPU_SKINNING === true;
+    if (gpuSkin) {
+        litShaderSkin = loadSkinnedProgram(LIT_VS_SKIN, LIT_FS);
+        shadowShaderSkin = shadowShader >= 0 ? loadSkinnedProgram(SHADOW_VS_SKIN, SHADOW_FS) : -1;
+        if (litShaderSkin >= 0) litPrograms.push(litProgramInfo(litShaderSkin));
+        if (shadowShaderSkin >= 0) {
+            shadowPrograms.push({ shader: shadowShaderSkin, uniforms: shadowLocations(shadowShaderSkin) });
+        }
+    }
     makeShadowMap();
-    console.log("lighting: lit shader " + litShader + ", shadow shader " + shadowShader);
+    // The third family is only knowable now, and only matters where the pass
+    // exists at all.
+    skinnedOk = gpuSkin && litShaderSkin >= 0 &&
+        (shadowShader < 0 || shadowShaderSkin >= 0) &&
+        (shadowMode !== SHADOW_MAP || depthShaderSkin >= 0);
+    if (gpuSkin && !skinnedOk) {
+        console.log("lighting: a skinned program did not compile - the models keep CPU skinning");
+    }
+    // The models that are already loaded route here: `loadGoat` runs before this
+    // step, while the bots and the peers come later and route themselves through
+    // `botAdd` and the peer's own load.
+    if (haveModel) {
+        modelLoaded(model);
+        rl.setModelShader(model, modelShaderFor(model, litShader));
+    }
+    // The terrain is a mesh with no bone data, so it takes the lit program the
+    // same way on both builds (`modelShaderFor` is for rigs).
+    if (terrainMesh >= 0) rl.setModelShader(terrainMesh, litShader);
+    console.log("lighting: lit shader " + litShader + ", shadow shader " + shadowShader +
+        (skinnedOk ? ", skinned" : ""));
+}
+
+// The lit program's uniform locations. Looked up per program, so a family's two
+// programs get their own -- the names are the same, the locations are not.
+function litLocations(shader) {
+    return {
+        lightDir: rl.getShaderLocation(shader, "lightDir"),
+        lightColor: rl.getShaderLocation(shader, "lightColor"),
+        ambientColor: rl.getShaderLocation(shader, "ambientColor"),
+        camPos: rl.getShaderLocation(shader, "camPos"),
+        blastPos: rl.getShaderLocation(shader, "blastPos"),
+        blastColor: rl.getShaderLocation(shader, "blastColor"),
+        blastEnergy: rl.getShaderLocation(shader, "blastEnergy"),
+    };
+}
+
+function shadowLocations(shader) {
+    return {
+        lightDir: rl.getShaderLocation(shader, "lightDir"),
+        groundY: rl.getShaderLocation(shader, "groundY"),
+        shadowOn: rl.getShaderLocation(shader, "shadowOn"),
+        shadowAlpha: rl.getShaderLocation(shader, "shadowAlpha"),
+    };
+}
+
+function litProgramInfo(shader) {
+    return { shader: shader, uniforms: litLocations(shader), shadow: null, sampler: -1 };
+}
+
+// Compile one skinned variant, or -1 for a caller that can branch on it. A program
+// whose *link* fails comes back as raylib's default program rather than as 0, so
+// the `boneMatrices` location is the real proof that this program skins.
+function loadSkinnedProgram(vertex, fragment) {
+    const shader = rl.loadShaderFromMemory(vertex, fragment);
+    if (shader < 0 || !rl.isShaderValid(shader)) return -1;
+    if (rl.getShaderLocation(shader, "boneMatrices") < 0) {
+        console.log("lighting: a skinned shader has no boneMatrices uniform - not using it");
+        return -1;
+    }
+    return shader;
+}
+
+// An animated model, right after it loads. A `gpu-skinning` build handed it over
+// with no deform buffers, so this is the one place that can give them back: a rig
+// the skinned programs cannot cover -- too many bones for `boneMatrices`, or a
+// program that did not compile -- has to keep deforming on the CPU, or it draws at
+// its bind pose forever. Per model on purpose: the fallback is raylib's own, and
+// the rest of the herd does not have to pay for one mod's rig.
+function modelLoaded(handle) {
+    if (!gpuSkin) return;
+    const bones = rl.modelBoneCount(handle);
+    if (skinnedOk && bones <= BONE_MATRICES) return;
+    if (bones > BONE_MATRICES) {
+        console.log("lighting: model " + handle + " has " + bones + " bones, over the skinned " +
+            "programs' " + BONE_MATRICES + " - it keeps CPU skinning");
+    }
+    plainModels[handle] = true;
+    if (typeof rl.setModelCpuSkinning === "function") rl.setModelCpuSkinning(handle, true);
+}
+
+// The program to route an animated model to, given the plain program for the pass:
+// the skinned counterpart, or `plain` where the model has to keep CPU skinning or
+// there is no skinned counterpart to give (-1 is the loader's own shader, and the
+// scene passes it through for the `L` toggle).
+function modelShaderFor(handle, plain) {
+    if (plain < 0 || !skinnedOk || plainModels[handle] === true) return plain;
+    if (plain === litShader) return litShaderSkin;
+    if (plain === shadowShader) return shadowShaderSkin;
+    if (plain === depthShader) return depthShaderSkin;
+    return plain;
 }
 
 // Refresh the light direction and colours from the day/night clock. The sun and
@@ -253,43 +447,58 @@ function updateLight() {
     LIGHT_AMBIENT[2] = 0.18 + 0.16 * skyLight;
 }
 
+// Push this frame's lit uniforms. Every program of the family gets them: they are
+// separate GL programs, so a value uploaded to the plain one is invisible to the
+// skinned one the animated models are routed to. (`setShaderValue*` enables the
+// shader it is given, which does not disturb an open `beginShaderMode` block -- a
+// batch flush re-binds the program raylib recorded there.)
 function setLitUniforms(cx, cy, cz) {
-    rl.setShaderValueVector3(litShader, litUniforms.lightDir,
+    for (let i = 0; i < litPrograms.length; i++) setLitUniformsOn(litPrograms[i], cx, cy, cz);
+}
+
+function setLitUniformsOn(program, cx, cy, cz) {
+    const shader = program.shader;
+    const u = program.uniforms;
+    rl.setShaderValueVector3(shader, u.lightDir,
         LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]);
-    rl.setShaderValueVector4(litShader, litUniforms.lightColor,
+    rl.setShaderValueVector4(shader, u.lightColor,
         LIGHT_COLOR[0], LIGHT_COLOR[1], LIGHT_COLOR[2], 1.0);
-    rl.setShaderValueVector4(litShader, litUniforms.ambientColor,
+    rl.setShaderValueVector4(shader, u.ambientColor,
         LIGHT_AMBIENT[0], LIGHT_AMBIENT[1], LIGHT_AMBIENT[2], 1.0);
-    rl.setShaderValueVector3(litShader, litUniforms.camPos, cx, cy, cz);
-    rl.setShaderValueVector3(litShader, litUniforms.blastPos,
+    rl.setShaderValueVector3(shader, u.camPos, cx, cy, cz);
+    rl.setShaderValueVector3(shader, u.blastPos,
         BLAST_POS[0], BLAST_POS[1], BLAST_POS[2]);
-    rl.setShaderValueVector4(litShader, litUniforms.blastColor,
+    rl.setShaderValueVector4(shader, u.blastColor,
         BLAST_TINT[0], BLAST_TINT[1], BLAST_TINT[2], 1.0);
-    rl.setShaderValue(litShader, litUniforms.blastEnergy, BLAST_POS[3],
+    rl.setShaderValue(shader, u.blastEnergy, BLAST_POS[3],
         rl.SHADER_UNIFORM_FLOAT);
-    if (litShadow !== null) {
-        setMatrixOn(litShader, litShadow.lightVP, LIGHT_MATRIX);
-        rl.setShaderValueVector2(litShader, litShadow.texel,
-            1 / TUNING.lighting.shadow.size, 1 / TUNING.lighting.shadow.size);
-        rl.setShaderValue(litShader, litShadow.bias, TUNING.lighting.shadow.bias, rl.SHADER_UNIFORM_FLOAT);
-        rl.setShaderValue(litShader, litShadow.strength, shadowStrengthNow, rl.SHADER_UNIFORM_FLOAT);
-        // The grass and the cube fallback are immediate-mode geometry, which
-        // never sees the model's material map 1, so bind the shadow sampler
-        // explicitly for the batch path.
-        if (shadowStrengthNow > 0.001 && shadowSamplerLoc >= 0) {
-            rl.setShaderValueTexture(litShader, shadowSamplerLoc, shadowColor);
-        }
+    if (program.shadow === null) return;
+    setMatrixOn(shader, program.shadow.lightVP, LIGHT_MATRIX);
+    rl.setShaderValueVector2(shader, program.shadow.texel,
+        1 / TUNING.lighting.shadow.size, 1 / TUNING.lighting.shadow.size);
+    rl.setShaderValue(shader, program.shadow.bias, TUNING.lighting.shadow.bias, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(shader, program.shadow.strength, shadowStrengthNow, rl.SHADER_UNIFORM_FLOAT);
+    // The grass and the cube fallback are immediate-mode geometry, which never
+    // sees the model's material map 1, so bind the shadow sampler explicitly for
+    // the batch path.
+    if (shadowStrengthNow > 0.001 && program.sampler >= 0) {
+        rl.setShaderValueTexture(shader, program.sampler, shadowColor);
     }
 }
 
 function setShadowUniforms() {
-    rl.setShaderValueVector3(shadowShader, shadowUniforms.lightDir,
-        LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]);
-    rl.setShaderValue(shadowShader, shadowUniforms.groundY,
-        GROUND_Y + terrainHeight(goat.px, goat.pz), rl.SHADER_UNIFORM_FLOAT);
-    rl.setShaderValue(shadowShader, shadowUniforms.shadowOn, 1.0, rl.SHADER_UNIFORM_FLOAT);
-    rl.setShaderValue(shadowShader, shadowUniforms.shadowAlpha,
-        SHADOW_ALPHA * (0.35 + 0.65 * skyLight), rl.SHADER_UNIFORM_FLOAT);
+    for (let i = 0; i < shadowPrograms.length; i++) {
+        const program = shadowPrograms[i];
+        const shader = program.shader;
+        const u = program.uniforms;
+        rl.setShaderValueVector3(shader, u.lightDir,
+            LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]);
+        rl.setShaderValue(shader, u.groundY,
+            GROUND_Y + terrainHeight(goat.px, goat.pz), rl.SHADER_UNIFORM_FLOAT);
+        rl.setShaderValue(shader, u.shadowOn, 1.0, rl.SHADER_UNIFORM_FLOAT);
+        rl.setShaderValue(shader, u.shadowAlpha,
+            SHADOW_ALPHA * (0.35 + 0.65 * skyLight), rl.SHADER_UNIFORM_FLOAT);
+    }
 }
 
 // ---- shadow map (M4b) ----------------------------------------------------
@@ -329,23 +538,29 @@ let shadowMode = SHADOW_PLANAR;
 let shadowRT = -1;
 let shadowColor = -1;
 let depthShader = -1;
-let depthUniforms = null;
-let litShadow = null;         // locations of the lit shader's shadow uniforms
-let shadowSamplerLoc = -1;
 const LIGHT_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 let shadowStrengthNow = 0;
 
-const DEPTH_VS = [
+const DEPTH_VS_HEAD = [
     "#version 330",
     "in vec3 vertexPosition;",
     "uniform mat4 matModel;",
     "uniform mat4 lightVP;",
     "out vec4 vClip;",
+];
+// Skinning is model space, so it goes exactly where `vertexPosition` was: after
+// `matModel`'s operands and before `lightVP`.
+const DEPTH_VS_BODY = [
     "void main() {",
-    "    vClip = lightVP * matModel * vec4(vertexPosition, 1.0);",
+    "    vClip = lightVP * matModel * skinMatrix() * vec4(vertexPosition, 1.0);",
     "    gl_Position = vClip;",
     "}",
-].join("\n");
+];
+function depthVertex(skin) {
+    return DEPTH_VS_HEAD.concat(skin ? SKIN_DECL : PLAIN_SKIN, DEPTH_VS_BODY).join("\n");
+}
+const DEPTH_VS = depthVertex(false);
+const DEPTH_VS_SKIN = depthVertex(true);
 
 const DEPTH_FS = [
     "#version 330",
@@ -408,6 +623,21 @@ function setMatrixOn(shader, loc, m) {
         m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 }
 
+// The shadow map's uniforms on one lit program, and the sampler for the batch
+// path: the grass and the cube fallback are immediate-mode geometry with no
+// materials, so they get the map by hand (`setShaderValueTexture`) while a model
+// gets it as material map 1. Every program of the lit family needs its own
+// locations, so this runs once per program.
+function attachShadowMap(program) {
+    program.sampler = rl.getShaderLocation(program.shader, "texture1");
+    program.shadow = {
+        lightVP: rl.getShaderLocation(program.shader, "lightVP"),
+        texel: rl.getShaderLocation(program.shader, "shadowTexel"),
+        bias: rl.getShaderLocation(program.shader, "shadowBias"),
+        strength: rl.getShaderLocation(program.shader, "shadowStrength"),
+    };
+}
+
 // Build the render texture and depth program. Needs the window (GL) and the lit
 // shader already compiled.
 function makeShadowMap() {
@@ -416,13 +646,8 @@ function makeShadowMap() {
         console.log("shadow map: engine lacks the bindings - keeping the planar shadow");
         return;
     }
-    shadowSamplerLoc = rl.getShaderLocation(litShader, "texture1");
-    litShadow = {
-        lightVP: rl.getShaderLocation(litShader, "lightVP"),
-        texel: rl.getShaderLocation(litShader, "shadowTexel"),
-        bias: rl.getShaderLocation(litShader, "shadowBias"),
-        strength: rl.getShaderLocation(litShader, "shadowStrength"),
-    };
+    attachShadowMap(litPrograms[0]);
+    if (litPrograms.length > 1) attachShadowMap(litPrograms[1]);
     shadowRT = rl.loadRenderTexture(TUNING.lighting.shadow.size, TUNING.lighting.shadow.size);
     if (shadowRT < 0 || !rl.isRenderTextureValid(shadowRT)) {
         shadowRT = -1;
@@ -436,13 +661,24 @@ function makeShadowMap() {
         console.log("shadow map: depth shader failed to compile - keeping the planar shadow");
         return;
     }
-    depthUniforms = { lightVP: rl.getShaderLocation(depthShader, "lightVP") };
+    // The pass draws models too, so a `gpu-skinning` build needs the skinned depth
+    // program as well: without it the goats land in the map at their bind pose,
+    // which is the kind of wrong nobody looks at twice.
+    depthShaderSkin = gpuSkin ? loadSkinnedProgram(DEPTH_VS_SKIN, DEPTH_FS) : -1;
+    depthPrograms = [{ shader: depthShader, lightVP: rl.getShaderLocation(depthShader, "lightVP") }];
+    if (depthShaderSkin >= 0) {
+        depthPrograms.push({
+            shader: depthShaderSkin,
+            lightVP: rl.getShaderLocation(depthShaderSkin, "lightVP"),
+        });
+    }
     if (haveModel) rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
     if (terrainMesh >= 0) rl.setModelTexture(terrainMesh, SHADOW_MAP_INDEX, shadowColor);
     shadowMapReady = true;
     shadowMode = SHADOW_MAP;
     console.log("shadow map: rt " + shadowRT + " color " + shadowColor +
-        " depth shader " + depthShader + " sampler loc " + shadowSamplerLoc);
+        " depth shader " + depthShader + (depthShaderSkin >= 0 ? "+" + depthShaderSkin : "") +
+        " sampler loc " + litPrograms[0].sampler);
 }
 
 // Refresh the light matrix and shadow strength for this frame.
@@ -459,6 +695,16 @@ function updateShadow() {
     shadowStrengthNow = TUNING.lighting.shadow.strength * low * (0.35 + 0.65 * skyLight);
 }
 
+// The light matrix lives at a location per depth program, so every one of them
+// gets it. `setShaderValue*` enables the shader it is given, which does not
+// disturb the open `beginShaderMode` block around the grass: a batch flush
+// re-binds the program raylib recorded there.
+function setDepthMatrix() {
+    for (let i = 0; i < depthPrograms.length; i++) {
+        setMatrixOn(depthPrograms[i].shader, depthPrograms[i].lightVP, LIGHT_MATRIX);
+    }
+}
+
 // Render the goat and the near grass from the light's point of view into the
 // shadow texture.
 function renderShadowMap() {
@@ -466,26 +712,27 @@ function renderShadowMap() {
     rl.beginTextureMode(shadowRT);
     rl.clearBackground(rl.color(0, 0, 0, 255));
     rl.beginMode3D(0, 0, 0, goat.px, 0, goat.pz, 45);
-    // Grass casts too. It is immediate-mode geometry, so unlike the model it goes
-    // through the batch path with `beginShaderMode`; drawing it first lets the
-    // goat's depth win wherever the two overlap. The tufts are swayed by the
-    // same `drawTufts` the visible pass uses, so the shadow tracks the wind.
+    // Grass casts too. It is immediate-mode geometry, so it can only go through
+    // the plain program with `beginShaderMode` -- unlike the models below, which
+    // are routed through `modelShaderFor`. Drawing it first lets the goat's depth
+    // win wherever the two overlap. The tufts are swayed by the same `drawTufts`
+    // the visible pass uses, so the shadow tracks the wind.
+    setDepthMatrix();
     rl.beginShaderMode(depthShader);
-    setMatrixOn(depthShader, depthUniforms.lightVP, LIGHT_MATRIX);
     drawTufts(goat, rl.WHITE, shadowGrassCull2(), shadowGrassCull2());
     rl.endShaderMode();
     perfMark("shadow_grass");
-    rl.setModelShader(model, depthShader);
+    rl.setModelShader(model, modelShaderFor(model, depthShader));
     // Detach the shadow target while it is the framebuffer's own attachment.
     rl.setModelTexture(model, SHADOW_MAP_INDEX, -1);
-    setMatrixOn(depthShader, depthUniforms.lightVP, LIGHT_MATRIX);
+    setDepthMatrix();
     drawModelGoat(goat, rl.WHITE);
     perfMark("shadow_goat");
     drawBotsShadow();
     drawPeersShadow();
     perfMark("shadow_bots");
     rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
-    rl.setModelShader(model, litShader);
+    rl.setModelShader(model, modelShaderFor(model, litShader));
     rl.endMode3D();
     rl.endTextureMode();
     perfMark("shadow_tail");
