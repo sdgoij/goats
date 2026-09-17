@@ -10,7 +10,8 @@
 //
 // The only state is where the devices are: which cells have already gone off and
 // which cells a replacement moved into (`SPENT`/`MOVED` and their trap twins), what
-// is waiting on a fuse (`PENDING`) and the live effect instances (`FX`). A device
+// is waiting on a fuse (`PENDING`), the craters the ground is carrying (`CRATERS`) and
+// the live effect instances (`FX`). A device
 // does not blow up where it was tripped -- the trigger starts a fuse
 // (`TUNING.explosions.fuse`), and the bang lands that many seconds later, which gives
 // the art a beat to read and the player a beat of "oh no".
@@ -114,6 +115,34 @@ function trapAt(cx, cz) {
         trapNoise(cx ^ 0x5bf03635, cz ^ 0x27d4eb2f, trapSalt) < TUNING.explosions.trap.chance;
 }
 
+// The tuft in cell (cx, cz), or null: where the meadow puts one, if it puts one there.
+//
+// A tuft is anchored at the cell's *even* corner -- `nearestTuft` jitters it +-0.9 m
+// around `cx * 2` -- which is not the point a mine's cell centre uses (`cx * 2 + 1`);
+// asking from the wrong one is a metre and a half of diagonal, and every tuft jittered
+// away from that corner falls outside the query's own range. This is that derivation
+// for one cell rather than a search for the nearest, which is both cheaper and
+// unambiguous: the nearest tuft to a cell's anchor can be a *neighbour's*.
+//
+// It answers for the meadow as it is derived, eaten or not -- whether a tuft is
+// currently *there* is `EATEN`, which is the caller's business.
+function tuftInCell(cx, cz) {
+    let h = (cx * 374761393 + cz * 668265263) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h = (h ^ (h >>> 16)) >>> 0;
+    const a = h / 4294967296;
+    if (a < 0.45) return null;
+    let h2 = (cx * 1103515245 + cz * 12345) | 0;
+    h2 = Math.imul(h2 ^ (h2 >>> 15), 2246822519);
+    h2 = (h2 ^ (h2 >>> 13)) >>> 0;
+    return {
+        cx: cx,
+        cz: cz,
+        x: cx * 2 + (h2 / 4294967296 - 0.5) * 1.8,
+        z: cz * 2 + (a - 0.5) * 1.8,
+    };
+}
+
 // Where a device goes when it has gone off.
 //
 // The destination is derived from the cell it left rather than from anything that
@@ -128,8 +157,10 @@ function trapAt(cx, cz) {
 // doubling one up -- and the spawn's safe disc is refused like everything else.
 //
 // A trap has one more condition: it has to land in a cell the meadow grows a tuft in,
-// because a trap without a tuft is not a device. That is why it asks `nearestTuft`
-// about the candidate cell rather than the meadow's hash directly.
+// because a trap without a tuft is not a device. That is why it asks `tuftInCell`
+// about the candidate cell rather than the meadow's hash directly -- and why it asks
+// for a *live* one: a trap on a cell whose grass is currently eaten is a device nobody
+// can see or trip.
 function relocateDevice(kind, fcx, fcz) {
     const e = TUNING.explosions;
     const r = e.relocate;
@@ -162,8 +193,7 @@ function relocateDevice(kind, fcx, fcz) {
             return true;
         }
         if (TRAP_SPENT.has(key) || trapAt(cx, cz)) continue;
-        const t = nearestTuft(x, z, 1.5, false);
-        if (t === null || t.cx !== cx || t.cz !== cz) continue;
+        if (tuftInCell(cx, cz) === null || EATEN.has(key)) continue;
         TRAP_MOVED.add(key);
         return true;
     }
@@ -214,12 +244,236 @@ function tripDevice(kind, cx, cz, x, z, depth) {
     return true;
 }
 
-// A bang at (x, z): damage every goat this process simulates, and set off the
-// neighbours if there is chain budget left. One level deep by default, so a
-// dense field cannot cascade into a frame-long loop.
+// ---- craters (M19d) ---------------------------------------------------------
+//
+// A bang dishes the ground. The dish is a *term in `terrainHeight`* (world.js) rather
+// than geometry of its own, so everything that reads the ground -- the goat, the herd,
+// the peers, the grass, both shadows -- stands in the crater with nothing added
+// anywhere: one pure function, already read by all of them.
+//
+// The list is the only state, capped at `crater.max` with the oldest retired first, and
+// it heals by scaling the dish down over `crater.heal`. The ground closing over is what
+// keeps the list -- and, once M19e puts craters on the wire, the datagram -- bounded,
+// the same argument `EATEN`'s regrow window makes for the meadow.
+//
+// All of this is per process until M19e: a crater is not replicated yet, so two players
+// in a session see the holes they made themselves (see *The wire* in ROADMAP.md).
+const CRATERS = [];             // { x, z, r, reach2, depth, dip, lip, seed, age, heal, drop }
+
+// Metres outside the dish's radius where the raised lip has fallen back to nothing.
+const CRATER_LIP_OUT = 1.45;
+
+// How far the dish eases before the per-cell height cache and the mesh are told to
+// catch up -- and, since the *ground* reads this same value, the size of the step a
+// goat standing in a healing crater would feel. Ten centimetres is under a hooffall,
+// and it costs a rebuild roughly every minute of a crater's four. Both halves read the
+// quantized value, so what the goat walks on is exactly what the mesh shows.
+const CRATER_STEP = 0.1;
+
+// The craters' own contribution to the ground: a bowl with a raised rim, eased back to
+// flat as it heals. Called from `terrainHeight` for every goat, every tuft cell and
+// every shadow vertex, so the shape is: nothing at all when there are no craters, two
+// multiplies and a compare for one that is nowhere near the query.
+function craterDipAt(x, z) {
+    let dip = 0;
+    for (let i = 0; i < CRATERS.length; i++) {
+        const c = CRATERS[i];
+        const dx = x - c.x;
+        const dz = z - c.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > c.reach2) continue;
+        const t = Math.sqrt(d2) / c.r;
+        if (t < 1) {
+            // The bowl: -dip at the centre, flat at the rim.
+            const s = 1 - t;
+            dip -= c.dip * s * s * (3 - 2 * s);
+        } else {
+            // The lip: raised at the rim, nothing at `CRATER_LIP_OUT`.
+            let s = (t - 1) / (CRATER_LIP_OUT - 1);
+            if (s > 1) continue;
+            s = 1 - s;
+            dip += c.lip * s * s * (3 - 2 * s);
+        }
+    }
+    return dip;
+}
+
+// The live craters, for the console and the tests: where, how wide, how deep right
+// now, and how far through its heal it is.
+function sceneCraters() {
+    const out = [];
+    for (let i = 0; i < CRATERS.length; i++) {
+        const c = CRATERS[i];
+        out.push({
+            x: c.x,
+            z: c.z,
+            r: c.r,
+            depth: c.dip,
+            age: c.age,
+            heal: c.heal,
+            seed: c.seed,
+        });
+    }
+    return out;
+}
+
+// Drop a crater's cells out of the per-cell height cache, so the grass (and anything
+// else that reads it) sees the ground as it is now, and mark the mesh dirty. The cache
+// is keyed by cell and world-anchored, so a cell is *deleted* rather than overwritten:
+// the next reader re-derives it.
+//
+// The cells always go -- a re-derive is cheap and always right -- but the *mesh* is
+// only rebuilt for a crater near the goat. A rebuild is a whole field's worth of
+// vertices, and a bang a bot set off forty metres away would otherwise hitch the frame
+// it landed in, over five centimetres of dish that nobody is looking at: the next
+// anchor rebuild picks it up on the way there (`terrainEnsure`).
+function craterDropCells(c) {
+    const r = c.r * CRATER_LIP_OUT;
+    const cx0 = Math.floor((c.x - r) / 2);
+    const cx1 = Math.ceil((c.x + r) / 2);
+    const cz0 = Math.floor((c.z - r) / 2);
+    const cz1 = Math.ceil((c.z + r) / 2);
+    for (let cx = cx0; cx <= cx1; cx++) {
+        for (let cz = cz0; cz <= cz1; cz++) TERRAIN_CELL_H.delete(tuftKey(cx, cz));
+    }
+    const dx = c.x - goat.px;
+    const dz = c.z - goat.pz;
+    const near = TUNING.terrain.snap;
+    if (dx * dx + dz * dz <= near * near) terrainDirty = true;
+}
+
+// The tufts a crater covers, as cell keys. A crater kills the grass it swallowed, and
+// the meadow's own `EATEN` is the mechanism -- with the crater's heal rather than a
+// bite's regrow window, so a tuft comes back exactly as the ground does.
+//
+// A tuft stands where its own hash jittered it inside its cell, not at the cell's
+// centre, so the test is the tuft's position against the crater: the box is widened a
+// cell for the same reason.
+function craterTuftCells(c) {
+    const cells = [];
+    const r = c.r;
+    const cx0 = Math.floor((c.x - r) / 2) - 1;
+    const cx1 = Math.floor((c.x + r) / 2) + 1;
+    const cz0 = Math.floor((c.z - r) / 2) - 1;
+    const cz1 = Math.floor((c.z + r) / 2) + 1;
+    for (let cx = cx0; cx <= cx1; cx++) {
+        for (let cz = cz0; cz <= cz1; cz++) {
+            const t = tuftInCell(cx, cz);
+            if (t === null) continue;
+            const dx = t.x - c.x;
+            const dz = t.z - c.z;
+            if (dx * dx + dz * dz > r * r) continue;
+            cells.push(tuftKey(cx, cz));
+        }
+    }
+    return cells;
+}
+
+// Whether a *live* crater other than `skip` still covers the tuft in `key`, which is
+// what decides whether a retiring crater may let it back.
+function craterCoversKey(key, skip) {
+    for (let i = 0; i < CRATERS.length; i++) {
+        const c = CRATERS[i];
+        if (c === skip) continue;
+        const cells = craterTuftCells(c);
+        if (cells.indexOf(key) >= 0) return true;
+    }
+    return false;
+}
+
+// Mark (or release) the tufts a crater covers. Releasing asks the other craters first:
+// two bangs in the same place must not let the grass back through the outer one. The
+// meadow is the host's whatever the session looks like (M12b), so a client kills
+// nothing here and mirrors the host's world instead.
+function markCraterTufts(c, on) {
+    if (!netWorldLocal()) return;
+    const cells = craterTuftCells(c);
+    for (let i = 0; i < cells.length; i++) {
+        if (on) EATEN.set(cells[i], c.heal);
+        else if (!craterCoversKey(cells[i], c)) EATEN.delete(cells[i]);
+    }
+}
+
+// Retire a crater: the ground is flat again, the grass comes back, and the mesh is
+// told. Used by the heal, by the cap, and by the harness's reset.
+function retireCrater(c) {
+    markCraterTufts(c, false);
+    c.dip = 0;
+    craterDropCells(c);
+}
+
+// Dig one. The radius varies a little per bang -- a minefield of identical holes reads
+// as a pattern -- and the depth is the tuning's.
+function addCrater(x, z, seed) {
+    const t = TUNING.explosions.crater;
+    if (t.radius <= 0 || t.depth <= 0 || t.max <= 0) return null;
+    // The cap retires the oldest rather than refusing the newest: a bang with no hole is
+    // a promise broken, and a far-away crater closing over is not.
+    while (CRATERS.length > 0 && CRATERS.length >= t.max) retireCrater(CRATERS.shift());
+    const r = t.radius * (0.85 + hash(seed) * 0.3);
+    const reach = r * CRATER_LIP_OUT;
+    const c = {
+        x: x,
+        z: z,
+        r: r,
+        reach2: reach * reach,
+        depth: t.depth,
+        dip: t.depth,
+        lip: t.lip,
+        seed: seed,
+        age: 0,
+        heal: t.heal,
+        drop: t.depth,
+    };
+    CRATERS.push(c);
+    markCraterTufts(c, true);
+    craterDropCells(c);
+    return c;
+}
+
+// Age the craters: the dish eases back to flat over `heal`, and the ground's caches are
+// told when it has moved far enough to matter. Runs whether or not the explosion system
+// is enabled: the ground is not an effect, and a crater that never healed would be a
+// hole in the world left by a debug switch.
+function updateCraters(dt) {
+    for (let i = CRATERS.length - 1; i >= 0; i--) {
+        const c = CRATERS[i];
+        c.age += dt;
+        if (c.age >= c.heal) {
+            CRATERS.splice(i, 1);
+            retireCrater(c);
+            continue;
+        }
+        const next = c.depth * (1 - c.age / c.heal);
+        if (c.drop - next >= CRATER_STEP) {
+            // Quantized, so the dip `craterDipAt` returns and the dip the mesh was built
+            // from are the same number: one rebuild per step, and no drift between the
+            // ground the goat stands on and the ground it can see.
+            c.drop = Math.floor(next / CRATER_STEP) * CRATER_STEP;
+            c.dip = c.drop;
+            craterDropCells(c);
+        }
+    }
+}
+
+// Forget every crater: the ground comes back, the grass with it, and the mesh is told.
+// What the harness resets the field with between cases.
+function sceneResetCraters() {
+    for (let i = 0; i < CRATERS.length; i++) retireCrater(CRATERS[i]);
+    CRATERS.length = 0;
+}
+
+// A bang at (x, z): leave a crater, damage every goat this process simulates, and
+// set off the neighbours if there is chain budget left. One level deep by default,
+// so a dense field cannot cascade into a frame-long loop.
 function blast(kind, x, z, seed, depth) {
     const e = TUNING.explosions;
     blastCount += 1;
+    // The hole the bang makes (M19d). It is the *ground* that is everyone's, so every
+    // process that applies a blast digs one -- which is why a client's own bang is a
+    // crater for its player and the host's world snapshot is where the others will
+    // come from (M19e).
+    addCrater(x, z, seed);
     const r = e.blast.radius;
     // The player's goat is simulated here whatever the session looks like
     // (M12b), so it always takes the blast, and it is clamped by `healthFloor`. The
@@ -404,6 +658,9 @@ function checkTriggers(unit, x, z, airborne) {
 }
 
 function updateExplosions(dt) {
+    // The ground heals whether or not the system is on: a crater is not an effect, and
+    // `enabled 0` is a frame-cost bisect, not a way to leave a hole in the world.
+    if (CRATERS.length > 0) updateCraters(dt);
     // `tune explosions.enabled 0` turns the whole system off, which is what a
     // frame-cost bisect needs: one command, no rebuild, and the engine, the world
     // and every other system stay exactly as they were.
@@ -451,8 +708,34 @@ function updateExplosions(dt) {
 // behind them.
 function drawExplosions() {
     if (cloudTex < 0 || TUNING.explosions.enabled <= 0) return;
-    const tell = TUNING.explosions.mine.tell;
+    const e = TUNING.explosions;
+    const tell = e.mine.tell;
     if (tell > 0) drawMineTells(tell);
+    // The scorch, until M19f's decals: a dark disc the width of the dish, at the ground
+    // it dished, fading faster than the ground closes. The same soft puff the tell uses
+    // -- one texture, no new asset, and the same argument M19b made for the bang itself.
+    //
+    // It is also *fill rate*, and the only thing in this system that is: every one of
+    // these is a camera-facing alpha quad metres across, so a field of craters behind a
+    // low camera is more blended pixels than everything else in the scene put together.
+    // Hence the range: a tint twenty metres away is a few pixels nobody can read, and
+    // `crater.scorch 0` is one `tune` away if the fill still shows (it is what M19d
+    // shipped to bisect exactly that).
+    if (e.crater.scorch > 0) {
+        const range = e.crater.scorchRange;
+        const range2 = range * range;
+        for (let i = 0; i < CRATERS.length; i++) {
+            const c = CRATERS[i];
+            const dx = c.x - goat.px;
+            const dz = c.z - goat.pz;
+            if (dx * dx + dz * dz > range2) continue;
+            const fade = 1 - c.age / c.heal;
+            const alpha = Math.round(150 * fade * fade);
+            if (alpha <= 0) continue;
+            rl.drawBillboard(cloudTex, c.x, terrainHeight(c.x, c.z) + 0.03, c.z, c.r * 2.2,
+                rl.color(44, 36, 28, alpha));
+        }
+    }
     for (let i = 0; i < fxTop; i++) {
         const slot = FX[i];
         if (!slot.live) continue;
@@ -561,11 +844,11 @@ function sceneTraps(x, z, range) {
                     moved: MOVED.has(key),
                 });
             }
-            // A trapped tuft is reported at the tuft, which is where the bang
-            // would land -- the tuft's own hash is `nearestTuft`'s.
-            if (trapAt(cx, cz)) {
-                const t = nearestTuft(mx, mz, 1.5, true);
-                if (t !== null && t.cx === cx && t.cz === cz) {
+            // A trapped tuft is reported at the tuft, which is where the bang would
+            // land -- the tuft's own hash is `tuftInCell`'s.
+            if (trapAt(cx, cz) && !EATEN.has(key)) {
+                const t = tuftInCell(cx, cz);
+                if (t !== null) {
                     out.traps.push({
                         x: t.x,
                         z: t.z,
@@ -591,6 +874,7 @@ function sceneExplosions() {
     return {
         spent: SPENT.size + TRAP_SPENT.size,
         moved: MOVED.size + TRAP_MOVED.size,
+        craters: CRATERS.length,
         pending: PENDING.length,
         live: live,
         blasts: blastCount,

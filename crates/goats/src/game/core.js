@@ -214,6 +214,25 @@ const TUNING = {
             push: 13.0,            // m/s of outward velocity at the centre (M19c)
             lift: 34.0,            // m/s of upward velocity at the centre (M19c)
         },
+        // The hole a bang leaves (M19d). The dish is a term in `terrainHeight`, so the
+        // goat, the herd, the peers, the grass and both shadows stand in the crater for
+        // free -- and it heals by scaling that depth down, which is also what bounds
+        // the list. `max` retires the oldest crater rather than refusing the newest:
+        // the ground closing over the far-away one is invisible, a bang with no hole is
+        // not.
+        crater: {
+            radius: 1.6,           // metres of the dish
+            depth: 0.45,           // metres deep at the centre
+            lip: 0.12,             // metres of raised rim just outside the dish
+            heal: 240,             // seconds until the ground is flat again
+            max: 24,               // live craters; the oldest retires first
+            // The tint on the ground. It is the one part of this system that is *fill
+            // rate* -- camera-facing alpha quads metres across -- so `scorch: 0` is the
+            // bisect for that, and `scorchRange` is the distance beyond which the tint
+            // is not drawn at all: a twenty-metre-away scorch is a few pixels.
+            scorch: 1,
+            scorchRange: 20,       // metres
+        },
         // The flung goat's arc (M19c).
         //
         // The lift is steep on purpose. Height goes with `lift²/g` and the throw
@@ -342,6 +361,16 @@ const TUNING_CLAMP = {
     "explosions.fling.pivot": [0, 2],
     "explosions.maxActive": [0, 64],
     "explosions.chainDepth": [0, 2],
+    // The crater's own numbers. `heal` is allowed to be short -- a two-second crater
+    // is a debug value, not an unplayable one -- but not zero, which would make the
+    // ground snap back under a goat that is standing in the hole.
+    "explosions.crater.radius": [0, 12],
+    "explosions.crater.depth": [0, 4],
+    "explosions.crater.lip": [0, 2],
+    "explosions.crater.heal": [2, 3600],
+    "explosions.crater.max": [0, 64],
+    "explosions.crater.scorch": [0, 1],
+    "explosions.crater.scorchRange": [0, 200],
 };
 
 // Leaves that must stay whole numbers (counts and pixel sizes). Integer-ness is
@@ -351,6 +380,7 @@ const TUNING_INT = {
     "herd.count": true,
     "lighting.shadow.size": true,
     "explosions.relocate.tries": true,
+    "explosions.crater.max": true,
 };
 
 function tuningHas(node, key) {

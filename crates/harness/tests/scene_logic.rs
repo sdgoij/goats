@@ -1087,6 +1087,11 @@ fn the_scene_runs_the_scripted_timeline() {
         fx.relocated,
     );
     checks.check(
+        "a bang dishes the ground, and it heals back with the grass",
+        fx.craters,
+        fx.craters,
+    );
+    checks.check(
         "a blast hurts a bot as much as it hurts the goat",
         fx.bot_hurt,
         fx.bot_hurt,
@@ -1198,6 +1203,7 @@ struct Explosions {
     flung_tumble: bool,
     herd_flung: bool,
     relocated: bool,
+    craters: bool,
     bot_hurt: bool,
     bot_death: bool,
     bot_lands: bool,
@@ -1633,12 +1639,10 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
         let arrived = moved_cells(harness, "TRAP_MOVED")?;
         let mut on_a_tuft = arrived.len() == 1;
         for (cx, cz) in &arrived {
-            let x = cx * 2.0 + 1.0;
-            let z = cz * 2.0 + 1.0;
-            if harness
-                .eval(&format!("nearestTuft({x}, {z}, 1.5, false)"))?
-                .is_null()
-            {
+            // The scene's own derivation, rather than a search from the cell's *centre*:
+            // a tuft is anchored at the cell's even corner, so a query from the wrong
+            // point reports no tuft on a cell that has one.
+            if !bool_of(harness.eval(&format!("tuftInCell({cx}, {cz}) !== null"))?) {
                 on_a_tuft = false;
             }
         }
@@ -1697,6 +1701,12 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
         drive_burst(harness, 9)?;
         drive_burst(harness, 9)?;
         harness.eval("sceneResetDevices()")?;
+        // ...and the ground with them. Craters *stack* where a device keeps being tripped,
+        // and this case's own mine is the one the cases above it have already set off:
+        // a take-off from the bottom of a stacked pit makes `py` -- the height above the
+        // ground directly below -- read short, which is nothing to do with whether the
+        // arc is what lifts the goat. This case is about the arc.
+        harness.eval("sceneResetCraters()")?;
         wait_mobile(harness)?;
         harness.eval(if placeholder {
             "CLIP.flung = null"
@@ -2057,6 +2067,92 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
             "blast debris case: grit={grit} bangs={bangs} drained={drained} queue={:?}",
             harness.eval("DEBRIS_QUEUE.length")?,
         );
+    }
+
+    // ---- M19d: craters --------------------------------------------------------
+    //
+    // A bang dishes the ground, kills the grass it swallowed, and heals back over
+    // `crater.heal` -- shortened here, because the default is four minutes. The dish is
+    // a term in `terrainHeight`, so what the case watches is the *ground*: everything
+    // that stands on it reads that one function, which is the whole reason it lives
+    // there rather than in the mesh.
+    harness.command("heal")?;
+    harness.command("pos 0 0")?;
+    harness.eval("sceneResetCraters()")?;
+    // A bang on a tuft, so the grass half of the case is about a tuft that was there:
+    // the `grass` verb is how the tuft cases find one.
+    let tuft = try_command_json(harness, "grass 40")?;
+    if bool_of(harness.eval("sceneCraters().length === 0")?) && tuft["x"].is_number() {
+        let tx = f64_of(tuft["x"].clone());
+        let tz = f64_of(tuft["z"].clone());
+        let depth = f64_of(harness.eval("TUNING.explosions.crater.depth")?);
+        let heal = f64_of(harness.eval("TUNING.explosions.crater.heal")?);
+        harness.eval("goats.tuning.set(\"explosions.crater.heal\", 2)")?;
+        // Nothing else must dig while this case waits for its hole to close: the herd
+        // walks the same field, and a bot tripping a device would add a crater with a
+        // four-minute life to a loop that is watching for an empty list.
+        harness.eval("goats.tuning.set(\"explosions.mine.density\", 0)")?;
+        harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0)")?;
+        let ground_before = f64_of(harness.call("terrainHeight", &[json!(tx), json!(tz)])?);
+        // The goat stands on the tuft before the bang: the mesh is only rebuilt for a
+        // crater near the goat (a distant bang must not cost a whole field's vertices),
+        // and this case is about the near one -- the hole the player is standing in.
+        harness.command(&format!("pos {tx} {tz}"))?;
+        harness.eval(&format!("blast(\"mine\", {tx}, {tz}, 0.25, 0)"))?;
+        let dug = try_command_json(harness, "craters 30")?;
+        let live = f64_of(dug["live"].clone());
+        let recorded = harness.call("sceneCraters", &[])?;
+        let radius = recorded
+            .as_array()
+            .and_then(|list| list.first())
+            .map(|c| f64_of(c["r"].clone()))
+            .unwrap_or(0.0);
+        let ground_after = f64_of(harness.call("terrainHeight", &[json!(tx), json!(tz)])?);
+        // The dish, at its own centre: the tuning's depth, within the radius' variation.
+        let dished = ground_after < ground_before - depth * 0.9;
+        // The grass the crater swallowed is gone...
+        let bare = harness
+            .eval(&format!("nearestTuft({tx}, {tz}, 0.5, false)"))?
+            .is_null();
+        // ...and the ground's own caches were told rather than left until the goat had
+        // walked `terrain.snap` away: dirty now, clean once a frame has run.
+        let marked = bool_of(harness.eval("terrainDirty")?);
+        drive_burst(harness, 4)?;
+        let rebuilt = !bool_of(harness.eval("terrainDirty")?);
+        // Then it heals: the ground comes back, and so does the grass -- a tuft returns
+        // as the ground closes over it, because a crater's kill is the meadow's own
+        // `EATEN` with the crater's heal for a duration.
+        let mut guard = 0;
+        while f64_of(harness.eval("sceneCraters().length")?) > 0.0 && guard < 40 {
+            drive_burst(harness, 9)?;
+            guard += 1;
+        }
+        let closed = f64_of(harness.eval("sceneCraters().length")?) == 0.0;
+        let ground_back = f64_of(harness.call("terrainHeight", &[json!(tx), json!(tz)])?);
+        let flat = (ground_back - ground_before).abs() < 0.01;
+        let regrown = !harness
+            .eval(&format!("nearestTuft({tx}, {tz}, 0.5, false)"))?
+            .is_null();
+        out.craters = live == 1.0
+            && radius > 0.5
+            && dished
+            && bare
+            && marked
+            && rebuilt
+            && closed
+            && flat
+            && regrown;
+        if !out.craters {
+            eprintln!(
+                "crater case: live={live} r={radius} before={ground_before} \
+                 after={ground_after} back={ground_back} dished={dished} bare={bare} \
+                 marked={marked} rebuilt={rebuilt} closed={closed} flat={flat} \
+                 regrown={regrown} heal was {heal}",
+            );
+        }
+        harness.eval("goats.tuning.set(\"explosions.crater.heal\", 240)")?;
+        harness.eval("goats.tuning.set(\"explosions.mine.density\", 0.012)")?;
+        harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
     }
 
     harness.command("heal")?;

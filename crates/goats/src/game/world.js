@@ -49,8 +49,18 @@ let terrainDetail = -1;
 let terrainAnchorX = 0;         // snapped centre of the built grid
 let terrainAnchorZ = 0;
 let terrainBuilt = false;
+// Set when the ground itself changes -- a crater appearing or closing over -- so the
+// mesh picks it up on the frame it happens rather than when the goat has walked
+// `TUNING.terrain.snap` away. `explosions.js` sets it; `terrainEnsure` consumes it.
+let terrainDirty = false;
 let terrainVerts = 0;
 let terrainTris = 0;
+// The last anchor this reported on. The log is for the anchor moves -- one line per 24
+// units of walking -- rather than for every rebuild: a crater near the goat rebuilds the
+// mesh a handful of times over its four minutes, and none of that is news, nor should it
+// grow the in-game console without bound.
+let terrainLogX = NaN;
+let terrainLogZ = NaN;
 
 // Smooth 0..1 value noise, three octaves: broad hills with smaller bumps on top.
 function terrainShape(x, z) {
@@ -61,14 +71,16 @@ function terrainShape(x, z) {
 
 // The ground height at (x, z). A bowl around the origin stays level so the goat
 // starts on flat grass, and the relief eases in over `TUNING.terrain.ramp` so
-// there is no cliff at its edge.
+// there is no cliff at its edge. The craters are the one thing that changes the
+// ground after the field is derived: `craterDipAt` is their term (explosions.js),
+// and it is why every reader of this function stands in a hole for free.
 function terrainHeight(x, z) {
     if (!TERRAIN_MESH_OK) return 0;
     const d = Math.sqrt(x * x + z * z);
     let t = (d - TUNING.terrain.flat) / TUNING.terrain.ramp;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     t = t * t * (3 - 2 * t);
-    return (terrainShape(x, z) - 0.5) * 2 * TUNING.terrain.relief * t;
+    return (terrainShape(x, z) - 0.5) * 2 * TUNING.terrain.relief * t + craterDipAt(x, z);
 }
 
 // The goat's ground-contact height. `g.py` is the height *above* the ground
@@ -179,9 +191,13 @@ function terrainBuild() {
     if (litShader >= 0) rl.setModelShader(terrainMesh, useLighting ? litShader : -1);
     if (shadowColor >= 0) rl.setModelTexture(terrainMesh, SHADOW_MAP_INDEX, shadowColor);
     terrainBuilt = true;
-    console.log("terrain: mesh " + terrainMesh + " " + terrainVerts + " verts " +
-        terrainTris + " tris cell " + TERRAIN_CELL +
-        " anchor " + terrainAnchorX + "," + terrainAnchorZ);
+    if (terrainAnchorX !== terrainLogX || terrainAnchorZ !== terrainLogZ) {
+        terrainLogX = terrainAnchorX;
+        terrainLogZ = terrainAnchorZ;
+        console.log("terrain: mesh " + terrainMesh + " " + terrainVerts + " verts " +
+            terrainTris + " tris cell " + TERRAIN_CELL +
+            " anchor " + terrainAnchorX + "," + terrainAnchorZ);
+    }
 }
 
 // Startup: make the detail texture and the first grid.
@@ -203,7 +219,8 @@ function terrainEnsure(px, pz) {
     if (terrainDetail < 0) return;
     const ax = Math.round(px / TUNING.terrain.snap) * TUNING.terrain.snap;
     const az = Math.round(pz / TUNING.terrain.snap) * TUNING.terrain.snap;
-    if (terrainBuilt && ax === terrainAnchorX && az === terrainAnchorZ) return;
+    if (!terrainDirty && terrainBuilt && ax === terrainAnchorX && az === terrainAnchorZ) return;
+    terrainDirty = false;
     terrainAnchorX = ax;
     terrainAnchorZ = az;
     terrainBuild();

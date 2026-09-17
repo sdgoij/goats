@@ -98,7 +98,7 @@ uses.
 | **M17** | Compiled mods: WebAssembly plugins, any language, capabilities by construction | M14g, M15 | M–L | ✅ **Done** — M17a (the ABI), M17b (the Rust host), M17c (the digest + determinism), M17c2 (the state surface) and M17d (the performance debt) all landed |
 | **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | ✅ **Done** — the fetch ALPN, the client's fetch/verify/install, the catalogue and the client wiring (consent, `--pull`, the one retry, and loading a mod that arrives after the freeze) |
 | **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
-| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | In progress — M19a (the engine additions), M19b (the devices and the blasts) and M19c (the flung goat, and the herd that now dies to it) have landed; M19d-M19g are below. The layout is derived from the seed, so nothing new on the handshake |
+| **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | In progress — M19a (the engine additions), M19b (the devices and the blasts), M19c (the flung goat, the herd that dies to it, and the device that moves house) and M19d (the craters) have landed; M19e-M19g are below. The layout is derived from the seed, so nothing new on the handshake |
 
 ---
 
@@ -2701,7 +2701,12 @@ Each frame: age the instances, retire the dead ones, and draw the live ones.
    `right = (1, 0, 0)`, `up = (0, 0, -1)` -- the opposite handedness is culled.
    Deliberately *not* baked into the terrain's per-vertex colours: the grid is 2 m a
    cell (`TERRAIN_CELL`), so a 1.6 m-radius crater spans barely two cells of it --
-   too coarse to read as a crater, which is exactly why the decal exists.
+   too coarse to read as a crater, which is exactly why the decal exists. **As
+   landed (M19d)** the interim is the faint disturbed-earth patch the mine's own tell
+   already draws: the same soft puff, scaled to the dish and tinted dark, fading
+   faster than the ground closes. One texture, no new asset, and the same argument
+   M19b made for the bang itself; the yawed decal replaces it without touching the
+   crater list.
 3. **The grass inside is gone.** A crater kills the tufts in its radius: this is
    the `EATEN` mechanism reused (mark the cells bare for the duration of the heal),
    which means nothing new on the wire -- the meadow already says which cells are
@@ -2709,13 +2714,38 @@ Each frame: age the instances, retire the dead ones, and draw the live ones.
    meadow is the host's; a client's own blast does not touch `EATEN` locally and the
    next snapshot settles it, which is exactly the optimism `startEat` already has
    (the tuft goes, the bite is reported, the snapshot replaces the optimistic copy).
+   The kill is the crater's *heal* as the regrow duration, so a tuft comes back as
+   the ground does, and a tuft inside two craters is released by neither until both
+   are gone.
+
+   One trap to avoid, learned the hard way in M19d: a tuft is anchored at its cell's
+   **even** corner -- `nearestTuft` jitters it +-0.9 m around `cx * 2` -- which is not
+   the point a mine's cell centre uses (`cx * 2 + 1`). Anything asking "the tuft in
+   this cell" must derive it (`tuftInCell`, explosions.js) rather than search from the
+   mine's centre: that is 1.4 m of diagonal, and every tuft jittered away from the
+   corner falls outside the query's own range, so the cell looks empty. The `traps`
+   verb and the trap half of `relocateDevice` both had this, and both looked fine --
+   they only missed *some* tufts.
 
 **A new crater forces a terrain rebuild.** The mesh otherwise rebuilds only when
 the goat has moved `TUNING.terrain.snap` (`terrainEnsure`), which is fine for a
 field that changes slowly and wrong for the one case that matters: the crater the
-player is standing in, at the moment of the bang. So a blast calls `terrainBuild`
-(and drops the affected cells from `TERRAIN_CELL_H`), and the goat is visibly
-standing in a fresh hole rather than on ground that catches up 24 units later.
+player is standing in, at the moment of the bang. So a crater sets `terrainDirty`
+and drops the affected cells from `TERRAIN_CELL_H`, and the goat is visibly
+standing in a fresh hole rather than on ground that catches up 24 units later. The
+dish *healing* steps the same way -- five centimetres at a time is the cache's and
+the mesh's resolution, so the terrain the goat walks on never drifts more than that
+from the terrain it can see.
+
+Two things bound what that costs. The dirty flag is only raised for a crater
+**near the goat** (inside `terrain.snap`): a bang a bot set off across the meadow
+would otherwise rebuild a whole field's worth of vertices on the frame it landed,
+over five centimetres of dish nobody is looking at -- and the next anchor rebuild
+picks it up on the way there. And the per-call crater loop in `terrainHeight` is
+written to be free when there are no craters and two multiplies a crater when
+there are none in reach, because `terrainHeight` is called for every goat, every
+tuft cell and every shadow vertex in the box (see *Testing* for the debug-harness
+measurement).
 
 **Healing** is one scalar per crater (`depth · (1 - age/heal)`) easing the dish back
 to flat, with the tufts coming back as the heal completes. The ground closes over,
@@ -2818,17 +2848,23 @@ is 0.6 m, so the goat is at arm's length -- is four to five metres up and six ou
 Height came out of the lift and the gravity together, not out of the push: the
 throw is the one it always was (the push *fell* from 14 to 13 to pay for the longer
 fall), and only the air is new. The values in the tree above are the ones in
-`core.js` today for everything M19b, M19c and M19c2 landed; `crater`, `maxReports`
-and `lethal` are still the proposal -- and `lethal`, when it lands, is a promise
-about the *player*: the herd is already mortal without it.
+`core.js` today for everything M19b, M19c, M19c2 and M19d landed; `maxReports` and
+`lethal` are still the proposal -- and `lethal`, when it lands, is a promise
+about the *player*: the herd is already mortal without it. The crater's `heal`
+landed with a floor of **2 s** rather than the ≥ 30 this list used to propose, and
+the reason is the harness: a four-minute heal cannot be tested without standing in
+the hole for four minutes, and a two-second crater is a debug value, not an
+unplayable one. Zero would be, and that is what the clamp refuses.
 
 with `TUNING_CLAMP` entries for the ones a mistake could make unplayable
 (`mine.density` ≤ 0.1, `relocate.min`/`max` ≤ 60 with the floor raised to
-`blast.radius` in the code, `relocate.tries` an integer ≤ 64, `blast.radius` ≤ 12,
+`blast.radius` in the code, `relocate.tries` an integer ≤ 64, `crater.radius` ≤ 12,
+`crater.depth` ≤ 4, `crater.lip` ≤ 2, `crater.heal` ≥ 2 and ≤ 3600, `crater.max` an
+integer ≤ 64, `blast.radius` ≤ 12,
 `blast.damage` ≤ 100, the fling's
 gravity a negative, `fling.pivot` within the goat's own height, `herd.deathLinger`
-at least half a second so a corpse cannot ping-pong, `crater.heal`
-≥ 30, `maxActive` ≤ 64, `chainDepth` ≤ 2) -- the tuning registry already has that
+at least half a second so a corpse cannot ping-pong, `maxActive` ≤ 64,
+`chainDepth` ≤ 2) -- the tuning registry already has that
 mechanism, and a bad `tuning.json` in a pulled mod should not be able to make the
 world unplayable.
 
@@ -2847,7 +2883,9 @@ world unplayable.
   where each one is, how far, and whether it *moved* there rather than being part of
   the field's own derivation -- exactly like `grass` and `bots` already report their
   own worlds. This is a debugging tool, the harness's best friend, and the answer to
-  "was that thing actually there?" without a screenshot.
+  "was that thing actually there?" without a screenshot. **`craters`** is the same
+  for the ground the bangs have dished: where, how wide, how deep *right now*, and
+  how far through its heal it is.
 
 ### Offline, the herd, and collisions
 
@@ -2982,7 +3020,7 @@ JavaScript stubs are the only implementation either of them ever gets.
 | **M19b** | Devices and blasts, offline, art-free | — | S–M | `explosions.js` (a sixteenth scene part): the derived layout, the triggers, `blast()`, the one-deep chain, damage and the health floor, the `traps` verb, a `tune` verb for the whole tuning tree, and the walking-onto-a-mine case. The bang reuses the weather's cloud puff, so the part adds no texture and no load step. **Revised**: a spent device *moves* rather than re-arming (`relocate`, 8-24 m from the cell it left, derived from that cell's key) -- the field drifts, its density is the world's, and the move needs nothing on the wire |
 | **M19c** | The flung goat | M19b | M | Landed: the `"flung"` mode and its arc (integrated in absolute height, so a slope it crosses mid-air cannot drag it), the input lock, landing on the ground it actually meets, the roll the placeholder owes (`flingDraw`), `Gait::Flung` + the `PROTOCOL_VERSION` 9 bump, the peer path, `restart()` clearing it, the clip contract -- with the jump variant as the fallback until Blender lands -- and the herd, which is flung, lands, and walks on. A bang in `sfx/` is heard too, faded by its distance. **Open, and named in *The wire*: the flung *height* does not travel**, so a bot on a client (and a peer's goat anywhere) tumbles on the ground until `py` rides on `BotState`/`PeerState` -- which M19f's rootless `GoatFlung` will force |
 | **M19c2** | The herd is mortal: bots take damage, and die | M19c | S | ✅ **Landed** — bots take the player's own blast curve without the player's floor (`health` on a bot, charged in `blast()`), a lethal bang kills instead of throwing (`botDie`, bots.js), a killed bot lies there for `herd.deathLinger` playing the death clip and then gets up 10-26 m away on ground with no armed mine under it (`botRespawn`), a corpse has no AI and trips no device but *does* land — a bot killed mid-arc keeps the arc it had. On the wire it is `Gait::Dead` plus the fraction (`netBotPhase`/`netApplyWorld`), which the enum already carried, so **no protocol version** |
-| **M19d** | Craters | M19b | M | The dish in `terrainHeight` (with the cell cache and the forced rebuild), the tufts killed inside it, healing, the cap, and the offline look (a tinted disc) |
+| **M19d** | Craters | M19b | M | ✅ **Landed** — the dish is a term in `terrainHeight` (`craterDipAt`, a bowl plus a raised lip, summing over the live list), so the goat, the herd, the peers, the grass and both shadows stand in it with nothing added anywhere; the list is capped at `crater.max` with the oldest retired first and heals by scaling the depth down over `crater.heal`; the grass the crater swallowed is killed through the meadow's own `EATEN`, with the heal for a regrow window, and released as the ground closes; `terrainDirty` makes a near bang's hole appear in the mesh on the frame it happens (a distant one waits for the next anchor rebuild, so a bot's bang cannot hitch the frame); the interim scorch is the mine's own tell puff scaled to the dish; `craters` is a console verb and `sceneCraters`/`sceneResetCraters` are the test surface. **Open**: craters stack (N bangs in one place dig N × `depth`, bounded by the cap and unwound by the heal), and nothing about them travels yet -- M19e's `craters` on the world datagram is what a client needs |
 | **M19e** | The wire | M19b-d | M | `BlastKind`, the two messages, the rate limit, `craters`/`spent` on the world datagram with `None`-means-keep, the shed order, the budget case, and the two-window check. The **move** needs no field of its own: a peer that knows which cell fired derives the same destination, so `spent` is the whole of it |
 | **M19f** | The art | M19a, M19c, M19d | M–L | `GoatFlung` in `goat.blend` (which retires the procedural roll and the jump-clip placeholder together); the three atlases and the crater decals as PNGs in the asset table; the flipbook instances; the light-flash uniforms; the camera shake and the HUD pulse |
 | **M19g** | Sound and the mod surface | M19e, M19f | S–M | The rest of the slots (`sfx.fuse`, `sfx.trap`, `sfx.blast.close`) and the per-slot pools, the fuse's click; `goats.explosions.*`, the `blast` event, the docs (`APIv1.md` §4, `README.md`) |
@@ -3003,8 +3041,17 @@ it:
   contexts); a goat that walks onto a mine is flung, damaged and lands on the
   ground; a hop *over* one clears it and a hop *onto* one does not; a trapped
   tuft's meal is replaced (energy and satiety unchanged, the tuft gone); a blast
-  never takes health below the floor; no device is derived inside `safe`; a crater
-  appears, the ground under it drops, and it heals back. M19c drives both flight
+  never takes health below the floor; no device is derived inside `safe`. M19d has
+  its own: a bang on a tuft is the *ground* dropping by the tuning's depth with the
+  crater recorded (and the `craters` verb reporting it), the grass it swallowed gone
+  from the meadow, `terrainDirty` raised so the mesh follows on that frame and
+  cleared once a frame has run, then -- with `crater.heal` cut to two seconds -- the
+  list emptying, the ground back within a centimetre of where it was, and the tuft
+  regrown with it. The cost of that case and of M19d generally is worth recording:
+  the debug harness went 165 -> 245 s, which is the per-call crater loop in
+  `terrainHeight` in an *unoptimized* interpreter (a debug build spends far more per
+  iteration than release does, which is the same asymmetry `birds` documents). M19c
+  drives both flight
   paths, one pass each -- with a clip and without (the placeholder that ships
   today) -- and asserts the lock frame by frame, that the *arc* is what lifts the
   goat in both paths, that the roll is drawn on an axis of its own only where no clip
@@ -3021,7 +3068,11 @@ it:
   (`mineArmed` false), exactly one replacement has arrived, it stands on the ring the
   tuning asks for (a cell either way, since a ring in metres lands wherever it lands
   in the grid), it is armed where it landed, the fuse it owed still lands -- and a
-  trap's replacement is on a tuft, because a trap without a tuft is not a device. Two
+  trap's replacement is on a tuft, because a trap without a tuft is not a device. A
+  case that measures the *arc* has to clear the craters first, the way it already
+  clears the devices: craters stack where a device keeps being tripped, and a
+  take-off from the bottom of a stacked pit reads short in `goat.py` (the height above
+  the ground directly below), which is nothing to do with what the arc does. Two
   of the cases wait for the
   goat's own bang rather than for the blast counter to move: `checkTriggers` runs over
   the herd too, so a bot stepping on a device of its own used to be able to end a case

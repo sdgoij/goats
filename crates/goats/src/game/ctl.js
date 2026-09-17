@@ -26,7 +26,7 @@ const HELP_GROUPS = [
     ["basics", "help ping"],
     ["state", "state stats time weather bots camera pos phase features fps"],
     ["move", "jump sleep wake walk trot run back stop turn yaw"],
-    ["vitals", "health energy heal eat grass traps restart kill"],
+    ["vitals", "health energy heal eat grass traps craters restart kill"],
     ["view", "lighting shadows sky mute settings setting tune perf ui console screenshot"],
     ["session", "host connect leave who net copy say msg"],
     ["mods", "mod"],
@@ -430,6 +430,32 @@ function sceneCommand(line) {
                 moved: sceneExplosions().moved,
                 pending: sceneExplosions().pending
             });
+        }
+        // The craters the ground is carrying (explosions.js): where, how wide, how deep
+        // right now and how far through its heal -- the devices' aftermath, and the
+        // other half of what a mod's mine detector would want to read.
+        case "craters": {
+            const range = ctlArg(parts, 1) || 30;
+            const all = sceneCraters();
+            const range2 = range * range;
+            const near = [];
+            for (let i = 0; i < all.length; i++) {
+                const c = all[i];
+                const dx = c.x - goat.px;
+                const dz = c.z - goat.pz;
+                const d2 = dx * dx + dz * dz;
+                if (d2 > range2) continue;
+                near.push({
+                    x: ctlRound(c.x),
+                    z: ctlRound(c.z),
+                    r: ctlRound(c.r),
+                    depth: ctlRound(c.depth),
+                    age: ctlRound(c.age),
+                    heal: ctlRound(c.heal),
+                    dist: ctlRound(Math.sqrt(d2))
+                });
+            }
+            return "ok " + JSON.stringify({ range: range, craters: near, live: all.length });
         }
         // The frame-cost benchmark (goat.js): `perf` prints the phase breakdown
         // gathered since the last print, `perf on` logs it every 240 frames,
