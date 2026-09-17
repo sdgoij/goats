@@ -240,63 +240,72 @@ function makeEyeTextures() {
     xTex = rl.makeTexture(8, 8, x);
 }
 
-// Procedural moon and glow sprites: the demo stays asset-free, and an alpha moon
-// composites cleanly (a photo would drag a black square along, since the `rl`
-// surface has no additive blend mode yet).
+// The sky's own procedural textures: the moon's surface and the sun's glare.
+//
+// The moon is *equirectangular*, on the sphere's own UV grid, because a sphere is
+// what wears it now (`makeCelestial`): the old generator drew a disc with a soft
+// alpha edge and its craters in a square around the centre, and a disc cannot be
+// wrapped onto a sphere -- the poles would sample the alpha ring and the ball would
+// read as cut open. The craters are also kept off the poles, where the UV grid
+// stretches them into bands, and the wrap in `u` is respected, so a crater lying on
+// the seam is still one crater. The limb darkening the disc had is gone: the sphere
+// shades its own limb now.
 function makeSkyTextures() {
-    const N = 64;
+    const W = 128, H = 64;
     const craters = [];
-    for (let i = 0; i < 16; i++) {
-        const a = hash(i * 3.7) * Math.PI * 2;
-        const rr = Math.sqrt(hash(i * 9.1)) * 0.40;
+    for (let i = 0; i < 46; i++) {
         craters.push({
-            cx: 0.5 + Math.cos(a) * rr,
-            cy: 0.5 + Math.sin(a) * rr,
-            cr: 0.045 + hash(i * 5.3) * 0.11,
-            deep: hash(i * 7.7),
+            u: hash(i * 3.7),
+            v: 0.12 + hash(i * 9.1) * 0.76,
+            r: 0.018 + hash(i * 5.3) * 0.055,
+            deep: 0.35 + hash(i * 7.7) * 0.65,
         });
     }
     let moon = "";
+    for (let y = 0; y < H; y++) {
+        const v = (y + 0.5) / H;
+        for (let x = 0; x < W; x++) {
+            const u = (x + 0.5) / W;
+            // A little mottling, so the surface is not a flat grey.
+            let shade = 0.88 + 0.12 * hash(x * 0.31 + y * 1.7);
+            for (let i = 0; i < craters.length; i++) {
+                const c = craters[i];
+                let du = u - c.u;
+                if (du > 0.5) du -= 1;
+                if (du < -0.5) du += 1;
+                // `v` spans half the angular range `u` does, so a crater only comes
+                // out round on the sphere when the v distance is halved with it.
+                const dv = (v - c.v) * 0.5;
+                const dd = Math.sqrt(du * du + dv * dv);
+                if (dd < c.r) {
+                    const t = 1 - dd / c.r;
+                    shade = shade - 0.26 * t * c.deep;       // the floor
+                    if (dd > c.r * 0.7) shade = shade + 0.16 * t;   // and its rim
+                }
+            }
+            shade = Math.min(1, Math.max(0.30, shade));
+            const r = Math.round(238 * shade);
+            const g = Math.round(234 * shade);
+            const b = Math.round(222 * shade);
+            moon += HEX256[r] + HEX256[g] + HEX256[b] + HEX256[255];
+        }
+    }
+    moonTex = rl.makeTexture(W, H, moon);
+
+    // The sun's glare: a white alpha falloff, drawn additively by
+    // `drawCelestialBody`, so the black around it adds nothing (which is also why a
+    // photographed glow would work).
+    const N = 64;
     let glow = "";
     for (let y = 0; y < N; y++) {
         for (let x = 0; x < N; x++) {
             const u = (x + 0.5) / N - 0.5;
             const v = (y + 0.5) / N - 0.5;
-            const d = Math.sqrt(u * u + v * v);
-            let r = 0;
-            let g = 0;
-            let b = 0;
-            let a = 0;
-            if (d < 0.5) {
-                const limb = 1 - 0.35 * (d / 0.5) * (d / 0.5);
-                let shade = 0.82 * limb;
-                for (let i = 0; i < craters.length; i++) {
-                    const c = craters[i];
-                    const dx = u + 0.5 - c.cx;
-                    const dy = v + 0.5 - c.cy;
-                    const dd = Math.sqrt(dx * dx + dy * dy);
-                    if (dd < c.cr) {
-                        const t = 1 - dd / c.cr;
-                        shade = shade - 0.20 * t * (0.5 + c.deep);
-                        if (dd > c.cr * 0.72) shade = shade + 0.14 * t;
-                    }
-                }
-                shade = Math.min(1, Math.max(0.32, shade));
-                r = 236 * shade;
-                g = 232 * shade;
-                b = 220 * shade;
-                a = 255 * Math.min(1, (0.5 - d) / 0.015);
-            }
-            moon += HEX256[Math.min(255, Math.max(0, Math.round(r)))] +
-                HEX256[Math.min(255, Math.max(0, Math.round(g)))] +
-                HEX256[Math.min(255, Math.max(0, Math.round(b)))] +
-                HEX256[Math.min(255, Math.max(0, Math.round(a)))];
-            const gd = d / 0.5;
-            const ga = gd >= 1 ? 0 : Math.round(255 * (1 - gd) * (1 - gd));
-            glow += "fff6d6" + HEX256[ga];
+            const d = Math.sqrt(u * u + v * v) / 0.5;
+            const a = d >= 1 ? 0 : Math.round(255 * (1 - d) * (1 - d));
+            glow += "fff6d6" + HEX256[a];
         }
     }
-    moonTex = rl.makeTexture(N, N, moon);
     glowTex = rl.makeTexture(N, N, glow);
 }
 function drawEyes() {
@@ -408,7 +417,13 @@ function sceneLoadStep() {
     const i = loadStep;
     loadStep += 1;
     if (i === 0) makeEyeTextures();
-    else if (i === 1) makeSkyTextures();
+    else if (i === 1) {
+        // The sky's textures, and then the two bodies that wear them: a sphere each,
+        // built before `makeTerrain`'s mesh because the harness reads the last mesh
+        // built as "the terrain".
+        makeSkyTextures();
+        makeCelestial();
+    }
     else if (i === 2) {
         // The weather's cloud puff and the explosions' flipbook atlases are both
         // procedurally built textures, so they share a step: one image path at boot,
@@ -802,8 +817,14 @@ function sceneFrame() {
     rl.beginDrawing();
     rl.clearBackground(skyBot);
     const skyShaderOn = useSkyShader && skyShader >= 0;
+    // The sky is two passes where the cloud layer can be blended over what is under
+    // it: the bodies and the sun's glare are drawn between them, so a cloud that
+    // drifts over the sun takes it -- per pixel, from the sky's own march -- instead
+    // of the sun being painted on top of the cloud.
+    const skySplit = skyShaderOn && skySplitOn();
     if (skyShaderOn) {
-        drawSky(cx, cy, cz, goat.px, ty, goat.pz, screenW, screenH, dt);
+        drawSky(cx, cy, cz, goat.px, ty, goat.pz, screenW, screenH, dt,
+            skySplit ? SKY_LAYER_AIR : SKY_LAYER_ALL);
     } else {
         rl.drawRectangleGradientV(0, 0, screenW, screenH, skyTop, skyBot);
     }
@@ -814,8 +835,16 @@ function sceneFrame() {
     if (lit) renderShadowMap();
     rl.beginMode3D(vx, vy, vz, lookX, lookY, lookZ, 55);
     drawStars();
-    drawCelestial();
+    drawCelestial(cx, cy, cz);
     perfMark("stars");
+    if (skySplit) {
+        // Out of 3D for the one pass that has to land over the bodies and under the
+        // world: the cloud layer, which attenuates what it covers.
+        rl.endMode3D();
+        drawSky(cx, cy, cz, goat.px, ty, goat.pz, screenW, screenH, dt, SKY_LAYER_CLOUD);
+        perfMark("sky_clouds");
+        rl.beginMode3D(vx, vy, vz, lookX, lookY, lookZ, 55);
+    }
     if (!skyShaderOn) drawClouds();
     perfMark("clouds");
 

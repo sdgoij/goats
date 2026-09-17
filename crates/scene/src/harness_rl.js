@@ -58,6 +58,19 @@
     let shadowPass = false;
     let skyFs = '';
     let goatDraw = null;
+    // The last frame's layering, in order -- see the drawing members below. "The sun
+    // is behind the cloud" is an *order*: the sky's layers with the bodies drawn
+    // between them. It is cleared at each `beginDrawing` rather than accumulated,
+    // because a whole run of it would be thousands of rows.
+    const layers = [];
+    // What a row of `layers` is: `[LAYER_SKY, layer, blend]` for a sky pass,
+    // `[LAYER_MODEL, handle, 0]` for a model, `[LAYER_BILLBOARD, 0, blend]` for a
+    // billboard. Numbers rather than names, so the rows deserialize as they are.
+    const LAYER_SKY = 0, LAYER_MODEL = 1, LAYER_BILLBOARD = 2;
+    let boundShader = -1;
+    let blendMode = 0;
+    let skyLayer = 0;
+    let skyHandle = -1;
     const drawnRows = {};
     let lastTerrainMesh = null;
     // Which uniform each location stands for, so a recorded `setShaderValue` can be
@@ -255,6 +268,9 @@
                 throw new TypeError('rl.drawModelEx: tint must be a packed colour, not ' + typeof tint);
             }
             counters.modelsDrawn += 1;
+            // The order a model was drawn in, which is half of what "under the
+            // clouds" means; the other half is the sky layer that follows it.
+            layers.push([LAYER_MODEL, model, 0]);
             // The goat is handle 0 and the terrain meshes are 1000+; everything
             // else is a bot. The bots are drawn at the ground under them, so the
             // recorded y must equal `terrainHeight` there -- which is what the
@@ -316,11 +332,23 @@
         // the run, which is the only way to exercise the skinned path without a GL
         // context -- the scene branches on it rather than on behaviour.
         GPU_SKINNING: false,
+        // The `BlendMode` members the scene reaches for: `ADDITIVE` for the sun's
+        // glare, and `ALPHA_PREMULTIPLY` for the sky's cloud layer, which attenuates
+        // the bodies under it. The engine reports the whole enum; defining these
+        // here is what puts both of them on the tested path.
+        BLEND_ADDITIVE: 1,
+        BLEND_ALPHA_PREMULTIPLY: 5,
         // The handle identifies which shader the scene compiled, so the checks
         // can tell the lit pass from the depth pass. The sky's fragment source is
         // kept, because a shader is only really tested by what it contains.
         loadShaderFromMemory: (vertex, fragment) => {
-            if (fragment.indexOf('cloudiness') >= 0) skyFs = fragment;
+            // The sky is the only program drawn as a full-screen rectangle, so its
+            // handle is remembered: that is what tells a sky layer apart from every
+            // other rectangle the scene draws.
+            if (fragment.indexOf('cloudiness') >= 0) { skyFs = fragment; skyHandle = 3; }
+            // The celestial bodies' own program (M2) declares its own fragment
+            // uniform, which is how a case can say the spheres are routed to it.
+            if (fragment.indexOf('shaded') >= 0) return 8;
             const base = vertex.indexOf('shadowOn') >= 0 ? 1
                 : (vertex.indexOf('vClip') >= 0 ? 2 : (fragment.indexOf('cloudiness') >= 0 ? 3 : 0));
             // A skinned variant is the same source plus the bone block, so it is
@@ -347,11 +375,14 @@
             }
             return id;
         },
-        setShaderValue: (_shader, location, value) => {
-            if (uniformById[location] === 'blastEnergy') {
+        setShaderValue: (shader, location, value) => {
+            const uniform = uniformById[location];
+            if (uniform === 'blastEnergy') {
                 blastEnergy = value;
                 if (value > blastEnergyPeak) blastEnergyPeak = value;
             }
+            // The layer the next sky draw will ask for; recorded per draw below.
+            if (uniform === 'skyLayer' && shader === skyHandle) skyLayer = value;
         },
         loadRenderTexture: () => 5, isRenderTextureValid: () => true,
         renderTextureColor: () => 6, renderTextureDepth: () => 7,
@@ -393,12 +424,25 @@
             if (shadowPass) counters.shadowCubeDraws += 1;
             counters.cubeDraws += 1;
         },
-        drawBillboardRec: () => { counters.billboardRecs += 1; },
-        drawBillboard: () => { counters.billboards += 1; },
+        drawBillboardRec: () => { counters.billboardRecs += 1; layers.push([LAYER_BILLBOARD, 0, blendMode]); },
+        drawBillboard: () => { counters.billboards += 1; layers.push([LAYER_BILLBOARD, 0, blendMode]); },
         drawSphereEx: () => { counters.sphereDraws += 1; },
-        beginBlendMode: () => {}, endBlendMode: () => {},
+        // The blend state, which one pass of the sky is the only thing that changes:
+        // the mode is recorded so a case can say the cloud layer composited rather
+        // than drew over. `endBlendMode` restores raylib's default alpha (0).
+        beginBlendMode: (mode) => { blendMode = mode; }, endBlendMode: () => { blendMode = 0; },
         drawQuad3D: () => { counters.quadDraws += 1; }, drawPoint3D: () => {},
         drawRectangleLines: () => { counters.menuDraws += 1; },
+        // A sky layer is the one *shader-bound* rectangle the scene draws, and the
+        // only way "the bodies are under the clouds" can be read back.
+        beginDrawing: () => { layers.length = 0; },
+        beginShaderMode: (shader) => { boundShader = shader; },
+        endShaderMode: () => { boundShader = -1; },
+        drawRectangle: () => {
+            if (skyHandle >= 0 && boundShader === skyHandle) {
+                layers.push([LAYER_SKY, skyLayer, blendMode]);
+            }
+        },
         // The HUD read-outs, which are otherwise write-only. They carry the clock,
         // the speed, the lighting, the audio and the sky state in one line.
         drawText: (text) => {
@@ -536,6 +580,9 @@
             soundHandles: soundsPlayed,
             timeline: timeline,
             probes: probes,
+            // The last frame's draw order: the sky's layers, the models and the
+            // billboards, as they happened.
+            layers: layers,
             counters: {
                 modelLoads: counters.modelLoads,
                 botPoses: counters.botPoses,

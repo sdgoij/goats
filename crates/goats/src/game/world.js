@@ -365,31 +365,209 @@ function drawStars() {
     }
 }
 
-// Sun and moon on opposite sides of a celestial sphere, arcing east to west
-// between 06:00 and 18:00. The sun is a stack of soft glow billboards (a hard
-// `drawSphere` reads flat), the moon a procedural cratered disc with a halo.
-function drawCelestial() {
-    const a = ((worldTime - 6) / 12) * Math.PI;   // 0 at 06:00, PI at 18:00
-    const dx = Math.cos(a);
-    const dy = Math.sin(a);
-    const R = 70;
-    const sx = goat.px + dx * R;
-    const sy = dy * R;
-    if (dy > -0.25 && glowTex >= 0) {
-        const warm = 0.55 + 0.45 * Math.max(0, dy);
-        rl.drawBillboard(glowTex, sx, sy, goat.pz, 26,
-            rl.color(255, Math.round(205 * warm + 30), Math.round(115 * warm + 40), 34));
-        rl.drawBillboard(glowTex, sx, sy, goat.pz, 14,
-            rl.color(255, Math.round(220 * warm + 30), Math.round(150 * warm + 70), 64));
-        rl.drawBillboard(glowTex, sx, sy, goat.pz, 7.2, rl.color(255, 250, 225, 140));
-        rl.drawBillboard(glowTex, sx, sy, goat.pz, 3.2, rl.color(255, 255, 246, 255));
+// ---- the sun and moon (M2) ------------------------------------------------
+//
+// Two spheres on the light's own line through the goat: the sun at `SUN_DIR` and
+// the moon at the other end of it, 600 units out, drawn with the celestial program
+// (lighting.js) so the moon carries a terminator and the sun's disc stays flat.
+//
+// What this replaces was a stack of camera-facing sprites at 70 units, and three
+// things about it read as glitches. The discs were placed in the plane `z =
+// goat.pz` -- their direction had no tilt -- while the sky's glow, the cloud light
+// and the shadow map all use `LIGHT_DIR`, which carries the arc's tilt, so the halo
+// sat about ten degrees off the disc it belonged to and the clouds were lit from
+// somewhere else. The elevation gates (`dy > -0.25`) drew each body for an hour and
+// a half *below* the horizon, where the terrain slab ends, so a disc hung in the
+// void under the world instead of setting. And at 70 units the sky slid with the
+// goat: a body that close swings ten degrees when the goat walks ten metres.
+//
+// Now the bodies sit on the light's own line, they are gone once they are below the
+// horizon (faded over the last few degrees, so a set does not pop), and at 600
+// units a walk across the meadow moves them about a degree.
+const CELESTIAL_R = 600;
+// The angular size the discs had as sprites -- about 2.6 degrees for the sun and
+// 2.5 for the moon, a shade smaller because it is.
+const SUN_RADIUS = 13.6;
+const MOON_RADIUS = 12.9;
+// What the weather takes off a body *before* the clouds are drawn over it: the
+// cloud layer is composited after the bodies (sky.js, `SKY_LAYER_CLOUD`), so a
+// cloud that covers a disc hides it, and this is the haze a broken sky still
+// leaves -- a disc glows dimmer through a gap than it does in the clear. And the
+// elevation over which a body fades out at the horizon, as the sine of the angle
+// -- a flat world's horizon is a hard line, so this stands in for setting behind
+// it.
+const CELESTIAL_CLOUD_FADE = 0.55;
+const CELESTIAL_HORIZON = 0.05;
+// The sun's glare, as two elements: a tight one on the disc, and a wide faint halo
+// under it, which is what makes it read as a sun rather than as a bright circle.
+// Both are multiples of the disc's radius.
+const CELESTIAL_GLARE = 5.2;
+const CELESTIAL_HALO = 11.0;
+const SUN_TINT = [255, 246, 214];
+const MOON_TINT = [238, 234, 222];
+let sunMesh = -1;
+let moonMesh = -1;
+
+// One unit sphere as a `makeModel` mesh, wound outward (the terrain's grid winding
+// would put the front faces on the inside -- a sphere's grid closes back on itself)
+// with normals so it can be shaded and UVs so the moon can carry a surface. 48
+// columns by 24 rows keeps the disc from reading as a polygon at the few dozen
+// pixels it covers.
+function makeSphereMesh() {
+    const COLS = 48, ROWS = 24;
+    const count = (COLS + 1) * (ROWS + 1);
+    const verts = new Array(count * 3);
+    const norms = new Array(count * 3);
+    const cols = new Array(count * 4);
+    const uvs = new Array(count * 2);
+    for (let j = 0; j <= ROWS; j++) {
+        const v = j / ROWS;
+        const phi = v * Math.PI;
+        const sp = Math.sin(phi);
+        const cp = Math.cos(phi);
+        for (let i = 0; i <= COLS; i++) {
+            const u = i / COLS;
+            const th = u * Math.PI * 2;
+            const x = sp * Math.cos(th);
+            const y = cp;
+            const z = sp * Math.sin(th);
+            const k = j * (COLS + 1) + i;
+            verts[k * 3] = x;
+            verts[k * 3 + 1] = y;
+            verts[k * 3 + 2] = z;
+            norms[k * 3] = x;
+            norms[k * 3 + 1] = y;
+            norms[k * 3 + 2] = z;
+            cols[k * 4] = 255;
+            cols[k * 4 + 1] = 255;
+            cols[k * 4 + 2] = 255;
+            cols[k * 4 + 3] = 255;
+            uvs[k * 2] = u;
+            uvs[k * 2 + 1] = 1 - v;
+        }
     }
-    if (dy < 0.25 && moonTex >= 0) {
-        rl.drawBillboard(glowTex, goat.px - dx * R, -dy * R, goat.pz, 9.5,
-            rl.color(196, 212, 240, 44));
-        rl.drawBillboard(moonTex, goat.px - dx * R, -dy * R, goat.pz, 3.0,
-            rl.color(255, 255, 255, 255));
+    const idx = new Array(COLS * ROWS * 6);
+    let t = 0;
+    for (let j = 0; j < ROWS; j++) {
+        for (let i = 0; i < COLS; i++) {
+            const a = j * (COLS + 1) + i;
+            const b = a + 1;
+            const c = a + COLS + 1;
+            const d = c + 1;
+            idx[t++] = a; idx[t++] = b; idx[t++] = c;
+            idx[t++] = b; idx[t++] = d; idx[t++] = c;
+        }
     }
+    return rl.makeModel(verts, idx, norms, cols, uvs);
+}
+
+// The two bodies, built with the sky's other assets -- before the terrain's mesh,
+// since the harness reads the *last* mesh built and that has to stay the terrain.
+// `makeModel` rather than `drawSphere`: immediate-mode geometry carries no normals,
+// so a sphere drawn that way cannot be shaded at all, which is why the bodies used
+// to be sprites.
+function makeCelestial() {
+    if (!TERRAIN_MESH_OK) {
+        console.log("celestial: engine has no makeModel - the sun and moon are not drawn");
+        return;
+    }
+    sunMesh = makeSphereMesh();
+    moonMesh = makeSphereMesh();
+    if (moonTex >= 0) rl.setModelTexture(moonMesh, 0, moonTex);
+    console.log("celestial: sun " + sunMesh + ", moon " + moonMesh + ", r " + CELESTIAL_R);
+}
+
+// Where a body is and how opaque it is, from the sun's direction and which end of
+// the line the body sits on (`side` 1 or -1). The one rule the draw and
+// `sceneCelestial` share, so what a test reads is what is drawn; `alpha` is what
+// the tint carries, so zero means not drawn at all.
+function celestialPlacement(side, cover) {
+    const up = SUN_DIR[1] * side;
+    const fade = up <= 0 ? 0 : Math.min(1, up / CELESTIAL_HORIZON);
+    return {
+        x: goat.px + SUN_DIR[0] * side * CELESTIAL_R,
+        y: up * CELESTIAL_R,
+        z: goat.pz + SUN_DIR[2] * side * CELESTIAL_R,
+        elevation: up,
+        alpha: Math.round(255 * cover * fade),
+    };
+}
+
+// What the weather takes off a body, 0..1.
+function celestialCover() {
+    return 1 - CELESTIAL_CLOUD_FADE * cloudiness;
+}
+
+// One body: the glare first -- a radial gradient is the one sprite that cannot look
+// wrong however the camera turns -- and the sphere over it. `shaded` is 0 on the
+// sun, whose disc is the light, and 1 on the moon, which is lit by the sun. All of
+// it sits between the sky's two layers, so the cloud layer lands over the top.
+function drawCelestialBody(mesh, side, radius, tint, shaded, glare, cover) {
+    if (mesh < 0) return;
+    const place = celestialPlacement(side, cover);
+    if (place.alpha <= 2) return;
+    // A low disc reddens, the way the sky's own glow does. Only the sun warms
+    // (`shaded` 0 is the body that *is* the light); a setting moon stays grey.
+    const warm = shaded === 0 ? Math.min(1, Math.max(0, place.elevation / 0.30)) : 1;
+    const r = tint[0];
+    const g = Math.round(tint[1] * (0.78 + 0.22 * warm));
+    const b = Math.round(tint[2] * (0.42 + 0.58 * warm));
+    if (glare > 0 && glowTex >= 0) {
+        // Additive: the glare *adds* light to the sky it hangs in rather than
+        // greying that sky toward its own colour, which is what glare is. The alpha
+        // blend was a stand-in for this from when the `rl` surface had no blend
+        // modes at all.
+        const additive = typeof rl.beginBlendMode === "function";
+        if (additive) rl.beginBlendMode(rl.BLEND_ADDITIVE);
+        // The wide halo under the tight one: a single billboard reads as a bright
+        // circle rather than as glare.
+        rl.drawBillboard(glowTex, place.x, place.y, place.z, radius * CELESTIAL_HALO,
+            rl.color(r, g, b, Math.round(place.alpha * 0.10)));
+        rl.drawBillboard(glowTex, place.x, place.y, place.z, radius * glare,
+            rl.color(r, g, b, Math.round(place.alpha * 0.35)));
+        if (additive) rl.endBlendMode();
+    }
+    if (celestialShader >= 0) {
+        rl.setShaderValue(celestialShader, celestialUniforms.shaded, shaded,
+            rl.SHADER_UNIFORM_FLOAT);
+    }
+    rl.drawModelEx(mesh, place.x, place.y, place.z, 0, 1, 0, 0,
+        radius, radius, radius, rl.color(r, g, b, place.alpha));
+}
+
+// The sun and the moon, on opposite ends of the light's line, arcing east to west
+// between 06:00 and 18:00. The frame calls this between the sky's two layers
+// (goat.js), which is what puts both bodies -- and the sun's glare -- behind the
+// clouds.
+function drawCelestial(cx, cy, cz) {
+    if (sunMesh < 0 && moonMesh < 0) return;
+    setCelestialUniforms(cx, cy, cz);
+    const cover = celestialCover();
+    drawCelestialBody(sunMesh, 1, SUN_RADIUS, SUN_TINT, 0.0, CELESTIAL_GLARE, cover);
+    drawCelestialBody(moonMesh, -1, MOON_RADIUS, MOON_TINT, 1.0, 0, cover);
+}
+
+// What the two bodies are doing, as numbers. The geometry is the part a test can
+// check without a GPU, and it is the part that was wrong: whether each body is on
+// the line the light comes from (`sunDot` is +1 when the light is the sun and -1
+// when it is the moon), whether it is above the horizon, and how much of it the
+// weather leaves.
+function sceneCelestial() {
+    const cover = celestialCover();
+    const sun = celestialPlacement(1, cover);
+    const moon = celestialPlacement(-1, cover);
+    return {
+        hour: worldTime,
+        radius: CELESTIAL_R,
+        goat: [goat.px, goat.pz],
+        sun: sun,
+        moon: moon,
+        light: [LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]],
+        sunDir: [SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]],
+        sunDot: SUN_DIR[0] * LIGHT_DIR[0] + SUN_DIR[1] * LIGHT_DIR[1] + SUN_DIR[2] * LIGHT_DIR[2],
+        meshes: [sunMesh, moonMesh],
+        shaded: celestialShader >= 0,
+    };
 }
 
 // Cheap contact shadow: a flattened dark rectangle under the goat, darker and

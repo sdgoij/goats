@@ -755,6 +755,38 @@ The routing rules are pinned by `crates/harness/tests/skinning.rs` (17 checks): 
 stub reports `rl.GPU_SKINNING` as a flag, so a case can drive each side of the branch,
 and the fallback, without a GL context.
 
+### 7c. The sky as two passes: the celestial bodies behind the clouds
+
+M2b draws the sun and the moon as spheres on the light's own line, and the sky
+shader marched its cloud slab *over* them, so a cloud that drifted across the sun
+left the sun painted on the cloud. The fix is layering rather than a second march:
+the sky shader gained a layer uniform, and the frame draws the air (gradient,
+cirrus, glow) first, then the two bodies and the sun's glare, then the clouds alone
+-- premultiplied light and the transmittance it leaves, blended
+ONE / ONE-MINUS-SRC-ALPHA, which is what "in front of" has to mean for a layer that
+attenuates what it covers rather than covering it with sky again. One march, and the
+bodies end up under the weather.
+
+The split is what a phase breakdown can see: `sky2d` is now the air pass and
+`sky_clouds` the cloud one. Single pass against the split, the same build otherwise,
+the protocol of §1 (7 bots, `--no-mods`, `perf on`, 240-frame windows, dry):
+
+| phase | one pass | two passes |
+| --- | ---: | ---: |
+| `sky2d` (the air, or the whole sky) | 0.33-0.40 | 0.26-0.29 |
+| `sky_clouds` (the march) | -- | 0.14-0.15 |
+| **sky, together** | **0.33-0.40** | **0.40-0.44** |
+| fps | 59-60 | 59-61 |
+
+**~+0.04 ms**: a quarter of a percent of a 16.6 ms frame, and inside the spread the
+single pass shows across windows on its own (0.33-0.40), so an fps reading cannot
+resolve it either way. The §3 table predates the split -- read its `sky2d` row as the
+whole sky.
+
+`crates/harness/tests/celestial.rs` pins what the numbers cannot: which draws land
+between the two passes, that the ground lands after them, the premultiplied blend,
+and the single-pass fallback, driven by taking the blend mode away from the stub.
+
 ## 8. Caveats
 
 - One machine, one scene, one spot in the meadow, vsync on. The numbers are a

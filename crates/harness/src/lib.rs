@@ -202,6 +202,13 @@ pub struct Observations {
     pub bot_draw: Vec<Draw>,
     /// The sky fragment shader's source, so a test can assert what it contains.
     pub sky_fs: String,
+    /// The last frame's draw order, one row per draw: `[kind, a, b]`, where kind 0
+    /// is a sky layer (`a` the layer, `b` the blend mode it blended with), 1 a model
+    /// (`a` its handle) and 2 a billboard. "The sun is behind the cloud" is an
+    /// *order* -- what was drawn between the sky's two passes -- and no counter can
+    /// hold it.
+    #[serde(default)]
+    pub layers: Vec<[i64; 3]>,
     /// The last value the scene set on the lit shader's `blastEnergy` uniform: the
     /// bang's light. Zero when nothing is burning.
     pub blast_energy: f64,

@@ -32,7 +32,7 @@ covers more than it first appears:
 | Recolor the sky, dim the scene | ✅ | lerp `clearBackground`; `drawModelEx` `tint` multiplies albedo |
 | Soft blob shadow under the goat | ✅ approx | flattened dark `drawCube`, no shadow map needed |
 | Stars | ✅ approx | a few hundred tiny `drawCube`s on a celestial sphere |
-| Sun / moon | ✅ approx | a small sphere model drawn with `drawModelEx` |
+| Sun / moon | ✅ | two spheres (`makeModel`) on the light's own line, 600 units out, shaded by a small program of their own (M2b) |
 | Rain streaks | ✅ (2D) | `drawLine` overlay angled to match the wind |
 | Grass sway / wind | ✅ | offset the existing tuft cubes with a wind field |
 | HUD bars, clock, icons | ✅ | `drawRectangle` + `drawText` |
@@ -263,8 +263,19 @@ fast-forward the clock. The HUD shows the time of day.
 - **Approximate lighting**: tint the goat and terrain by the ambient colour
   (`drawModelEx` tint multiplies albedo; recolor the ground and tuft cubes).
   Cheap, and reads as "dimmer and bluer at night" without shaders.
-- **Sun and moon**: two bodies on opposite sides of a celestial sphere, arcing
-  across the sky as the clock turns, drawn with `drawSphere`.
+- **Sun and moon**: two bodies on opposite ends of one line through the goat, whose
+  direction is the *light's* -- the sun at `SUN_DIR`, the moon at its negation, 600
+  units out. Both are `makeModel` spheres shaded by a small program of their own
+  (M2b): the sun's disc is unshaded, and the moon is lit by the sun's direction, so
+  it carries a phase that follows the real sun even at night, when the scene's own
+  light has already gone to the moon. The sun carries glare with it: a tight
+  billboard on the disc and a wide faint halo under that, both drawn additively,
+  so they add light to the sky rather than greying it. A body below the horizon
+  is not drawn (it fades out over the last few degrees), and the clouds pass *in
+  front of* it: the sky is two layers -- the air, then the clouds alone -- with
+  `drawCelestial` drawn between them, so a cloud that drifts over the sun takes it
+  per pixel out of the sky's own march rather than the disc being painted on top of
+  the cloud (M5b).
 - **Stars**: a fixed field on the celestial sphere, faded in after dusk and out
   before dawn, drawn with `drawPoint3D`.
 - **Blob shadow**: a flattened dark cube under the goat that shortens toward
@@ -429,9 +440,17 @@ from a moving texture into a volume:
   fewer pixels, and the high-frequency erosion fades out with distance. There is
   deliberately *no* per-pixel jitter on the march start: randomising the offset
   per pixel is itself what reads as pixelated noise.
-- **Bodies.** The sun and moon discs are *not* drawn here. `drawCelestial`
-  (world.js) already puts textured sprites over this pass, so a disc in the
-  shader doubles it; the shader adds only the wide atmospheric glow.
+- **Bodies.** The sun and moon are *not* drawn here, and M2b turned that into the
+  layering: this pass is drawn as two -- the air and the cirrus, then the clouds
+  alone -- with `drawCelestial` between them. The cloud pass returns premultiplied
+  light and the transmittance it leaves, and is blended ONE /
+  ONE-MINUS-SRC-ALPHA, which is what lets it attenuate the bodies under it instead
+  of covering them with a second helping of sky: a cloud that drifts over the sun
+  takes it, per pixel, out of the march the sky already does. `SKY_LAYER_*`
+  (sky.js) names the two passes, and the single pass for a build without the blend
+  mode. What the shader adds around the disc is the wide atmospheric glow, and it
+  stays in the air pass, where it belongs -- a disc in the shader would double it.
+  is up.
 - **Atmosphere.** The gradient gained a forward-scattered glow that widens as the
   sun approaches the horizon, the sun/moon disc, and a horizon haze band.
 
@@ -732,8 +751,8 @@ Verified: the harness sets a stub clipboard, presses Ctrl+V and Ctrl+C on
 scripted frames, and checks the pasted line plus both writes back (five checks),
 taking it to 105. The rl surface test covers the two new bindings.
 
-**Pending:** nothing. The bindings landed upstream (Slag `d8dd8c4`), so the
-clipboard works in a normal build; `Cargo.lock` pins that rev.
+**Pending:** nothing. The bindings landed upstream (Slag `d8dd8c4`, an ancestor
+of the revision `Cargo.lock` pins), so the clipboard works in a normal build.
 
 ---
 
@@ -1789,8 +1808,8 @@ dependency on the same git revision. Same shape as M9's upstream prerequisite.
 **What it costs (measured).** `crates/harness/tests/plugin_bench.rs` runs
 `fixtures/wasm/c/bench.c` -- the boid inner loop, one O(n^2) neighbour pass per
 frame, f64 with f32 storage -- three ways. Nanoseconds per agent-pair per frame,
-release, one machine, one kernel, at engine `2dba2c5e` (the revision `Cargo.lock`
-pins):
+release, one machine, one kernel, at engine `2dba2c5e` (an ancestor of the
+revision `Cargo.lock` pins):
 
 | n | js interpreted | js + jit | wasm | wasm per frame | wasm / js+jit |
 | --- | --- | --- | --- | --- | --- |
@@ -3539,7 +3558,7 @@ this milestone is a consequence of these, so they come first.
 22. **The engine took the frame-cost profile, and the client has since taken the
     last item.** The report (`PERF.md`) landed upstream as seven
     commits, all of them inside the revision the workspace pins (`slag`
-    `4e019a7d`, moved by `2cc22a5`): the release profile it asked to keep (§7.1
+    `4e019a7d`, moved by `31bc9eb`): the release profile it asked to keep (§7.1
     item 0), the two global-read fixes (§7.1 item 1 -- the value cell now serves
     the declarative record, so the corpus row for a top-level `const` goes
     52.5 ms -> 2.5 ms per 1M reads, and the `clean_chain` gate is per name now,

@@ -26,11 +26,19 @@ const GROUND_Y = 0.02;          // plane the planar shadow projects onto, plus
 const SHADOW_ALPHA = 0.34;      // base opacity of the cast shadow
 
 const LIGHT_DIR = [0.4, 0.8, 0.12];   // unit vector pointing at the active body
+// The sun's own direction. The two celestial bodies sit at opposite ends of one
+// line (`drawCelestial`), so the moon's direction is the negation of this one, and
+// the scene's light is whichever of them is up. It is kept separate from
+// `LIGHT_DIR` because the *moon's phase* is set by the sun even at night, when the
+// scene's light has already flipped to the moon.
+const SUN_DIR = [0.4, 0.8, 0.12];
 const LIGHT_COLOR = [0.9, 0.9, 0.9];  // rgb, already scaled by intensity
 const LIGHT_AMBIENT = [0.2, 0.22, 0.3];
 
 let litShader = -1;
 let shadowShader = -1;
+let celestialShader = -1;
+let celestialUniforms = null;   // the sun's direction, and the camera position
 let useLighting = true;         // toggled with L
 let lightingText = "cube shader";
 
@@ -283,6 +291,57 @@ const UNLIT_FS = [
     "}",
 ].join("\n");
 
+// The celestial bodies (M2): the sun's disc and the moon, one program for both.
+// `shaded` is 0 on the sun -- its disc *is* the light, so nothing lights it -- and
+// 1 on the moon, which is lit by the sun's direction and so carries a terminator:
+// a phase that follows the real sun even at night, when the scene's own light has
+// already flipped to the moon. The moon sits at the anti-sun, so on that line the
+// phase is full at night and a crescent when the moon is up in the day, which is
+// what the geometry says it should be.
+const CELESTIAL_VS = [
+    "#version 330",
+    "in vec3 vertexPosition;",
+    "in vec3 vertexNormal;",
+    "in vec2 vertexTexCoord;",
+    "uniform mat4 mvp;",
+    "uniform mat4 matModel;",
+    "uniform mat4 matNormal;",
+    "out vec3 fragNormal;",
+    "out vec3 fragWorldPos;",
+    "out vec2 fragTexCoord;",
+    "void main() {",
+    "    fragNormal = normalize(mat3(matNormal) * vertexNormal);",
+    "    fragWorldPos = vec3(matModel * vec4(vertexPosition, 1.0));",
+    "    fragTexCoord = vertexTexCoord;",
+    "    gl_Position = mvp * vec4(vertexPosition, 1.0);",
+    "}",
+].join("\n");
+
+const CELESTIAL_FS = [
+    "#version 330",
+    "in vec3 fragNormal;",
+    "in vec3 fragWorldPos;",
+    "in vec2 fragTexCoord;",
+    "uniform sampler2D texture0;",
+    "uniform vec4 colDiffuse;",
+    "uniform vec3 camPos;",
+    "uniform vec3 sunDir;",
+    "uniform float shaded;",
+    "out vec4 finalColor;",
+    "void main() {",
+    // The near face's normal, whichever way the sphere was wound: the mesh is wound
+    // outward, and this keeps the terminator on the lit side even where the
+    // driver's culling and the winding disagree.
+    "    vec3 n = normalize(fragNormal);",
+    "    if (dot(n, camPos - fragWorldPos) < 0.0) n = -n;",
+    "    vec4 texel = texture(texture0, fragTexCoord) * colDiffuse;",
+    // The terminator, with a floor: the moon's dark limb is lit by earthshine
+    // rather than cut off, so the body keeps its shape against a dark sky.
+    "    float moon = mix(0.12, 1.0, smoothstep(-0.20, 0.30, dot(n, normalize(sunDir))));",
+    "    finalColor = vec4(texel.rgb * mix(1.0, moon, shaded), texel.a);",
+    "}",
+].join("\n");
+
 const SHADOW_VS_HEAD = [
     "#version 330",
     "in vec3 vertexPosition;",
@@ -341,6 +400,23 @@ function makeLighting() {
     }
     shadowShader = rl.loadShaderFromMemory(SHADOW_VS, SHADOW_FS);
     if (shadowShader < 0 || !rl.isShaderValid(shadowShader)) shadowShader = -1;
+    // The celestial bodies' own program (M2). It needs nothing from the rest of the
+    // scene but the sun's direction, and if it does not compile the bodies stay on
+    // the shader they were built with -- raylib's default, which draws them as flat
+    // discs, and no terminator on the moon.
+    celestialShader = rl.loadShaderFromMemory(CELESTIAL_VS, CELESTIAL_FS);
+    if (celestialShader < 0 || !rl.isShaderValid(celestialShader)) {
+        console.log("lighting: celestial shader failed to compile - the bodies draw unshaded");
+        celestialShader = -1;
+    } else {
+        celestialUniforms = {
+            sunDir: rl.getShaderLocation(celestialShader, "sunDir"),
+            camPos: rl.getShaderLocation(celestialShader, "camPos"),
+            shaded: rl.getShaderLocation(celestialShader, "shaded"),
+        };
+        if (sunMesh >= 0) rl.setModelShader(sunMesh, celestialShader);
+        if (moonMesh >= 0) rl.setModelShader(moonMesh, celestialShader);
+    }
     litPrograms = [litProgramInfo(litShader)];
     shadowPrograms = shadowShader >= 0
         ? [{ shader: shadowShader, uniforms: shadowLocations(shadowShader) }] : [];
@@ -460,23 +536,29 @@ function modelShaderFor(handle, plain) {
     return plain;
 }
 
-// Refresh the light direction and colours from the day/night clock. The sun and
-// moon are the same two bodies `drawCelestial` arcs across the sky, so the light
-// and the visible disc always agree.
+// Refresh the light direction and colours from the day/night clock. The two
+// bodies `drawCelestial` puts in the sky sit on this same line -- the sun at
+// `SUN_DIR`, the moon at its negation -- so the visible disc, the sky's glow, the
+// cloud light and the shadow map all agree about where the light is.
 function updateLight() {
     const a = ((worldTime - 6) / 12) * Math.PI;   // 0 at 06:00, PI at 18:00
     const sunX = Math.cos(a);
     const sunY = Math.sin(a);
-    const tilt = 0.18;                            // push light off the XZ plane
-    const day = sunY > 0.02;
-    let lx = sunX, ly = sunY, lz = tilt;
-    if (!day) {
-        lx = -sunX; ly = -sunY; lz = -tilt;       // the moon takes over
-    }
-    const len = Math.sqrt(lx * lx + ly * ly + lz * lz) || 1;
-    LIGHT_DIR[0] = lx / len;
-    LIGHT_DIR[1] = ly / len;
-    LIGHT_DIR[2] = lz / len;
+    const tilt = 0.18;                            // push the arc off the XZ plane
+    const sunLen = Math.sqrt(sunX * sunX + sunY * sunY + tilt * tilt) || 1;
+    SUN_DIR[0] = sunX / sunLen;
+    SUN_DIR[1] = sunY / sunLen;
+    SUN_DIR[2] = tilt / sunLen;
+    const day = sunY > 0;
+    // The light is whichever body is up: the sun's direction by day, the moon's --
+    // the negation -- after dusk. The flip is therefore exactly at the horizon, which
+    // is where `drawCelestial` fades the bodies out as well, so a visible disc and the
+    // light never disagree. (A threshold just above zero left a few game-minutes in
+    // which the sun was still drawn while the light had already gone to a moon that
+    // was still below the horizon.)
+    LIGHT_DIR[0] = day ? SUN_DIR[0] : -SUN_DIR[0];
+    LIGHT_DIR[1] = day ? SUN_DIR[1] : -SUN_DIR[1];
+    LIGHT_DIR[2] = day ? SUN_DIR[2] : -SUN_DIR[2];
 
     const warm = Math.max(0, Math.min(1, 1 - Math.abs(sunY) / 0.45));
     const intense = day ? 0.30 + 0.70 * skyLight : 0.16;
@@ -546,6 +628,16 @@ function setShadowUniforms() {
         rl.setShaderValue(shader, u.shadowAlpha,
             SHADOW_ALPHA * (0.35 + 0.65 * skyLight), rl.SHADER_UNIFORM_FLOAT);
     }
+}
+
+// Push this frame's celestial uniforms: the sun's direction (the moon's light, and
+// the sun's own) and the camera position, which the fragment shader uses to pick
+// the near face's normal.
+function setCelestialUniforms(cx, cy, cz) {
+    if (celestialShader < 0) return;
+    rl.setShaderValueVector3(celestialShader, celestialUniforms.sunDir,
+        SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]);
+    rl.setShaderValueVector3(celestialShader, celestialUniforms.camPos, cx, cy, cz);
 }
 
 // ---- shadow map (M4b) ----------------------------------------------------

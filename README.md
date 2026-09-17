@@ -42,8 +42,10 @@ page, where GitHub plays it.*
 - **Sleeping and death** with their own clips: the goat's real eyelids close
   while sleeping (a `LidL`/`LidR` bone pair), and on death it buckles and topples
   right over onto its side, where the cartoon X-eyes appear.
-- **Day/night cycle**: a clock drives a gradient sky, the sun and moon arcing
-  overhead, a star field and a scene-wide ambient tint. Hold `T` to
+- **Day/night cycle**: a clock drives a gradient sky, the sun and moon as two
+  spheres on the light's own line arcing overhead (the moon phases as the real sun
+  lights it, and the sun carries a glare), with the clouds passing in front of
+  either of them, a star field and a scene-wide ambient tint. Hold `T` to
   fast-forward the clock.
 - **Weather**: a seeded state machine walks `clear → cloudy → rain → clearing`,
   forced to the next state with `C`. Rain falls as wind-slanted streaks, the

@@ -1,10 +1,12 @@
 // Part 5/16 of the goat scene: the volumetric cloud sky shader.
 // ---- sky shader (M5b): volumetric cumulus and cirrus ----------------------
 //
-// The sky is drawn as one full-screen pass. For each pixel the shader rebuilds
-// the camera ray from the camera basis, shades an analytic atmosphere, and then
-// raymarches a slab of cloud between `TUNING.sky.cloudBase` and
-// `TUNING.sky.cloudTop`.
+// The sky is a full-screen pass per layer: the air and the cloud as two passes
+// whenever the cloud layer can be blended over what is under it, so the celestial
+// bodies sit behind the clouds rather than in front of them. For each pixel the
+// shader rebuilds the camera ray from the camera basis, shades an analytic
+// atmosphere, and then raymarches a slab of cloud between
+// `TUNING.sky.cloudBase` and `TUNING.sky.cloudTop`.
 //
 // What makes it read as a volume rather than a texture:
 //
@@ -66,6 +68,10 @@ const SKY_FS = [
     "uniform float cirrusHeight;",
     "uniform float nightDim;",
     "uniform int   cloudSteps;",
+    // Which part of the sky this pass draws (`SKY_LAYER_*`): 0 the whole thing,
+    // 1 the air alone, 2 the clouds alone -- and the last one premultiplied, so it
+    // composites over whatever is already on the screen.
+    "uniform float skyLayer;",
     "const float PI = 3.14159265;",
     "const float MAX_DIST = 450.0;",
     // ---- noise ----
@@ -153,7 +159,11 @@ const SKY_FS = [
     "    return mix(behind, c, mask * cirrus * exp(-t * 0.0035) * 0.85);",
     "}",
     // ---- the march ----
-    "vec3 cumulus(vec3 behind, vec3 dir) {",
+    "vec3 cumulus(vec3 behind, vec3 dir, out float trans) {",
+    // The coverage on this ray, which a probe reads back. It has to be written on
+    // every path out: an `out` parameter that a return leaves untouched is
+    // undefined, and a clear ray is exactly the case that matters most.
+    "    trans = 1.0;",
     "    float dy = dir.y;",
     "    if (abs(dy) < 1e-4) return behind;",
     "    float t0 = (cloudBase - camPos.y) / dy;",
@@ -179,7 +189,6 @@ const SKY_FS = [
     // No per-pixel jitter: randomising the start offset per pixel is exactly the
     // speckle it was meant to hide, and the exponential steps already stagger the
     // samples.
-    "    float trans = 1.0;",
     "    vec3 scatter = vec3(0.0);",
     "    float t = t0 + dt * 0.5;",
     "    for (int i = 0; i < cloudSteps; i++) {",
@@ -214,9 +223,21 @@ const SKY_FS = [
     "    vec2 ndc = vec2(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0);",
     "    vec3 dir = normalize(camForward + camRight * (ndc.x * tanHalfFov * aspect)",
     "                                       + camUp * (ndc.y * tanHalfFov));",
+    "    float trans = 1.0;",
+    "    if (skyLayer > 1.5) {",
+    // The cloud layer on its own. `cumulus` uses `behind` only where it returns --
+    // `behind * trans + scatter` -- so asking it for nothing leaves exactly the
+    // light the cloud scattered, and `1 - trans` is what the cloud leaves of the
+    // sky behind it. Premultiplied, those two composite over the celestial bodies
+    // drawn between this pass and the air, which is what puts a cloud in front of
+    // the sun. The cirrus is not in here: a thin high layer is not an occluder.
+    "        vec3 scatter = cloudiness > 0.01 ? cumulus(vec3(0.0), dir, trans) : vec3(0.0);",
+    "        finalColor = vec4(scatter, 1.0 - trans);",
+    "        return;",
+    "    }",
     "    vec3 sky = skyBackground(dir);",
     "    sky = cirrusLayer(dir, sky);",
-    "    if (cloudiness > 0.01) sky = cumulus(sky, dir);",
+    "    if (skyLayer < 0.5 && cloudiness > 0.01) sky = cumulus(sky, dir, trans);",
     "    finalColor = vec4(clamp(sky, 0.0, 1.0), 1.0);",
     "}",
 ].join("\n");
@@ -255,6 +276,8 @@ function makeSkyShader() {
         cirrusHeight: rl.getShaderLocation(skyShader, "cirrusHeight"),
         nightDim: rl.getShaderLocation(skyShader, "nightDim"),
         cloudSteps: rl.getShaderLocation(skyShader, "cloudSteps"),
+        // Which part of the sky a pass draws, `SKY_LAYER_*` below.
+        skyLayer: rl.getShaderLocation(skyShader, "skyLayer"),
     };
     console.log("sky: shader " + skyShader + ", clouds " + CLOUD_LEVELS[SETTINGS.cloud] +
         " (" + TUNING.sky.steps[SETTINGS.cloud] + " steps)");
@@ -273,31 +296,80 @@ function cloudSteps() {
     return TUNING.sky.steps[cloudLevel()];
 }
 
-// Draw the whole sky. `cx/cy/cz` is the camera, `tx/ty/tz` its target; the
+// The view the sky shader is aimed down: the camera, and the forward/right/up basis
+// `drawSky` rebuilds every frame. They are module state rather than parameters
+// because `drawSky` is called twice a frame -- once per layer -- and both calls have
+// to fill in exactly the same uniforms.
+const SKY_CAM = [0, 1, 0];
+const SKY_FWD = [0, 0, 1];
+const SKY_RIGHT = [1, 0, 0];
+const SKY_UP = [0, 1, 0];
+
+// Which part of the sky a pass draws. The frame draws the air and the cloud as two
+// passes whenever `skySplitOn`, with `drawCelestial` between them, so the bodies
+// end up *under* the clouds rather than painted over them; `SKY_LAYER_ALL` is the
+// single pass for where that is not available.
+const SKY_LAYER_ALL = 0;
+const SKY_LAYER_AIR = 1;
+const SKY_LAYER_CLOUD = 2;
+
+// Whether the frame can draw the sky in two layers. The cloud layer has to
+// *attenuate* what is already on the screen -- the two bodies and the sun's glare,
+// drawn between the passes -- which is raylib's premultiplied blend mode. Without
+// that, or without the sky shader at all, the sky stays one pass and the bodies are
+// drawn over the clouds, which is how M2b first shipped.
+function skySplitOn() {
+    return skyShader >= 0 && useSkyShader &&
+        typeof rl.beginBlendMode === "function" && rl.BLEND_ALPHA_PREMULTIPLY !== undefined;
+}
+
+// Draw one layer of the sky. `cx/cy/cz` is the camera, `tx/ty/tz` its target; the
 // forward/right/up basis is rebuilt here and handed to the shader, which turns
-// each pixel back into a view ray.
-function drawSky(cx, cy, cz, tx, ty, tz, sw, sh, dt) {
-    skyTime += dt;
+// each pixel back into a view ray. `layer` is `SKY_LAYER_*`, the whole sky by
+// default.
+function drawSky(cx, cy, cz, tx, ty, tz, sw, sh, dt, layer) {
+    if (layer === undefined) layer = SKY_LAYER_ALL;
+    // The cloud field's clock advances once a frame, in whichever layer is drawn
+    // first: both layers read the one `time` uniform, so they agree about where the
+    // clouds are.
+    if (layer !== SKY_LAYER_CLOUD) skyTime += dt;
     let fx = tx - cx, fy = ty - cy, fz = tz - cz;
     const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1;
     fx /= fl; fy /= fl; fz /= fl;
     let rx = -fz, rz = fx;
     const rlen = Math.sqrt(rx * rx + rz * rz) || 1;
     rx /= rlen; rz /= rlen;
+    SKY_CAM[0] = cx; SKY_CAM[1] = cy; SKY_CAM[2] = cz;
+    SKY_FWD[0] = fx; SKY_FWD[1] = fy; SKY_FWD[2] = fz;
+    SKY_RIGHT[0] = rx; SKY_RIGHT[1] = 0; SKY_RIGHT[2] = rz;
     // up = cross(right, forward), with right.y = 0
-    const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
+    SKY_UP[0] = -rz * fy; SKY_UP[1] = rz * fx - rx * fz; SKY_UP[2] = rx * fy;
 
+    rl.beginShaderMode(skyShader);
+    setSkyUniforms(sw, sh, layer);
+    // The cloud layer is a *compositing* pass: it returns premultiplied light and
+    // the transmittance it leaves behind it, so the blend has to be ONE /
+    // ONE-MINUS-SRC-ALPHA. The default alpha blend would not attenuate the bodies
+    // under it -- it would draw a second helping of sky over them.
+    if (layer === SKY_LAYER_CLOUD) rl.beginBlendMode(rl.BLEND_ALPHA_PREMULTIPLY);
+    rl.drawRectangle(0, 0, sw, sh, rl.WHITE);
+    if (layer === SKY_LAYER_CLOUD) rl.endBlendMode();
+    rl.endShaderMode();
+}
+
+// The sky shader's uniforms for one view: the basis above, the screen, and which
+// layer of the sky this pass is (`SKY_LAYER_*`).
+function setSkyUniforms(sw, sh, layer) {
     // Overcast greys the clouds; night darkens them.
     const lit = 0.12 + 0.88 * skyLight;
     const shadow = 0.09 + 0.40 * skyLight;
     // The high cirrus only shows up once the sky is broken or overcast.
     const cirrus = clamp((cloudiness - 0.25) * 1.2, 0, 0.85);
-    rl.beginShaderMode(skyShader);
     rl.setShaderValueVector2(skyShader, skyUniforms.screenSize, sw, sh);
-    rl.setShaderValueVector3(skyShader, skyUniforms.camPos, cx, cy, cz);
-    rl.setShaderValueVector3(skyShader, skyUniforms.camForward, fx, fy, fz);
-    rl.setShaderValueVector3(skyShader, skyUniforms.camRight, rx, 0, rz);
-    rl.setShaderValueVector3(skyShader, skyUniforms.camUp, ux, uy, uz);
+    rl.setShaderValueVector3(skyShader, skyUniforms.camPos, SKY_CAM[0], SKY_CAM[1], SKY_CAM[2]);
+    rl.setShaderValueVector3(skyShader, skyUniforms.camForward, SKY_FWD[0], SKY_FWD[1], SKY_FWD[2]);
+    rl.setShaderValueVector3(skyShader, skyUniforms.camRight, SKY_RIGHT[0], SKY_RIGHT[1], SKY_RIGHT[2]);
+    rl.setShaderValueVector3(skyShader, skyUniforms.camUp, SKY_UP[0], SKY_UP[1], SKY_UP[2]);
     rl.setShaderValue(skyShader, skyUniforms.tanHalfFov, Math.tan(55 * 0.5 * Math.PI / 180),
         rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(skyShader, skyUniforms.aspect, sw / sh, rl.SHADER_UNIFORM_FLOAT);
@@ -326,6 +398,5 @@ function drawSky(cx, cy, cz, tx, ty, tz, sw, sh, dt) {
     rl.setShaderValue(skyShader, skyUniforms.cirrusHeight, TUNING.sky.cirrusLevel, rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(skyShader, skyUniforms.nightDim, 1 - skyLight, rl.SHADER_UNIFORM_FLOAT);
     rl.setShaderValue(skyShader, skyUniforms.cloudSteps, cloudSteps(), rl.SHADER_UNIFORM_INT);
-    rl.drawRectangle(0, 0, sw, sh, rl.WHITE);
-    rl.endShaderMode();
+    rl.setShaderValue(skyShader, skyUniforms.skyLayer, layer, rl.SHADER_UNIFORM_FLOAT);
 }

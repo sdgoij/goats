@@ -40,6 +40,29 @@ fn routes_of(obs: &Observations, model: i64) -> Vec<i64> {
         .collect()
 }
 
+/// The two celestial spheres' handles: they are `makeModel` meshes too, so they
+/// share the terrain's handle range while being routed to their own program
+/// (`celestial.rs` is where that is checked).
+fn celestial_meshes(harness: &mut Harness) -> Vec<i64> {
+    harness.call("sceneCelestial", &[]).expect("sceneCelestial")["meshes"]
+        .as_array()
+        .map(|meshes| meshes.iter().filter_map(|m| m.as_i64()).collect())
+        .unwrap_or_default()
+}
+
+/// Every rig in the scene, i.e. every model handle that is neither the terrain's
+/// nor the celestial bodies'.
+fn rig_routes(obs: &Observations, bodies: &[i64]) -> Vec<i64> {
+    obs.model_shader_routes
+        .iter()
+        .filter(|row| {
+            let handle = row.first().copied().unwrap_or(-1);
+            (0..1000).contains(&handle) && !bodies.contains(&handle)
+        })
+        .filter_map(|row| row.get(1).copied())
+        .collect()
+}
+
 /// Every model handle that is a rig rather than the terrain mesh.
 fn rig_handles(obs: &Observations) -> Vec<i64> {
     let mut handles: Vec<i64> = obs
@@ -61,6 +84,7 @@ fn the_skinned_paths_are_routed() {
     {
         let mut harness = Harness::start().expect("evaluate the scene");
         let obs = harness.run(FRAMES).expect("run the scene");
+        let bodies = celestial_meshes(&mut harness);
         checks.check(
             "a CPU-skinning build compiles no skinned program",
             obs.skinned_shaders.is_empty(),
@@ -72,10 +96,8 @@ fn the_skinned_paths_are_routed() {
             &obs.cpu_skin_calls,
         );
         checks.check(
-            "...and routes every model to a plain program",
-            obs.model_shader_routes
-                .iter()
-                .all(|row| row.get(1).copied().unwrap_or(-1) < 4),
+            "...and routes every rig to a plain program",
+            !bodies.is_empty() && rig_routes(&obs, &bodies).iter().all(|shader| *shader < 4),
             &obs.model_shader_routes,
         );
         // `L` turns the lighting off by pointing the models back at the shader they
@@ -96,6 +118,7 @@ fn the_skinned_paths_are_routed() {
             .eval("rl.GPU_SKINNING = true")
             .expect("the build flag");
         let obs = harness.run(FRAMES).expect("run the scene");
+        let bodies = celestial_meshes(&mut harness);
 
         checks.check(
             "every skinned program was compiled: three passes and the unlit one",
@@ -154,11 +177,16 @@ fn the_skinned_paths_are_routed() {
             &rigs,
         );
         // The terrain is a `makeModel` mesh with no bone data: a skinned program
-        // would read the generic attributes and deform the grid.
+        // would read the generic attributes and deform the grid. (The celestial
+        // spheres are `makeModel` meshes too, in the same handle range, and are
+        // routed to their own program -- `celestial.rs` is where that is checked.)
         let terrain = obs
             .model_shader_routes
             .iter()
-            .filter(|row| row.first().copied().unwrap_or(-1) >= 1000)
+            .filter(|row| {
+                let handle = row.first().copied().unwrap_or(-1);
+                handle >= 1000 && !bodies.contains(&handle)
+            })
             .map(|row| row[1])
             .collect::<Vec<_>>();
         checks.check(
@@ -197,7 +225,10 @@ fn the_skinned_paths_are_routed() {
         let terrain_off = off
             .model_shader_routes
             .iter()
-            .filter(|row| row.first().copied().unwrap_or(-1) >= 1000)
+            .filter(|row| {
+                let handle = row.first().copied().unwrap_or(-1);
+                handle >= 1000 && !bodies.contains(&handle)
+            })
             .map(|row| row[1])
             .collect::<Vec<_>>();
         checks.check(
@@ -214,6 +245,7 @@ fn the_skinned_paths_are_routed() {
             .eval("rl.GPU_SKINNING = true; rl.MODEL_BONES = 64")
             .expect("the build flag and a bigger rig");
         let obs = harness.run(FRAMES).expect("run the scene");
+        let bodies = celestial_meshes(&mut harness);
 
         checks.check(
             "a rig over `boneMatrices` was given its deform buffers back",
@@ -229,9 +261,7 @@ fn the_skinned_paths_are_routed() {
         );
         checks.check(
             "...and is routed to a plain program",
-            obs.model_shader_routes
-                .iter()
-                .all(|row| row.get(1).copied().unwrap_or(-1) < 4),
+            rig_routes(&obs, &bodies).iter().all(|shader| *shader < 4),
             &obs.model_shader_routes,
         );
         // The fallback is per model: the programs are still there for the next one.
