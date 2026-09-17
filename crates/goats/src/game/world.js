@@ -52,7 +52,7 @@ let terrainBuilt = false;
 // Set when the ground itself changes -- a crater appearing or closing over -- so the
 // mesh picks it up on the frame it happens rather than when the goat has walked
 // `TUNING.terrain.snap` away. `explosions.js` sets it; `terrainEnsure` consumes it.
-let terrainDirty = false;
+// (The pending box itself is `terrainPatch`, declared with the grid below.)
 let terrainVerts = 0;
 let terrainTris = 0;
 // The last anchor this reported on. The log is for the anchor moves -- one line per 24
@@ -120,70 +120,159 @@ function makeTerrainTexture() {
 }
 
 // Build the grid at the current anchor: one `makeModel` call, replacing the
-// previous mesh. `terrainEnsure` only calls this when the anchor has moved, so
-// between rebuilds the terrain costs a single draw.
-function terrainBuild() {
-    const n = TERRAIN_QUADS + 1;
-    const step = TERRAIN_CELL;
-    const half = (TERRAIN_QUADS * TERRAIN_CELL) / 2;
-    const ax = terrainAnchorX;
-    const az = terrainAnchorZ;
-    // Heights first, so the slope comes from the grid instead of four more field
-    // samples per vertex.
-    const h = new Array(n * n);
-    for (let j = 0; j < n; j++) {
-        const wz = az - half + j * step;
-        for (let i = 0; i < n; i++) {
-            h[j * n + i] = terrainHeight(ax - half + i * step, wz);
-        }
+// previous mesh. `terrainEnsure` only calls this when the anchor has moved or the
+// ground has changed, so between rebuilds the terrain costs a single draw.
+//
+// The arrays are the grid's, not the call's: they are allocated once and recomputed
+// into. So is the index list -- the 48x48 topology never changes, whatever the anchor
+// or the craters do -- and the recompute is limited to the rectangle that actually
+// moved, which is the whole field for a step and a handful of vertices for a crater.
+const T_N = TERRAIN_QUADS + 1;                  // vertices per side
+const T_HALF = (TERRAIN_QUADS * TERRAIN_CELL) / 2;
+const T_H = new Array(T_N * T_N);
+const T_VERTS = new Array(T_N * T_N * 3);
+const T_NORMS = new Array(T_N * T_N * 3);
+const T_COLS = new Array(T_N * T_N * 4);
+const T_UVS = new Array(T_N * T_N * 2);
+const T_IDX = new Array(TERRAIN_QUADS * TERRAIN_QUADS * 6);
+let terrainIdxBuilt = false;
+
+// The ground that has changed since the mesh was last handed to the engine, as
+// world-space boxes, and `null`-free: a crater folds its own circle in through
+// `terrainDirtyAt`. Boxes rather than a flag because a 1.6 m hole is a handful of
+// vertices -- the mesh is a 96 m square, and rebuilding all of it for one crater is
+// what made a bang hitch (~150-650 ms measured, growing with the crater count,
+// against the ~0.2 ms of engine call it cannot avoid).
+//
+// A *list* rather than one box because a bang at the cap is two events in one frame --
+// a new crater here and the oldest retired over there -- and a single box spanning
+// both is most of the field (measured: 110 ms against 5 ms for the two separately).
+// Boxes that overlap or touch are merged, so a chain of craters in one place still
+// costs one rect.
+const terrainPatches = [];
+
+function terrainDirtyAt(x, z, r) {
+    const minX = x - r;
+    const maxX = x + r;
+    const minZ = z - r;
+    const maxZ = z + r;
+    for (let i = 0; i < terrainPatches.length; i++) {
+        const p = terrainPatches[i];
+        if (minX > p.maxX + TERRAIN_CELL || maxX < p.minX - TERRAIN_CELL ||
+            minZ > p.maxZ + TERRAIN_CELL || maxZ < p.minZ - TERRAIN_CELL) continue;
+        if (minX < p.minX) p.minX = minX;
+        if (maxX > p.maxX) p.maxX = maxX;
+        if (minZ < p.minZ) p.minZ = minZ;
+        if (maxZ > p.maxZ) p.maxZ = maxZ;
+        return;
     }
-    const verts = new Array(n * n * 3);
-    const norms = new Array(n * n * 3);
-    const cols = new Array(n * n * 4);
-    const uvs = new Array(n * n * 2);
-    for (let j = 0; j < n; j++) {
-        const wz = az - half + j * step;
-        for (let i = 0; i < n; i++) {
-            const k = j * n + i;
-            const wx = ax - half + i * step;
-            const y = h[k];
-            verts[k * 3] = wx;
-            verts[k * 3 + 1] = y;
-            verts[k * 3 + 2] = wz;
-            // Central differences on the grid give the normal, so the shading is
-            // smooth across cells without a normal attribute on the geometry.
-            const dx = (h[k + (i < n - 1 ? 1 : 0)] - h[k - (i > 0 ? 1 : 0)]) / (2 * step);
-            const dz = (h[k + (j < n - 1 ? n : 0)] - h[k - (j > 0 ? n : 0)]) / (2 * step);
-            const inv = 1 / Math.sqrt(dx * dx + dz * dz + 1);
-            norms[k * 3] = -dx * inv;
-            norms[k * 3 + 1] = inv;
-            norms[k * 3 + 2] = -dz * inv;
-            const c = terrainMaterial(y, Math.min(1, Math.sqrt(dx * dx + dz * dz)),
-                vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7));
-            cols[k * 4] = c[0];
-            cols[k * 4 + 1] = c[1];
-            cols[k * 4 + 2] = c[2];
-            cols[k * 4 + 3] = 255;
-            uvs[k * 2] = wx * TUNING.terrain.uv;
-            uvs[k * 2 + 1] = wz * TUNING.terrain.uv;
-        }
+    terrainPatches.push({ minX: minX, maxX: maxX, minZ: minZ, maxZ: maxZ });
+}
+
+function terrainClampIndex(v) {
+    if (v < 0) return 0;
+    if (v > T_N - 1) return T_N - 1;
+    return v;
+}
+
+// The vertices a pending patch touches, widened by one vertex on every side: the
+// normals come from central differences, so the vertices at the edge of the change
+// need their neighbours' heights to be current too.
+function terrainPatchRect(p) {
+    const x0 = terrainAnchorX - T_HALF;
+    const z0 = terrainAnchorZ - T_HALF;
+    return {
+        i0: terrainClampIndex(Math.floor((p.minX - x0) / TERRAIN_CELL) - 1),
+        i1: terrainClampIndex(Math.ceil((p.maxX - x0) / TERRAIN_CELL) + 1),
+        j0: terrainClampIndex(Math.floor((p.minZ - z0) / TERRAIN_CELL) - 1),
+        j1: terrainClampIndex(Math.ceil((p.maxZ - z0) / TERRAIN_CELL) + 1),
+    };
+}
+
+// One grid row of heights. A function of its own on purpose: the engine's JIT
+// compiles a small function and interprets a large one (PERF.md, `perf probe`:
+// ~50 ns an iteration against ~730), and these loops are the whole cost of a
+// rebuild. Heights first, so the slope comes from the grid instead of four more
+// field samples per vertex.
+function terrainHeightRow(j, i0, i1) {
+    const wz = terrainAnchorZ - T_HALF + j * TERRAIN_CELL;
+    const x0 = terrainAnchorX - T_HALF;
+    const base = j * T_N;
+    for (let i = i0; i <= i1; i++) {
+        T_H[base + i] = terrainHeight(x0 + i * TERRAIN_CELL, wz);
     }
-    // Wound like raylib's own `GenMeshPlane` (the same two triangles per quad).
-    const idx = new Array(TERRAIN_QUADS * TERRAIN_QUADS * 6);
+}
+
+// One vertex's position, normal, colour and texcoord. Also its own function, for the
+// same reason as the row.
+function terrainVertex(k, i, j) {
+    const wx = terrainAnchorX - T_HALF + i * TERRAIN_CELL;
+    const wz = terrainAnchorZ - T_HALF + j * TERRAIN_CELL;
+    const y = T_H[k];
+    T_VERTS[k * 3] = wx;
+    T_VERTS[k * 3 + 1] = y;
+    T_VERTS[k * 3 + 2] = wz;
+    // Central differences on the grid give the normal, so the shading is smooth
+    // across cells without a normal attribute on the geometry.
+    const dx = (T_H[k + (i < T_N - 1 ? 1 : 0)] - T_H[k - (i > 0 ? 1 : 0)]) /
+        (2 * TERRAIN_CELL);
+    const dz = (T_H[k + (j < T_N - 1 ? T_N : 0)] - T_H[k - (j > 0 ? T_N : 0)]) /
+        (2 * TERRAIN_CELL);
+    const inv = 1 / Math.sqrt(dx * dx + dz * dz + 1);
+    T_NORMS[k * 3] = -dx * inv;
+    T_NORMS[k * 3 + 1] = inv;
+    T_NORMS[k * 3 + 2] = -dz * inv;
+    const c = terrainMaterial(y, Math.min(1, Math.sqrt(dx * dx + dz * dz)),
+        vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7));
+    T_COLS[k * 4] = c[0];
+    T_COLS[k * 4 + 1] = c[1];
+    T_COLS[k * 4 + 2] = c[2];
+    T_COLS[k * 4 + 3] = 255;
+    T_UVS[k * 2] = wx * TUNING.terrain.uv;
+    T_UVS[k * 2 + 1] = wz * TUNING.terrain.uv;
+}
+
+function terrainAttrRow(j, i0, i1) {
+    const base = j * T_N;
+    for (let i = i0; i <= i1; i++) terrainVertex(base + i, i, j);
+}
+
+// Wound like raylib's own `GenMeshPlane` (the same two triangles per quad). Built
+// once: the topology is the same grid at every anchor.
+function terrainIndices() {
     let t = 0;
     for (let j = 0; j < TERRAIN_QUADS; j++) {
         for (let i = 0; i < TERRAIN_QUADS; i++) {
-            const a = j * n + i;
+            const a = j * T_N + i;
             const b = a + 1;
-            const c = a + n;
+            const c = a + T_N;
             const d = c + 1;
-            idx[t++] = a; idx[t++] = c; idx[t++] = b;
-            idx[t++] = b; idx[t++] = c; idx[t++] = d;
+            T_IDX[t++] = a; T_IDX[t++] = c; T_IDX[t++] = b;
+            T_IDX[t++] = b; T_IDX[t++] = c; T_IDX[t++] = d;
         }
     }
+}
+
+function terrainBuildRects(rects) {
+    if (!terrainIdxBuilt) { terrainIndices(); terrainIdxBuilt = true; }
+    for (let r = 0; r < rects.length; r++) {
+        const rect = rects[r];
+        for (let j = rect.j0; j <= rect.j1; j++) terrainHeightRow(j, rect.i0, rect.i1);
+        for (let j = rect.j0; j <= rect.j1; j++) terrainAttrRow(j, rect.i0, rect.i1);
+    }
+    terrainUpload();
+}
+
+function terrainBuild(i0, i1, j0, j1) {
+    terrainBuildRects([{ i0: i0, i1: i1, j0: j0, j1: j1 }]);
+}
+
+// The one engine call the mesh costs. The arrays are the same objects every time, which
+// is why a re-upload measured 0.2 ms against 13 ms for freshly allocated ones.
+function terrainUpload() {
     if (terrainMesh >= 0) rl.unloadModel(terrainMesh);
-    terrainMesh = rl.makeModel(verts, idx, norms, cols, uvs);
-    terrainVerts = n * n;
+    terrainMesh = rl.makeModel(T_VERTS, T_IDX, T_NORMS, T_COLS, T_UVS);
+    terrainVerts = T_N * T_N;
     terrainTris = TERRAIN_QUADS * TERRAIN_QUADS * 2;
     rl.setModelTexture(terrainMesh, 0, terrainDetail);
     // A fresh model starts on raylib's default shader, so re-apply the lit
@@ -211,21 +300,31 @@ function makeTerrain() {
     makeTerrainTexture();
     terrainAnchorX = Math.round(goat.px / TUNING.terrain.snap) * TUNING.terrain.snap;
     terrainAnchorZ = Math.round(goat.pz / TUNING.terrain.snap) * TUNING.terrain.snap;
-    terrainBuild();
+    terrainBuild(0, T_N - 1, 0, T_N - 1);
 }
 
-// Rebuild the grid when the goat has left the one it was built around. Called
-// once per frame; the snapped anchor means the rebuild lands every
-// `TUNING.terrain.snap` units of travel, not every frame.
+// Rebuild the grid when the goat has left the one it was built around, or patch the
+// boxes the ground changed in. Called once per frame; the snapped anchor means a step
+// rebuild lands every `TUNING.terrain.snap` units of travel, not every frame, and one
+// upload covers every box a frame's craters made.
 function terrainEnsure(px, pz) {
     if (terrainDetail < 0) return;
     const ax = Math.round(px / TUNING.terrain.snap) * TUNING.terrain.snap;
     const az = Math.round(pz / TUNING.terrain.snap) * TUNING.terrain.snap;
-    if (!terrainDirty && terrainBuilt && ax === terrainAnchorX && az === terrainAnchorZ) return;
-    terrainDirty = false;
-    terrainAnchorX = ax;
-    terrainAnchorZ = az;
-    terrainBuild();
+    const moved = !terrainBuilt || ax !== terrainAnchorX || az !== terrainAnchorZ;
+    if (!moved && terrainPatches.length === 0) return;
+    if (moved) {
+        // A step covers the whole field, so anything pending is already in it.
+        terrainPatches.length = 0;
+        terrainAnchorX = ax;
+        terrainAnchorZ = az;
+        terrainBuild(0, T_N - 1, 0, T_N - 1);
+        return;
+    }
+    const rects = [];
+    for (let i = 0; i < terrainPatches.length; i++) rects.push(terrainPatchRect(terrainPatches[i]));
+    terrainPatches.length = 0;
+    terrainBuildRects(rects);
 }
 
 // Draw the ground. `tint` multiplies the mesh's own per-vertex colours: white

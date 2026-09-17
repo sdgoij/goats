@@ -109,6 +109,15 @@ perf             print the breakdown now and reset the window
 perf probe       run the micro-probe: 4 loops of 20 000 iterations each
 ```
 
+Each logged window carries three frame-time numbers beside the phases, because a
+phases' average cannot see a stutter (the engine's safe-point collections are one
+long frame each — Appendix B):
+
+```text
+worst 701.1          the longest frame in the window, ms
+slow 5 slowms 1022.6 frames over 30 ms (a dropped 60 Hz frame), and their total
+```
+
 The phase marks live in `sceneFrame` (`crates/goats/src/game/goat.js`), in
 `renderShadowMap` (`lighting.js`) and in the grass loop (`weather.js`); the block
 itself is at the end of `goat.js`. Each mark is two `rl.getTime()` calls, so
@@ -917,3 +926,76 @@ global-value        3051.1 ns/iter
 The next run of the same binary put `arith` at 15.4 and `nested-7` at 31.2 — the
 ranges in §4b are the envelope of four runs, and the *grouping* was identical in
 all four.
+
+## Appendix B — the collector's share (a baseline for the GC work)
+
+The engine collects at loop back edges: a backward `Step::Jump` and the fused
+`FastLoopHead` (`runtime/src/ir.rs`), and `gc_safepoint` in compiled loops
+(`jit/src/jit.rs`), each call `Agent::maybe_collect` once the allocation budget is
+crossed (`crux/src/heap.rs`, `ALLOC_BUDGET = 1024`); `agent.rs` collects when the
+live heap has doubled since the last one, and the collection itself
+(`agent.rs::collect_garbage` → `Heap::collect_with_stack`) is a stop-the-world
+mark-sweep with a conservative native-stack scan. A generational nursery is being
+built for that; this is the baseline it should be measured against, and the protocol
+to re-measure it with.
+
+**Why the phase table cannot see it.** A collection is one long frame, so it is
+1/240th of a window's average, and it lands in whichever phase the loop was in —
+this session saw the same stall attributed to `mods_upd` (144 ms), `hud` (169),
+`sky2d` (54) and `boundary` (653). Hence `worst`/`slow`/`slowms` (§2).
+
+**Protocol.** The release client, mods on (7 bots, five mods), `setting fullscreen
+off`, `perf on`, 240-frame windows. Eight forced chains four seconds apart, so
+craters, effects and flung goats accumulate, then 26 s quiet:
+
+```text
+( echo "setting fullscreen off"; sleep 8; echo "perf on"; sleep 16;
+  echo "fatguy boom mine"; sleep 4;      # ×8, four seconds apart
+  sleep 26 ) | ./target/release/goats.exe
+```
+
+**Baseline, two runs of that protocol** (~72 s of `perf on` each, on a machine that
+was also running an engine build):
+
+| run | windows | `slow` | `slowms` | `worst` |
+| --- | --- | --- | --- | --- |
+| 1 | 18 | 81 | 5880 ms | 701 ms |
+| 2 | 20 | 38 | 2380 ms | 363 ms |
+
+Read that spread as the floor of what this machine can resolve: 2.4–5.9 s of stalled
+time in 72 s, a 2.5× spread between runs of *identical* code. Both runs agree on the
+shape: a burst around load, then clusters of stalls as the episodes accumulate, with
+fps dipping to 23–50 in the windows that carry them.
+
+**Two caveats that matter more than the numbers.** A later pair of runs measured
+*every* phase ~1.6× higher — `food` 0.12 → 0.16, `audio` 0.24 → 0.49, `weather`
+0.28 → 0.42 — including phases no scene change can reach: that is contention, not a
+result (another build was running here). Re-measure on a quiet machine, three runs,
+and compare `slow`/`slowms` — the GC's own footprint — rather than `fps`. And check
+`df`: this session also hit a full system drive (`rustc-LLVM ERROR: IO failure on
+output stream`), which is its own source of multi-hundred-ms stalls.
+
+**What the scene did about its own share while this was being written** (nothing
+below needs the engine's GC to be different):
+
+- A bang used to rebuild the whole 96 m heightfield mesh — 2401 vertices, ~30 µs
+each in the interpreter — for 150–650 ms, growing with the crater count. It now hands
+the mesh only the box the ground changed in (`world.js`, `terrainPatches`;
+`explosions.js`, `terrainDirtyAt`): 5–15 ms, and over the same 100 s chain run the
+frames over 100 ms went 12 → 0 and the worst frame 650 → 82 ms. The grid's arrays are
+kept and its indices are built once; re-uploading the *same* arrays measured 0.2 ms
+against 13 ms for freshly allocated ones.
+- A full rebuild still costs ~72 ms — the anchor moving 24 units of travel, or a
+blast flinging the player across one — which is the interpreter's price for 2401
+vertices. Expect it in `worst` on a run where the player is flung.
+- The mods' per-frame API queries were allocating: `bump()` returned a fresh object
+per candidate (up to nine a frame), and `contact()` asked `player.state()` twice and
+`bots.list()` twice (the latter is a fresh array of fresh handles every call). The
+fatguy asks once each now and writes its contact into module scratch
+(`mods/fatguy/mod.js`). On this machine the change sits under the noise floor above.
+
+**What to compare once the nursery lands.** `slow` and `slowms` for this protocol
+(they are the collector's footprint rather than the scene's) and `worst`. If it does
+its job the clusters go and `worst` falls to the scene's own high-water mark —
+currently the ~72 ms anchor rebuild, which is the number the scene should then be
+held to.

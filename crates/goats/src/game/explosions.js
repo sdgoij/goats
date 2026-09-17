@@ -629,15 +629,15 @@ function sceneCraters() {
 }
 
 // Drop a crater's cells out of the per-cell height cache, so the grass (and anything
-// else that reads it) sees the ground as it is now, and mark the mesh dirty. The cache
-// is keyed by cell and world-anchored, so a cell is *deleted* rather than overwritten:
-// the next reader re-derives it.
+// else that reads it) sees the ground as it is now, and hand the mesh the box it
+// changed in. The cache is keyed by cell and world-anchored, so a cell is *deleted*
+// rather than overwritten: the next reader re-derives it.
 //
-// The cells always go -- a re-derive is cheap and always right -- but the *mesh* is
-// only rebuilt for a crater near the goat. A rebuild is a whole field's worth of
-// vertices, and a bang a bot set off forty metres away would otherwise hitch the frame
-// it landed in, over five centimetres of dish that nobody is looking at: the next
-// anchor rebuild picks it up on the way there (`terrainEnsure`).
+// The mesh patch is a world-space box rather than a flag now (`world.js`,
+// `terrainPatch`): the vertices a 1.6 m hole touches are a handful of a 96 m grid, so
+// the distance test this used to need -- rebuild only for a crater near the goat,
+// because a rebuild was a whole field -- is gone with the cost it was guarding.
+// Several craters in one frame fold into the one box, and one upload.
 function craterDropCells(c) {
     const r = c.r * CRATER_LIP_OUT;
     const cx0 = Math.floor((c.x - r) / 2);
@@ -647,10 +647,7 @@ function craterDropCells(c) {
     for (let cx = cx0; cx <= cx1; cx++) {
         for (let cz = cz0; cz <= cz1; cz++) TERRAIN_CELL_H.delete(tuftKey(cx, cz));
     }
-    const dx = c.x - goat.px;
-    const dz = c.z - goat.pz;
-    const near = TUNING.terrain.snap;
-    if (dx * dx + dz * dz <= near * near) terrainDirty = true;
+    terrainDirtyAt(c.x, c.z, r);
 }
 
 // The tufts a crater covers, as cell keys. A crater kills the grass it swallowed, and

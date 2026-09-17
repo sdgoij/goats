@@ -976,11 +976,24 @@ function run() {
 // expose a stall; `boundary` is where the rest of it waits. And a phase time is
 // submission plus any synchronous work in the call -- the GPU's own time lands in
 // `boundary`, at the swap.
-const PERF = { on: false, t: 0, acc: {}, frames: 0 };
+//
+// A third thing, and the reason `worst`/`slow`/`slowms` are here: neither the
+// phase table nor `fps` can see a *stutter*, because a single long frame is one
+// 240th of a window's average. The engine collects at loop back edges (a
+// safe-point mark-sweep: `ir.rs`'s backward `Jump` and `FastLoopHead`, `jit.rs`'s
+// `gc_safepoint`), so its cost lands in whichever phase was running and shows up
+// as isolated long frames -- `perf`'s average is the wrong instrument for it. A
+// frame over `PERF_SLOW` is a dropped frame; their count and total are the
+// numbers to compare across an engine change (PERF.md, "The collector's share").
+const PERF = { on: false, t: 0, acc: {}, frames: 0, start: 0, worst: 0, slow: 0, slowMs: 0 };
+const PERF_SLOW = 0.03;
 let perfCubes = 0;
 
 function perfStart() {
-    if (PERF.on) PERF.t = rl.getTime();
+    if (PERF.on) {
+        PERF.start = rl.getTime();
+        PERF.t = PERF.start;
+    }
 }
 
 // Ends the span that began at the previous mark (or at `perfStart`).
@@ -994,6 +1007,12 @@ function perfMark(name) {
 
 function perfEnd() {
     if (!PERF.on) return;
+    const full = rl.getTime() - PERF.start;
+    if (full > PERF.worst) PERF.worst = full;
+    if (full > PERF_SLOW) {
+        PERF.slow += 1;
+        PERF.slowMs += full;
+    }
     PERF.frames += 1;
     if (PERF.frames % 240 === 0) perfLog();
 }
@@ -1005,9 +1024,14 @@ function perfLog() {
         line += " " + name + " " + ((PERF.acc[name] * 1000) / PERF.frames).toFixed(2);
     }
     line += " cubes/frame " + Math.round(perfCubes / PERF.frames);
+    line += " worst " + (PERF.worst * 1000).toFixed(1);
+    line += " slow " + PERF.slow + " slowms " + (PERF.slowMs * 1000).toFixed(1);
     console.log(line + " fps " + rl.getFPS() + " bots " + BOTS.length);
     PERF.acc = {};
     PERF.frames = 0;
+    PERF.worst = 0;
+    PERF.slow = 0;
+    PERF.slowMs = 0;
     perfCubes = 0;
 }
 

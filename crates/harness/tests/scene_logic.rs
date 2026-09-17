@@ -2269,9 +2269,11 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
         harness.eval("goats.tuning.set(\"explosions.mine.density\", 0)")?;
         harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0)")?;
         let ground_before = f64_of(harness.call("terrainHeight", &[json!(tx), json!(tz)])?);
-        // The goat stands on the tuft before the bang: the mesh is only rebuilt for a
-        // crater near the goat (a distant bang must not cost a whole field's vertices),
-        // and this case is about the near one -- the hole the player is standing in.
+        // The goat stands on the tuft before the bang, so the hole is one the player is
+        // standing in rather than one somewhere across the field. What a bang now costs
+        // the mesh is a *box* -- the vertices the crater moved, not the field -- and this
+        // case watches that box: pending the moment the hole is dug, consumed by the
+        // frame that tells the mesh (`terrainPatches`, `world.js`).
         harness.command(&format!("pos {tx} {tz}"))?;
         harness.eval(&format!("blast(\"mine\", {tx}, {tz}, 0.25, 0)"))?;
         let dug = try_command_json(harness, "craters 30")?;
@@ -2290,10 +2292,10 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
             .eval(&format!("nearestTuft({tx}, {tz}, 0.5, false)"))?
             .is_null();
         // ...and the ground's own caches were told rather than left until the goat had
-        // walked `terrain.snap` away: dirty now, clean once a frame has run.
-        let marked = bool_of(harness.eval("terrainDirty")?);
+        // walked `terrain.snap` away: a box is pending now, and gone once a frame has run.
+        let marked = bool_of(harness.eval("terrainPatches.length > 0")?);
         drive_burst(harness, 4)?;
-        let rebuilt = !bool_of(harness.eval("terrainDirty")?);
+        let rebuilt = bool_of(harness.eval("terrainPatches.length === 0")?);
         // Then it heals: the ground comes back, and so does the grass -- a tuft returns
         // as the ground closes over it, because a crater's kill is the meadow's own
         // `EATEN` with the crater's heal for a duration.

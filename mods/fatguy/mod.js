@@ -225,13 +225,12 @@ function say(sounds, volume) {
 }
 
 // The nearest goat: the player first, then the herd. The offset *to* it, so the
-// escape direction is the negation.
-function nearestGoat() {
-    const p = goats.player.state();
+// escape direction is the negation. Both reads are handed in from `update` (see
+// `contact`), so a frame asks the API for each once.
+function nearestGoat(p, bots) {
     let bx = p.x - x;
     let bz = p.z - z;
     let best = bx * bx + bz * bz;
-    const bots = goats.bots.list();
     for (let i = 0; i < bots.length; i++) {
         const dx = bots[i].x - x;
         const dz = bots[i].z - z;
@@ -251,34 +250,53 @@ function nearestGoat() {
 // width lets it come. Null when it is out of reach at all, and a frame's contact is
 // the deepest one, so being crowded by the herd shoves him no harder than the
 // closest of them.
+// One contact, written into the module's scratch rather than returned as a fresh
+// object: this runs for the player, every bot and every offered entity, every frame,
+// and the three numbers are read on the spot. Returns whether there was a contact.
+let hitX = 0;
+let hitZ = 0;
+let hitOverlap = 0;
+
 function bump(ox, oz, weight, reach) {
     const dx = ox - x;
     const dz = oz - z;
     const d2 = dx * dx + dz * dz;
     const release = reach + BUMP_OFFSET * 0.75;
-    if (d2 > release * release) return null;
+    if (d2 > release * release) return false;
     const d = Math.sqrt(d2);
     const overlap = clamp((reach - d) / reach + 0.35, 0.2, 1) * weight;
     // Coincident is the *deepest* contact, so it must not be a no-op: with no
     // direction from the pair, the shove goes the way he is already running.
     const nx = d2 > 1e-6 ? dx / d : Math.sin(heading);
     const nz = d2 > 1e-6 ? dz / d : Math.cos(heading);
-    return {
-        x: nx * BUMP_OFFSET * overlap,
-        z: nz * BUMP_OFFSET * overlap,
-        overlap: overlap,
-    };
+    hitX = nx * BUMP_OFFSET * overlap;
+    hitZ = nz * BUMP_OFFSET * overlap;
+    hitOverlap = overlap;
+    return true;
 }
 
 // Everyone who touched him this frame: the player, every bot, and every bird within
 // reach that is not flying. The birds come from `goats.entities` -- another mod's
 // offer -- so this is also where a mod that is not loaded simply contributes nothing.
-function contact() {
-    let best = bump(goats.player.state().x, goats.player.state().z, 1, BUMP_DIST);
-    const bots = goats.bots.list();
+//
+// The two reads are handed in from `update` rather than asked for here: a frame asks
+// the API once for the player and once for the herd, and the herd is a fresh array of
+// fresh handles every time it is asked (APIv1 §4.5, §4.8).
+function contact(p, bots) {
+    let best = -1;
+    let bx = 0;
+    let bz = 0;
+    if (bump(p.x, p.z, 1, BUMP_DIST)) {
+        best = hitOverlap;
+        bx = hitX;
+        bz = hitZ;
+    }
     for (let i = 0; i < bots.length; i++) {
-        const hit = bump(bots[i].x, bots[i].z, 1, BUMP_DIST);
-        if (hit !== null && (best === null || hit.overlap > best.overlap)) best = hit;
+        if (bump(bots[i].x, bots[i].z, 1, BUMP_DIST) && hitOverlap > best) {
+            best = hitOverlap;
+            bx = hitX;
+            bz = hitZ;
+        }
     }
     const near = goats.entities.near(x, z, BUMP_DIST + ENTITY_MARGIN);
     for (let i = 0; i < near.length; i++) {
@@ -286,16 +304,19 @@ function contact() {
         // A bird in the air is not a bird he can walk into; `y` against the ground is
         // the whole of telling them apart, since nothing here knows what a bird is.
         if (e.y - goats.world.terrainHeight(e.x, e.z) > BIRD_AIRBORNE) continue;
-        const hit = bump(e.x, e.z, BIRD_BUMP, BUMP_DIST + e.r);
-        if (hit !== null && (best === null || hit.overlap > best.overlap)) best = hit;
+        if (bump(e.x, e.z, BIRD_BUMP, BUMP_DIST + e.r) && hitOverlap > best) {
+            best = hitOverlap;
+            bx = hitX;
+            bz = hitZ;
+        }
     }
-    if (best === null) {
+    if (best < 0) {
         held = false;
         return;
     }
-    knockX = best.x;
-    knockZ = best.z;
-    knock = Math.min(1, knock + best.overlap * 0.5);
+    knockX = bx;
+    knockZ = bz;
+    knock = Math.min(1, knock + best * 0.5);
     held = true;
 }
 
@@ -470,6 +491,12 @@ goats.on("update", function (dt) {
         return;
     }
 
+    // The frame's two API reads, asked for once and handed to everything that needs
+    // them: `state` is a fresh object and `list` a fresh array of fresh handles, and a
+    // frame used to ask for three of the first and two of the second (APIv1 §4.5, §4.8).
+    const p = goats.player.state();
+    const bots = goats.bots.list();
+
     // The ladder is restored once he has been on his feet a while, so the next device
     // he finds is a certainty again rather than the tail of the last episode.
     resting += dt;
@@ -478,7 +505,7 @@ goats.on("update", function (dt) {
         aimed = false;
     }
 
-    const near = nearestGoat();
+    const near = nearestGoat(p, bots);
 
     if (panic > 0) {
         if (near.d2 > CALM_RANGE * CALM_RANGE) panic = 0;
@@ -523,7 +550,7 @@ goats.on("update", function (dt) {
     z += Math.cos(heading) * speed * dt;
     stride += (speed * dt) / STRIDE;
 
-    contact();
+    contact(p, bots);
     if (!held) {
         const fade = Math.exp(-dt / BUMP_FADE);
         knockX *= fade;
