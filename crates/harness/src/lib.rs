@@ -131,6 +131,15 @@ pub struct Counters {
     pub texture_binds: u32,
     pub models_drawn: u32,
     pub models_unloaded: u32,
+    /// Effect flipbook quads drawn (`drawBillboardRec`), and the hot cores
+    /// (`drawSphereEx`), so a check can count one draw per live instance.
+    pub billboard_recs: u32,
+    pub sphere_draws: u32,
+    /// Plain `drawBillboard` calls: the ladder's second rung draws the weather's
+    /// puff through this, and the mine tells and the scorch go through it too.
+    pub billboards: u32,
+    /// Ground decals drawn (`drawQuad3D`), which is what a crater's scorch is now.
+    pub quad_draws: u32,
 }
 
 /// Everything the stub recorded, read back as one JSON object.
@@ -177,6 +186,11 @@ pub struct Observations {
     pub bot_draw: Vec<Draw>,
     /// The sky fragment shader's source, so a test can assert what it contains.
     pub sky_fs: String,
+    /// The last value the scene set on the lit shader's `blastEnergy` uniform: the
+    /// bang's light. Zero when nothing is burning.
+    pub blast_energy: f64,
+    /// The brightest that uniform ever got over the run.
+    pub blast_energy_peak: f64,
     pub clipboard_writes: Vec<String>,
     /// The scene's own `console.log` lines.
     pub logs: Vec<String>,

@@ -925,13 +925,19 @@ mismatch it replies with `ServerMessage::Error` naming the missing, extra and
 differing ids -- and, for a differing one, both sides' version and hash -- waits
 for the peer to read it, and drops the connection; the
 client surfaces that in the console's network stream. This shipped in M14d:
-`PROTOCOL_VERSION` is `7`, `ModRef { id, version, hash }` rides `Hello` and
+`ModRef { id, version, hash }` rides `Hello` and
 `Welcome`, `proto::compare_world_mods` is the shared comparison, and
 `session` has `Host::start_with_mods` / `Client::join_with_mods`. `goatsd`
 takes `--mods`/`--no-mods`, hashes the assets without keeping them
 (`mods::AssetMode::HashOnly`), requires its world-mod set of every joiner, and
 now **runs its mods** in the headless world (M14d2), so their published state
 and streams reach clients beside the world rather than inside it.
+
+`PROTOCOL_VERSION` is `10` (M19f; `7` when this section was written, and the
+milestones since have bumped it for the gait they added and the flung height they
+taught the world to carry). Nothing in *this* section changes with it: a mod
+reference and the comparison are the same shape at every version, and the bump is
+what makes a mismatch a refusal rather than a decode of somebody else's field.
 
 `Goatsd` takes `--mods <dir>` and loads the same loader; a server with no
 `mods/` only accepts clients with no world mods.

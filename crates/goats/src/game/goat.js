@@ -409,7 +409,13 @@ function sceneLoadStep() {
     loadStep += 1;
     if (i === 0) makeEyeTextures();
     else if (i === 1) makeSkyTextures();
-    else if (i === 2) makeWeatherTextures();
+    else if (i === 2) {
+        // The weather's cloud puff and the explosions' flipbook atlases are both
+        // procedurally built textures, so they share a step: one image path at boot,
+        // and the splash still paints between this step and the next.
+        makeWeatherTextures();
+        makeFxTextures();
+    }
     else if (i === 3) loadGoat();
     else if (i === 4) makeTerrain();
     else if (i === 5) makeLighting();
@@ -779,6 +785,19 @@ function sceneFrame() {
     const cx = goat.px + camDist * cp * Math.sin(camYaw);
     const cy = ty + camDist * Math.sin(camPitch);
     const cz = goat.pz + camDist * cp * Math.cos(camYaw);
+    // The blast's knock (M19f): the camera *and* what it looks at are moved by the
+    // same offset, so the world shifts rather than the view swinging. The sky is left
+    // where it was, because the knock is a translation and the sky is where a
+    // translation does nothing.
+    const shakeX = shakeOffsetX();
+    const shakeY = shakeOffsetY();
+    const shakeZ = shakeOffsetZ();
+    const vx = cx + shakeX;
+    const vy = cy + shakeY;
+    const vz = cz + shakeZ;
+    const lookX = goat.px + shakeX;
+    const lookY = ty + shakeY;
+    const lookZ = goat.pz + shakeZ;
 
     rl.beginDrawing();
     rl.clearBackground(skyBot);
@@ -793,7 +812,7 @@ function sceneFrame() {
     // The shadow-map pass must run before the main 3D pass, since it swaps
     // render targets and leaves the model pointing back at the lit shader.
     if (lit) renderShadowMap();
-    rl.beginMode3D(cx, cy, cz, goat.px, ty, goat.pz, 55);
+    rl.beginMode3D(vx, vy, vz, lookX, lookY, lookZ, 55);
     drawStars();
     drawCelestial();
     perfMark("stars");
@@ -858,7 +877,7 @@ function sceneFrame() {
     // before the HUD, so the smoke reads in front of what it hit.
     drawExplosions();
     perfMark("fx");
-    modEmit("draw3d", { x: cx, y: cy, z: cz, targetX: goat.px, targetY: ty, targetZ: goat.pz, fov: 55 });
+    modEmit("draw3d", { x: vx, y: vy, z: vz, targetX: lookX, targetY: lookY, targetZ: lookZ, fov: 55 });
     perfMark("mods_draw3d");
     rl.endMode3D();
     perfMark("endmode3d");
@@ -866,6 +885,8 @@ drawRain(screenW, screenH);
 perfMark("rain2d");
 if (uiScreen === "hud") {
     drawHud(move);
+    // The blast's own HUD reaction (M19f), over the HUD it belongs to.
+    drawDamagePulse();
     perfMark("hud");
     modEmit("hud", { width: screenW, height: screenH });
     perfMark("mods_hud");

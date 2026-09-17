@@ -2026,6 +2026,7 @@ mod tests {
                         phase: 0.25,
                         gait: proto::Gait::Walk,
                         variant: 0,
+                        py: 0,
                     })
                     .collect(),
                 weather: WeatherState {
@@ -2116,6 +2117,7 @@ mod tests {
                         phase: 0.25,
                         gait: proto::Gait::Walk,
                         variant: 0,
+                        py: 0,
                     })
                     .collect(),
                 weather: WeatherState {
@@ -2176,6 +2178,7 @@ mod tests {
                         phase: 0.25,
                         gait: proto::Gait::Walk,
                         variant: 0,
+                        py: 0,
                     },
                     BotState {
                         index: 1,
@@ -2185,6 +2188,7 @@ mod tests {
                         phase: 0.75,
                         gait: proto::Gait::Idle,
                         variant: 2,
+                        py: 0,
                     },
                 ],
                 weather: WeatherState {
@@ -2312,6 +2316,7 @@ mod tests {
                 phase: 0.25,
                 speed: 3.0,
                 gait: proto::Gait::Run,
+                py: 1.5,
             };
             // Datagrams are unreliable, so a handful of attempts stand in for
             // the twenty a second a real client sends.
@@ -2345,6 +2350,7 @@ mod tests {
                 phase: 0.0,
                 speed: 0.0,
                 gait: proto::Gait::Idle,
+                py: 0.0,
             };
             for _ in 0..10 {
                 host.publish(&host_state).await;

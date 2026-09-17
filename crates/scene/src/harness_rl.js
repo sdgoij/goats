@@ -60,6 +60,19 @@
     let goatDraw = null;
     const drawnRows = {};
     let lastTerrainMesh = null;
+    // Which uniform each location stands for, so a recorded `setShaderValue` can be
+    // named. The stub used to hand out 0 for everything, which cannot tell the shadow
+    // bias from the blast's energy; the ids stay numbers (the scene compares one
+    // against zero) and only the bookkeeping is new.
+    const uniformNames = {};
+    const uniformById = [];
+    let uniformTop = 0;
+    // The last value the scene put on the lit shader's `blastEnergy`, which is the
+    // bang's light. Zero when nothing is burning.
+    let blastEnergy = 0;
+    // ...and the brightest it ever got, so a run can say the light was written at all
+    // after the last flash has gone out.
+    let blastEnergyPeak = 0;
 
     // The counters a test can read and reset. `cubeDraws` is reset by the tuft
     // check, which draws the field twice and compares.
@@ -68,7 +81,12 @@
         cubeDraws: 0, shadowCubeDraws: 0, menuDraws: 0, progressBarCalls: 0,
         musicUpdates: 0, terrainMeshesBuilt: 0,
         texturesMade: 0, textureBinds: 0, modelsDrawn: 0, modelsUnloaded: 0,
+        billboardRecs: 0, sphereDraws: 0, billboards: 0, quadDraws: 0,
     };
+    // The size each made texture was handed, so `textureWidth`/`textureHeight` answer
+    // with something: the effect atlases (M19f) read their grid back off the image,
+    // and a stub that always said 0 would take the fallback path every time.
+    const textureSizes = {};
     const modelPaths = [];
     const botClipNames = {};
     const modelShaderCalls = [];
@@ -248,7 +266,20 @@
         },
         // A mod that builds its own geometry has nothing else to check: the meshes
         // it makes, the texture it bakes, the binds it does and the unload.
-        makeTexture: () => { counters.texturesMade += 1; return 900 + counters.texturesMade; },
+        makeTexture: (w, h) => {
+            counters.texturesMade += 1;
+            const handle = 900 + counters.texturesMade;
+            textureSizes[handle] = { w: w, h: h };
+            return handle;
+        },
+        // No mod atlas in the harness's asset table, which is what the ladder's first
+        // rung falls back from; `loadTexture` returning -1 is that fallback.
+        loadTexture: () => -1,
+        textureWidth: (t) => (textureSizes[t] ? textureSizes[t].w : 0),
+        textureHeight: (t) => (textureSizes[t] ? textureSizes[t].h : 0),
+        setTextureFilter: () => {},
+        // The effect pipeline's own draws (M19f), counted so a check can say "one per
+        // live instance" without a GPU to look at.
         unloadModel: () => { counters.modelsUnloaded += 1; },
 
         // ---- shaders and render targets ------------------------------------
@@ -261,7 +292,22 @@
                 : (vertex.indexOf('vClip') >= 0 ? 2 : (fragment.indexOf('cloudiness') >= 0 ? 3 : 0));
         },
         isShaderValid: () => true,
-        getShaderLocation: () => 0,
+        getShaderLocation: (_shader, name) => {
+            let id = uniformNames[name];
+            if (id === undefined) {
+                uniformTop += 1;
+                id = uniformTop;
+                uniformNames[name] = id;
+                uniformById[id] = name;
+            }
+            return id;
+        },
+        setShaderValue: (_shader, location, value) => {
+            if (uniformById[location] === 'blastEnergy') {
+                blastEnergy = value;
+                if (value > blastEnergyPeak) blastEnergyPeak = value;
+            }
+        },
         loadRenderTexture: () => 5, isRenderTextureValid: () => true,
         renderTextureColor: () => 6, renderTextureDepth: () => 7,
         renderTextureSize: () => ({ x: 1024, y: 1024 }),
@@ -297,6 +343,11 @@
             if (shadowPass) counters.shadowCubeDraws += 1;
             counters.cubeDraws += 1;
         },
+        drawBillboardRec: () => { counters.billboardRecs += 1; },
+        drawBillboard: () => { counters.billboards += 1; },
+        drawSphereEx: () => { counters.sphereDraws += 1; },
+        beginBlendMode: () => {}, endBlendMode: () => {},
+        drawQuad3D: () => { counters.quadDraws += 1; }, drawPoint3D: () => {},
         drawRectangleLines: () => { counters.menuDraws += 1; },
         // The HUD read-outs, which are otherwise write-only. They carry the clock,
         // the speed, the lighting, the audio and the sky state in one line.
@@ -446,6 +497,10 @@
                 textureBinds: counters.textureBinds,
                 modelsDrawn: counters.modelsDrawn,
                 modelsUnloaded: counters.modelsUnloaded,
+                billboardRecs: counters.billboardRecs,
+                sphereDraws: counters.sphereDraws,
+                billboards: counters.billboards,
+                quadDraws: counters.quadDraws,
             },
             modelShaderCalls: modelShaderCalls,
             modelTextureCalls: modelTextureCalls,
@@ -463,6 +518,8 @@
             goatDraw: goatDraw,
             botDraw: drawn,
             skyFs: skyFs,
+            blastEnergy: blastEnergy,
+            blastEnergyPeak: blastEnergyPeak,
             clipboardWrites: clipboardWrites,
             logs: logs,
         });

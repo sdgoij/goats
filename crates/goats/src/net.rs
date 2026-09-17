@@ -55,6 +55,12 @@ enum Command {
         #[serde(default)]
         speed: f32,
         gait: String,
+        /// How far above the ground this goat is, in metres (M19f): the flung arc's
+        /// height. Defaulted, so a scene that does not carry it still parses -- the
+        /// field is what a *version 10* scene sends, and the version handshake is what
+        /// makes that a promise rather than a hope.
+        #[serde(default)]
+        py: f32,
     },
     /// The server's world, queued by the scene only while it is hosting. A
     /// client never sends this; the runtime ignores it outside a host session.
@@ -544,6 +550,7 @@ async fn run(
                     phase,
                     speed,
                     gait,
+                    py,
                 } => {
                     if let Some(session) = live.as_ref() {
                         session
@@ -554,6 +561,7 @@ async fn run(
                                 phase,
                                 speed,
                                 gait: parse_gait(&gait),
+                                py,
                             })
                             .await;
                     }
@@ -994,7 +1002,7 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         match serde_json::from_str::<Command>(
-            r#"{"type":"pose","x":1.0,"z":2.0,"yaw":0.5,"phase":0.25,"speed":3.0,"gait":"run"}"#,
+            r#"{"type":"pose","x":1.0,"z":2.0,"yaw":0.5,"phase":0.25,"speed":3.0,"gait":"run","py":1.25}"#,
         )
         .expect("pose")
         {
@@ -1005,10 +1013,22 @@ mod tests {
                 phase,
                 speed,
                 gait,
+                py,
             } => {
                 assert_eq!((x, z, yaw, phase, speed), (1.0, 2.0, 0.5, 0.25, 3.0));
                 assert_eq!(gait, "run");
+                assert_eq!(py, 1.25);
             }
+            other => panic!("unexpected {other:?}"),
+        }
+        // `py` may be omitted on the same rule as `speed`: a goat on the ground has no
+        // height, and the field is what a flung one adds.
+        match serde_json::from_str::<Command>(
+            r#"{"type":"pose","x":0,"z":0,"yaw":0,"phase":0,"gait":"idle"}"#,
+        )
+        .expect("pose")
+        {
+            Command::Pose { py, .. } => assert_eq!(py, 0.0),
             other => panic!("unexpected {other:?}"),
         }
         // `speed` may be omitted; the scene's placeholder before a gait exists.
@@ -1019,7 +1039,7 @@ mod tests {
             .is_ok()
         );
         match serde_json::from_str::<Command>(
-            r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"trot","variant":1}],"weather":{"kind":"rain","cloudiness":0.8,"rain_amount":0.6,"wind_x":1.4,"wind_z":0.2,"wind_sway":1.0,"world_time":9.25},"streams":{"weather":1,"bots":2,"food":3,"audio":4},"eaten":[{"key":99,"left":30.5}]}"#,
+            r#"{"type":"world","bots":[{"index":0,"x":1.0,"z":2.0,"yaw":0.0,"phase":0.5,"gait":"trot","variant":1,"py":150}],"weather":{"kind":"rain","cloudiness":0.8,"rain_amount":0.6,"wind_x":1.4,"wind_z":0.2,"wind_sway":1.0,"world_time":9.25},"streams":{"weather":1,"bots":2,"food":3,"audio":4},"eaten":[{"key":99,"left":30.5}]}"#,
         )
         .expect("world")
         {
@@ -1035,6 +1055,9 @@ mod tests {
                 assert_eq!(bots[0].index, 0);
                 assert_eq!(bots[0].gait, session::Gait::Trot);
                 assert_eq!(bots[0].variant, 1);
+                // The flung height rides the scene's world JSON too (M19f), in the
+                // centimetres `BotState` is typed in.
+                assert_eq!(bots[0].py, 150);
                 assert_eq!(weather.kind, session::WeatherKind::Rain);
                 assert_eq!(weather.world_time, 9.25);
                 assert_eq!(streams.food, 3);
@@ -1162,6 +1185,7 @@ mod tests {
                 phase: 0.0,
                 speed: 0.0,
                 gait: session::Gait::Idle,
+                py: 1.25,
             },
         }))
         .expect("encode");
@@ -1178,6 +1202,7 @@ mod tests {
                 phase: 0.5,
                 gait: session::Gait::Idle,
                 variant: 0,
+                py: 0,
             }],
             weather: session::WeatherState {
                 kind: session::WeatherKind::Cloudy,

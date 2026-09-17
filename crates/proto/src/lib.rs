@@ -37,7 +37,7 @@ mod wire;
 /// world mods differ, which is exactly the silent divergence the set exists to
 /// prevent. Version 8 is a stronger case still: a 7 peer would fail to decode
 /// every datagram, so the two would agree on a session and see nothing move.
-pub const PROTOCOL_VERSION: u16 = 9;
+pub const PROTOCOL_VERSION: u16 = 10;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -404,6 +404,11 @@ pub struct PeerState {
     pub phase: f32,
     pub speed: f32,
     pub gait: Gait,
+    /// How far above the ground the goat is, in metres (M19f). It is the arc's height
+    /// and it is *not* eased on arrival, for the reason the arc is absolute: easing a
+    /// parabola flattens its apex, so a flung peer would fly through a lower arc than
+    /// the one its owner simulated. Zero is every other gait.
+    pub py: f32,
 }
 
 impl PeerState {
@@ -415,6 +420,7 @@ impl PeerState {
             && self.yaw.is_finite()
             && self.phase.is_finite()
             && self.speed.is_finite()
+            && self.py.is_finite()
     }
 }
 
@@ -442,6 +448,22 @@ pub struct BotState {
     pub gait: Gait,
     /// Which idle/jump/eat variant the bot is playing, so its clip cycles too.
     pub variant: i32,
+    /// How far above the ground the bot is, in **centimetres** (M19f): the flung arc's
+    /// height, which is the one thing `Gait::Flung` and a phase could not say. It is
+    /// the scene's own `py` -- a height above the terrain directly below, so a client
+    /// with the same ground (which the snapshot's craters give it) puts the bot where
+    /// the host had it. Zero for every grounded gait, which is why it costs a byte
+    /// rather than two on the wire; signed, because the ground can move under a bot
+    /// between snapshots (a crater opens where it was standing) and a height that has
+    /// gone slightly negative is a bot standing in a hole rather than a wrapped one.
+    ///
+    /// `serde(default)` is for the *JSON* bridges only -- the scene hands the host a
+    /// world, and the host hands the scene one back, so a payload without the field is
+    /// a grounded bot, which is what zero means. The datagram path is positional and
+    /// versioned (`PROTOCOL_VERSION`), which is where a missing field is a refusal
+    /// rather than a default.
+    #[serde(default)]
+    pub py: i16,
 }
 
 impl BotState {
@@ -1198,6 +1220,7 @@ mod tests {
                 phase: 0.5,
                 speed: 1.25,
                 gait: Gait::Trot,
+                py: 0.0,
             },
         };
         let payload = encode_frame(&frame).expect("encode");
@@ -1218,11 +1241,15 @@ mod tests {
             phase: 0.0,
             speed: 0.0,
             gait: Gait::Idle,
+            py: 0.0,
         };
         assert!(state.is_finite());
         state.x = f32::NAN;
         assert!(!state.is_finite());
         state.x = 0.0;
+        state.py = f32::NAN;
+        assert!(!state.is_finite());
+        state.py = 0.0;
         state.z = f32::INFINITY;
         assert!(!state.is_finite());
     }
@@ -1250,6 +1277,7 @@ mod tests {
                     phase: on_the_phase_grid(0.5),
                     gait: Gait::Idle,
                     variant: 2,
+                    py: 0,
                 },
                 BotState {
                     index: 1,
@@ -1259,6 +1287,7 @@ mod tests {
                     phase: on_the_phase_grid(0.25),
                     gait: Gait::Eat,
                     variant: 1,
+                    py: 0,
                 },
             ],
             weather: WeatherState {
@@ -1336,6 +1365,7 @@ mod tests {
                 phase: on_the_phase_grid(0.75),
                 speed: 1.25,
                 gait: Gait::Walk,
+                py: 2.5,
             },
         });
         let bytes = encode_datagram(&peer).expect("encode");
@@ -1426,7 +1456,8 @@ mod tests {
         }))
     }
 
-    /// A bot as the scene sends one.
+    /// A bot as the scene sends one. Flung, because that is the row the height field
+    /// exists for: the shed-order cases below want a bot with every field populated.
     fn bot(index: u16) -> BotState {
         BotState {
             index,
@@ -1436,6 +1467,7 @@ mod tests {
             phase: 0.123,
             gait: Gait::Walk,
             variant: 1,
+            py: 250,
         }
     }
 
@@ -1781,6 +1813,7 @@ mod tests {
                     phase: 0.0,
                     speed: 0.0,
                     gait: Gait::Idle,
+                    py: 0.0,
                 },
             })
         };

@@ -233,6 +233,76 @@ const TUNING = {
             scorch: 1,
             scorchRange: 20,       // metres
         },
+        // The light a bang throws (M19f). The scene drives the lit shader's three
+        // `blast*` uniforms from this: a point light at the fireball for `time`
+        // seconds, so the ground, the goat, the herd and the grass are lit by the
+        // explosion rather than a sprite pasted over them. `energy` is the peak
+        // scale -- one at the fireball is about a stop of overexposure -- and `lift`
+        // is how far above the ground it sits.
+        flash: {
+            time: 0.3,             // seconds from full to nothing, squared off
+            energy: 1.5,           // peak brightness at the fireball
+            lift: 0.9,             // metres above the ground the bang came from
+        },
+        // The look (M19f): the flipbook atlases and the instances drawn from them.
+        //
+        // `cols`/`cell` describe an atlas's grid. The scene *generates* its art at
+        // boot -- a grid of noise puffs, one frame per cell -- so `cell` is the
+        // pixels it draws a frame at and `cols` is how many cells across; a mod that
+        // points `fx.blast`/`fx.smoke` in the asset table at a real atlas sets `cols`
+        // to its own grid and the cell size is read off the texture (`textureWidth`),
+        // which is what keeps `cell` from being a second place to get the layout
+        // wrong. Every atlas is padded inside each cell, so a bilinear sample at a
+        // frame's edge reads the padding rather than its neighbour.
+        //
+        // The kinds are the effects themselves: `blast` is the fireball, `smoke` the
+        // column behind it, and `debris` is not a texture at all -- grit reads as
+        // *things*, so it is a handful of cubes thrown on the instance's own streams.
+        fx: {
+            blast: {
+                cols: 4,           // 4x4 frames, a little over half a second
+                cell: 32,          // pixels a frame
+                time: 0.5,         // seconds it burns for
+                scale: 4.2,        // metres the widest frame draws at
+                lift: 1.1,         // metres the fireball rises over its life
+            },
+            smoke: {
+                cols: 6,           // 6x6, slower and longer than the fire
+                cell: 24,
+                time: 1.2,
+                scale: 5.6,
+                lift: 2.2,
+            },
+            debris: {
+                count: 7,          // bodies thrown per bang
+                time: 0.9,         // seconds before they are gone
+                speed: 7.5,        // m/s outward at the rim, before the seed's jitter
+                up: 5.5,           // m/s upward
+                gravity: 22,       // m/s^2, twice the world's so grit lands quickly
+                size: 0.16,        // metres of one body
+            },
+        },
+        // The player's own reaction (M19f): the camera is knocked along the blast's
+        // direction and a red frame flashes for a beat. Both are about *this* goat
+        // being hit, so they are the process that owns it and nothing on the wire.
+        //
+        // `energy` is the peak offset in metres at the blast's own centre and `range`
+        // is where it has fallen to half, so a bang across the meadow is a twitch and
+        // the one underfoot is a shove. `decay` is metres a second given back, and
+        // `speed` how fast the knock oscillates: together they are the difference
+        // between a shake and a wobble.
+        shake: {
+            energy: 0.26,
+            range: 12,
+            decay: 1.5,
+            speed: 26,
+        },
+        // The pulse's fade, in fractions a second, and the damage that is a full
+        // strength flash: a bruise at the rim is a third of one at the centre.
+        pulse: {
+            decay: 2.4,
+            damage: 25,
+        },
         // The flung goat's arc (M19c).
         //
         // The lift is steep on purpose. Height goes with `lift²/g` and the throw
@@ -371,6 +441,40 @@ const TUNING_CLAMP = {
     "explosions.crater.max": [0, 64],
     "explosions.crater.scorch": [0, 1],
     "explosions.crater.scorchRange": [0, 200],
+    // The flash: a light nobody asked to keep is a light that hides the world, so the
+    // energy is clamped well below the point where the ground turns white, and zero
+    // is the off switch.
+    "explosions.flash.time": [0, 3],
+    "explosions.flash.energy": [0, 8],
+    "explosions.flash.lift": [0, 6],
+    // The effect atlases: `cell` and `cols` are a texture's size in pixels, so a
+    // typo there is memory rather than a picture, and the times and scales are the
+    // ones a bang's look hangs off.
+    "explosions.fx.blast.cols": [1, 16],
+    "explosions.fx.blast.cell": [8, 256],
+    "explosions.fx.blast.time": [0, 10],
+    "explosions.fx.blast.scale": [0, 40],
+    "explosions.fx.blast.lift": [0, 20],
+    "explosions.fx.smoke.cols": [1, 16],
+    "explosions.fx.smoke.cell": [8, 256],
+    "explosions.fx.smoke.time": [0, 10],
+    "explosions.fx.smoke.scale": [0, 40],
+    "explosions.fx.smoke.lift": [0, 20],
+    "explosions.fx.debris.count": [0, 32],
+    "explosions.fx.debris.time": [0, 10],
+    "explosions.fx.debris.speed": [0, 60],
+    "explosions.fx.debris.up": [0, 60],
+    "explosions.fx.debris.gravity": [0, 120],
+    "explosions.fx.debris.size": [0, 2],
+    // The camera's knock and the HUD's pulse: both are "how much" knobs, so the
+    // clamps are only about a typo shaking the world apart or a flash that never
+    // fades.
+    "explosions.shake.energy": [0, 2],
+    "explosions.shake.range": [0, 100],
+    "explosions.shake.decay": [0, 20],
+    "explosions.shake.speed": [0, 80],
+    "explosions.pulse.decay": [0, 20],
+    "explosions.pulse.damage": [0, 100],
 };
 
 // Leaves that must stay whole numbers (counts and pixel sizes). Integer-ness is
@@ -381,6 +485,11 @@ const TUNING_INT = {
     "lighting.shadow.size": true,
     "explosions.relocate.tries": true,
     "explosions.crater.max": true,
+    "explosions.fx.blast.cols": true,
+    "explosions.fx.blast.cell": true,
+    "explosions.fx.smoke.cols": true,
+    "explosions.fx.smoke.cell": true,
+    "explosions.fx.debris.count": true,
 };
 
 function tuningHas(node, key) {

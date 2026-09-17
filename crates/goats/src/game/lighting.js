@@ -32,6 +32,21 @@ let shadowUniforms = null;
 let useLighting = true;         // toggled with L
 let lightingText = "cube shader";
 
+// The blast light's current state, written by the explosion system
+// (`setBlastLight`) and pushed to the shader every frame by `setLitUniforms`. The
+// colour is the fireball's and is not per-blast: what varies is where it is and how
+// bright, and a bang does not need a palette. Held as flat arrays so the per-frame
+// push is array reads rather than property reads.
+const BLAST_POS = [0, 0, 0, 0];   // x, y, z, energy
+const BLAST_TINT = [1.0, 0.74, 0.45, 1.0];
+
+function setBlastLight(x, y, z, energy) {
+    BLAST_POS[0] = x;
+    BLAST_POS[1] = y;
+    BLAST_POS[2] = z;
+    BLAST_POS[3] = energy;
+}
+
 const LIT_VS = [
     "#version 330",
     "in vec3 vertexPosition;",
@@ -72,6 +87,13 @@ const LIT_FS = [
     "uniform vec2 shadowTexel;",
     "uniform float shadowBias;",
     "uniform float shadowStrength;",
+    // The blast light (M19f): a point light the explosion system drives for a third
+    // of a second after a bang. It is a uniform rather than a light in the engine
+    // for the reason the sun is: every lit thing already shares this program, so
+    // the ground, the goat, the herd and the grass are lit by it for free.
+    "uniform vec3 blastPos;",
+    "uniform vec4 blastColor;",
+    "uniform float blastEnergy;",
     "out vec4 finalColor;",
     // Depth is packed across RGB so 8-bit channels give ~24-bit precision.
     "float unpackDepth(vec3 c) { return dot(c, vec3(1.0, 1.0/255.0, 1.0/65025.0)); }",
@@ -106,6 +128,20 @@ const LIT_FS = [
     "    vec3 halfV = normalize(l + viewDir);",
     "    float spec = pow(max(dot(n, halfV), 0.0), 24.0) * ndl * shadow * 0.18;",
     "    vec3 color = texel.rgb * (ambient + diffuse) + lightColor.rgb * spec;",
+    // The bang's own light. The falloff's half-distance is ten metres, which is
+    // about three blast radii -- near enough that standing at the rim still flashes
+    // and far enough that a bang across the meadow only warms the grass. The
+    // squared-off decay in `blastEnergy` is the scene's; this is the shape.
+    "    if (blastEnergy > 0.001) {",
+    "        vec3 bd = blastPos - fragWorldPos;",
+    "        float bd2 = dot(bd, bd);",
+    "        float blastAtt = blastEnergy * (1.0 / (1.0 + bd2 * 0.01));",
+    // A point light instead of a directional one, so a wall of ground facing the
+    // wrong way stays dark. The half-metre in the reciprocal keeps the normalise
+    // finite for a fragment that is standing in the fireball.
+    "        float blastNdl = max(dot(n, bd * inversesqrt(bd2 + 0.25)), 0.0);",
+    "        color += texel.rgb * blastColor.rgb * (blastAtt * (0.35 + 0.65 * blastNdl));",
+    "    }",
     "    finalColor = vec4(color, texel.a);",
     "}",
 ].join("\n");
@@ -166,6 +202,9 @@ function makeLighting() {
         lightColor: rl.getShaderLocation(litShader, "lightColor"),
         ambientColor: rl.getShaderLocation(litShader, "ambientColor"),
         camPos: rl.getShaderLocation(litShader, "camPos"),
+        blastPos: rl.getShaderLocation(litShader, "blastPos"),
+        blastColor: rl.getShaderLocation(litShader, "blastColor"),
+        blastEnergy: rl.getShaderLocation(litShader, "blastEnergy"),
     };
     shadowUniforms = shadowShader >= 0 ? {
         lightDir: rl.getShaderLocation(shadowShader, "lightDir"),
@@ -222,6 +261,12 @@ function setLitUniforms(cx, cy, cz) {
     rl.setShaderValueVector4(litShader, litUniforms.ambientColor,
         LIGHT_AMBIENT[0], LIGHT_AMBIENT[1], LIGHT_AMBIENT[2], 1.0);
     rl.setShaderValueVector3(litShader, litUniforms.camPos, cx, cy, cz);
+    rl.setShaderValueVector3(litShader, litUniforms.blastPos,
+        BLAST_POS[0], BLAST_POS[1], BLAST_POS[2]);
+    rl.setShaderValueVector4(litShader, litUniforms.blastColor,
+        BLAST_TINT[0], BLAST_TINT[1], BLAST_TINT[2], 1.0);
+    rl.setShaderValue(litShader, litUniforms.blastEnergy, BLAST_POS[3],
+        rl.SHADER_UNIFORM_FLOAT);
     if (litShadow !== null) {
         setMatrixOn(litShader, litShadow.lightVP, LIGHT_MATRIX);
         rl.setShaderValueVector2(litShader, litShadow.texel,

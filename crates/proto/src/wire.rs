@@ -122,6 +122,9 @@ pub(crate) struct WirePeer {
     phase: u8,
     speed: i16,
     gait: Gait,
+    /// The flung arc's height above the ground, on the same centimetre grid as every
+    /// other distance here (M19f). Zero for every grounded gait, so it is a byte.
+    py: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -157,6 +160,10 @@ pub(crate) struct WireBot {
     phase: u8,
     gait: Gait,
     variant: i32,
+    /// `BotState::py` is already centimetres, so this one is a copy rather than a
+    /// quantisation: two bytes a bot against the ten the rest of the row costs, and
+    /// what the flung arc needed to travel.
+    py: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -234,6 +241,7 @@ impl WirePeer {
             phase: phase_steps(frame.state.phase),
             speed: speed_units(frame.state.speed),
             gait: frame.state.gait,
+            py: centimetres(frame.state.py),
         }
     }
 
@@ -247,6 +255,7 @@ impl WirePeer {
                 phase: phase_of(self.phase),
                 speed: speed_of(self.speed),
                 gait: self.gait,
+                py: metres(self.py),
             },
         }
     }
@@ -351,6 +360,7 @@ impl WireBot {
             phase: phase_steps(bot.phase),
             gait: bot.gait,
             variant: bot.variant,
+            py: bot.py,
         }
     }
 
@@ -363,6 +373,7 @@ impl WireBot {
             phase: phase_of(self.phase),
             gait: self.gait,
             variant: self.variant,
+            py: self.py,
         }
     }
 }
@@ -401,6 +412,8 @@ mod tests {
             phase: 0.4,
             gait: Gait::Trot,
             variant: 2,
+            // A flung bot, so the round trips below carry a height rather than a zero.
+            py: 312,
         }
     }
 
@@ -414,6 +427,7 @@ mod tests {
                 phase: 0.75,
                 speed: 1.25,
                 gait: Gait::Run,
+                py: 3.12,
             },
         }
     }
@@ -456,6 +470,27 @@ mod tests {
         assert!((packed.state.yaw - frame.state.yaw).abs() <= TURN);
         assert!((packed.state.phase - frame.state.phase).abs() <= PHASE);
         assert!((packed.state.speed - frame.state.speed).abs() <= 1.0 / PER_SPEED);
+        assert!((packed.state.py - frame.state.py).abs() <= CENTIMETRE);
+    }
+
+    #[test]
+    fn the_flung_height_travels_on_the_centimetre_grid() {
+        // M19f: the arc's height is the one thing a gait and a phase could not say, and
+        // it is the same grid everything else uses -- a flung bot at 3.12 m arrives at
+        // 3.12 m, and a grounded one at zero costs a byte.
+        let bot = WireBot::pack(&a_bot());
+        assert_eq!(bot.unpack().py, 312);
+        let mut grounded = a_bot();
+        grounded.py = 0;
+        let bytes = postcard::to_allocvec(&WireBot::pack(&grounded)).expect("pack");
+        let airborne = postcard::to_allocvec(&WireBot::pack(&a_bot())).expect("pack");
+        assert_eq!(grounded.py, WireBot::pack(&grounded).unpack().py);
+        assert!(
+            bytes.len() < airborne.len(),
+            "a grounded bot should cost less than a flung one: {} vs {}",
+            bytes.len(),
+            airborne.len()
+        );
     }
 
     #[test]
@@ -477,9 +512,10 @@ mod tests {
     #[test]
     fn a_bot_is_a_handful_of_bytes() {
         // The size this whole exercise is for. 86 bytes of JSON per bot, ten
-        // times a second, against a 1200-byte budget.
+        // times a second, against a 1200-byte budget. The flung height (M19f) added
+        // the one field: a flung bot is 12 bytes, a grounded one 11.
         let bytes = postcard::to_allocvec(&WireBot::pack(&a_bot())).expect("pack");
-        assert!(bytes.len() <= 14, "{} bytes: {bytes:?}", bytes.len());
+        assert!(bytes.len() <= 15, "{} bytes: {bytes:?}", bytes.len());
     }
 
     #[test]

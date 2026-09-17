@@ -47,22 +47,295 @@ let tripCount = 0;              // devices taken out of the field, for the tell 
 // scene, the two sweeps alone cost ~2 ms/frame while sixteen inlined JS calls
 // cost nothing. At rest `fxTop` is 0, so the frame does no pool work at all.
 const FX_CAPACITY = 64;
+// Bodies one debris instance can throw. The pool's slots carry the arrays, so a bang
+// fills them rather than allocating, and the draw is arithmetic over them.
+const DEBRIS_MAX = 12;
 const FX = [];
 let fxTop = 0;
 (function buildFxPool() {
     for (let i = 0; i < FX_CAPACITY; i++) {
-        FX.push({ live: false, kind: 0, x: 0, y: 0, z: 0, age: 0, dur: 1, seed: 0, scale: 1 });
+        const slot = {
+            live: false, kind: 0, x: 0, y: 0, z: 0, age: 0, dur: 1, seed: 0, scale: 1,
+            spin: 0, n: 0,
+            // The grit's own streams, drawn once when the bang is thrown rather than
+            // per frame: `hash` is `Math.sin`-based and this engine charges for a
+            // builtin, so a body's direction is decided the frame it leaves the hole.
+            bx: [], by: [], bz: [], vx: [], vy: [], vz: [],
+        };
+        for (let b = 0; b < DEBRIS_MAX; b++) {
+            slot.bx.push(0);
+            slot.by.push(0);
+            slot.bz.push(0);
+            slot.vx.push(0);
+            slot.vy.push(0);
+            slot.vz.push(0);
+        }
+        FX.push(slot);
     }
 })();
 
-// What a bang looks like for now: the weather's own cloud puff (weather.js), the
-// soft radial sprite this generator was copied from. Reusing it keeps M19b out of
-// the texture list entirely -- one new texture turned out to cost the whole frame
-// in the draw path (see the M19b notes in ROADMAP.md) -- and the Blender atlases
-// (M19f) replace both users of it behind the same pool.
-const FX_PUFF_TIME = 0.9;
-const FX_PUFF_LIFT = 1.1;
-const FX_PUFF_SCALE = 2.8;
+// The bang's light (M19f): a handful of point lights, each a peak that fades over
+// `flash.time`. Four is more than a chain can use -- `chain` is 0.15 s against a
+// 0.3 s flash, so two overlapping is the busy case -- and the *strongest* live one is
+// the one handed to the shader, which is what stops the second bang of a pair from
+// darkening the first: the light coming off a fresh bang is brighter than the tail
+// of the one before it.
+const FLASH_CAPACITY = 4;
+const FLASH = [];
+let flashTop = 0;
+let flashEnergy = 0;            // the energy the shader was last given
+(function buildFlashPool() {
+    for (let i = 0; i < FLASH_CAPACITY; i++) {
+        FLASH.push({ live: false, x: 0, y: 0, z: 0, age: 0, dur: 1, peak: 0 });
+    }
+})();
+
+// The player's own reaction (M19f): the camera is knocked along the blast's direction
+// and a red frame flashes for a beat when a bang hurts *this* goat. Both are held as
+// the number the offset is scaled by, so the camera and the HUD are handed exactly
+// what the cases can read back.
+let shakeEnergy = 0;            // metres of offset at its peak, decaying
+let shakePhase = 0;             // where the knock is in its oscillation
+let shakeDirX = 0, shakeDirZ = 0;
+let hurtPulse = 0;              // fraction of a full-strength hit
+
+// ---- the effect atlases (M19f) ----------------------------------------------
+//
+// An effect's look is a flipbook: one atlas and a source rectangle per frame
+// (`drawBillboardRec`), so a bang costs a texture handle and four numbers a frame
+// rather than a model. The atlases are *generated* here at boot -- the same
+// value-noise puff the weather's clouds are built from (`makeWeatherTextures`), laid
+// out as a grid whose frames step through the effect -- so the scene gains no binary
+// data. A mod replaces one with real art by pointing `fx.blast` or `fx.smoke` in the
+// asset table at an image; the only thing its layout has to agree with is `cols`.
+const FX_FIRE = 0;
+const FX_SMOKE = 1;
+const FX_DEBRIS = 2;              // the third kind is bodies, and has no atlas
+const FX_ATLAS = [-1, -1];        // the two textures, -1 when there is none
+const FX_COLUMNS = [0, 0];        // cells across, read off the texture
+const FX_CELL = [0, 0];           // one cell's edge in pixels, read the same way
+
+// The margin each frame keeps inside its cell. A bilinear sample at a frame's edge
+// reads that padding rather than the neighbouring frame, which is the whole reason
+// it is there -- the alternative is `TEXTURE_FILTER_POINT` (M19a), and the atlases
+// are deliberately *not* set to it: point-filtered smoke at four metres is visibly
+// blocky.
+const FX_PAD = 8;
+
+// Value noise on integer mixing rather than `hash`/`vnoise2`: those are built on
+// `Math.sin`, and this samples four corners per octave for every pixel of every
+// frame at boot. The mixing is `trapNoise`'s, which is the same trade.
+function fxHash(x, y, salt) {
+    let h = (x * 374761393 + y * 668265263 + salt) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function fxNoise(x, y, salt) {
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    const xf = x - xi;
+    const yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf);
+    const v = yf * yf * (3 - 2 * yf);
+    const a = fxHash(xi, yi, salt);
+    const b = fxHash(xi + 1, yi, salt);
+    const c = fxHash(xi, yi + 1, salt);
+    const d = fxHash(xi + 1, yi + 1, salt);
+    return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+}
+
+// One noise field, 32x32, built once and sampled by index. A value-noise sample is
+// four hashes and an interpolation, and the atlases are tens of thousands of pixels
+// built on the *interpreter* path -- the boot frames of the harness and the headless
+// host, where a loop only ever runs once and is never compiled. Sampling a tile is an
+// array index and two masks instead, which is the same trade the pools make.
+const FX_TILE = 32;
+const FX_TILE_MASK = FX_TILE - 1;
+const FX_NOISE_TILE = (function buildFxNoiseTile() {
+    const out = [];
+    for (let y = 0; y < FX_TILE; y++) {
+        for (let x = 0; x < FX_TILE; x++) {
+            out.push(0.55 * fxNoise(x * 0.17, y * 0.17, 11) +
+                0.30 * fxNoise(x * 0.34, y * 0.34, 7) +
+                0.15 * fxNoise(x * 0.69, y * 0.69, 5));
+        }
+    }
+    return out;
+})();
+
+// The tile's value at (x, y), scrolled by the frame's own offsets so the fire licks
+// rather than pulsing: the same field, read from a different corner each frame.
+function fxTileAt(x, y, ox, oy) {
+    return FX_NOISE_TILE[((x + ox) & FX_TILE_MASK) * FX_TILE + ((y + oy) & FX_TILE_MASK)];
+}
+
+// One atlas, as hex: `cols x cols` cells of `cell` pixels, each frame a step further
+// through the effect than the one before. The puff grows along the strip, the noise
+// scrolls a little with it so the fire licks rather than pulses, and the content
+// stays inside `FX_PAD` -- which is what makes the padding real rather than
+// decorative. Fire carries its own colour ramp (a white-hot core, orange at the
+// rim) because it is drawn additively and the draw's tint is a single colour; smoke
+// is grey and gets its whole shape from alpha.
+function fxAtlasPixels(kind, cols, cell) {
+    const frames = cols * cols;
+    const radius = (cell - FX_PAD * 2) / cell;
+    const fire = kind === FX_FIRE;
+    // One entry per row, joined once at the end: a string grown a pixel at a time is
+    // quadratic in the atlas's size, and this runs at boot on the interpreter too (the
+    // headless host and the harness), where that is the difference between a moment
+    // and a minute.
+    const rows = [];
+    for (let f = 0; f < frames; f++) {
+        const t = frames > 1 ? f / (frames - 1) : 1;
+        const rad = radius * (fire ? 0.42 + 0.58 * t : 0.30 + 0.70 * t);
+        const gain = fire ? 2.2 - 0.45 * t : 1.8;
+        const bias = fire ? 0.55 : 0.45;
+        // Two scrolls of the same tile, so the puff's edge breaks up instead of
+        // reading as one soft blob, and neither one repeats over the frame.
+        const ox = Math.round(f * 5.3);
+        const oy = Math.round(f * 2.7);
+        for (let y = 0; y < cell; y++) {
+            let row = "";
+            for (let x = 0; x < cell; x++) {
+                const u = (x + 0.5) / cell - 0.5;
+                const v = (y + 0.5) / cell - 0.5;
+                const edge = Math.sqrt(u * u + v * v) / 0.5 / rad;
+                let a = 0;
+                let r = 0, g = 0, b = 0;
+                if (edge < 1) {
+                    const n = 0.62 * fxTileAt(x >> 1, y >> 1, ox, oy) +
+                        0.38 * fxTileAt(x, y, oy, ox);
+                    let k = (1 - edge) * (n * gain - bias);
+                    k = k < 0 ? 0 : (k > 1 ? 1 : k);
+                    if (fire) {
+                        const heat = 1 - edge;
+                        a = k;
+                        r = 255;
+                        g = 120 + 130 * heat;
+                        b = 30 + 120 * heat * heat;
+                    } else {
+                        a = k * 0.62;
+                        r = 120;
+                        g = 112;
+                        b = 104;
+                    }
+                }
+                row += HEX256[Math.round(r)] + HEX256[Math.round(g)] + HEX256[Math.round(b)] +
+                    HEX256[Math.round(a * 255)];
+            }
+            rows.push(row);
+        }
+    }
+    return rows.join("");
+}
+
+// The atlases, at boot: a mod's if the asset table has one, the generated grid
+// otherwise.
+function makeFxTextures() {
+    fxAtlasLoad(FX_FIRE, "fx.blast", "blast");
+    fxAtlasLoad(FX_SMOKE, "fx.smoke", "smoke");
+    makeCraterTexture();
+}
+
+// One atlas, from the asset table or the generator, and the grid read back off it.
+// `cols` is the tuning's, because a grid cannot be guessed from an image; the cell
+// size is the texture's, because that is arithmetic -- `textureWidth / cols` -- and
+// so a mod's atlas declares one number and not two.
+function fxAtlasLoad(kind, slot, key) {
+    const cfg = TUNING.explosions.fx[key];
+    const cols = Math.max(1, Math.round(cfg.cols));
+    let tex = -1;
+    const names = assetList(slot);
+    if (names.length > 0 && typeof rl.loadTexture === "function") tex = rl.loadTexture(names[0]);
+    if (tex < 0) tex = fxAtlasMake(kind, cols, Math.max(8, Math.round(cfg.cell)));
+    FX_ATLAS[kind] = tex;
+    FX_COLUMNS[kind] = cols;
+    const width = tex >= 0 && typeof rl.textureWidth === "function" ? rl.textureWidth(tex) : 0;
+    FX_CELL[kind] = width > 0 ? Math.round(width / cols) : Math.max(8, Math.round(cfg.cell));
+}
+
+// The generated atlas, through `rl.makeTexture`, which decodes plain hex and sets
+// the texture to point filtering. Bilinear is what the padding is for, so it is
+// asked for here rather than left as whatever the loader did.
+function fxAtlasMake(kind, cols, cell) {
+    if (typeof rl.makeTexture !== "function") return -1;
+    const size = cols * cell;
+    const tex = rl.makeTexture(size, size, fxAtlasPixels(kind, cols, cell));
+    if (tex >= 0 && typeof rl.setTextureFilter === "function" &&
+        typeof rl.TEXTURE_FILTER_BILINEAR === "number") {
+        rl.setTextureFilter(tex, rl.TEXTURE_FILTER_BILINEAR);
+    }
+    return tex;
+}
+
+// ---- the crater decal (M19f) -------------------------------------------------
+//
+// A crater's scorch, drawn *on the ground* rather than as a camera-facing billboard.
+// That is the whole reason `drawQuad3D` exists, and it is a fill-rate argument, not
+// an aesthetic one: a flat disc of the same diameter covers a fraction of the pixels
+// a billboard does from a low camera, and the interim M19d shipped -- the mine's own
+// puff, scaled to the dish -- was the most expensive thing in this system.
+let craterTex = -1;
+let craterTexW = 0;
+let craterTexH = 0;
+
+function makeCraterTexture() {
+    const names = assetList("fx.crater");
+    if (names.length > 0 && typeof rl.loadTexture === "function") craterTex = rl.loadTexture(names[0]);
+    if (craterTex >= 0) {
+        craterTexW = typeof rl.textureWidth === "function" ? rl.textureWidth(craterTex) : 0;
+        craterTexH = typeof rl.textureHeight === "function" ? rl.textureHeight(craterTex) : 0;
+        if (craterTexW > 0 && craterTexH > 0) return;
+        craterTex = -1;
+    }
+    if (typeof rl.makeTexture !== "function") return;
+    const N = 64;
+    craterTexW = N;
+    craterTexH = N;
+    // Row-wise, joined once: see `fxAtlasPixels` for why.
+    const rows = [];
+    for (let y = 0; y < N; y++) {
+        let row = "";
+        for (let x = 0; x < N; x++) {
+            const u = (x + 0.5) / N - 0.5;
+            const v = (y + 0.5) / N - 0.5;
+            const d = Math.sqrt(u * u + v * v) / 0.5;
+            let a = 0, r = 0, g = 0, b = 0;
+            if (d < 1) {
+                const n = 0.62 * fxTileAt(x >> 1, y >> 1, 7, 3) + 0.38 * fxTileAt(x, y, 13, 19);
+                let k = (1 - d) * (n * 2.0 - 0.5);
+                k = k < 0 ? 0 : (k > 1 ? 1 : k);
+                a = k * 0.95;
+                // Char in the middle, the ochre of turned earth at the rim, and
+                // enough mottling that it does not read as a printed disc.
+                const shade = 0.6 + 0.7 * n;
+                r = (20 + 84 * d) * shade;
+                g = (15 + 58 * d) * shade;
+                b = (11 + 34 * d) * shade;
+            }
+            row += HEX256[Math.round(r)] + HEX256[Math.round(g)] + HEX256[Math.round(b)] +
+                HEX256[Math.round(a * 255)];
+        }
+        rows.push(row);
+    }
+    craterTex = rl.makeTexture(N, N, rows.join(""));
+    if (craterTex >= 0 && typeof rl.setTextureFilter === "function" &&
+        typeof rl.TEXTURE_FILTER_BILINEAR === "number") {
+        rl.setTextureFilter(craterTex, rl.TEXTURE_FILTER_BILINEAR);
+    }
+}
+
+// The decal's basis on the ground, yawed by the crater's own seed. `drawQuad3D`'s
+// one contract is the winding -- a quad is visible from the side `right x up` points
+// to -- and this basis keeps that cross product at (0, 1, 0) whatever the yaw, which
+// is what makes a decal on the ground visible from above rather than culled.
+function craterBasis(seed) {
+    const a = hash(seed * 11.3) * 6.283185307179586;
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    return { right: [c, 0, -s], up: [-s, 0, -c] };
+}
 
 let blastCount = 0;
 
@@ -595,8 +868,11 @@ function blast(kind, x, z, seed, depth, key) {
     if (d2 <= r * r) {
         const d = Math.sqrt(d2);
         const falloff = 1 - d / r;
-        stats.health = Math.max(e.blast.healthFloor,
-            stats.health - e.blast.damage * falloff * falloff);
+        const taken = e.blast.damage * falloff * falloff;
+        stats.health = Math.max(e.blast.healthFloor, stats.health - taken);
+        // The player's own reaction (M19f): the knock and the flash are this process's,
+        // and both are scaled by what the blast actually took.
+        if (taken > 0) hurtBy(taken);
         // M19c: away from the blast, up, and scaled by the same falloff as the
         // damage, so the rim is a shove and the centre is a launch.
         const u = flingDirection(dx, dz, d, seed);
@@ -633,6 +909,11 @@ function blast(kind, x, z, seed, depth, key) {
         }
     }
     spawnBlastFx(x, z, seed);
+    // And its light, which is the part the *world* rather than the sprite reacts to.
+    flashAt(x, z, seed);
+    // ...and the knock, which is the part the player does. It is outside the damage
+    // radius on purpose: a bang just past the goat's feet is a shove with no bruise.
+    blastShake(x, z, seed);
     // Heard wherever the goat is, in or out of the radius (audio.js).
     playBlast(x, z);
     if (depth < e.chainDepth) chainFrom(x, z, depth + 1);
@@ -751,19 +1032,216 @@ function fxTake() {
 }
 
 function spawnBlastFx(x, z, seed) {
+    const fx = TUNING.explosions.fx;
+    const ground = terrainHeight(x, z);
+    fxSpawn(FX_FIRE, x, ground + 0.2, z, seed, fx.blast.time, fx.blast.scale, seed);
+    // Two plumes: the close one is thicker and lives the tuning's `time`, the far one
+    // is smaller, slower and longer, which is what gives the column depth rather than
+    // one flat puff. The phases are the same seed turned differently, so a bang looks
+    // the same to everyone who sees it.
+    fxSpawn(FX_SMOKE, x + 0.35, ground, z - 0.25, seed + 1.7, fx.smoke.time, fx.smoke.scale,
+        seed * 1.3);
+    fxSpawn(FX_SMOKE, x - 0.45, ground, z + 0.15, seed + 3.1, fx.smoke.time * 1.25,
+        fx.smoke.scale * 0.62, seed * 0.7);
+    spawnDebrisFx(x, ground, z, seed);
+}
+
+// One instance of an effect. `phase` becomes the frame it starts on, so two plumes
+// of one bang -- and two bangs of the same age -- are not showing the same picture.
+function fxSpawn(kind, x, y, z, seed, dur, scale, phase) {
     const at = fxTake();
-    if (at < 0) return;
+    if (at < 0) return -1;
     if (at + 1 > fxTop) fxTop = at + 1;
     const slot = FX[at];
     slot.live = true;
-    slot.kind = 0;
+    slot.kind = kind;
     slot.x = x;
+    slot.y = y;
     slot.z = z;
-    slot.y = terrainHeight(x, z) + 0.3;
     slot.age = 0;
-    slot.dur = FX_PUFF_TIME;
+    slot.dur = dur > 0 ? dur : 0.01;
     slot.seed = seed;
-    slot.scale = FX_PUFF_SCALE * (0.8 + hash(seed) * 0.5);
+    slot.scale = scale * (0.8 + hash(seed) * 0.5);
+    slot.spin = phase - Math.floor(phase);
+    slot.n = 0;
+    return at;
+}
+
+// The grit a bang throws: cubes on streams drawn here and once. The bodies are the
+// exception to the billboards -- grit thrown outward reads as *things* -- and they
+// cost a cube each, so the count is the tuning's and the pool has room for it.
+function spawnDebrisFx(x, ground, z, seed) {
+    const d = TUNING.explosions.fx.debris;
+    const count = clamp(Math.round(d.count), 0, DEBRIS_MAX);
+    if (count <= 0 || d.time <= 0) return;
+    const at = fxSpawn(FX_DEBRIS, x, ground, z, seed, d.time, 0, 0);
+    if (at < 0) return;
+    const slot = FX[at];
+    slot.n = count;
+    for (let i = 0; i < count; i++) {
+        const a = hash(seed * 3.1 + i * 1.7) * 6.283185307179586;
+        const speed = d.speed * (0.35 + hash(seed * 5.7 + i * 2.3) * 0.9);
+        slot.bx[i] = x;
+        slot.by[i] = ground + 0.25;
+        slot.bz[i] = z;
+        slot.vx[i] = Math.cos(a) * speed;
+        slot.vz[i] = Math.sin(a) * speed;
+        slot.vy[i] = d.up * (0.5 + hash(seed * 7.3 + i * 3.1) * 0.9);
+    }
+}
+
+// Which cell of an atlas an instance is on: its age through its life, plus the phase
+// it was born with, cut into frames. Exposed (below) as `sceneFxFrame`, because a
+// grid that is one cell out is a picture of the neighbouring frame -- a check, not a
+// crash.
+function fxFrame(kind, t, spin) {
+    const cols = FX_COLUMNS[kind];
+    const frames = cols * cols;
+    if (frames <= 1) return 0;
+    let f = Math.floor(t * (frames - 1) + spin);
+    if (f < 0) f = 0;
+    if (f >= frames) f = frames - 1;
+    return f;
+}
+
+// The frame an instance of `kind` shows at `t` through its life, as a source
+// rectangle: the arithmetic the draw uses, for the console and the tests.
+function sceneFxFrame(kind, t) {
+    const cols = FX_COLUMNS[kind] | 0;
+    const cell = FX_CELL[kind] | 0;
+    if (cols <= 0 || cell <= 0) return { cols: 0, cell: 0, frames: 0, frame: 0, sx: 0, sy: 0 };
+    const f = fxFrame(kind, t, 0);
+    return {
+        cols: cols,
+        cell: cell,
+        frames: cols * cols,
+        frame: f,
+        sx: (f % cols) * cell,
+        sy: Math.floor(f / cols) * cell,
+    };
+}
+
+// The knock a bang gives the camera: strongest at its own centre and tending to
+// nothing rather than reaching it, which is what makes the same bang read differently
+// at two metres and at thirty. The direction is the blast's own -- the camera is
+// pushed *away* -- and a bang dead on the goat has no direction to give, so it takes
+// the seed's.
+function blastShake(x, z, seed) {
+    const cfg = TUNING.explosions.shake;
+    if (cfg.energy <= 0) return;
+    const dx = goat.px - x;
+    const dz = goat.pz - z;
+    const d2 = dx * dx + dz * dz;
+    const r2 = cfg.range * cfg.range;
+    const d = Math.sqrt(d2);
+    if (d > 0.01) {
+        shakeDirX = dx / d;
+        shakeDirZ = dz / d;
+    } else {
+        const a = hash(seed * 5.3) * 6.283185307179586;
+        shakeDirX = Math.cos(a);
+        shakeDirZ = Math.sin(a);
+    }
+    const energy = cfg.energy * (r2 / (r2 + d2)) * (0.85 + hash(seed * 1.9) * 0.3);
+    // A fresh, harder bang takes the knock over; a distant one landing on top of a
+    // near one does not cut it short. The phase restarts a quarter turn in, which is
+    // the swing, so the first frame of the shake is the shove outward.
+    if (energy > shakeEnergy) {
+        shakeEnergy = energy;
+        shakePhase = 1.5;
+    }
+}
+
+// Where the camera and its target are moved to this frame, in metres. The vertical is
+// a smaller and faster oscillation of the same phase, which is what keeps the knock
+// from reading as a slide.
+function shakeOffsetX() { return shakeEnergy * shakeDirX * Math.sin(shakePhase); }
+function shakeOffsetY() { return shakeEnergy * 0.55 * Math.sin(shakePhase * 1.7 + 1.1); }
+function shakeOffsetZ() { return shakeEnergy * shakeDirZ * Math.sin(shakePhase); }
+
+// The HUD's flash: how much of itself a hit of `damage` is worth. The strongest
+// unrecovered hit wins, so a second bang cannot make a bruise look like a scratch.
+function hurtBy(damage) {
+    const cfg = TUNING.explosions.pulse;
+    const k = cfg.damage > 0 ? damage / cfg.damage : 0;
+    if (k > hurtPulse) hurtPulse = k > 1 ? 1 : k;
+}
+
+// The red frame, for a beat after a hit. A border rather than a screenful of tint on
+// purpose: it is four small rectangles rather than every pixel on the screen, and it
+// reads the same.
+function drawDamagePulse() {
+    if (hurtPulse <= 0 || typeof rl.drawRectangle !== "function") return;
+    const a = hurtPulse > 1 ? 1 : hurtPulse;
+    const band = Math.round(24 + 46 * a);
+    const tint = rl.color(150, 20, 16, Math.round(120 * a));
+    rl.drawRectangle(0, 0, screenW, band, tint);
+    rl.drawRectangle(0, screenH - band, screenW, band, tint);
+    rl.drawRectangle(0, 0, band, screenH, tint);
+    rl.drawRectangle(screenW - band, 0, band, screenH, tint);
+}
+// A slot for a fresh flash, or -1: a free one, else the oldest (the dimmest, since
+// every one of them is fading). Four lights is a fixed cost the pool pays once.
+function flashTake() {
+    let oldest = -1;
+    for (let i = 0; i < FLASH_CAPACITY; i++) {
+        if (!FLASH[i].live) return i;
+        if (oldest < 0 || FLASH[i].age > FLASH[oldest].age) oldest = i;
+    }
+    return oldest;
+}
+
+// The light a bang throws, over the fireball. The peak and the life both jitter a
+// little off the seed so that two bangs in a row are not the same flash, the way the
+// bang itself is not the same bang (audio.js picks it off the same seed).
+function flashAt(x, z, seed) {
+    const f = TUNING.explosions.flash;
+    if (f.energy <= 0 || f.time <= 0) return;
+    const at = flashTake();
+    if (at < 0) return;
+    if (at + 1 > flashTop) flashTop = at + 1;
+    const slot = FLASH[at];
+    slot.live = true;
+    slot.x = x;
+    slot.y = terrainHeight(x, z) + f.lift;
+    slot.z = z;
+    slot.age = 0;
+    slot.dur = f.time * (0.9 + hash(seed * 1.7) * 0.2);
+    slot.peak = f.energy * (0.85 + hash(seed * 2.9 + 0.7) * 0.3);
+}
+
+// Age the flashes and hand the strongest to the lit shader. Runs whether or not the
+// system is on, for the reason the craters heal whether or not it is: `enabled 0` is
+// a frame-cost bisect, and a bisect that leaves a light burning is not a bisect.
+//
+// The decay is squared, so the flash reads as a hit and not as a lamp being turned
+// down; the last frame of the last flash is what writes zero, and once the last one
+// is out the shader is left alone entirely.
+function updateFlashes(dt) {
+    let best = 0;
+    let bx = 0, by = 0, bz = 0;
+    for (let i = 0; i < flashTop; i++) {
+        const f = FLASH[i];
+        if (!f.live) continue;
+        f.age += dt;
+        if (f.age >= f.dur) {
+            f.live = false;
+            continue;
+        }
+        const fade = 1 - f.age / f.dur;
+        const energy = f.peak * fade * fade;
+        if (energy > best) {
+            best = energy;
+            bx = f.x;
+            by = f.y;
+            bz = f.z;
+        }
+    }
+    while (flashTop > 0 && !FLASH[flashTop - 1].live) flashTop -= 1;
+    if (best > 0 || flashEnergy > 0) {
+        flashEnergy = best;
+        setBlastLight(bx, by, bz, best);
+    }
 }
 
 // The player's trigger, and the herd's: a goat on the ground walks onto a mine
@@ -824,8 +1302,22 @@ function checkTriggers(unit, x, z, airborne) {
 
 function updateExplosions(dt) {
     // The ground heals whether or not the system is on: a crater is not an effect, and
-    // `enabled 0` is a frame-cost bisect, not a way to leave a hole in the world.
+    // `enabled 0` is a frame-cost bisect, not a way to leave a hole in the world. The
+    // bang's light is the same argument.
     if (CRATERS.length > 0) updateCraters(dt);
+    if (flashTop > 0 || flashEnergy > 0) updateFlashes(dt);
+    // The player's knock and the HUD's flash, on the same rule: they are about a bang
+    // that already happened, so switching the system off for a bisect must not leave
+    // the camera vibrating or the screen red.
+    if (shakeEnergy > 0) {
+        shakePhase += dt * TUNING.explosions.shake.speed;
+        shakeEnergy -= dt * TUNING.explosions.shake.decay;
+        if (shakeEnergy < 0) shakeEnergy = 0;
+    }
+    if (hurtPulse > 0) {
+        hurtPulse -= dt * TUNING.explosions.pulse.decay;
+        if (hurtPulse < 0) hurtPulse = 0;
+    }
     // `tune explosions.enabled 0` turns the whole system off, which is what a
     // frame-cost bisect needs: one command, no rebuild, and the engine, the world
     // and every other system stay exactly as they were.
@@ -868,24 +1360,25 @@ function updateExplosions(dt) {
     }
 }
 
-// The bang, and the faint patch that warns of a mine. Drawn inside the 3D pass,
-// after the world, so smoke reads over the goats it is blowing up rather than
-// behind them.
+// The look of a bang (M19f): the flipbook billboards, the hot core and the grit,
+// over the world it happened in. Drawn inside the 3D pass, after the goats and the
+// grass, so smoke reads over what it hit rather than behind it.
+//
+// The ladder is the point of the shader/mesh fallbacks elsewhere: no atlas (a mod
+// replaced the slot with something that will not decode, or there is no image path)
+// falls back to the weather's own puff, and no texture at all to an untextured
+// primitive. Each rung is forced by the harness, and each is a picture rather than
+// an error.
 function drawExplosions() {
-    if (cloudTex < 0 || TUNING.explosions.enabled <= 0) return;
+    if (TUNING.explosions.enabled <= 0) return;
     const e = TUNING.explosions;
     const tell = e.mine.tell;
-    if (tell > 0) drawMineTells(tell);
-    // The scorch, until M19f's decals: a dark disc the width of the dish, at the ground
-    // it dished, fading faster than the ground closes. The same soft puff the tell uses
-    // -- one texture, no new asset, and the same argument M19b made for the bang itself.
-    //
-    // It is also *fill rate*, and the only thing in this system that is: every one of
-    // these is a camera-facing alpha quad metres across, so a field of craters behind a
-    // low camera is more blended pixels than everything else in the scene put together.
-    // Hence the range: a tint twenty metres away is a few pixels nobody can read, and
-    // `crater.scorch 0` is one `tune` away if the fill still shows (it is what M19d
-    // shipped to bisect exactly that).
+    if (tell > 0 && cloudTex >= 0) drawMineTells(tell);
+    // The scorch: a decal per crater, yawed by its own seed and tinted as it heals.
+    // The range is what keeps a field of them from being fill rate nobody can read --
+    // and `crater.scorch 0` is the bisect, which is what M19d shipped for exactly
+    // that. Without the decal texture the interim puff is still there: it is a
+    // billboard, so it costs more, and it is a picture of the same thing.
     if (e.crater.scorch > 0) {
         const range = e.crater.scorchRange;
         const range2 = range * range;
@@ -895,20 +1388,120 @@ function drawExplosions() {
             const dz = c.z - goat.pz;
             if (dx * dx + dz * dz > range2) continue;
             const fade = 1 - c.age / c.heal;
-            const alpha = Math.round(150 * fade * fade);
+            const alpha = Math.round(170 * fade * fade);
             if (alpha <= 0) continue;
-            rl.drawBillboard(cloudTex, c.x, terrainHeight(c.x, c.z) + 0.03, c.z, c.r * 2.2,
-                rl.color(44, 36, 28, alpha));
+            const y = terrainHeight(c.x, c.z) + 0.03;
+            if (craterTex >= 0 && craterTexW > 0 && craterTexH > 0) {
+                const b = craterBasis(c.seed);
+                rl.drawQuad3D(craterTex, 0, 0, craterTexW, craterTexH, c.x, y, c.z,
+                    b.right[0], b.right[1], b.right[2],
+                    b.up[0], b.up[1], b.up[2],
+                    c.r * 2.4, c.r * 2.4, rl.color(255, 250, 240, alpha));
+            } else if (cloudTex >= 0) {
+                rl.drawBillboard(cloudTex, c.x, y, c.z, c.r * 2.2,
+                    rl.color(44, 36, 28, alpha));
+            }
         }
     }
+    if (fxTop === 0) return;
+    // Smoke and grit first, the fire over them: the fire is what lights the smoke, so
+    // that is also the order that reads. The blend change is once for the whole pool
+    // rather than once per instance.
+    let fire = 0;
     for (let i = 0; i < fxTop; i++) {
         const slot = FX[i];
         if (!slot.live) continue;
-        const t = slot.age / slot.dur;
-        const fade = 1 - t;
-        const alpha = Math.round(255 * fade * fade);
-        rl.drawBillboard(cloudTex, slot.x, slot.y + t * FX_PUFF_LIFT, slot.z,
-            slot.scale * (0.55 + t), rl.color(255, 206, 140, alpha));
+        if (slot.kind === FX_FIRE) {
+            fire += 1;
+        } else if (slot.kind === FX_SMOKE) {
+            drawFxSmoke(slot);
+        } else {
+            drawFxDebris(slot);
+        }
+    }
+    if (fire > 0 && typeof rl.beginBlendMode === "function") {
+        rl.beginBlendMode(rl.BLEND_ADDITIVE);
+        for (let i = 0; i < fxTop; i++) {
+            if (FX[i].live && FX[i].kind === FX_FIRE) drawFxFire(FX[i]);
+        }
+        rl.endBlendMode();
+    }
+}
+
+// The fireball: one flipbook frame, additive, rising as it burns out, with a small
+// sphere under it for the core -- the flames are a picture, and the sphere is the
+// thing that is bright.
+function drawFxFire(slot) {
+    const t = slot.age / slot.dur;
+    const fade = 1 - t;
+    const alpha = Math.round(255 * fade * fade);
+    if (alpha <= 0) return;
+    const size = slot.scale * (0.62 + 0.55 * t);
+    const y = slot.y + TUNING.explosions.fx.blast.lift * t;
+    const cols = FX_COLUMNS[FX_FIRE];
+    const cell = FX_CELL[FX_FIRE];
+    if (FX_ATLAS[FX_FIRE] >= 0 && cols > 0 && cell > 0) {
+        const f = fxFrame(FX_FIRE, t, slot.spin);
+        rl.drawBillboardRec(FX_ATLAS[FX_FIRE], (f % cols) * cell, Math.floor(f / cols) * cell,
+            cell, cell, slot.x, y, slot.z, size, size,
+            rl.color(255, 214, 168, alpha));
+    } else if (cloudTex >= 0) {
+        // No atlas: the weather's own puff, which is what M19b shipped.
+        rl.drawBillboard(cloudTex, slot.x, y, slot.z, size * 0.68,
+            rl.color(255, 206, 140, alpha));
+    } else {
+        // No texture at all: a hot cube. There is nothing to sample, so the shape is
+        // the message -- the flat-slab rung of the ladder.
+        rl.drawCube(slot.x, y + size * 0.5, slot.z, size, size, size,
+            rl.color(255, 150, 60, 255));
+    }
+    if (t < 0.55) {
+        const core = slot.scale * (0.10 + 0.28 * t);
+        rl.drawSphereEx(slot.x, y + core * 0.6, slot.z, core, 5, 6,
+            rl.color(255, 226, 180, alpha));
+    }
+}
+
+// One smoke plume, alpha-blended and depth-tested. Two of these are spawned per
+// bang, which is what gives the column depth; the tint carries the fade, since the
+// atlas is the same grey all the way through.
+function drawFxSmoke(slot) {
+    const t = slot.age / slot.dur;
+    const fade = 1 - t;
+    const alpha = Math.round(210 * fade * fade);
+    if (alpha <= 0) return;
+    const size = slot.scale * (0.55 + 0.85 * t);
+    const y = slot.y + TUNING.explosions.fx.smoke.lift * t;
+    const cols = FX_COLUMNS[FX_SMOKE];
+    const cell = FX_CELL[FX_SMOKE];
+    if (FX_ATLAS[FX_SMOKE] >= 0 && cols > 0 && cell > 0) {
+        const f = fxFrame(FX_SMOKE, t, slot.spin);
+        rl.drawBillboardRec(FX_ATLAS[FX_SMOKE], (f % cols) * cell, Math.floor(f / cols) * cell,
+            cell, cell, slot.x, y, slot.z, size, size,
+            rl.color(196, 182, 166, alpha));
+    } else if (cloudTex >= 0) {
+        rl.drawBillboard(cloudTex, slot.x, y, slot.z, size * 0.7,
+            rl.color(120, 112, 104, alpha));
+    } else {
+        rl.drawCube(slot.x, y, slot.z, size * 0.5, size * 0.5, size * 0.5,
+            rl.color(70, 66, 62, 255));
+    }
+}
+
+// The grit: cubes on the streams the bang drew for them, thrown outward and up and
+// falling under a gravity of its own. They are gone in under a second, and the last
+// of the fall is hidden by the ground rather than stopped by it -- a body that has
+// gone under is behind an opaque surface, which is cheaper than a collision test.
+function drawFxDebris(slot) {
+    const d = TUNING.explosions.fx.debris;
+    const t = slot.age;
+    const n = slot.n;
+    const size = d.size;
+    for (let i = 0; i < n; i++) {
+        rl.drawCube(slot.bx[i] + slot.vx[i] * t,
+            slot.by[i] + slot.vy[i] * t - 0.5 * d.gravity * t * t,
+            slot.bz[i] + slot.vz[i] * t,
+            size, size, size, rl.color(64, 54, 42, 255));
     }
 }
 
@@ -1043,6 +1636,12 @@ function sceneExplosions() {
         pending: PENDING.length,
         live: live,
         blasts: blastCount,
+        // The light as the shader has it, so a test can watch it come up on a bang
+        // and go out `flash.time` later without a GPU to read the uniform back from.
+        flash: flashEnergy,
+        // ...and the player's own two reactions, which are read the same way.
+        shake: shakeEnergy,
+        hurt: hurtPulse,
         safe: TUNING.explosions.safe,
     };
 }

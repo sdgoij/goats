@@ -798,8 +798,18 @@ fn the_scene_runs_the_scripted_timeline() {
         &sync,
     );
     checks.check("leaving removes the remote goat", sync.peer_left, &sync);
+    checks.check(
+        "a flung peer's height travels, and is not eased",
+        sync.peer_height,
+        &sync,
+    );
     checks.check("a host publishes its bots", sync.world, &sync);
     checks.check("a client mirrors the server bots", sync.mirror, &sync);
+    checks.check(
+        "a flung bot's height travels with the snapshot",
+        sync.flung_height,
+        &sync,
+    );
     checks.check(
         "a client mirrors the server weather",
         sync.weather_mirror,
@@ -1157,6 +1167,46 @@ fn the_scene_runs_the_scripted_timeline() {
         fx.blast_debris,
         fx.blast_debris,
     );
+    checks.check(
+        "a bang lights the world, and the light goes out",
+        fx.flash,
+        fx.flash,
+    );
+
+    // ---- M19f: the look ------------------------------------------------------
+    // The flipbook atlases, the draws they come to, and the two rungs below them
+    // when the art is not there.
+    let (art, art_error) = match art_block(&mut harness) {
+        Ok(art) => (art, None),
+        Err(error) => (Art::default(), Some(error)),
+    };
+    checks.check("no effect art errors", art_error.is_none(), art_error);
+    checks.check("the effect grid is read off the atlas", art.grid, &art);
+    checks.check(
+        "one draw per live effect instance",
+        art.quads && art.core,
+        &art,
+    );
+    checks.check(
+        "with no atlas the bang falls back to a puff",
+        art.fallback,
+        &art,
+    );
+    checks.check(
+        "with no texture at all it falls back to a solid",
+        art.bare,
+        &art,
+    );
+    checks.check(
+        "a crater's scorch is one quad on the ground",
+        art.decals && art.winding,
+        &art,
+    );
+    checks.check(
+        "a bang knocks the camera and flashes the HUD, by distance",
+        art.reaction,
+        &art,
+    );
 
     checks.finish();
 }
@@ -1242,6 +1292,7 @@ struct Explosions {
     flung_restart: bool,
     blast_sound: bool,
     blast_debris: bool,
+    flash: bool,
 }
 
 /// The device state the scene reports: pending fuses, spent devices, blasts so
@@ -2185,8 +2236,340 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
         harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
     }
 
+    // ---- M19f: the bang's light ------------------------------------------------
+    //
+    // A bang lights the world for `flash.time`. The light is the lit shader's own
+    // `blastEnergy` uniform, so what is read here is the value the *shader* was
+    // handed -- the harness records it by name -- and not a copy of the number the
+    // scene computed. The bang is our own, fourteen metres off to the side with the
+    // chain switched off, so this is about the light and nothing else: no device is
+    // tripped, no herd trips one either, and the goat is outside the blast radius.
+    let flash_now = |harness: &mut Harness| -> Result<f64, String> {
+        Ok(f64_of(
+            harness.call("sceneExplosions", &[])?["flash"].clone(),
+        ))
+    };
     harness.command("heal")?;
     harness.command("pos 0 0")?;
+    harness.eval("sceneResetDevices()")?;
+    harness.eval("sceneResetCraters()")?;
+    harness.eval("goats.tuning.set(\"explosions.chainDepth\", 0)")?;
+    drive_burst(harness, 9)?;
+    let dark = flash_now(harness)? == 0.0;
+    let dark_uniform = harness.observe()?.blast_energy;
+    harness.eval("blast(\"mine\", goat.px + 14, goat.pz + 6, 3.7, 0)")?;
+    // One frame, because the bangs' light is aged by the update that follows them.
+    drive_burst(harness, 1)?;
+    let lit = flash_now(harness)?;
+    let lit_uniform = harness.observe()?.blast_energy;
+    // Three bursts is 0.45 s, past the 0.3 s the flash lives however the seed's own
+    // jitter moves the duration -- and then the shader has to be told so: a light
+    // that fades to nearly nothing and stops there is a light that stays on.
+    drive_burst(harness, 9)?;
+    drive_burst(harness, 9)?;
+    drive_burst(harness, 9)?;
+    let out_uniform = harness.observe()?.blast_energy;
+    out.flash = dark
+        && dark_uniform == 0.0
+        && lit > 0.0
+        && lit_uniform > 0.0
+        && flash_now(harness)? == 0.0
+        && out_uniform == 0.0;
+    if !out.flash {
+        eprintln!(
+            "flash case: lit={lit} lit_uniform={lit_uniform} now={} out_uniform={out_uniform} \
+             dark={dark} dark_uniform={dark_uniform}",
+            flash_now(harness)?,
+        );
+    }
+    harness.eval("goats.tuning.set(\"explosions.chainDepth\", 1)")?;
+
+    harness.command("heal")?;
+    harness.command("pos 0 0")?;
+    Ok(out)
+}
+
+/// The two atlas kinds, by the numbers the scene gives them (`FX_FIRE`/`FX_SMOKE` in
+/// `explosions.js`): the harness drives `sceneFxFrame` by name and passes the kind
+/// as an argument.
+const FX_FIRE: f64 = 0.0;
+const FX_SMOKE: f64 = 1.0;
+
+/// The effect pool as counts: live fire quads, live smoke quads and live grit
+/// bodies. The draw counts are checked against this rather than against the tuning's
+/// own spawn rates, so a mod that changes the mix is not a test failure.
+const FX_LIVE: &str = "(function () { \
+     let fire = 0, smoke = 0, grit = 0; \
+     for (let i = 0; i < fxTop; i++) { \
+       const slot = FX[i]; \
+       if (!slot.live) continue; \
+       if (slot.kind === FX_FIRE) fire += 1; \
+       else if (slot.kind === FX_SMOKE) smoke += 1; \
+       else grit += slot.n; \
+     } \
+     return { fire: fire, smoke: smoke, grit: grit }; })()";
+
+/// What the M19f art cases found. One field per case.
+#[derive(Debug, Default)]
+struct Art {
+    grid: bool,
+    quads: bool,
+    core: bool,
+    fallback: bool,
+    bare: bool,
+    decals: bool,
+    winding: bool,
+    reaction: bool,
+}
+
+/// The look of a bang (M19f): the flipbook atlases, the draws they come to, and the
+/// two rungs below them when the art is not there.
+///
+/// The draws are counted by calling `drawExplosions` directly with the pool emptied
+/// first (`fxTop = 0`, the same hammer the other cases use for a trip stamp), so what
+/// is counted is one draw per live instance rather than whatever the frame loop left
+/// burning. The mine tell and the crater scorch are switched off with it, because
+/// they draw billboards of their own.
+fn art_block(harness: &mut Harness) -> Result<Art, String> {
+    let mut out = Art::default();
+    harness.command("stop")?;
+    harness.command("heal")?;
+    harness.command("pos 0 0")?;
+    harness.eval("sceneResetDevices()")?;
+    harness.eval("sceneResetCraters()")?;
+    harness.eval("goats.tuning.set(\"explosions.chainDepth\", 0)")?;
+    harness.eval("goats.tuning.set(\"explosions.mine.tell\", 0)")?;
+    harness.eval("goats.tuning.set(\"explosions.crater.scorch\", 0)")?;
+    drive_burst(harness, 9)?;
+
+    // ---- the grid -----------------------------------------------------------
+    // A frame for every step through a life: inside the atlas, never going
+    // backwards, and covering the whole strip. A `cols` that disagreed with the
+    // texture would put a frame outside the image here rather than on the screen.
+    let shape = harness.call("sceneFxFrame", &[json!(FX_FIRE), json!(0.0)])?;
+    let cols = f64_of(shape["cols"].clone());
+    let cell = f64_of(shape["cell"].clone());
+    let span = cols * cell;
+    let mut inside = cols > 1.0 && cell > 0.0;
+    let mut monotonic = true;
+    let mut first = -1.0;
+    let mut previous = -1.0;
+    let mut last = -1.0;
+    for step in 0..=20 {
+        let rect = harness.call("sceneFxFrame", &[json!(FX_FIRE), json!(step as f64 / 20.0)])?;
+        let frame = f64_of(rect["frame"].clone());
+        let sx = f64_of(rect["sx"].clone());
+        let sy = f64_of(rect["sy"].clone());
+        if !(0.0..=cols * cols - 1.0).contains(&frame)
+            || sx < 0.0
+            || sy < 0.0
+            || sx + cell > span
+            || sy + cell > span
+        {
+            inside = false;
+        }
+        if previous > frame {
+            monotonic = false;
+        }
+        if first < 0.0 {
+            first = frame;
+        }
+        previous = frame;
+        last = frame;
+    }
+    // The smoke atlas is a different grid, and it is the same arithmetic.
+    let smoke_shape = harness.call("sceneFxFrame", &[json!(FX_SMOKE), json!(0.5)])?;
+    let smoke_ok =
+        f64_of(smoke_shape["cols"].clone()) > 1.0 && f64_of(smoke_shape["cell"].clone()) > 0.0;
+    out.grid = inside && monotonic && first == 0.0 && last == cols * cols - 1.0 && smoke_ok;
+    if !out.grid {
+        eprintln!(
+            "art grid case: cols={cols} cell={cell} first={first} last={last} \
+             inside={inside} monotonic={monotonic} smoke_ok={smoke_ok}"
+        );
+    }
+
+    // ---- one draw per live instance -----------------------------------------
+    // The pool is emptied *after* the frames above, so what is in it is the one bang
+    // below and nothing the herd tripped on the way here: every instance is at the
+    // start of its life, which is what makes the counts exact rather than "at least".
+    harness.eval("fxTop = 0")?;
+    harness.eval("blast(\"mine\", goat.px + 14, goat.pz + 6, 3.7, 0)")?;
+    let live = harness.eval(FX_LIVE)?;
+    let fire = f64_of(live["fire"].clone());
+    let smoke = f64_of(live["smoke"].clone());
+    let grit = f64_of(live["grit"].clone());
+    harness.reset_counters(&["billboardRecs", "sphereDraws", "cubeDraws", "billboards"])?;
+    harness.call("drawExplosions", &[])?;
+    let quads = harness.observe()?.counters;
+    out.quads = fire > 0.0
+        && smoke > 0.0
+        && grit > 0.0
+        && f64::from(quads.billboard_recs) == fire + smoke
+        && f64::from(quads.cube_draws) == grit
+        && quads.billboards == 0;
+    // The core is the light rather than the picture, so it is one per fireball and
+    // not one per atlas frame.
+    out.core = f64::from(quads.sphere_draws) == fire;
+    if !out.quads || !out.core {
+        eprintln!(
+            "art draw case: live={live:?} quads={} cubes={} spheres={} billboards={}",
+            quads.billboard_recs, quads.cube_draws, quads.sphere_draws, quads.billboards,
+        );
+    }
+
+    // ---- the ladder ---------------------------------------------------------
+    // Rung 2: no atlas. The flipbook has nothing to sample, so the same instances
+    // draw the weather's own puff instead -- still a bang, and no quads.
+    let saved = harness.eval(
+        "(function () { return { fire: FX_ATLAS[0], smoke: FX_ATLAS[1], cloud: cloudTex }; })()",
+    )?;
+    harness.eval("FX_ATLAS[0] = -1; FX_ATLAS[1] = -1")?;
+    harness.reset_counters(&["billboardRecs", "sphereDraws", "cubeDraws", "billboards"])?;
+    harness.call("drawExplosions", &[])?;
+    let fallback = harness.observe()?.counters;
+    out.fallback = fallback.billboard_recs == 0
+        && f64::from(fallback.billboards) == fire + smoke
+        && f64::from(fallback.cube_draws) == grit;
+    if !out.fallback {
+        eprintln!(
+            "art fallback case: quads={} cubes={} spheres={} billboards={}",
+            fallback.billboard_recs,
+            fallback.cube_draws,
+            fallback.sphere_draws,
+            fallback.billboards,
+        );
+    }
+
+    // Rung 3: no texture at all. There is nothing to sample anywhere, so an instance
+    // becomes an untextured primitive -- one cube per billboard, plus the grit that
+    // was bodies to begin with.
+    harness.eval("cloudTex = -1")?;
+    harness.reset_counters(&["billboardRecs", "sphereDraws", "cubeDraws", "billboards"])?;
+    harness.call("drawExplosions", &[])?;
+    let bare = harness.observe()?.counters;
+    out.bare = bare.billboard_recs == 0
+        && bare.billboards == 0
+        && f64::from(bare.cube_draws) == grit + fire + smoke;
+    if !out.bare {
+        eprintln!(
+            "art bare case: quads={} cubes={} spheres={} billboards={}",
+            bare.billboard_recs, bare.cube_draws, bare.sphere_draws, bare.billboards,
+        );
+    }
+
+    // ...and back to the art, so nothing after this block sees a scene with no
+    // textures in it.
+    harness.eval(&format!(
+        "FX_ATLAS[0] = {}; FX_ATLAS[1] = {}; cloudTex = {}",
+        f64_of(saved["fire"].clone()),
+        f64_of(saved["smoke"].clone()),
+        f64_of(saved["cloud"].clone()),
+    ))?;
+
+    // ---- the scorch decal ---------------------------------------------------
+    // One flat quad per crater in range, and no billboard: the bang above left
+    // exactly one crater (the chain is off, and the ground was cleared first), so the
+    // count is one. `scorch 0` is the same bisect M19d shipped, which is how the
+    // previous rungs could draw a bang with no decal in the way.
+    harness.eval("goats.tuning.set(\"explosions.crater.scorch\", 1)")?;
+    harness.reset_counters(&["quadDraws", "billboards"])?;
+    harness.call("drawExplosions", &[])?;
+    let decal = harness.observe()?.counters;
+    let craters = f64_of(harness.eval("sceneCraters().length")?);
+    out.decals = craters == 1.0 && decal.quad_draws == 1 && decal.billboards == 0;
+    if !out.decals {
+        eprintln!(
+            "art decal case: craters={craters} quads={} billboards={}",
+            decal.quad_draws, decal.billboards,
+        );
+    }
+
+    // ...and its one contract: whatever the yaw, `right x up` has to point up, or the
+    // decal is culled from above and the ground has no scorch on it at all. The basis
+    // is the scene's own, so this is the arithmetic the draw uses.
+    let mut winding = true;
+    for step in 0..8 {
+        let seed = step as f64 * 0.37;
+        let basis = harness.call("craterBasis", &[json!(seed)])?;
+        let right = &basis["right"];
+        let up = &basis["up"];
+        let (rx, ry, rz) = (
+            f64_of(right[0].clone()),
+            f64_of(right[1].clone()),
+            f64_of(right[2].clone()),
+        );
+        let (ux, uy, uz) = (
+            f64_of(up[0].clone()),
+            f64_of(up[1].clone()),
+            f64_of(up[2].clone()),
+        );
+        let unit = (rx * rx + ry * ry + rz * rz - 1.0).abs() < 1e-9
+            && (ux * ux + uy * uy + uz * uz - 1.0).abs() < 1e-9;
+        let on_ground = ry.abs() < 1e-9 && uy.abs() < 1e-9;
+        let square = (rx * ux + ry * uy + rz * uz).abs() < 1e-9;
+        // The cross product's y component, which is the side the quad is visible from.
+        let visible_from_above = rz * ux - rx * uz;
+        if !(unit && on_ground && square && visible_from_above > 0.999) {
+            winding = false;
+            eprintln!(
+                "art winding case: seed={seed} right={right:?} up={up:?} \
+                 unit={unit} on_ground={on_ground} square={square} \
+                 visible={visible_from_above}"
+            );
+        }
+    }
+    out.winding = winding;
+
+    // ---- the player's own reaction -----------------------------------------
+    // The camera's knock and the HUD's flash, read where the camera and the HUD are
+    // handed them: the energy the offset is scaled by, and the fraction of a full
+    // flash. The field is emptied for this (`density 0`), so no device -- the herd's or
+    // anyone's -- can add a bang of its own while the two are being compared.
+    harness.eval("goats.tuning.set(\"explosions.mine.density\", 0)")?;
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0)")?;
+    harness.eval("sceneResetDevices()")?;
+    harness.command("heal")?;
+    harness.command("stop")?;
+    // A bang two metres off: inside the blast's own radius, so it is a knock and a
+    // bruise both.
+    harness.eval("blast(\"mine\", goat.px + 2, goat.pz, 3.1, 0)")?;
+    drive_burst(harness, 1)?;
+    let near = harness.call("sceneExplosions", &[])?;
+    let near_shake = f64_of(near["shake"].clone());
+    let near_hurt = f64_of(near["hurt"].clone());
+    // ...and it gives itself back: half a second of frames is well past the fifth of a
+    // second the default 0.26 m takes.
+    for _ in 0..4 {
+        drive_burst(harness, 9)?;
+    }
+    let faded = harness.call("sceneExplosions", &[])?;
+    let faded_shake = f64_of(faded["shake"].clone());
+    let faded_hurt = f64_of(faded["hurt"].clone());
+    // The same bang thirty metres out, read straight after it happens so nothing else
+    // could have moved either number: the falloff is the whole reason the knock says
+    // anything about where the bang was.
+    harness.eval("blast(\"mine\", goat.px + 30, goat.pz, 5.9, 0)")?;
+    let far = f64_of(harness.call("sceneExplosions", &[])?["shake"].clone());
+    out.reaction = near_shake > 0.0
+        && near_hurt > 0.0
+        && faded_shake == 0.0
+        && faded_hurt == 0.0
+        && far > 0.0
+        && far < near_shake * 0.5;
+    if !out.reaction {
+        eprintln!(
+            "art reaction case: near_shake={near_shake} near_hurt={near_hurt} \
+             faded_shake={faded_shake} faded_hurt={faded_hurt} far={far}"
+        );
+    }
+    harness.eval("goats.tuning.set(\"explosions.mine.density\", 0.012)")?;
+    harness.eval("goats.tuning.set(\"explosions.trap.chance\", 0.04)")?;
+
+    harness.eval("fxTop = 0")?;
+    harness.eval("goats.tuning.set(\"explosions.mine.tell\", 3)")?;
+    harness.eval("goats.tuning.set(\"explosions.crater.scorch\", 1)")?;
+    harness.eval("goats.tuning.set(\"explosions.chainDepth\", 1)")?;
     Ok(out)
 }
 
@@ -2523,8 +2906,10 @@ struct Sync {
     pose_throttled: bool,
     peer_added: bool,
     peer_left: bool,
+    peer_height: bool,
     world: bool,
     mirror: bool,
+    flung_height: bool,
     weather_mirror: bool,
     streams_mirror: bool,
     eaten_mirror: bool,
@@ -2541,7 +2926,10 @@ struct Sync {
 }
 
 /// The snapshot a hosting server sends a client, verbatim.
-const WORLD_EVENT: &str = r#"{"type":"world","weather":{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5},"streams":{"weather":111,"bots":222,"food":333,"audio":444},"eaten":[{"key":4242,"left":12.5}],"bots":[{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0},{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2}]}"#;
+/// The snapshot a hosting server sends a client, verbatim. `py` is on both rows
+/// because M19f put it on the wire: `Gait::Flung` and a fraction say *how* a goat is
+/// tumbling, and the height is the one part of the arc only the owner knows.
+const WORLD_EVENT: &str = r#"{"type":"world","weather":{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5},"streams":{"weather":111,"bots":222,"food":333,"audio":444},"eaten":[{"key":4242,"left":12.5}],"bots":[{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"flung","variant":0,"py":240},{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2,"py":0}]}"#;
 
 /// The same snapshot with only the two parts M19e added: the ground the host has cratered and
 /// the devices it has seen go off. The bots are the same two `WORLD_EVENT` carries -- a case
@@ -2549,7 +2937,7 @@ const WORLD_EVENT: &str = r#"{"type":"world","weather":{"kind":"rain","cloudines
 /// these cases say about it is `null`, `[]` or a value.
 fn world_wire(craters: &str, spent: &str) -> String {
     format!(
-        r#"{{"type":"world","weather":{{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5}},"streams":{{"weather":111,"bots":222,"food":333,"audio":444}},"eaten":[],"bots":[{{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0}},{{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2}}],"craters":{craters},"spent":{spent}}}"#
+        r#"{{"type":"world","weather":{{"kind":"rain","cloudiness":0.9,"rain_amount":0.8,"wind_x":1.5,"wind_z":-0.5,"wind_sway":1.2,"world_time":21.5}},"streams":{{"weather":111,"bots":222,"food":333,"audio":444}},"eaten":[],"bots":[{{"index":0,"x":9,"z":9,"yaw":0,"phase":0.5,"gait":"walk","variant":0,"py":0}},{{"index":1,"x":-9,"z":-9,"yaw":1,"phase":0.25,"gait":"idle","variant":2,"py":0}}],"craters":{craters},"spent":{spent}}}"#
     )
 }
 
@@ -2644,6 +3032,48 @@ fn sync_block(harness: &mut Harness) -> Result<Sync, String> {
             && f64_of(list[0]["tz"].clone()) == 6.0
             && list[0]["gait"] == json!("trot")
     });
+
+    // The flung *height* (M19f). A peer's arc is its own client's, so the fraction and
+    // the height travel together and the height is applied where it arrives: a
+    // parabola whose apex is eased is a lower parabola, and the second snapshot below
+    // is a *descent* the record has to show rather than meet halfway.
+    net_feed(
+        harness,
+        r#"{"type":"peer","name":"alice","state":{"x":5,"z":6,"yaw":1,"phase":0.5,"speed":2,"gait":"flung","py":2.5}}"#,
+    )?;
+    let aloft = harness.call("scenePeers", &[])?;
+    // And it is the *draw* that uses it: the same pose at two heights comes out that
+    // far apart in what was drawn, which no other number in the frame can do.
+    let drawn_at = |harness: &mut Harness, height: f64| -> Result<f64, String> {
+        net_feed(
+            harness,
+            &format!(
+                r#"{{"type":"peer","name":"alice","state":{{"x":5,"z":6,"yaw":1,"phase":0.5,"speed":2,"gait":"flung","py":{height}}}}}"#
+            ),
+        )?;
+        harness.call("drawPeers", &[json!(0xffff_ffffu32)])?;
+        let handle = f64_of(harness.eval("PEERS[0].model")?);
+        Ok(harness
+            .observe()?
+            .bot_draw
+            .into_iter()
+            .find(|d| d.model as f64 == handle)
+            .map(|d| d.y)
+            .unwrap_or(f64::NAN))
+    };
+    let high = drawn_at(harness, 2.5)?;
+    let low = drawn_at(harness, 0.4)?;
+    let descended = harness.call("scenePeers", &[])?;
+    sync.peer_height = (high - low - 2.1).abs() < 0.05
+        && aloft
+            .as_array()
+            .is_some_and(|list| f64_of(list[0]["py"].clone()) == 2.5)
+        && descended
+            .as_array()
+            .is_some_and(|list| f64_of(list[0]["py"].clone()) == 0.4);
+    if !sync.peer_height {
+        eprintln!("peer height case: high={high} low={low} aloft={aloft:?}");
+    }
     net_feed(harness, r#"{"type":"left","name":"alice"}"#)?;
     sync.peer_left = harness
         .call("scenePeers", &[])?
@@ -2664,6 +3094,21 @@ fn sync_block(harness: &mut Harness) -> Result<Sync, String> {
             && f64_of(list[1]["z"].clone()) == -9.0
             && list[1]["gait"] == json!("idle")
     });
+    // The flung height (M19f), through the snapshot and back out again: the host says a
+    // bot is 240 cm up, the client's bot is 2.4 m up, and the row it would publish says
+    // 240 again -- which is the whole of the field, quantisation included. The row is
+    // read before any frame runs, because a host would otherwise simulate the arc on.
+    sync.flung_height = f64_of(mirrored[0]["py"].clone()) == 240.0
+        && f64_of(harness.eval("BOTS[0].py")?) == 2.4
+        && harness.eval("BOTS[0].mode")? == json!("flung");
+    if !sync.flung_height {
+        eprintln!(
+            "flung height case: row={:?} py={:?} mode={:?}",
+            mirrored.as_array().map(|list| list[0].clone()),
+            harness.eval("BOTS[0].py")?,
+            harness.eval("BOTS[0].mode")?,
+        );
+    }
     let weather = harness.call("sceneWeatherState", &[])?;
     sync.weather_mirror = weather["kind"] == json!("rain")
         && f64_of(weather["rain_amount"].clone()) == 0.8

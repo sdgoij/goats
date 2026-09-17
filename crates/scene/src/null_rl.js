@@ -38,6 +38,10 @@
         { name: 'GoatRun', dur: 0.5 },
         { name: 'GoatJump', dur: 1.16667 },
         { name: 'GoatJump2', dur: 1.33333 },
+        // The clip M19f added to `goat.blend`: rootless in the sense that the *arc* in
+        // `goat.js` owns the height, and the tumble is the clip's own -- so the scene
+        // takes the real path here rather than the placeholder roll.
+        { name: 'GoatFlung', dur: 2.0 },
         { name: 'GoatSleep', dur: 8.0 },
         { name: 'GoatSleep2', dur: 8.0 },
         { name: 'GoatDeath', dur: 2.33333 },
@@ -94,6 +98,9 @@
         renderTextureSize: () => ({ x: 0, y: 0 }),
         beginTextureMode: noop, endTextureMode: noop,
         makeTexture: () => 0,
+        loadTexture: () => -1, unloadTexture: noop,
+        textureWidth: () => 0, textureHeight: () => 0,
+        setTextureFilter: noop,
 
         // Audio: devices "open" and handles are handed out, but nothing plays.
         initAudioDevice: noop, closeAudioDevice: noop,
@@ -104,10 +111,14 @@
         setMusicVolume: noop, setMusicPitch: noop, isMusicPlaying: () => false,
         musicTimeLength: () => 0, musicTimePlayed: () => 0,
 
-        // Drawing: nothing.
+        // Drawing: nothing. The effect atlases (M19f) are made and sampled through the
+        // texture bindings above even here, so the headless world takes the same path
+        // the client does and simply draws none of it.
         beginDrawing: noop, endDrawing: noop, clearBackground: noop,
         beginMode3D: noop, endMode3D: noop,
         drawCube: noop, drawLine: noop, drawPoint3D: noop, drawBillboard: noop,
+        drawBillboardRec: noop, drawSphereEx: noop, drawQuad3D: noop,
+        beginBlendMode: noop, endBlendMode: noop,
         drawModelEx: noop,
         drawRectangle: noop, drawRectangleGradientV: noop, drawRectangleLines: noop,
         drawText: noop, takeScreenshot: noop,

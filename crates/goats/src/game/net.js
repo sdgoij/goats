@@ -279,6 +279,11 @@ function netPeerState(name, state) {
             model: handle,
             x: state.x, z: state.z, yaw: state.yaw, phase: state.phase,
             tx: state.x, tz: state.z, tyaw: state.yaw, tphase: state.phase,
+            // The flung arc's height (M19f), in metres above the ground under it. Its
+            // own field rather than part of the easing below: a parabola whose apex is
+            // eased is a lower parabola, so this is applied *directly*, every
+            // snapshot.
+            py: netPeerHeight(state),
             gait: state.gait,
             shot: netPeerShot(state.gait),
         });
@@ -296,7 +301,17 @@ function netPeerState(name, state) {
     p.tz = state.z;
     p.tyaw = state.yaw;
     p.tphase = state.phase;
+    // ...and neither is the flung height: `py` is applied where it arrives, for the
+    // reason above and one more -- the arc's shape is the host's simulation, and a
+    // smoothed copy of a parabola is a different, lower trajectory.
+    p.py = netPeerHeight(state);
     p.gait = state.gait;
+}
+
+// A peer's height above its ground, from the frame. Absent (an older scene, or a goat
+// that has never been airborne) is zero.
+function netPeerHeight(state) {
+    return typeof state.py === "number" && state.py > 0 ? state.py : 0;
 }
 
 // Ease every remote goat toward its last snapshot. Phase and yaw take the short
@@ -338,9 +353,6 @@ function peerRole(p) {
     if (p.gait === "dead" && CLIP.death) return "death";
     if (p.gait === "sleep" && CLIP.sleep) return "sleep";
     if (p.gait === "eat" && CLIP.eat) return "eat";
-    // A flung peer is flown by *its own* client (M19c) and arrives here as a gait
-    // and a phase; the clip's root motion is what carries it off the ground, which
-    // is why the pose datagram needs no height. Same fallback as `clipRole`.
     if (p.gait === "flung") return CLIP.flung ? "flung" : "jump";
     if (p.gait === "jump" && CLIP.jump) return "jump";
     if (p.gait === "run" && CLIP.run) return "run";
@@ -359,9 +371,12 @@ function drawPeers(tint) {
             rl.drawCube(p.x, terrainHeight(p.x, p.z) + 0.06, p.z, 1.3, 0.012, 1.75, ambShadow);
         }
         poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);
-        // A flung peer rolls like our own goat does -- `p.phase` is the fraction
-        // through the arc, and the roll is the placeholder's on the same rule.
-        const py = terrainHeight(p.x, p.z) + groundOffset;
+        // A flung peer is flown by *its own* client (M19c) and arrives here as a gait,
+        // a phase and a height (M19f): the fraction poses and rolls it, the clip's own
+        // tumble is the clip's, and `p.py` is where the arc had it -- without which a
+        // mirrored goat somersaults on the grass. The roll stays the placeholder's on
+        // the same rule as `clipRole`'s.
+        const py = terrainHeight(p.x, p.z) + groundOffset + p.py;
         if (p.gait === "flung") {
             const d = flingDraw(p.x, py, p.z, p.yaw, flingTumble(p.phase),
                 TUNING.explosions.fling.pivot);
@@ -385,7 +400,7 @@ function drawPeersShadow() {
         // the depth pass draws the pose `drawPeers` left in the mesh last frame,
         // so a remote goat is skinned once a frame rather than twice. The roll is
         // the same as the visible pass leaves it, for the same reason.
-        const py = terrainHeight(p.x, p.z) + groundOffset;
+        const py = terrainHeight(p.x, p.z) + groundOffset + p.py;
         if (p.gait === "flung") {
             const d = flingDraw(p.x, py, p.z, p.yaw, flingTumble(p.phase),
                 TUNING.explosions.fling.pivot);
@@ -427,6 +442,11 @@ function netMaybePublish() {
         phase: netRound3(netPeerPhase()),
         speed: netRound3(curSpeed),
         gait: mode,
+        // The flung arc's height, in metres (M19f): the one thing a gait and a phase
+        // could not say. Zero for every other mode, so a grounded goat costs a number
+        // rather than nothing -- and it is what a viewer needs to put the tumble where
+        // the throw actually went.
+        py: netRound3(mode === "flung" ? goat.py : 0),
     });
 }
 
@@ -478,6 +498,10 @@ function sceneWorldBots() {
             phase: netRound3(netBotPhase(b)),
             gait: b.mode,
             variant: variant === undefined ? 0 : variant,
+            // The flung arc's height (M19f) in **centimetres**, which is the unit
+            // `BotState::py` is typed in -- the scene is where a bot's height lives,
+            // so this is the only conversion there is.
+            py: Math.round(b.py * 100),
         });
     }
     return out;
@@ -529,6 +553,11 @@ function netApplyWorld(bots, weather, streams, eaten, craters, spent) {
         b.yaw = s.yaw;
         b.mode = s.gait;
         b.phase = s.phase;
+        // Where the host had it, whatever the gait (M19f). Not the flung gait's private
+        // field: a bot killed in the air keeps falling from where it was killed
+        // (M19c2), and its corpse is a `dead` row with a height on it. An older row
+        // without the field is a grounded bot, which is what zero means.
+        b.py = (s.py === undefined ? 0 : s.py) / 100;
         // A one-shot gait is posed from its own clock in `drawBots`, so point
         // that clock at the fraction the server resolved.
         if (s.gait === "jump") {
@@ -538,13 +567,11 @@ function netApplyWorld(bots, weather, streams, eaten, craters, spent) {
             b.eatTime = s.phase;
             b.eatDur = 1;
         } else if (s.gait === "flung") {
-            // The arc belongs to the host, and only the fraction travels: point the
-            // clock at it (as above) so the pose and the roll read the same here.
-            // The *height* is the host's too and does not travel yet, so a mirrored
-            // bot tumbles on the ground -- see the M19c note in ROADMAP.md.
+            // The arc belongs to the host, and the fraction travels (M19f): point the
+            // clock at it (as above) so the pose and the roll read the same here. The
+            // height is in `b.py`, set above with every other row's.
             b.flyTime = s.phase;
             b.flyFlight = 1;
-            b.py = 0;
         } else if (s.gait === "dead") {
             // A death is the host's, clip and all: the fraction is the pose, and the
             // body lies at the position the snapshot carries. Getting up again is the
@@ -637,7 +664,7 @@ function scenePeers() {
     const out = [];
     for (let i = 0; i < PEERS.length; i++) {
         const p = PEERS[i];
-        out.push({ name: p.name, x: p.x, z: p.z, tx: p.tx, tz: p.tz, gait: p.gait, phase: p.phase });
+        out.push({ name: p.name, x: p.x, z: p.z, tx: p.tx, tz: p.tz, gait: p.gait, phase: p.phase, py: p.py });
     }
     return out;
 }
