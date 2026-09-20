@@ -25,13 +25,14 @@ env:
 jobs:
   # The scene tests are Rust (M15): `crates/harness` evaluates the client's exact
   # scene on Slag against a recording `rl` stub, so the suite needs no Node, no
-  # raylib and no display. Slag is slow unoptimized, so the long runs are
-  # `#[ignore]`d and driven in release -- which is also what makes the engine's own
-  # speed visible as a number.
+  # raylib and no display. Slag is slow unoptimized, so the harness's long cases
+  # are `#[ignore]`d for a local debug run and CI runs the whole crate in release
+  # with `--include-ignored` -- one pass over everything, in the profile the
+  # engine ships in, which is also what makes the engine's own speed a number.
   test:
     name: Scene tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -41,21 +42,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The client crate is left out: it links raylib, and the build job below is
-      # the one that installs the build dependencies for it.
-      - name: Test the workspace
-        run: cargo test --workspace --exclude goats
-      # The scene's own suite: the 4050-frame scripted timeline, the 47 mod cases
-      # (the synthetic tables, the checked-in example fixture and the mod added
-      # after the freeze) and the birds flock.
+      # the one that installs the build dependencies for it. The harness is left
+      # out too -- it is the release step below -- so the debug pass is the crates
+      # that are fast unoptimized, where debug's overflow and `debug_assert`
+      # checks are worth having and cost nothing.
+      - name: Test the crates that need no engine
+        run: cargo test --workspace --exclude goats --exclude harness
+      # The scene's own suite: the 4050-frame scripted timeline, the mod cases (the
+      # synthetic tables, the checked-in example fixtures and the mod added after
+      # the freeze), the birds flock, the sky and the skinning. `--include-ignored`
+      # is the point: the long cases are ignored for a local debug run, and this
+      # runs them too, so nothing is covered only when someone remembers a second
+      # command.
       - name: Test the scene on the engine
-        run: cargo test --release -p harness -- --ignored --nocapture
+        run: cargo test --release -p harness -- --include-ignored --nocapture
 
   # The game embeds every asset it needs, so each release is a single binary.
   build:
     name: Build (${{ matrix.name }})
     needs: test
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
