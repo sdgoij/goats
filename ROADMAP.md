@@ -3213,8 +3213,10 @@ fast path, so a game with no explosives mods pays nothing for the gate.
 We own the engine, so this started as a list of *things to add* rather than a list of
 things to work around -- and the list was short because most of it was already there.
 Everything on it landed upstream as M19a (`slag` `8a4209fa`), so the scene can call
-all of it today; the workspace has since pinned `4e019a7d`, which is M19a plus the
-frame-cost work (open question 22). The audit below is taken from the engine's own
+all of it today; the workspace has since moved past it twice more -- `4e019a7d`,
+which is M19a plus the frame-cost work (open question 22), and now `de980d4`, the
+generational nursery plus the cuts to the minor that it made possible (`PERF.md`,
+appendix B, measures both). The audit below is taken from the engine's own
 binding table (`crates/runtime/src/raylib.rs`, the `FUNCTIONS` list), which is the
 authoritative surface list -- the README's `rl` prose summarises it and now names the
 texture, image and blend bindings it used to omit.
@@ -3647,8 +3649,9 @@ this milestone is a consequence of these, so they come first.
     (M15, "What the port taught us about the engine").
 22. **The engine took the frame-cost profile, and the client has since taken the
     last item.** The report (`PERF.md`) landed upstream as seven
-    commits, all of them inside the revision the workspace pins (`slag`
-    `4e019a7d`, moved by `31bc9eb`): the release profile it asked to keep (§7.1
+    commits, all of them inside `4e019a7d`, which the lock moved to in `31bc9eb` --
+    the pin has moved twice since, to the nursery and then to `de980d4`, and
+    `PERF.md` appendix B measures both: the release profile it asked to keep (§7.1
     item 0), the two global-read fixes (§7.1 item 1 -- the value cell now serves
     the declarative record, so the corpus row for a top-level `const` goes
     52.5 ms -> 2.5 ms per 1M reads, and the `clean_chain` gate is per name now,

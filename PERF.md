@@ -999,3 +999,89 @@ fatguy asks once each now and writes its contact into module scratch
 its job the clusters go and `worst` falls to the scene's own high-water mark —
 currently the ~72 ms anchor rebuild, which is the number the scene should then be
 held to.
+
+### The nursery landed, and it is measured (engine `58b52dd`)
+
+The engine grew a generational nursery (`58b52dd`, "feat: add a generational nursery
+collector": an O(young) minor, in-place promotion, a young-restricted stack scan and
+a remembered set, with the minor paced by the young cohort and the major by retained
+set growth). The lock moved to it, and the same protocol was re-run.
+
+The end-to-end numbers are ambiguous on this machine — three runs gave `slow` 59 /
+110 / 77 and `slowms` 3544 / 3786 / 2835 ms against the baseline's 81 / 5880 and
+38 / 2380 — because a cross-session comparison here carries the contention above
+(×1.6 on every phase) on top of the change. What is *not* ambiguous is the engine's
+own per-collection telemetry, which the client now turns on with `--gc-trace`
+(`crates/goats/src/main.rs`, through the embedding context's own `set_gc_trace` —
+`slag` stays the only engine entrypoint the client names): 92 s of the same
+protocol, 1126 collections:
+
+| level | n | median pause | p95 | max | young (median) |
+| --- | --- | --- | --- | --- | --- |
+| minor | 1108 | **3.24 ms** | 3.87 ms | 6.23 ms | 8606 |
+| major | 18 | 3.59 ms | 5.46 ms | 5.46 ms | — |
+
+Total pause 3614 ms in ~92 s, and **no collection over 6.3 ms**. The baseline's
+failures were single stalls of 50–670 ms in `perf`'s windows, which is what the old
+full mark-sweep cost; there is nothing of that size left in the collector. Two
+consequences:
+
+- **Pause no longer tracks the retained set**, which is what the commit claimed and
+  what the numbers show: a minor sweeps ~8.6k young boxes for ~3 ms whether the
+  world is a minute or ten minutes old.
+- **The stutter that remains is not the collector.** `perf` still reports 59–110
+  frames over 30 ms per run, one of them 894 ms, and a collection cannot exceed
+  6.3 ms. The scene's own high-water mark is the ~72 ms anchor rebuild (a step, or a
+  blast flinging the player across one); everything else of that size is the
+  machine (a full disk was measured in this same session, and an engine build ran
+  beside these runs). Those are the next two things to chase, and the discipline is
+  the same: `slow`/`slowms` for the frame, `--gc-trace` to exonerate the collector.
+
+The allocation rate the nursery is eating is worth recording too: ~8.6k young boxes a
+minor, 12 minors a second — **~100k allocations a second** from the scene. That is why
+the mod-side allocation diet below measured under the noise: the fatguy's per-frame
+scratch is ~1% of it.
+
+### The minor's own cuts, measured (engine `de980d4`)
+
+Eight commits landed after the nursery: the minor's unread passes and its duplicated
+function roots (`73c55a9`), a closure's environment tied to its box and try-block
+envs elided (`1536367`), retired lexical slots reused and reclaimed (`a3485f6`,
+`ca9782d`, `16650e1`, `1a48b91`), a try frame pushed and popped in machine code
+(`7a18ef1`), and the derived read caches dropped before a mark (`de980d4`). The lock
+moved to `de980d4` and the same protocol ran twice — on a quiet machine this time,
+which the stable phases say (`food` 0.12, `audio` 0.20, against the ×1.6 contended
+pair above), so these two runs are comparable to each other and to the nursery's:
+
+| | `58b52dd` (nursery) | `de980d4` run 1 | run 2 |
+| --- | --- | --- | --- |
+| minor, median | 3.24 ms | **1.40 ms** | **1.45 ms** |
+| minor, p95 | 3.87 ms | 1.89 ms | 1.89 ms |
+| minor, max | 6.23 ms | 3.40 ms | 3.24 ms |
+| majors, n | 18 | 11 | 11 |
+| major, median / max | 3.59 / 5.46 ms | 3.56 / 6.02 ms | 2.85 / 5.95 ms |
+| collection time per second | 39 ms | **18.8 ms** | **18.4 ms** |
+| young per minor (median) | 8606 | 8510 | 8695 |
+| minors a second | 12.2 | 13.2 | 12.6 |
+| `perf` `slow` / `slowms` | 59–110 / 2835–3786 ms | **27 / 1034 ms** | **20 / 785 ms** |
+| `perf` `worst` | 894 ms | **90 ms** | **94 ms** |
+
+Read together: the minor is ~2.3× cheaper and the collector's share of the wall
+clock is ~2.1× smaller, at the *same* cohort size — young per minor did not move, so
+the cuts took cost out of the pass rather than out of what it collects. Majors fell
+by a third, which is the same statement one level up (the retained set grows more
+slowly, so the trigger fires less often).
+
+**The high-water mark has moved off the collector**, which is what the baseline
+asked for. `worst` is now 90–94 ms against the nursery's 894 ms — and that 90 ms is
+the scene's own business: the ~72 ms anchor rebuild (a step, or a blast flinging the
+player across one) plus this machine's jitter. `slow`/`slowms` fell by ~3.5× on the
+same protocol, so what is left has the shape of that rebuild rather than of a
+collection. The next thing to chase is therefore scene-side, and it is now the only
+thing of its size in the frame.
+
+Two things did *not* move, and they are the record's own next leads: young per minor
+(8.5–8.7k) and the allocation rate it implies — ~110k allocations a second from the
+scene's own code, unchanged by the slot-reuse work, because that work reuses
+*runtime* slots rather than the boxes the scene's own objects and strings make.
+`--gc-trace` reports it; the nursery is simply eating it.

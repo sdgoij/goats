@@ -258,7 +258,7 @@ dependencies = [
 [[package]]
 name = "byteblock"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 
 [[package]]
 name = "byteorder"
@@ -665,7 +665,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "crux"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "byteblock",
  "half",
@@ -1826,7 +1826,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jit"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "cranelift-codegen",
  "cranelift-control",
@@ -1964,7 +1964,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lexer"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "crux",
  "syntax",
@@ -2753,7 +2753,7 @@ checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 [[package]]
 name = "parser"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "crux",
  "lexer",
@@ -3099,7 +3099,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "regexp"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "crux",
  "unicode",
@@ -3171,7 +3171,7 @@ dependencies = [
 [[package]]
 name = "runtime"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "crux",
  "lexer",
@@ -3549,7 +3549,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slag"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "crux",
  "jit",
@@ -3692,7 +3692,7 @@ dependencies = [
 [[package]]
 name = "syntax"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "crux",
 ]
@@ -4068,7 +4068,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "unicode"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "unicode-id",
  "unicode-normalization",
@@ -4196,7 +4196,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 [[package]]
 name = "wasm"
 version = "0.1.0"
-source = "git+https://github.com/sdgoij/slag#4e019a7d2a391e0a85fd9b16347223cecdb72bca"
+source = "git+https://github.com/sdgoij/slag#de980d4683c15b5ebd4911a4f81b982940e1f733"
 dependencies = [
  "byteblock",
  "cranelift-codegen",

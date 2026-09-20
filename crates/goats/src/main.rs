@@ -177,7 +177,7 @@ fn scene_function_if_present(context: &Context, name: &str) -> Option<JsValue> {
 }
 
 const USAGE: &str = "\
-goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull]
+goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull] [--gc-trace]
 
   --mods DIRECTORY   load mods from DIRECTORY instead of the default search
                      ($GOATS_MODS, then mods/ next to the executable, then
@@ -187,6 +187,9 @@ goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull]
   --pull             fetch the world mods a host runs and this client lacks when
                      a join is refused for them, install them, and retry once;
                      also serve this client's own world mods to a fetching joiner
+  --gc-trace         print one line per collection to stderr, from the engine's
+                     own telemetry (level, pause_us, live, swept, young): the
+                     pause structure, which a frame average cannot see
   -h, --help         this text";
 
 /// How long to wait for an editor's burst of writes to settle before reloading.
@@ -198,6 +201,7 @@ struct Options {
     no_mods: bool,
     watch: bool,
     pull: bool,
+    gc_trace: bool,
     help: bool,
 }
 
@@ -207,6 +211,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
         no_mods: false,
         watch: false,
         pull: false,
+        gc_trace: false,
         help: false,
     };
     let mut args = args;
@@ -216,6 +221,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--no-mods" => options.no_mods = true,
             "--watch" => options.watch = true,
             "--pull" => options.pull = true,
+            "--gc-trace" => options.gc_trace = true,
             "--mods" => {
                 options.mods_dir = Some(PathBuf::from(
                     args.next().ok_or("--mods needs a directory")?,
@@ -620,6 +626,16 @@ fn main() {
     }
 
     let mut context = Context::new().unwrap();
+    // The engine's per-collection telemetry, through the embedding context -- the
+    // engine's own `Context::set_gc_trace`, so no crate of its internals is named
+    // here. One line per collection on stderr (`gc-trace minor pause_us=...
+    // live=...->... swept=... young=...`), which is the pause structure a frame
+    // average cannot show; turned on before the scene loads so that is traced too
+    // (PERF.md, appendix B).
+    if options.gc_trace {
+        context.set_gc_trace(true);
+        println!("[gc] tracing every collection to stderr");
+    }
     let callbacks = HostCallbacks {
         console_log: Some(Box::new(|text| eprintln!("[js] {text}"))),
         ..HostCallbacks::default()
