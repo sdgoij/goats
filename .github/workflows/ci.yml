@@ -106,10 +106,15 @@ jobs:
       - name: Build
         run: cargo build --release --workspace
 
-      # The rest of the workspace's debug tests -- the scene suite itself is the
-      # `test` job's `--ignored` run, which needs the release profile.
-      - name: Test the workspace
-        run: cargo test --workspace
+      # The client's own unit tests -- the one thing the `test` job cannot reach,
+      # because it leaves out the crate that links raylib (whose build dependencies
+      # are installed above, for the build). Everything else has passed there
+      # already: this job needs it. Release, so it reuses the artifacts the step
+      # above just built; a debug run would compile the whole dependency tree again,
+      # raylib included. The two ignored cases are the ones that need real
+      # hardware: a sound card and a microphone.
+      - name: Test the client
+        run: cargo test --release -p goats
 
       # Ship the licence, the readme and the mod API reference alongside the
       # self-contained binary, plus the checked-in example mods as zips in `mods/`
