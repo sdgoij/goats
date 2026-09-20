@@ -531,13 +531,47 @@ function modBotHandle(b) {
     };
 }
 
+// The handles are kept, not rebuilt: one per (bot, position), refreshed on every read.
+// A handle is an object and four closures around the bot, and a closure that captures a
+// value costs its function, its environment and the captured cell -- so a seven-bot
+// `list()` measured 99 boxes. One mod asking once a frame spent 5.9k allocations a second
+// on that, and `list`/`get` are what every mod reads the herd through (PERF.md appendix
+// B). The verbs act on the bot either way; only the five numbers have to be rewritten.
+//
+// `MOD_BOT_OF[i] === BOTS[i]` keeps a handle bound to its bot when the herd is resized
+// under it: same position, different bot, new handle. APIv1.md §4.8 documents that what
+// a read hands back is the scene's own and is reused -- and it has to be, because these
+// are the objects the scene writes the herd's state into.
+const MOD_BOT_LIST = [];
+const MOD_BOT_VIEW = [];
+const MOD_BOT_OF = [];
+
+function modBotView(b, i) {
+    let h = MOD_BOT_VIEW[i];
+    if (MOD_BOT_OF[i] !== b) {
+        h = MOD_BOT_VIEW[i] = modBotHandle(b);
+        MOD_BOT_OF[i] = b;
+    }
+    h.x = b.x;
+    h.z = b.z;
+    h.yaw = b.yaw;
+    h.mode = b.mode;
+    h.satiety = b.satiety;
+    return h;
+}
+
 const goatsBots = {
     count: function () { return BOTS.length; },
     setCount: function (n) { return tuningSet("herd.count", n); },
-    list: function () { return BOTS.map(modBotHandle); },
+    list: function () {
+        const n = BOTS.length;
+        for (let i = 0; i < n; i++) MOD_BOT_LIST[i] = modBotView(BOTS[i], i);
+        MOD_BOT_LIST.length = n;
+        return MOD_BOT_LIST;
+    },
     get: function (index) {
         const b = BOTS[index];
-        return b === undefined ? null : modBotHandle(b);
+        return b === undefined ? null : modBotView(b, index);
     },
 };
 

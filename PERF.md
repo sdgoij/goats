@@ -1155,3 +1155,63 @@ the field for it — keeping the mesh in local coordinates and moving it, so a s
 computes one band instead of 2401 vertices.
 
 `terrainprobe` was temporary and is not in the tree; the numbers above are its output.
+
+### The allocation rate: what the mods read (scene-side)
+
+The collector's section above leaves one number open -- the ~8.5k young boxes a minor,
+which is the scene's own allocation rate. It is **61.7k boxes a second** before this
+work, and **the two mods are ~60% of it**.
+
+**Protocol, and a pitfall.** `--gc-trace` prints a line per collection. A window is 10 s
+of settle and then 24 s, bracketed by two console commands (`ping` answers `ok pong`, so
+the trace lines between the two replies are exactly the window, and `state` either side
+gives the frame count). The rate is `minors/s x young per minor`, both read from the
+window. The pitfall: **a window that follows a config-changing command in the same run
+collapses** -- `mod disable` or `setting shadow 0` between windows left the next one with
+1 minor in 1363 frames, where the same configuration alone gives ~100. One configuration
+per process, applied before the settle, is the only shape that reproduced. (The first
+version of this measurement summed `stack_words`, because the last field of a trace line
+is not `young`; the numbers here are the corrected ones, and the pre-fix 61.7k agrees with
+the 61.8k this appendix recorded before the work started -- which is the check that the
+protocol is right.)
+
+| configuration | minors/s | young/minor | boxes/s |
+| --- | --- | --- | --- |
+| before this work (both mods, herd 7) | 7.08 | 8708 | **61.7k** |
+| after (both mods, herd 7) | 4.42 | 8521 | **37.6k** |
+| mods disabled | 2.96 | 8411 | **24.9k** |
+| mods disabled, `herd.count 0` | 1.04 | 8645 | **8.6k** |
+
+The two mods cost 36.8k a second before and 12.7k after, **-65%**. The scene's own frame
+is now the majority: within that 24.9k the **herd is 16.3k** -- the bots' update and draw
+-- and 8.6k is everything else the scene does with no mods and no herd at all.
+
+`goats.bots.list()` was the price of admission. With the fix reverted, ten extra calls a
+frame (600 a second) took the rate from 6.25 to 13.75 minors/s, so **~105 boxes a call**
+for a seven-bot herd. A handle is an object and four closures around a bot, and a closure
+that captures a value costs its function, its environment *and* the captured cell: the
+closures are ~12 of the 14 boxes a bot, not 4 of 5 as reading the source suggests. The
+earlier note in this appendix that "the fatguy's per-frame scratch is ~1% of it" was right
+about the scratch and wrong about the mod -- what a mod *reads* is the cost, and
+`list`/`get`/`state` are what both mods read every frame.
+
+The changes, in minors/s as measured, against the ~8.5k young a minor:
+
+| change | minors/s | boxes/s | what |
+| --- | --- | --- | --- |
+| -- | 7.08 | 61.7k | |
+| `perchTarget` asks `bots.get` for the one bot it sits on | 6.96 | 60.7k | it asked `list()` -- ~105 boxes -- to index one element, every frame, for every perched bird. Small, because few birds are on a bot at once |
+| the flock's pose maths stops allocating | 6.25 | 54.7k | `bodyQuat` built five objects (three axes, two multiplies) and the two wings ten more: 16 a bird a frame. Turning the draw off entirely measured the path at 9.2k of the then-rate, so the quaternions were most of it; they now write into scratch (`qAxisInto`/`qMulInto`/`qRotInto`/`qAxisAngleInto`/`bodyQuatInto`) |
+| the herd handles are pooled | 4.25 | 37.1k | one handle per bot, refreshed per read, and the array is the scene's (`APIv1.md` §4.8). `list()` costs nothing after the first read, and its three callers a frame stop paying |
+| the flock's entity rows are pooled | 4.42 | 37.6k | 13 boxes a call -- *under* this protocol's resolution (the runs agree to ~3%); kept as the same waste, not as a measured win |
+
+**61.7k -> 37.6k boxes a second, -39%**, and the mods' own share down 65%.
+
+What is left, in the order it is worth chasing: the **herd's 16.3k** (the bots' update and
+draw, not yet separated -- that is the next bisect); the mods' remaining 12.7k; and the
+8.6k of everything else, which is the scene's own frame with no mods and no herd.
+
+Two caveats, both about the idle goat: the flock anchors to the *herd* when the player is
+not moving, so the birds' `updateHome` reads the herd every frame here and would
+early-return in play, and a stationary goat also keeps birds perched on bots (the `get`
+path) rather than on the player. Every comparison above is inside this one protocol.

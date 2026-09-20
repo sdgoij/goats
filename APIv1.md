@@ -549,6 +549,15 @@ b.face(yaw);
 On a client in a session, bot state is server-owned (`netWorldLocal()` is
 false); writes are ignored with a note, reads mirror the last snapshot.
 
+`list()` and `get()` hand back objects the **scene owns**: the array, and one handle
+per bot, are reused from call to call, and a handle's five numbers are refreshed on
+every read. Read what you need before the next call, or copy it -- a handle kept across
+frames reports the bot's current state rather than the state it had when it was read,
+and the array follows the herd's size. (The four verbs always acted on the live bot;
+the numbers are what moved.) This is the one read a mod is expected to call in a loop,
+and rebuilding a handle per bot per call cost 99 allocations per `list()` -- see
+PERF.md, appendix B. `goats.player.state()` is a snapshot and still fresh each call.
+
 ### 4.9 Settings
 
 ```js

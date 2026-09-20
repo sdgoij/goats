@@ -1717,7 +1717,7 @@ mod tests {
             .expect("the birds fixture");
 
         assert_eq!(
-            birds.hash, 0xde6c_e231_24a0_7ca4,
+            birds.hash, 0xbb77_c875_8d25_e5a1,
             "the birds digest changed: {}@{}",
             birds.id, birds.version
         );

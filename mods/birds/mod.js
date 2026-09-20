@@ -152,38 +152,84 @@ function hex2(v) { return HEX[clamp(ROUND(v), 0, 255)]; }
 // Compose the orientation of a part into one axis-angle, which is all
 // `drawModelEx` accepts. Conventions: the bird faces local +X, up is +Y and the
 // right wing is +Z; yaw is about Y, pitch about Z, roll about X.
+//
+// Every helper writes into an object the caller owns instead of building one, because
+// this runs once a frame for every drawn bird and it used to allocate its way through
+// the whole pose: `bodyQuat` alone made five objects (three axes and two multiplies) and
+// the two wings made ten more, so a flock of a dozen handed the collector ~200 objects a
+// frame. Turning this draw off measured 12.6k of the scene's ~42k allocations a second.
+//
+// The scratch below is reused, so a result must be read before the next call that uses
+// the same slot -- which is the discipline the draw already keeps: the body quaternion
+// outlives both wing results, and each axis-angle is consumed by its own `drawModelEx`.
+const Q_TMP1 = { x: 0, y: 0, z: 0, w: 1 };
+const Q_TMP2 = { x: 0, y: 0, z: 0, w: 1 };
+const Q_BODY = { x: 0, y: 0, z: 0, w: 1 };
+const AA_BODY = { x: 0, y: 0, z: 0, deg: 0 };
+const AA_WING = { x: 0, y: 0, z: 0, deg: 0 };
+const V_WING = { x: 0, y: 0, z: 0 };
 
-function qAxis(x, y, z, rad) {
+function qAxisInto(out, x, y, z, rad) {
     const s = SIN(rad / 2);
-    return { x: x * s, y: y * s, z: z * s, w: COS(rad / 2) };
+    out.x = x * s;
+    out.y = y * s;
+    out.z = z * s;
+    out.w = COS(rad / 2);
+    return out;
 }
-function qMul(a, b) {
-    return {
-        x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-        y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-        z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-        w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-    };
+
+// `out` may be either input: the four components are read out of `a` and `b` before
+// anything is written.
+function qMulInto(out, a, b) {
+    const x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+    const y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
+    const z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
+    const w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+    out.x = x;
+    out.y = y;
+    out.z = z;
+    out.w = w;
+    return out;
 }
-function qRot(q, v) {
+
+function qRotInto(out, q, vx, vy, vz) {
     const x = q.x, y = q.y, z = q.z, w = q.w;
-    const tx = 2 * (y * v.z - z * v.y);
-    const ty = 2 * (z * v.x - x * v.z);
-    const tz = 2 * (x * v.y - y * v.x);
-    return {
-        x: v.x + w * tx + (y * tz - z * ty),
-        y: v.y + w * ty + (z * tx - x * tz),
-        z: v.z + w * tz + (x * ty - y * tx),
-    };
+    const tx = 2 * (y * vz - z * vy);
+    const ty = 2 * (z * vx - x * vz);
+    const tz = 2 * (x * vy - y * vx);
+    const rx = vx + w * tx + (y * tz - z * ty);
+    const ry = vy + w * ty + (z * tx - x * tz);
+    const rz = vz + w * tz + (x * ty - y * tx);
+    out.x = rx;
+    out.y = ry;
+    out.z = rz;
+    return out;
 }
-function qAxisAngle(q) {
+
+function qAxisAngleInto(out, q) {
     const w = clamp(q.w, -1, 1);
     const s = SQRT(MAX(1e-12, 1 - w * w));
-    if (s < 1e-6) return { x: 0, y: 1, z: 0, deg: 0 };
-    return { x: q.x / s, y: q.y / s, z: q.z / s, deg: (2 * ACOS(w) * 180) / PI };
+    if (s < 1e-6) {
+        out.x = 0;
+        out.y = 1;
+        out.z = 0;
+        out.deg = 0;
+        return out;
+    }
+    out.x = q.x / s;
+    out.y = q.y / s;
+    out.z = q.z / s;
+    out.deg = (2 * ACOS(w) * 180) / PI;
+    return out;
 }
-function bodyQuat(b) {
-    return qMul(qMul(qAxis(0, 1, 0, b.yaw), qAxis(0, 0, 1, b.pitch)), qAxis(1, 0, 0, b.roll));
+
+// Yaw about Y, then pitch about Z, then roll about X. `out` must be a scratch of its
+// own, not one of the two temporaries.
+function bodyQuatInto(out, b) {
+    qMulInto(Q_TMP1, qAxisInto(Q_TMP2, 0, 1, 0, b.yaw), qAxisInto(out, 0, 0, 1, b.pitch));
+    qAxisInto(Q_TMP2, 1, 0, 0, b.roll);
+    qMulInto(out, Q_TMP1, Q_TMP2);
+    return out;
 }
 
 // ---- meshes ---------------------------------------------------------------
@@ -582,8 +628,11 @@ function perchTarget(b) {
         return { x: p.x, z: p.z, y: groundAt(p.x, p.z) + PERCH_H + lift, yaw: p.yaw,
             speed: p.speed || 0 };
     }
-    const bot = goats.bots.list()[b.perch];
-    if (bot === undefined) return null;
+    // One bot, by index: this runs once a frame for every perched bird, and `list()
+    // would build a handle for every bot in the herd -- an object and four closures
+    // each -- to read the one. `get` is the same read for one bot (APIv1 §4.8).
+    const bot = goats.bots.get(b.perch);
+    if (bot === null) return null;
     return { x: bot.x, z: bot.z, y: groundAt(bot.x, bot.z) + PERCH_H, yaw: bot.yaw,
         speed: bot.mode === "run" ? 4 : 0 };
 }
@@ -994,15 +1043,15 @@ function drawFlock(cam) {
             const sh = clamp(1 - lift / 7, 0, 1) * 0.9 * s;
             rl.drawCube(b.x, gy + 0.03, b.z, sh, 0.012, sh * 0.7, SHADOW);
         }
-        const q = bodyQuat(b);
-        const ba = qAxisAngle(q);
+        const q = bodyQuatInto(Q_BODY, b);
+        const ba = qAxisAngleInto(AA_BODY, q);
         const tint = rl.color(200 + ((i * 17) % 56), 200 + ((i * 29) % 56), 200 + ((i * 11) % 56), 255);
         rl.drawModelEx(bodyModel, b.x, b.y, b.z, ba.x, ba.y, ba.z, ba.deg, s, s, s, tint);
         const f = flapFor(b);
         for (let side = -1; side <= 1; side += 2) {
-            const wq = qMul(q, qAxis(1, 0, 0, side > 0 ? -f : f));
-            const wa = qAxisAngle(wq);
-            const pv = qRot(q, { x: SHOULDER.x * s, y: SHOULDER.y * s, z: side * SHOULDER.z * s });
+            const wq = qMulInto(Q_TMP1, q, qAxisInto(Q_TMP2, 1, 0, 0, side > 0 ? -f : f));
+            const wa = qAxisAngleInto(AA_WING, wq);
+            const pv = qRotInto(V_WING, q, SHOULDER.x * s, SHOULDER.y * s, side * SHOULDER.z * s);
             rl.drawModelEx(side > 0 ? wingR : wingL,
                 b.x + pv.x, b.y + pv.y, b.z + pv.z, wa.x, wa.y, wa.z, wa.deg, s, s, s, tint);
         }
@@ -1016,12 +1065,22 @@ function drawFlock(cam) {
 // every frame (APIv1.md §4.16). Nothing is published for this -- it is a client's
 // own view of the birds it is drawing.
 
+// The rows are read on the spot -- `modEntitiesNear` runs the callback and walks the
+// rows in the same call -- so they are pooled and refilled rather than rebuilt: a row
+// and its array, per bird, per query, was 13 allocations a frame for the one asker
+// (PERF.md appendix B).
+const ENTITY_ROWS = [];
+
 goats.entities.offer("flock", function () {
-    const rows = [];
     for (let i = 0; i < BIRDS.length; i++) {
-        rows.push([BIRDS[i].x, BIRDS[i].y, BIRDS[i].z, BODY_R]);
+        const row = ENTITY_ROWS[i] === undefined ? (ENTITY_ROWS[i] = [0, 0, 0, 0]) : ENTITY_ROWS[i];
+        row[0] = BIRDS[i].x;
+        row[1] = BIRDS[i].y;
+        row[2] = BIRDS[i].z;
+        row[3] = BODY_R;
     }
-    return rows;
+    ENTITY_ROWS.length = BIRDS.length;
+    return ENTITY_ROWS;
 });
 
 goats.on("update", function (dt) {
