@@ -287,10 +287,11 @@ cargo run             # debug builds work too; see "Troubleshooting"
 Pushing a `v*` tag publishes all three archives as a GitHub Release; an ordinary
 push only builds and keeps the artifacts. Because the model and every sound are
 embedded, an archive is the two executables (the game and `goatsd`), this
-readme, the licence, the mod API reference (`APIv1.md`) and a `mods/birds.zip`
-example mod. The birds mod ships zipped and inside `mods/`, so the released
-game loads it on the first run -- a self-test of `.zip` mod loading. Delete it,
-or run with `--no-mods`, for an unmodded game.
+readme, the licence, the mod API reference (`APIv1.md`) and two example mods in
+`mods/`: `birds.zip` (a world mod) and `fatguy.zip` (a client mod, with a model
+and sounds of its own). Both ship zipped, so the released game loads them on the
+first run -- a self-test of `.zip` mod loading. Delete either, or run with
+`--no-mods`, for an unmodded game.
 The AArch64 job uses GitHub's hosted arm64 runners, which a public repository
 gets on the free plan.
 
@@ -307,7 +308,7 @@ gets on the free plan.
 | `crates/harness/` | The scene tests: the Rust harness that runs the scene on Slag, with no Node (M15) |
 | `crates/mods/` | The mod loader: discovery, manifest validation, ordering and asset reads (pure Rust, no engine) |
 | `crates/pull/` | Mod sync (M18): fetch a host's world mods over the fetch ALPN, verify each with the loader, and install it beside the player's own |
-| `mods/` | Checked-in example mods: `example/` (a command, a HUD hook, an asset override) and `birds/` (a procedural world mod) |
+| `mods/` | Checked-in example mods: `example/` (a command, a HUD hook, an asset override), `birds/` (a procedural world mod) and `fatguy/` (a client mod with a model of its own and a chain of bad luck) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
 | `crates/server/src/web.rs` | The optional status page: ticket, protocol version, client count, the mod list and a `mods.zip` download, behind `--listen` |
 | `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
@@ -405,7 +406,7 @@ is part of that surface: a mod can read the derived device field (a mine detecto
 a mod), set a bang off through the core blast path, take the core devices out of the
 field, and hook the `"blast"` event -- `APIv1.md` §4.15.
 
-Two examples ship in `mods/`. `example/` is the small one: a console command, a
+Three examples ship in `mods/`. `example/` is the small one: a console command, a
 HUD clock, a generated `sfx.bleat` override and a `tuning.json`. `birds/` is the
 large one: a `side: "world"` flock with a procedural body and wings, a generated
 feather texture, seven states (idle, walk, take-off, fly, land, perch, flung), boids
@@ -413,9 +414,15 @@ flocking while flying, and multiplayer sync through `world.extend`. It also ship
 macaw calls (its only files) and reaches into the world through the surface M19g added
 for mods: a bird sets off the device it walks over, is thrown by it with a squawk, and
 one sitting on the goat's back gives the goat
-energy and health back. Both are
+energy and health back. `fatguy/` is the client-side one: a fat guy with a small
+guitar who runs for his life, with a model of his own in a slot of his own
+(`mods/fatguy/assets/fat_guy.glb`, built by the Blender script beside it), two sound
+slots of his own, contact with the goats *and* with the birds' flock (through
+`goats.entities`), and a chain of device bangs he is unlucky enough to land on.
+All three are
 exercised without a window by the scene suite (`crates/harness/tests/mods.rs`
-and `birds.rs`).
+and `birds.rs`), and the two that a release ships are also loaded from a zip by
+`crates/mods`'s own cases.
 
 `APIv1.md` is the reference for the manifest, the `goats` surface, the
 compatibility handshake and the non-goals.

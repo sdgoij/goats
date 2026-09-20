@@ -1547,6 +1547,74 @@ mod tests {
     }
 
     #[test]
+    fn the_fatguy_fixture_is_identical_from_a_zip() {
+        // The release ships `mods/fatguy/` zipped too. It is a `side: "client"`
+        // mod, so unlike the birds its digest is nobody's compatibility surface and
+        // there is no pinned constant here -- what this proves is that the zip is a
+        // real mod source: the same id, the same entry, the same digest, and the
+        // model and four sound files still inside it.
+        let mods_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("mods");
+        let guy_dir = mods_dir.join("fatguy");
+        let from_dir = Loader::discover(&mods_dir);
+        assert!(from_dir.errors().is_empty(), "{:?}", from_dir.errors());
+        let dir_manifest = from_dir
+            .mods()
+            .iter()
+            .find(|manifest| manifest.path().ends_with("fatguy"))
+            .expect("the fatguy directory mod");
+
+        let root = workspace("fatguyzip");
+        zip_directory(&root.join("fatguy.zip"), &guy_dir);
+        let from_zip = Loader::discover(&root);
+        assert!(from_zip.errors().is_empty(), "{:?}", from_zip.errors());
+        let zip_manifest = from_zip
+            .get(&dir_manifest.id)
+            .expect("the same mod from a zip");
+
+        assert_eq!(dir_manifest.hash, zip_manifest.hash, "digests must match");
+        assert_eq!(dir_manifest.entry_source, zip_manifest.entry_source);
+        assert!(
+            zip_manifest
+                .entry_source
+                .as_deref()
+                .unwrap_or("")
+                .contains("runs for his life"),
+            "the entry must be the real fatguy source"
+        );
+        // Every slot the manifest names travels: the model it *fills*, and the two
+        // sounds it *joins* (`assetAdds`) -- which is also the indexed-name path, a
+        // slot with several files in it.
+        let slots = |manifest: &Manifest| {
+            let mut out: Vec<(String, usize, bool)> = manifest
+                .assets
+                .iter()
+                .map(|asset| (asset.slot.clone(), asset.index, asset.add))
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(
+            slots(zip_manifest),
+            slots(dir_manifest),
+            "assets must travel"
+        );
+        let named = |needle: &str| {
+            zip_manifest
+                .assets
+                .iter()
+                .filter(|asset| asset.name.contains(needle))
+                .count()
+        };
+        assert_eq!(named("model.fatguy"), 1, "the model travels");
+        assert_eq!(named("sfx.fatguy.yell"), 3, "the three yells travel");
+        assert_eq!(named("sfx.fatguy.land"), 1, "the landing travels");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn the_mods_directory_archives_and_reloads_identically() {
         // What `goatsd`'s status page hands out: the mods directory packaged as
         // a `.zip`. Extracting it must reproduce the same mods, digests and all,

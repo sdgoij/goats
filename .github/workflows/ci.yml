@@ -105,7 +105,7 @@ jobs:
         run: cargo test --workspace
 
       # Ship the licence, the readme and the mod API reference alongside the
-      # self-contained binary, plus the checked-in birds mod as a zip in `mods/`
+      # self-contained binary, plus the checked-in example mods as zips in `mods/`
       # so a release exercises `.zip` mod loading on its first run.
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -116,7 +116,8 @@ jobs:
           Copy-Item target/release/goats.exe, target/release/goatsd.exe dist/
           Copy-Item README.md, LICENSE.md, APIv1.md dist/
           Compress-Archive -Path mods/birds/* -DestinationPath dist/mods/birds.zip -Force
-          Set-Content dist/mods/README.txt "birds.zip is a bundled world mod, loaded from this directory. Delete it (or run with --no-mods) for an unmodded game."
+          Compress-Archive -Path mods/fatguy/* -DestinationPath dist/mods/fatguy.zip -Force
+          Set-Content dist/mods/README.txt "birds.zip is a bundled world mod and fatguy.zip a bundled client mod; both load from this directory. Delete them (or run with --no-mods) for an unmodded game."
           Compress-Archive -Path dist/* -DestinationPath ${{ matrix.package }} -Force
 
       - name: Package (Linux)
@@ -127,10 +128,11 @@ jobs:
           cp README.md LICENSE.md APIv1.md dist/
           if command -v zip >/dev/null; then
             ( cd mods/birds && zip -qr ../../dist/mods/birds.zip . )
+            ( cd mods/fatguy && zip -qr ../../dist/mods/fatguy.zip . )
           else
-            python3 -c "import shutil; shutil.make_archive('dist/mods/birds', 'zip', 'mods/birds')"
+            python3 -c "import shutil; shutil.make_archive('dist/mods/birds', 'zip', 'mods/birds'); shutil.make_archive('dist/mods/fatguy', 'zip', 'mods/fatguy')"
           fi
-          echo "birds.zip is a bundled world mod, loaded from this directory. Delete it (or run with --no-mods) for an unmodded game." > dist/mods/README.txt
+          echo "birds.zip is a bundled world mod and fatguy.zip a bundled client mod; both load from this directory. Delete them (or run with --no-mods) for an unmodded game." > dist/mods/README.txt
           tar -czf ${{ matrix.package }} -C dist .
 
       - uses: actions/upload-artifact@v7

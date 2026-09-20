@@ -1370,6 +1370,14 @@ decisions behind it and the constraints that shape it.
     The birds' own digest moved with this -- the flock is part of that file -- which
     is the third move of the pin written up in M14d: the compatibility boundary
     working, not a bug.
+  - **It ships.** A release packages it as `dist/mods/fatguy.zip` beside the birds'
+    (`.github/workflows/ci.yml`), so both examples in a release are the `.zip` mod
+    source the loader is meant to accept; `crates/mods`'s cases load each of them
+    from a zip and compare it with its directory -- same id, same entry, same
+    digest, and here the model and its four sound files still inside the archive.
+    No digest pin comes with it, unlike the birds': it is `side: "client"`, so its
+    digest is nobody's compatibility surface. The zip is the checked-in directory
+    (source and all), which is what the birds' rule already was.
 
 **Constraints to respect.** The scene is one flat global scope joined by
 `concat!`, so `goats.freeze()`, not the loader, is what keeps registrations
