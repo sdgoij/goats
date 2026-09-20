@@ -1085,3 +1085,73 @@ Two things did *not* move, and they are the record's own next leads: young per m
 scene's own code, unchanged by the slot-reuse work, because that work reuses
 *runtime* slots rather than the boxes the scene's own objects and strings make.
 `--gc-trace` reports it; the nursery is simply eating it.
+
+### The anchor rebuild, and what a crater costs (scene-side)
+
+The nursery section above names the anchor rebuild as the frame's remaining high-water
+mark — "the ~72 ms anchor rebuild (a step, or a blast flinging the player across one)".
+It was four times that, and the missing term is the craters: `terrainHeight` scans the
+crater list, a full-field rebuild calls it 2401 times (one per vertex), and the list is
+capped at 24 (`TUNING.explosions.crater.max`).
+
+A temporary `terrainprobe` verb timed one full-field build piece by piece on a settled
+client, second pass of each phase, craters at the cap. ms for 2401 vertices:
+
+| phase | 0 craters | 24 craters | 24, after |
+| --- | --- | --- | --- |
+| `terrainBuild` (the real thing, upload included) | 61.9 | **721.4** | **36.2** |
+| the height pass (`terrainHeightRow`) | 42.7 | **739.1** | **9.4** |
+| `terrainHeight` over the grid (the readers' path) | 43.0 | 752.8 | 463.5 |
+| the crater term alone (`craterDipAt`) | 30.8 | **713.2** | 458.0 |
+| the noise (`terrainShape`) | 19.2 | 20.4 | 18.7 |
+| the bowl's arithmetic and `Math.sqrt` | 13.4 | 11.2 | 11.2 |
+| the vertex pass (`terrainVertex`) | 28.8 | 29.9 | 36.5 |
+| a plain store loop of the same size (the floor) | 25.0 | 25.4 | 23.7 |
+
+So the hitch was a 721 ms frame at the cap, 682 ms of which was the crater scan: 11.8 us
+a crater per vertex, which at ~15 operations an iteration is ~0.8 us per *operation*. The
+engine interprets a loop that reads a global array and reaches through an object per
+crater, and that is the whole of the number.
+
+Three scene-side changes:
+
+1. **The crater term is stamped, not scanned.** A crater reaches `r * 1.45` metres —
+   about two cells of the 2 m grid — so it can only move the handful of vertices inside
+   its own box. `terrainStampCraters` walks each crater's box and adds `craterDipOne` to
+   `T_H`, instead of asking all 2401 vertices about all 24 craters: 57600 iterations
+   become ~250 vertex visits. `terrainHeight` split into `terrainBaseHeight` plus the
+   crater term, so the row pass writes the base and the stamp adds to it. The heights are
+   the same numbers — all 2401 were compared against a fresh scan at the cap and matched
+   exactly.
+2. **The crater count is hoisted** in `craterDipAt`, the readers' path: re-reading
+   `CRATERS.length` once per crater per call was 31% of the function (713.2 → 490.9 ms,
+   one run, both shapes side by side).
+3. **A vertex may not be stamped twice.** The stamp *adds* where the row pass *assigns*,
+   and `terrainPatchRect` widens each patch by a cell so two patches two metres apart can
+   share one, so every (build, crater) pass carries a marker in `T_STAMP` and steps over a
+   cell it has already had.
+
+At the frame, on the same client with 24 craters live and the debris gone:
+
+| | `perf` |
+| --- | --- |
+| settled | `worst` 19–21, `slow` 0, `slowms` 0, 60 fps |
+| a step rebuild, forced with `pos` | `worst 65.1`, `slow 1`, `slowms 65.1`, 49 fps |
+
+Rejected, and worth the record: flattening the crater list into packed number arrays was
+*slower* — 876.0 ms against 713.2 for the shipped object list (934.4 in a second run).
+Six globals read per iteration against one cost more than the object fields they save.
+What is expensive here is the global binding (~3.9 us inside an interpreted loop), not
+the field.
+
+What is left: the vertex pass, 2401 vertices × 11 array stores against a plain store loop
+of the same size at ~24 ms, so it is at the interpreter's floor. These edits do not touch
+it — the 29.9 → 36.5 spread in that row is this machine's run-to-run noise (see §8), not
+a regression — and it is now crater-count independent: 36.2 ms at the cap against 28.0 ms
+with no craters at all. The readers are the next lever: `craterDipAt` is still ~190 us a
+call at the cap, and a bucket index would let a point query test the craters near it
+rather than all of them. Below that, a step stops costing 30 ms only by not rebuilding
+the field for it — keeping the mesh in local coordinates and moving it, so a step
+computes one band instead of 2401 vertices.
+
+`terrainprobe` was temporary and is not in the tree; the numbers above are its output.

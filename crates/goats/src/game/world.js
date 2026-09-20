@@ -76,11 +76,21 @@ function terrainShape(x, z) {
 // and it is why every reader of this function stands in a hole for free.
 function terrainHeight(x, z) {
     if (!TERRAIN_MESH_OK) return 0;
+    return terrainBaseHeight(x, z) + craterDipAt(x, z);
+}
+
+// Everything about the ground that depends only on where you are, with the craters left
+// out: the bowl and the three-octave noise. Split from `terrainHeight` so that a rebuild
+// can lay the crater term down a crater at a time (`terrainStampCraters`) rather than
+// asking every vertex to scan the crater list -- at the 24-crater cap that scan was 713
+// of a 721 ms rebuild (PERF.md appendix B). The readers keep calling `terrainHeight`, so
+// the two halves are added back in the same order for them.
+function terrainBaseHeight(x, z) {
     const d = Math.sqrt(x * x + z * z);
     let t = (d - TUNING.terrain.flat) / TUNING.terrain.ramp;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     t = t * t * (3 - 2 * t);
-    return (terrainShape(x, z) - 0.5) * 2 * TUNING.terrain.relief * t + craterDipAt(x, z);
+    return (terrainShape(x, z) - 0.5) * 2 * TUNING.terrain.relief * t;
 }
 
 // The goat's ground-contact height. `g.py` is the height *above* the ground
@@ -135,7 +145,12 @@ const T_NORMS = new Array(T_N * T_N * 3);
 const T_COLS = new Array(T_N * T_N * 4);
 const T_UVS = new Array(T_N * T_N * 2);
 const T_IDX = new Array(TERRAIN_QUADS * TERRAIN_QUADS * 6);
+// One number per vertex, used by the crater stamp to tell whether a cell in the
+// rectangle being built has already had this crater's term added (see
+// `terrainStampCraters`).
+const T_STAMP = new Array(T_N * T_N);
 let terrainIdxBuilt = false;
+let terrainStampId = 0;
 
 // The ground that has changed since the mesh was last handed to the engine, as
 // world-space boxes, and `null`-free: a crater folds its own circle in through
@@ -189,17 +204,71 @@ function terrainPatchRect(p) {
     };
 }
 
-// One grid row of heights. A function of its own on purpose: the engine's JIT
-// compiles a small function and interprets a large one (PERF.md, `perf probe`:
-// ~50 ns an iteration against ~730), and these loops are the whole cost of a
-// rebuild. Heights first, so the slope comes from the grid instead of four more
-// field samples per vertex.
+// One grid row of heights, without the craters: they go on top as a stamp. A function of
+// its own on purpose: the engine's JIT compiles a small function and interprets a large
+// one (PERF.md, `perf probe`: ~50 ns an iteration against ~730), and these loops are the
+// whole cost of a rebuild.
 function terrainHeightRow(j, i0, i1) {
     const wz = terrainAnchorZ - T_HALF + j * TERRAIN_CELL;
     const x0 = terrainAnchorX - T_HALF;
     const base = j * T_N;
     for (let i = i0; i <= i1; i++) {
-        T_H[base + i] = terrainHeight(x0 + i * TERRAIN_CELL, wz);
+        const wx = x0 + i * TERRAIN_CELL;
+        T_H[base + i] = terrainBaseHeight(wx, wz);
+    }
+}
+
+// The craters' contribution, stamped onto the heights the row pass just wrote.
+//
+// A crater reaches `c.r * CRATER_LIP_OUT` metres -- about two cells -- so it can only
+// touch the handful of vertices inside its own box, and "which vertices does this crater
+// move" is a much smaller question than "which craters move this vertex", which is what
+// `terrainHeight` asks and what a rebuild cannot afford: at the cap, 2401 vertices
+// against 24 craters is 57600 iterations of an interpreted loop, measured at 713 ms.
+// Stamping the same 24 craters costs about 250 vertex visits.
+//
+// The term is `craterDipAt`'s exactly, and the craters are visited in the same order. The
+// sum is associated differently -- the scan accumulates the terms and adds the total to
+// the base once, this adds each term to the base in turn -- so a vertex under two
+// overlapping craters can differ in the last bit of an addition. The two paths were
+// compared vertex by vertex at the 24-crater cap (all 2401 of them) and agreed exactly.
+//
+// This *adds*, where the row pass *assigns*, and that is why it is clipped to the
+// rectangles being built: a vertex outside them is already holding a finished total. Two
+// rectangles may share a vertex (`terrainPatchRect` widens each box by a cell, so two
+// patches two metres apart can overlap), so each (build, crater) pass carries its own
+// marker in `T_STAMP` and steps over a cell that has already had it.
+function terrainStampCraters(rects) {
+    const x0 = terrainAnchorX - T_HALF;
+    const z0 = terrainAnchorZ - T_HALF;
+    const nc = CRATERS.length;
+    for (let k = 0; k < nc; k++) {
+        const c = CRATERS[k];
+        const reach = c.r * CRATER_LIP_OUT;
+        terrainStampId++;
+        const sid = terrainStampId;
+        for (let r = 0; r < rects.length; r++) {
+            const rect = rects[r];
+            let i0 = Math.floor((c.x - reach - x0) / TERRAIN_CELL);
+            let i1 = Math.ceil((c.x + reach - x0) / TERRAIN_CELL);
+            let j0 = Math.floor((c.z - reach - z0) / TERRAIN_CELL);
+            let j1 = Math.ceil((c.z + reach - z0) / TERRAIN_CELL);
+            if (i0 < rect.i0) i0 = rect.i0;
+            if (i1 > rect.i1) i1 = rect.i1;
+            if (j0 < rect.j0) j0 = rect.j0;
+            if (j1 > rect.j1) j1 = rect.j1;
+            if (i0 > i1 || j0 > j1) continue;
+            for (let j = j0; j <= j1; j++) {
+                const wz = z0 + j * TERRAIN_CELL;
+                const row = j * T_N;
+                for (let i = i0; i <= i1; i++) {
+                    const cell = row + i;
+                    if (T_STAMP[cell] === sid) continue;
+                    T_STAMP[cell] = sid;
+                    T_H[cell] += craterDipOne(c, x0 + i * TERRAIN_CELL, wz);
+                }
+            }
+        }
     }
 }
 
@@ -255,9 +324,16 @@ function terrainIndices() {
 
 function terrainBuildRects(rects) {
     if (!terrainIdxBuilt) { terrainIndices(); terrainIdxBuilt = true; }
+    // The ground itself for every rectangle, then every crater over all of them, then
+    // the vertices: the craters are added to heights, so no vertex may be derived from a
+    // height before the last stamp has landed on it.
     for (let r = 0; r < rects.length; r++) {
         const rect = rects[r];
         for (let j = rect.j0; j <= rect.j1; j++) terrainHeightRow(j, rect.i0, rect.i1);
+    }
+    terrainStampCraters(rects);
+    for (let r = 0; r < rects.length; r++) {
+        const rect = rects[r];
         for (let j = rect.j0; j <= rect.j1; j++) terrainAttrRow(j, rect.i0, rect.i1);
     }
     terrainUpload();
@@ -678,4 +754,3 @@ function drawShadow() {
     rl.drawCube(goat.px, terrainHeight(goat.px, goat.pz) + 0.06, goat.pz,
         1.25, 0.012, 1.7, ambShadow);
 }
-

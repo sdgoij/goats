@@ -587,7 +587,11 @@ const CRATER_STEP = 0.1;
 // multiplies and a compare for one that is nowhere near the query.
 function craterDipAt(x, z) {
     let dip = 0;
-    for (let i = 0; i < CRATERS.length; i++) {
+    // The count is hoisted rather than re-read: a read of a global binding inside an
+    // interpreted loop is this engine's worst operation (~3.9 us measured), and this
+    // loop was paying it once per crater per call -- 31% of the function at the cap.
+    const nc = CRATERS.length;
+    for (let i = 0; i < nc; i++) {
         const c = CRATERS[i];
         const dx = x - c.x;
         const dz = z - c.z;
@@ -607,6 +611,29 @@ function craterDipAt(x, z) {
         }
     }
     return dip;
+}
+
+// One crater's contribution at a point: the bowl with its raised rim, for a crater the
+// caller already holds, so no list is scanned. `terrainStampCraters` (world.js) is the
+// caller, and it walks the handful of vertices a crater reaches rather than asking every
+// vertex in the grid about every crater. The arithmetic is `craterDipAt`'s with the loop
+// lifted off, so the two return the same numbers.
+function craterDipOne(c, x, z) {
+    const dx = x - c.x;
+    const dz = z - c.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > c.reach2) return 0;
+    const t = Math.sqrt(d2) / c.r;
+    if (t < 1) {
+        // The bowl: -dip at the centre, flat at the rim.
+        const s = 1 - t;
+        return -c.dip * s * s * (3 - 2 * s);
+    }
+    // The lip: raised at the rim, nothing at `CRATER_LIP_OUT`.
+    let s = (t - 1) / (CRATER_LIP_OUT - 1);
+    if (s > 1) return 0;
+    s = 1 - s;
+    return c.lip * s * s * (3 - 2 * s);
 }
 
 // The live craters, for the console and the tests: where, how wide, how deep right
