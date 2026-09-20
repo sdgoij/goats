@@ -793,6 +793,8 @@ function sceneFrame() {
     // Mods see the world after it has moved and before it is drawn.
     modFrameTick(dt);
     perfMark("mods_upd");
+    // The engine-cost benchmark, when the console has armed it (`perf loop <kind> <n>`).
+    if (PERF_LOOP.n > 0) perfLoopRun();
 
     // render
     const ty = 0.85 + goatBaseY(goat);
@@ -1079,4 +1081,143 @@ function perfPureLoop(n) {
     let sink = 0;
     for (let i = 0; i < n; i++) sink += i * 3;
     return sink;
+}
+
+// ---- the engine-cost benchmark -------------------------------------------
+//
+// `perf probe` above prices the crossings in one shot and counts nanoseconds only:
+// nothing in it can see what a loop *allocates*. This runs a loop once a *frame*
+// instead, with the body and the count the console picks (`perf loop <kind> <n>`), so
+// the same run can be read off both clocks the scene already has -- `perf`'s for the
+// time and `--gc-trace`'s for the boxes a minor sweeps. Then:
+//
+//     boxes per iteration = (boxes/s armed - boxes/s with `none`) / (60 x n)
+//     ns per iteration    = what `perf loop` replies
+//
+// One variant per process: a configuration command between two windows collapses the
+// second window (PERF.md appendix B). Each body isolates one operation class and takes
+// everything it touches as a parameter, because that is the shape the JIT is meant to
+// compile (§4b/§4c) -- so if a body allocates, the class it isolates is what the engine
+// is allocating for, and if `call` differs from the same arithmetic inlined, the call is
+// what costs. `new` is the calibration: one object literal is one box by definition.
+const PERF_LOOP = { kind: "none", n: 0, frames: 0, ns: 0, sink: 0 };
+const PERF_LOOP_KINDS = ["none", "arith", "arithinline", "global", "field", "fieldset", "index", "sqrt", "new", "call", "mapget", "maphas", "mapset"];
+const PERF_LOOP_OBJ = { v: 1 };
+const PERF_LOOP_ARR = [0, 1, 2, 3, 4, 5, 6, 7];
+let PERF_LOOP_SEED = 7;                  // the global a `global` iteration reads
+
+function perfLoopArith(n) {              // locals and arithmetic only
+    let s = 0;
+    for (let i = 0; i < n; i++) s += i * 3 - 1;
+    return s;
+}
+
+function perfLoopGlobal(n) {             // one read of a global binding an iteration
+    let s = 0;
+    for (let i = 0; i < n; i++) s += PERF_LOOP_SEED + i;
+    return s;
+}
+
+function perfLoopFieldRead(n, o) {       // one object property read an iteration
+    let s = 0;
+    for (let i = 0; i < n; i++) s += o.v;
+    return s;
+}
+
+function perfLoopFieldWrite(n, o) {      // one object property write an iteration
+    for (let i = 0; i < n; i++) o.v = i;
+    return o.v;
+}
+
+function perfLoopIndex(n, a) {           // one array element read an iteration
+    let s = 0;
+    for (let i = 0; i < n; i++) s += a[i & 7];
+    return s;
+}
+
+function perfLoopSqrt(n) {               // one builtin call an iteration
+    let s = 0;
+    for (let i = 1; i <= n; i++) s += Math.sqrt(i);
+    return s;
+}
+
+function perfLoopNew(n) {                // one object literal an iteration
+    let o = null;
+    for (let i = 0; i < n; i++) o = { v: i };
+    return o === null ? 0 : o.v;
+}
+
+function perfLoopCallee(i) {             // what the `call` body calls
+    return i * 3 - 1;
+}
+
+function perfLoopCall(n) {               // one small JS call an iteration
+    let s = 0;
+    for (let i = 0; i < n; i++) s += perfLoopCallee(i);
+    return s;
+}
+
+// The scene leans on Maps for its cell bookkeeping (`EATEN`, `SPENT`, `TRAP_SPENT`,
+// the tuft height cache), and `field` above says an *object* read is free -- so these
+// two ask the same question of an integer-keyed Map.
+const PERF_LOOP_MAP = new Map();
+(function primeLoopMap() {
+    for (let i = 0; i < 8; i++) PERF_LOOP_MAP.set(i, i * 2);
+})();
+
+function perfLoopMapGet(n, m) {          // one Map.get an iteration
+    let s = 0;
+    for (let i = 0; i < n; i++) s += m.get(i & 7);
+    return s;
+}
+
+function perfLoopMapHas(n, m) {          // one Map.has an iteration
+    let s = 0;
+    for (let i = 0; i < n; i++) if (m.has(i & 7)) s += 1;
+    return s;
+}
+
+function perfLoopMapSet(n, m) {          // one Map.set on an existing key an iteration
+    for (let i = 0; i < n; i++) m.set(i & 7, i);
+    return m.get(7);
+}
+
+// One frame's worth, timed. `sceneFrame` calls it only when the console armed it, so an
+// unarmed frame costs one comparison.
+function perfLoopRun() {
+    const n = PERF_LOOP.n;
+    const kind = PERF_LOOP.kind;
+    const t0 = rl.getTime();
+    let s = 0;
+    if (kind === "arith") s = perfLoopArith(n);
+    // The same body as `arith`, but written out here: this driver is a large function,
+    // so the pair answers whether it is the *call* into a small function that gets
+    // compiled, or the loop, or neither.
+    else if (kind === "arithinline") { for (let i = 0; i < n; i++) s += i * 3 - 1; }
+    else if (kind === "global") s = perfLoopGlobal(n);
+    else if (kind === "field") s = perfLoopFieldRead(n, PERF_LOOP_OBJ);
+    else if (kind === "fieldset") s = perfLoopFieldWrite(n, PERF_LOOP_OBJ);
+    else if (kind === "index") s = perfLoopIndex(n, PERF_LOOP_ARR);
+    else if (kind === "sqrt") s = perfLoopSqrt(n);
+    else if (kind === "new") s = perfLoopNew(n);
+    else if (kind === "call") s = perfLoopCall(n);
+    else if (kind === "mapget") s = perfLoopMapGet(n, PERF_LOOP_MAP);
+    else if (kind === "maphas") s = perfLoopMapHas(n, PERF_LOOP_MAP);
+    else if (kind === "mapset") s = perfLoopMapSet(n, PERF_LOOP_MAP);
+    PERF_LOOP.sink += s;
+    PERF_LOOP.frames += 1;
+    PERF_LOOP.ns += rl.getTime() - t0;
+}
+
+function perfLoopSet(kind, n) {
+    PERF_LOOP.kind = kind;
+    PERF_LOOP.n = n;
+    PERF_LOOP.frames = 0;
+    PERF_LOOP.ns = 0;
+    PERF_LOOP.sink = 0;
+}
+
+function perfLoopNs() {
+    const iters = PERF_LOOP.frames * PERF_LOOP.n;
+    return iters > 0 ? (PERF_LOOP.ns / iters) * 1e9 : 0;
 }

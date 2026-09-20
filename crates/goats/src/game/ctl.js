@@ -483,7 +483,26 @@ function sceneCommand(line) {
                     fps: rl.getFPS()
                 });
             }
-            if (side !== undefined) return "error perf expects on|off|probe";
+            // The engine-cost benchmark: one loop a frame, a body and a count the
+            // console picks, so boxes per iteration come from `--gc-trace` and ns per
+            // iteration from this reply. One variant per process.
+            if (side === "loop") {
+                if (parts[2] === undefined) {
+                    return "ok " + JSON.stringify({
+                        kind: PERF_LOOP.kind, n: PERF_LOOP.n, frames: PERF_LOOP.frames,
+                        nsPerIter: ctlRound(perfLoopNs()), sink: PERF_LOOP.sink
+                    });
+                }
+                const kind = String(parts[2]);
+                if (kind === "kinds") return "ok " + PERF_LOOP_KINDS.join(" ");
+                if (PERF_LOOP_KINDS.indexOf(kind) < 0) {
+                    return "error perf loop expects " + PERF_LOOP_KINDS.join("|");
+                }
+                const n = kind === "none" ? 0 : (ctlArg(parts, 3) === null ? 200 : ctlArg(parts, 3));
+                perfLoopSet(kind, n);
+                return "ok perf loop " + kind + " " + n;
+            }
+            if (side !== undefined) return "error perf expects on|off|probe|loop";
             perfLog();
             return "ok perf logged";
         }

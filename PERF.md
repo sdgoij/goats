@@ -1267,3 +1267,55 @@ Two negative results worth keeping:
   clamped to ten. So the quadratic *shape* is bounded by a cap, and the fix that pays is
   the relaxation count; the grid is the shape to reach for if a cap rises, and that
   crossover is the number to check first.
+
+### What the engine actually allocates for, and what is left
+
+An earlier version of this section said ~0.36 boxes an interpreted operation and blamed
+interpreter overhead for the scene's remaining rate. **That was wrong.** The tool that
+settled it is kept in the tree: `perf loop <kind> <n>` arms one loop of `n` iterations a
+*frame* (goat.js), so a single run can be read off both clocks -- `perf loop` replies ns
+per iteration, and `--gc-trace` gives boxes per iteration. One variant per process, 200
+iterations a frame, sound muted, the usual 24 s window (`bench.sh` drives the sweep):
+
+| body (one operation an iteration) | boxes/s | ns/iteration |
+| --- | --- | --- |
+| `none` (unarmed) | 32777 | -- |
+| `arith` (locals) | 32857 | 47.7 |
+| `arithinline` (the same body in the large driver) | 32890 | **17.4** |
+| `global` (a global binding read) | 32463 | 71.9 |
+| `field` (an object property read) | 32908 | 78.5 |
+| `fieldset` (an object property write) | 32543 | 91.9 |
+| `index` (an array element read) | 32282 | 97.5 |
+| `sqrt` (`Math.sqrt`) | 32850 | 82.5 |
+| `call` (a small JS call) | 32162 | 97.7 |
+| `mapget` (a `Map.get`) | 32901 | 174.8 |
+| `maphas` (a `Map.has`) | 32520 | 179.4 |
+| `mapset` (a `Map.set` on an existing key) | 32899 | 177.2 |
+| `new` (one object literal) | **44311** | 172.6 |
+
+Twelve thousand iterations a second of every one of those bodies adds **nothing** to what
+the collector sweeps. Arithmetic, a global read, an object read and write, an index, a
+builtin, a JS call and a Map lookup are all allocation-free, and they run at 17-98 ns an
+iteration -- i.e. compiled. Only an object literal allocates, and it allocates **0.96
+boxes a literal**, which is the calibration the table needed. So there is nothing in the
+engine's loop, call or Map path to fix, and this scene's remaining rate is *real
+objects* -- literals, closures, arrays and strings -- not interpreter overhead.
+
+The same sweep prices the engine's operations in time, which is the other half an engine
+author wants: arithmetic 48 ns, a global read 72, an object read 79, an object write 92,
+an index 98, a small call 98, and a Map lookup 175-179. A Map is twice an index.
+
+What that leaves, honestly. The herd's collision pass was 11.4k a second (measured inside
+one build: `resolveGoatCollisions` not called, 24.9k -> 13.5k) and it contains no
+allocation at all -- no literal, no closure, not even a builtin -- so its cost is
+*indirect*: something its shoves make other code do. Of those paths, each measured inside
+one build: the per-unit trap query is 2.5k (17.4k against a 19.9k floor), and the
+explosion system it trips is 3.6k (21.3k against 24.9k). About 5k of the 11.4k is still
+unattributed, and that is the open question this record leaves.
+
+Two smaller corrections from the same round. `nearestTuft` builds its result object on
+every improving cell instead of once, which looked like the trap query's cost -- making it
+build once measured nothing at all (19.9k before and after) and was reverted rather than
+kept as a tidy-up; at a 0.6 m trigger the scan is 3x3 and only a tuft inside it improves,
+so that object was created at most once a call. And `tuftKey` is a *number*, not a string
+(both were suspected), so the cell bookkeeping Maps allocate nothing.
