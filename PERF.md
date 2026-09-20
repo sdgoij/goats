@@ -1215,3 +1215,55 @@ Two caveats, both about the idle goat: the flock anchors to the *herd* when the 
 not moving, so the birds' `updateHome` reads the herd every frame here and would
 early-return in play, and a stationary goat also keeps birds perched on bots (the `get`
 path) rather than on the player. Every comparison above is inside this one protocol.
+
+### What the herd's collision pass costs, and the engine finding under it
+
+The herd's 16.3k a second was `resolveGoatCollisions` -- one call a frame, the two
+relaxation passes of `collidePairs`. Measured at herd 7 with the mods disabled (floor
+2.96 minors/s = 24.9k), one configuration per process:
+
+| | minors/s | boxes/s |
+| --- | --- | --- |
+| floor | 2.96 | 24.9k |
+| `resolveGoatCollisions()` not called | 1.62 | 13.5k |
+| the same function with `b.spec.scale` replaced by a constant | 3.00 | 25.2k |
+| the same function with one relaxation pass instead of two | 2.33 | 19.5k |
+
+The pass was **11.4k boxes a second -- 30% of the scene's whole rate -- for 56
+pair-iterations a frame**, and the cost is linear in the iterations and nothing else:
+replacing the only nested read in the loop with a constant changed nothing (3.00 against
+2.96), and halving the passes halved the cost. ~3.4 boxes an iteration for a body of
+about nine operations.
+
+That is not a scene-side allocation. It is the interpreter: **an interpreted loop body
+allocates on the order of a box per few operations**, whatever those operations are. The
+notes above already say the engine interprets these loops (~730 ns an operation against
+~50 compiled, §4b/§7); what this adds is that the same interpreted work *is* the
+allocation rate, so the two hunts are one hunt. It is worth handing to the engine side
+as its own finding.
+
+The action, measured:
+
+| change | minors/s | boxes/s |
+| --- | --- | --- |
+| before | 2.96 (mods off) / 4.42 (both mods) | 24.9k / 37.6k |
+| the second relaxation pass runs only when the first moved something | 2.38 / 3.79 | 19.9k / **32.2k** |
+
+The pass exists because "shoving a bot off the player can push it into another bot", so a
+pass that moved nothing cannot have made a chain -- a chain still settles in the frame it
+was made in, and the quiet frame skips half the work. The `collide` phase drops with it,
+0.27 -> 0.15 ms.
+
+Two negative results worth keeping:
+
+- **The flock's separation is free.** `separateFlock` is the same O(N^2) shape (15 pairs a
+  frame at `COUNT = 6`) and turning it off measured 3.88 minors/s against 3.79, inside
+  the noise. Its body mostly `continue`s on the airborne filter, which is the same
+  finding from the other side: the *operations* are charged, not the loop.
+- **A spatial grid would be the wrong fix here.** The pair loop is n + n(n-1)/2
+  iterations a pass (28 at seven, 210 at twenty); a grid needs an insert and a 3x3 query
+  per unit, so at least ~9 cell reads each, i.e. ~10n iterations (70 at seven, 200 at
+  twenty). It breaks even around twenty units and loses below that -- and the herd is
+  clamped to ten. So the quadratic *shape* is bounded by a cap, and the fix that pays is
+  the relaxation count; the grid is the shape to reach for if a cap rises, and that
+  crossover is the number to check first.

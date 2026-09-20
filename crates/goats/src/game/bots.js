@@ -546,9 +546,16 @@ function updateBots(dt) {
 // hoisting half of that recipe and the `** 0.5` is the other half (`Math.sqrt`
 // is a global read of `Math`).
 function collidePairs(bots, count, gx, gz, rad, pr) {
-    // Two relaxation passes: shoving a bot off the player can push it into
-    // another bot, so a second pass settles the chain.
-    for (let pass = 0; pass < 2; pass++) {
+    // Two relaxation passes: shoving a bot off the player can push it into another bot,
+    // so a second pass settles the chain -- but only a pass that moved something can
+    // have made a chain, and the herd spends most frames touching nobody. Measured:
+    // this whole pass is 28 pair-iterations a frame in the quiet case and every
+    // iteration costs this engine ~3.6 allocation boxes, so running the second one
+    // unconditionally was paying twice for a case that only comes up on the frames the
+    // goat walks into the herd. A chain still settles inside the frame it was made in.
+    let moved = true;                       // the first pass always runs
+    for (let pass = 0; pass < 2 && moved; pass++) {
+        moved = false;
         for (let i = 0; i < count; i++) {
             const b = bots[i];
             const rr = pr + rad * b.spec.scale;
@@ -565,6 +572,7 @@ function collidePairs(bots, count, gx, gz, rad, pr) {
                     b.z += dz * push;
                 }
                 if (b.timer > 0.6) b.timer = 0.6;   // re-think the plan soon
+                moved = true;
             }
         }
         for (let i = 0; i < count; i++) {
@@ -583,6 +591,7 @@ function collidePairs(bots, count, gx, gz, rad, pr) {
                     a.z -= dz * push;
                     b.x += dx * push;
                     b.z += dz * push;
+                    moved = true;
                 }
             }
         }
