@@ -1,4 +1,3 @@
-// Part 5/16 of the goat scene: the volumetric cloud sky shader.
 // ---- sky shader (M5b): volumetric cumulus and cirrus ----------------------
 //
 // The sky is a full-screen pass per layer: the air and the cloud as two passes

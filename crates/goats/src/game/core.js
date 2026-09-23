@@ -1,6 +1,3 @@
-// Part 1/16 of the goat scene: tuning, stats, palette and maths helpers. This
-// file also carries the scene's overall header comment.
-//
 // A walking, running, jumping goat for the Slag x raylib sandbox.
 //
 // The scene is split across `crates/goats/src/game/*.js`, which the host

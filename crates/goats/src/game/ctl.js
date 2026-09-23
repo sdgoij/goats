@@ -1,4 +1,3 @@
-// Part 11/16 of the goat scene: the stdin command channel.
 // ---- control channel ------------------------------------------------------
 //
 // The host (`crates/goats/src/main.rs`) reads a line from stdin, calls

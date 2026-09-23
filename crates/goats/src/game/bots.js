@@ -1,5 +1,3 @@
-// Part 9/16 of the goat scene: the bot herd.
-//
 // Each bot owns its own model handle. That is not wasteful book-keeping: the pose
 // lives in the model -- in the meshes a CPU-skinning build deforms, in the bone
 // matrices a `gpu-skinning` build uploads -- so two goats can only hold different

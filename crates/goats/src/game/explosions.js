@@ -1,4 +1,3 @@
-// Part 16/16 of the goat scene: landmines, boobytraps and the bangs they make.
 // ---- explosions ------------------------------------------------------------
 //
 // Two devices, both *derived* rather than placed: a 2-unit cell either holds a

@@ -1,4 +1,3 @@
-// Part 15/16 of the goat scene: the mod table and the `goats` API.
 // ---- mods -----------------------------------------------------------------
 //
 // The host is the only side that touches the disk. It discovers mods, reads

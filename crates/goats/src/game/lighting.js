@@ -1,5 +1,3 @@
-// Part 4/16 of the goat scene: the lit shader, the directional light, and both
-// the planar and shadow-map cast shadows.
 // ---- lighting (M4): directional light and projected cast shadows ---------
 //
 // raylib's default shader is unlit, so the scene is lit by a small custom

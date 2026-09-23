@@ -1,4 +1,3 @@
-// Part 2/16 of the goat scene: the animated model and the cube fallback.
 // ---- the model goat ------------------------------------------------------
 
 let model = -1;

@@ -1,4 +1,3 @@
-// Part 14/16 of the goat scene: the network bridge to the Rust host.
 // ---- net ------------------------------------------------------------------
 //
 // The JS engine has no sockets, so all of the networking lives in the Rust host

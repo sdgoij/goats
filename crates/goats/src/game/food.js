@@ -1,4 +1,3 @@
-// Part 8/16 of the goat scene: grass as food.
 // ---- food ------------------------------------------------------------------
 //
 // The "grass thingys" are the procedural tufts weather.js draws. A tuft's
