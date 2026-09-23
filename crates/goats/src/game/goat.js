@@ -880,6 +880,12 @@ function sceneFrame() {
         perfMark("bots");
         drawPeers(rl.WHITE);
         perfMark("peers");
+        // The water surface (M20b): last in the 3D pass, because it is the scene's only
+        // transparent model and has to blend over the ground and over anything standing
+        // in it. It shares the lit program's uniforms, so it lives in this branch; with
+        // the lighting off the field is still simulated, just not drawn.
+        waterDraw();
+        perfMark("water");
         if (shadowMode === SHADOW_MAP && shadowStrengthNow > 0.001) lightingText = "lit + shadow map";
         else if (shadowMode === SHADOW_PLANAR && LIGHT_DIR[1] > 0.06) lightingText = "lit + planar shadow";
         else lightingText = "lit";

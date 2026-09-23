@@ -31,6 +31,11 @@ const FRAMES: u32 = 30;
 /// The goat's model handle; the terrain mesh handles are 1000+.
 const GOAT: i64 = 0;
 
+/// The stub's handle for the water surface's own program (M20b). The water is a
+/// `makeModel` mesh like the terrain and the celestial spheres, so it shares their
+/// handle range and is told apart by the program it is routed to.
+const WATER_SHADER: i64 = 9;
+
 /// The programs a model was routed to, in order.
 fn routes_of(obs: &Observations, model: i64) -> Vec<i64> {
     obs.model_shader_routes
@@ -178,8 +183,9 @@ fn the_skinned_paths_are_routed() {
         );
         // The terrain is a `makeModel` mesh with no bone data: a skinned program
         // would read the generic attributes and deform the grid. (The celestial
-        // spheres are `makeModel` meshes too, in the same handle range, and are
-        // routed to their own program -- `celestial.rs` is where that is checked.)
+        // spheres and the water surface are `makeModel` meshes too, in the same handle
+        // range, and are routed to programs of their own -- `celestial.rs` and
+        // `water.rs` are where those are checked.)
         let terrain = obs
             .model_shader_routes
             .iter()
@@ -188,6 +194,7 @@ fn the_skinned_paths_are_routed() {
                 handle >= 1000 && !bodies.contains(&handle)
             })
             .map(|row| row[1])
+            .filter(|shader| *shader != WATER_SHADER)
             .collect::<Vec<_>>();
         checks.check(
             "the terrain mesh keeps the plain lit program",
@@ -230,6 +237,7 @@ fn the_skinned_paths_are_routed() {
                 handle >= 1000 && !bodies.contains(&handle)
             })
             .map(|row| row[1])
+            .filter(|shader| *shader != WATER_SHADER)
             .collect::<Vec<_>>();
         checks.check(
             "...while the terrain keeps the loader's own shader",

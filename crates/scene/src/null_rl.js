@@ -119,6 +119,9 @@
         drawCube: noop, drawLine: noop, drawPoint3D: noop, drawBillboard: noop,
         drawBillboardRec: noop, drawSphereEx: noop, drawQuad3D: noop,
         beginBlendMode: noop, endBlendMode: noop,
+        // The one blend mode the scene reads a name for on this path (the water
+        // surface, M20b); the calls themselves are no-ops headlessly.
+        BLEND_ALPHA: 0,
         drawModelEx: noop,
         drawRectangle: noop, drawRectangleGradientV: noop, drawRectangleLines: noop,
         drawText: noop, takeScreenshot: noop,

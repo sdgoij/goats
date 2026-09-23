@@ -37,6 +37,13 @@ let litShader = -1;
 let shadowShader = -1;
 let celestialShader = -1;
 let celestialUniforms = null;   // the sun's direction, and the camera position
+// The water surface's own program (M20b). It is a *sibling* of the lit one rather
+// than a member of its skinned family, so `setLitUniforms` and `makeShadowMap`
+// reach it explicitly -- `litPrograms`' first two entries are the plain/skinned
+// pair by construction, and a third would break that.
+let waterShader = -1;
+let waterProgram = null;
+let waterUniforms = null;       // water.js's own level and colours
 let useLighting = true;         // toggled with L
 let lightingText = "cube shader";
 
@@ -246,6 +253,160 @@ const LIT_FS = [
     "}",
 ].join("\n");
 
+// ---- the water surface (M20b) ---------------------------------------------
+//
+// The water is a `makeModel` mesh whose vertices carry the *ground* under them and,
+// in the texcoord, the deepest water that vertex's basin can hold (`maxDepth`, from
+// water.js's fill). The level is one uniform, so the surface is computed per vertex
+// and the mesh is never rebuilt as the rain rises -- which is the whole reason the
+// field is split the way it is: `F - terrain` is static between terrain rebuilds,
+// and the level is not.
+//
+// The fragment is a *sibling* of `LIT_FS` rather than a second lighting model: the
+// same sun, ambient, shadow map and blast light, so a pool sits in the scene rather
+// than on it. What it adds is the water's own colour -- the surface takes the deep
+// tint with depth -- and the shore, an alpha that fades to nothing as the water runs
+// out, which is what keeps a pool from ending on a drawn line. The surface is flat
+// here; waves, fresnel and reflections are M20c and M20e.
+//
+// The shadow and blast terms are *duplicated* from `LIT_FS` deliberately: the lit
+// program is the scene's most load-bearing shader and there is no GLSL compiler in
+// the harness, so the shared-snippet refactor -- the way `litVertex(skin)` shares the
+// vertex -- waits until a real GPU can check both.
+const WATER_VS = [
+    "#version 330",
+    "in vec3 vertexPosition;",     // (x, the ground's height, z)
+    "in vec2 vertexTexCoord;",     // (maxDepth of this vertex's basin, unused)
+    "uniform mat4 mvp;",
+    "uniform float waterLevel;",
+    "out vec3 fragWorldPos;",
+    "out float fragDepth;",
+    "out float fragWet;",
+    "void main() {",
+    "    float ground = vertexPosition.y;",
+    "    float maxDepth = vertexTexCoord.x;",
+    "    float depth = waterLevel - ground;",
+    "    if (depth > maxDepth) depth = maxDepth;",
+    "    if (depth < 0.0) depth = 0.0;",
+    // How full this vertex's basin is, 0 at the rim and 1 where the water reaches the
+    // ground's own brim -- computed here rather than in the fragment, because at the
+    // rim both the depth and the potential are nothing and the division has to be
+    // guarded where the inputs are known.
+    "    fragWet = maxDepth > 1e-4 ? clamp(depth / maxDepth, 0.0, 1.0) : 0.0;",
+    "    fragDepth = depth;",
+    // The surface is the ground plus the water standing on it: a level pool, because
+    // `depth` is the same everywhere the ground is below the table.
+    "    vec3 world = vec3(vertexPosition.x, ground + depth, vertexPosition.z);",
+    "    fragWorldPos = world;",
+    "    gl_Position = mvp * vec4(world, 1.0);",
+    "}",
+].join("\n");
+
+const WATER_FS = [
+    "#version 330",
+    "in vec3 fragWorldPos;",
+    "in float fragDepth;",
+    "in float fragWet;",
+    "uniform vec3 lightDir;",
+    "uniform vec4 lightColor;",
+    "uniform vec4 ambientColor;",
+    "uniform vec3 camPos;",
+    "uniform mat4 lightVP;",
+    "uniform vec2 shadowTexel;",
+    "uniform float shadowBias;",
+    "uniform float shadowStrength;",
+    "uniform sampler2D texture1;",
+    "uniform vec3 blastPos;",
+    "uniform vec4 blastColor;",
+    "uniform float blastEnergy;",
+    "uniform vec4 waterShallow;",
+    "uniform vec4 waterDeep;",
+    "uniform float waterShore;",
+    // The chop (M20c): the height field's own numbers, the wind that drives it, and the
+    // clock it rides.
+    "uniform float waterTime;",
+    "uniform vec3 waterWave;",     // height, scale, speed
+    "uniform vec3 waterWind;",     // the wind's direction (unit) and the gust's share
+    "uniform float waterFresnel;",
+    "uniform vec3 waterSky;",      // what a reflection sees, until M20e mirrors the world
+    "out vec4 finalColor;",
+    "float unpackDepth(vec3 c) { return dot(c, vec3(1.0, 1.0/255.0, 1.0/65025.0)); }",
+    // The wave height field, differentiated. It is not *displaced*: the water mesh is the
+    // terrain's own 2 m grid and a wave is centimetres across, which no quad that size
+    // can carry, so the surface is shaded by the normal the same height field would have
+    // had -- evaluated per fragment, which is also what keeps a short wave from aliasing
+    // across the grid. Two crossed directions, so the chop does not read as stripes, and
+    // the amplitude falls away where the water is thin (a puddle does not chop).
+    "vec3 waterNormal(vec2 p, float depth) {",
+    "    float amp = waterWave.x * waterWind.z * clamp(depth / max(waterShore, 1e-4), 0.0, 1.0);",
+    "    float k = 6.2831853 / max(waterWave.y, 0.05);",
+    "    float t = waterTime * waterWave.z;",
+    "    vec2 d1 = normalize(waterWind.xy + vec2(0.21, -0.13));",
+    "    vec2 d2 = normalize(vec2(-waterWind.y, waterWind.x) + vec2(-0.17, 0.23));",
+    "    float p1 = dot(d1, p) * k + t;",
+    "    float p2 = dot(d2, p) * k * 1.7 + t * 1.3;",
+    "    vec2 grad = d1 * (cos(p1) * k) + d2 * (cos(p2) * k * 1.7 * 0.6);",
+    "    return normalize(vec3(-grad.x * amp, 1.0, -grad.y * amp));",
+    "}",
+    "void main() {",
+    // A pool is flat only until it is not: the normal comes from the chop, and between
+    // them the view, the light and the reflection are all measured against it.
+    "    vec3 viewDir = normalize(camPos - fragWorldPos);",
+    "    vec3 n = waterNormal(fragWorldPos.xz, fragDepth);",
+    "    vec3 l = normalize(lightDir);",
+    "    float ndl = max(dot(n, l), 0.0);",
+    "    vec3 ambient = ambientColor.rgb * 1.05;",
+    "    float shadow = 1.0;",
+    "    if (shadowStrength > 0.001) {",
+    "        vec4 lclip = lightVP * vec4(fragWorldPos, 1.0);",
+    "        vec3 ndc = lclip.xyz / lclip.w;",
+    "        vec2 uv = ndc.xy * 0.5 + 0.5;",
+    "        float ref = ndc.z * 0.5 + 0.5;",
+    "        if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0 && ref < 1.0) {",
+    "            float sum = 0.0;",
+    "            for (int y = -1; y <= 1; y++) {",
+    "                for (int x = -1; x <= 1; x++) {",
+    "                    vec3 e = texture(texture1, uv + vec2(float(x), float(y))*shadowTexel).rgb;",
+    "                    float d = 1.0 - unpackDepth(e);",
+    "                    sum += (ref - shadowBias > d) ? 1.0 : 0.0;",
+    "                }",
+    "            }",
+    "            shadow = 1.0 - (sum/9.0)*shadowStrength;",
+    "        }",
+    "    }",
+    // The deep tint where the basin is full and the shallow one at the rim, so a
+    // puddle reads thin and a pool reads deep.
+    "    vec3 texel = mix(waterShallow.rgb, waterDeep.rgb, fragWet);",
+    "    vec3 diffuse = lightColor.rgb * ndl * shadow;",
+    "    vec3 halfV = normalize(l + viewDir);",
+    // The glitter. A tight lobe over the wave normals is what makes a pool sparkle
+    // rather than glow: the ground's 24 is a broad sheen, and the sun's own reflection
+    // is a point the chop spreads into a path.
+    "    float spec = pow(max(dot(n, halfV), 0.0), 160.0) * ndl * shadow * 0.9;",
+    "    vec3 color = texel * (ambient + diffuse) + lightColor.rgb * spec;",
+    "    if (blastEnergy > 0.001) {",
+    "        vec3 bd = blastPos - fragWorldPos;",
+    "        float bd2 = dot(bd, bd);",
+    "        float blastAtt = blastEnergy * (1.0 / (1.0 + bd2 * 0.01));",
+    "        float blastNdl = max(dot(n, bd * inversesqrt(bd2 + 0.25)), 0.0);",
+    "        color += texel * blastColor.rgb * (blastAtt * (0.35 + 0.65 * blastNdl));",
+    "    }",
+    // The fresnel (M20c): a thin sheet of water is nearly transparent seen from above
+    // and nearly a mirror seen along it, which is the single biggest "wet" cue there is.
+    // `waterSky` is what the reflection sees until M20e has a real mirror to sample, and
+    // it dims with the clock, so night water reflects a dark sky.
+    "    float ndv = max(dot(n, viewDir), 0.0);",
+    "    float fres = waterFresnel + (1.0 - waterFresnel) * pow(1.0 - ndv, 5.0);",
+    "    vec3 refl = reflect(-viewDir, n);",
+    "    vec3 sky = waterSky * (0.55 + 0.45 * clamp(refl.y, 0.0, 1.0));",
+    "    color = mix(color, sky, fres);",
+    // The shore: a sheet a few centimetres deep is barely there, so the alpha runs out
+    // with the depth and the water's edge is a fade rather than a drawn line.
+    "    float shore = clamp(fragDepth / max(waterShore, 1e-4), 0.0, 1.0);",
+    "    finalColor = vec4(color, waterDeep.a * shore);",
+    "}",
+].join("\n");
+
 // The planar blob shadow. The world position carries the pose, so the ground
 // projection and the `world.y > groundY` test follow it for free: the blob a
 // raised hoof casts moves with the hoof. On a CPU-skinning build that came for
@@ -415,6 +576,28 @@ function makeLighting() {
         if (sunMesh >= 0) rl.setModelShader(sunMesh, celestialShader);
         if (moonMesh >= 0) rl.setModelShader(moonMesh, celestialShader);
     }
+    // The water surface's program (M20b), compiled before `makeShadowMap` so the map
+    // can be attached to it below. It is a `makeModel` mesh with no bone data, like
+    // the terrain, so it is never routed through `modelShaderFor`.
+    waterShader = rl.loadShaderFromMemory(WATER_VS, WATER_FS);
+    if (waterShader < 0 || !rl.isShaderValid(waterShader)) {
+        console.log("water: the surface shader did not compile - the pools stay undrawn");
+        waterShader = -1;
+    } else {
+        waterProgram = litProgramInfo(waterShader);
+        waterUniforms = {
+            level: rl.getShaderLocation(waterShader, "waterLevel"),
+            shallow: rl.getShaderLocation(waterShader, "waterShallow"),
+            deep: rl.getShaderLocation(waterShader, "waterDeep"),
+            shore: rl.getShaderLocation(waterShader, "waterShore"),
+            time: rl.getShaderLocation(waterShader, "waterTime"),
+            wave: rl.getShaderLocation(waterShader, "waterWave"),
+            wind: rl.getShaderLocation(waterShader, "waterWind"),
+            fresnel: rl.getShaderLocation(waterShader, "waterFresnel"),
+            sky: rl.getShaderLocation(waterShader, "waterSky"),
+        };
+        console.log("water: surface shader " + waterShader);
+    }
     litPrograms = [litProgramInfo(litShader)];
     shadowPrograms = shadowShader >= 0
         ? [{ shader: shadowShader, uniforms: shadowLocations(shadowShader) }] : [];
@@ -455,8 +638,10 @@ function makeLighting() {
         rl.setModelShader(model, modelShaderFor(model, litShader));
     }
     // The terrain is a mesh with no bone data, so it takes the lit program the
-    // same way on both builds (`modelShaderFor` is for rigs).
+    // same way on both builds (`modelShaderFor` is for rigs). The water surface is
+    // the same kind of mesh with a program of its own.
     if (terrainMesh >= 0) rl.setModelShader(terrainMesh, litShader);
+    if (waterMesh >= 0 && waterShader >= 0) rl.setModelShader(waterMesh, waterShader);
     console.log("lighting: lit shader " + litShader + ", shadow shader " + shadowShader +
         (skinnedOk ? ", skinned" : ""));
 }
@@ -581,6 +766,9 @@ function updateLight() {
 // batch flush re-binds the program raylib recorded there.)
 function setLitUniforms(cx, cy, cz) {
     for (let i = 0; i < litPrograms.length; i++) setLitUniformsOn(litPrograms[i], cx, cy, cz);
+    // The water surface shares this frame's light, so it gets the same push. Its own
+    // uniforms (the level and the colours) are water.js's, pushed as it draws.
+    if (waterProgram !== null) setLitUniformsOn(waterProgram, cx, cy, cz);
 }
 
 function setLitUniformsOn(program, cx, cy, cz) {
@@ -785,6 +973,9 @@ function makeShadowMap() {
     }
     attachShadowMap(litPrograms[0]);
     if (litPrograms.length > 1) attachShadowMap(litPrograms[1]);
+    // The water surface receives the same shadow the ground does, so a pool in the
+    // goat's shadow goes dark with it.
+    if (waterProgram !== null) attachShadowMap(waterProgram);
     shadowRT = rl.loadRenderTexture(TUNING.lighting.shadow.size, TUNING.lighting.shadow.size);
     if (shadowRT < 0 || !rl.isRenderTextureValid(shadowRT)) {
         shadowRT = -1;
@@ -811,6 +1002,7 @@ function makeShadowMap() {
     }
     if (haveModel) rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
     if (terrainMesh >= 0) rl.setModelTexture(terrainMesh, SHADOW_MAP_INDEX, shadowColor);
+    if (waterMesh >= 0) rl.setModelTexture(waterMesh, SHADOW_MAP_INDEX, shadowColor);
     shadowMapReady = true;
     shadowMode = SHADOW_MAP;
     console.log("shadow map: rt " + shadowRT + " color " + shadowColor +

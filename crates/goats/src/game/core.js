@@ -365,9 +365,21 @@ const TUNING = {
     // is the wading cap M20g lifts for swimming.
     water: {
         enabled: 1,                // 0 disables the system (the frame-cost bisect)
-        fill: 1,                   // share of the basins' spill range at rain 1
+        fill: 0.15,                // share of the basins' spill range at rain 1
         seep: 0.15,                // rain below this leaves the ground dry
-        maxDepth: 0.6,             // metres; v1 keeps pools wading depth
+        maxDepth: 0.6,             // metres; v1 keeps pools wading depth (M20g lifts it)
+        shore: 0.25,               // metres of depth the surface fades out over
+        // The chop (M20c): the wave height field's own numbers, a 5 cm crest every 60 cm.
+        // It is never *displaced* -- the water mesh is the terrain's 2 m grid and a wave
+        // is centimetres across -- so the surface is shaded by the normal taken from
+        // this field per fragment (`WATER_FS`, lighting.js).
+        wave: {
+            height: 0.05,          // metres, crest to trough
+            scale: 0.6,            // metres between crests
+            speed: 1.2,            // the phase speed, times the gust
+            wind: 0.8,             // how much the gust drives the amplitude (0 = not at all)
+        },
+        fresnel: 0.02,             // the reflectance at normal incidence
     },
     world: {
         dayLength: 240,            // real seconds for one 24 h day
@@ -502,6 +514,17 @@ const TUNING_CLAMP = {
     "water.fill": [0, 1],
     "water.seep": [0, 0.99],
     "water.maxDepth": [0, 8],
+    // The shore is a fade width, so a longer one is a softer edge and zero is a drawn
+    // line at the water's rim.
+    "water.shore": [0, 4],
+    // The chop and the fresnel (M20c). `scale` is the one that matters to what can be
+    // seen: at the water mesh's 2 m cells a crest much finer than the grid cannot be
+    // resolved by anything but the fragment shader, which is where the normal lives.
+    "water.wave.height": [0, 1],
+    "water.wave.scale": [0.05, 8],
+    "water.wave.speed": [0, 20],
+    "water.wave.wind": [0, 1],
+    "water.fresnel": [0, 1],
 };
 
 // Leaves that must stay whole numbers (counts and pixel sizes). Integer-ness is

@@ -57,6 +57,7 @@
     let splashStep = '';
     let shadowPass = false;
     let skyFs = '';
+    let waterFs = '';
     let goatDraw = null;
     // The last frame's layering, in order -- see the drawing members below. "The sun
     // is behind the cloud" is an *order*: the sky's layers with the bodies drawn
@@ -80,6 +81,11 @@
     const uniformNames = {};
     const uniformById = [];
     let uniformTop = 0;
+    // The last value each uniform was given, by the name the *scene* asked for. With no
+    // GL to compile a program, a name reached on both sides -- declared in the source and
+    // asked for by that exact string -- is the strongest thing a case can check.
+    const uniformValues = {};
+    const uniformVectors = {};
     // The last value the scene put on the lit shader's `blastEnergy`, which is the
     // bang's light. Zero when nothing is burning.
     let blastEnergy = 0;
@@ -177,6 +183,12 @@
     // the run.
     const pack = (r, g, b, a) =>
         (((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | ((a === undefined ? 255 : a) & 255)) >>> 0;
+
+    // One vector uniform's value, by name (see `uniformVectors`).
+    function recordVector(location, values) {
+        const uniform = uniformById[location];
+        if (uniform !== undefined) uniformVectors[uniform] = values;
+    }
 
     const base = globalThis.rl;
     globalThis.rl = Object.assign({}, base, {
@@ -333,9 +345,11 @@
         // context -- the scene branches on it rather than on behaviour.
         GPU_SKINNING: false,
         // The `BlendMode` members the scene reaches for: `ADDITIVE` for the sun's
-        // glare, and `ALPHA_PREMULTIPLY` for the sky's cloud layer, which attenuates
-        // the bodies under it. The engine reports the whole enum; defining these
-        // here is what puts both of them on the tested path.
+        // glare, `ALPHA_PREMULTIPLY` for the sky's cloud layer, which attenuates the
+        // bodies under it, and plain `ALPHA` for the water surface (M20b), the scene's
+        // only transparent model. The engine reports the whole enum; defining these
+        // here is what puts them on the tested path.
+        BLEND_ALPHA: 0,
         BLEND_ADDITIVE: 1,
         BLEND_ALPHA_PREMULTIPLY: 5,
         // The handle identifies which shader the scene compiled, so the checks
@@ -349,6 +363,9 @@
             // The celestial bodies' own program (M2) declares its own fragment
             // uniform, which is how a case can say the spheres are routed to it.
             if (fragment.indexOf('shaded') >= 0) return 8;
+            // The water surface's program (M20b) declares its own colours, which is how
+            // a case can say a pool is routed to it rather than to the ground's.
+            if (fragment.indexOf('waterDeep') >= 0) { waterFs = fragment; return 9; }
             const base = vertex.indexOf('shadowOn') >= 0 ? 1
                 : (vertex.indexOf('vClip') >= 0 ? 2 : (fragment.indexOf('cloudiness') >= 0 ? 3 : 0));
             // A skinned variant is the same source plus the bone block, so it is
@@ -377,6 +394,7 @@
         },
         setShaderValue: (shader, location, value) => {
             const uniform = uniformById[location];
+            if (uniform !== undefined) uniformValues[uniform] = value;
             if (uniform === 'blastEnergy') {
                 blastEnergy = value;
                 if (value > blastEnergyPeak) blastEnergyPeak = value;
@@ -384,6 +402,12 @@
             // The layer the next sky draw will ask for; recorded per draw below.
             if (uniform === 'skyLayer' && shader === skyHandle) skyLayer = value;
         },
+        // The vector uniforms by name, so a case can say the chop's own numbers reached
+        // the water's program (`waterWave`, `waterWind`) rather than only being declared
+        // in its source.
+        setShaderValueVector2: (_s, location, x, y) => recordVector(location, [x, y]),
+        setShaderValueVector3: (_s, location, x, y, z) => recordVector(location, [x, y, z]),
+        setShaderValueVector4: (_s, location, x, y, z, w) => recordVector(location, [x, y, z, w]),
         loadRenderTexture: () => 5, isRenderTextureValid: () => true,
         renderTextureColor: () => 6, renderTextureDepth: () => 7,
         renderTextureSize: () => ({ x: 1024, y: 1024 }),
@@ -622,6 +646,9 @@
             goatDraw: goatDraw,
             botDraw: drawn,
             skyFs: skyFs,
+            waterFs: waterFs,
+            uniformValues: uniformValues,
+            uniformVectors: uniformVectors,
             blastEnergy: blastEnergy,
             blastEnergyPeak: blastEnergyPeak,
             clipboardWrites: clipboardWrites,

@@ -202,6 +202,18 @@ pub struct Observations {
     pub bot_draw: Vec<Draw>,
     /// The sky fragment shader's source, so a test can assert what it contains.
     pub sky_fs: String,
+    /// The water surface's fragment source (M20c), for the same reason: the chop is a
+    /// fragment-side normal field and there is no GL here to compile it.
+    #[serde(default)]
+    pub water_fs: String,
+    /// The last value each scalar uniform was set to, by the name the scene asked for.
+    /// With nothing to compile a program, a name reached on *both* sides -- declared in
+    /// the source and requested by that exact string -- is what a case can hold.
+    #[serde(default)]
+    pub uniform_values: BTreeMap<String, f64>,
+    /// The same for the vector uniforms: `waterWave` is `[height, scale, speed]`.
+    #[serde(default)]
+    pub uniform_vectors: BTreeMap<String, Vec<f64>>,
     /// The last frame's draw order, one row per draw: `[kind, a, b]`, where kind 0
     /// is a sky layer (`a` the layer, `b` the blend mode it blended with), 1 a model
     /// (`a` its handle) and 2 a billboard. "The sun is behind the cloud" is an

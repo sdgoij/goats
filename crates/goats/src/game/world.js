@@ -335,11 +335,13 @@ function terrainBuildRects(rects) {
         const rect = rects[r];
         for (let j = rect.j0; j <= rect.j1; j++) terrainAttrRow(j, rect.i0, rect.i1);
     }
-    terrainUpload();
     // The ground the fill is a function of has just changed -- a new anchor or a
-    // crater -- so the water table is recomputed with it (water.js). A step and a
-    // crater both reach the mesh through here, which is what makes it the one hook.
+    // crater -- so the water table is recomputed with it (water.js), mesh and all. It
+    // runs *before* `terrainUpload` on purpose: the terrain has to be the last mesh
+    // the engine is handed, because that is the one the harness reads its facts back
+    // off, and the water surface is a `makeModel` mesh in the same handle range.
     waterRebuild();
+    terrainUpload();
 }
 
 function terrainBuild(i0, i1, j0, j1) {

@@ -76,6 +76,7 @@ page, where GitHub plays it.*
   nothing floats or sinks. A cube-per-cell version of this measured 41 fps
   against 56 for the flat plane, which is why it is one mesh; without the
   `makeModel` binding the ground falls back to the flat slab.
+- **Pools on the low ground (M20a/M20b/M20c)**: when it rains, the water pools in the field's hollows and drains away as it clears. The surface is a mesh that carries the ground under it and each basin's own depth, so the level is a single number a frame and the mesh only rebuilds when the ground does -- and a crater a bang leaves becomes a puddle. It takes the same sun, shadow and blast light as the terrain, its edge is a fade rather than a line, and the surface carries a chop: a wave field short enough that it lives in the fragment shader's normal, driven by the same gust the grass sways to and dying away in shallow water. The fresnel is what sells it -- reflective along the surface, transparent seen from above -- and it reflects the hour's own sky. It is drawn in the lit pass, so the `L` toggle hides it (the field is still simulated). Reflections and the goat's interaction with it are M20d-M20e.
 - **Real lighting and shadows (M4/M4b)**: a small custom GLSL program lights
   the scene. A directional sun (or moon at night) driven by the clock, plus a
   hemispheric ambient term, shades the goat and the terrain per fragment. The

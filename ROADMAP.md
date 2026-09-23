@@ -3515,15 +3515,18 @@ this milestone is a consequence of these, so they come first.
 
 ## M20 — Water: pools, waves and a reflected sky
 
-**Status:** 🚧 **In progress** -- M20a (the field and the fill) has landed: `water.js`,
-`TUNING.water`, the two hooks (the terrain rebuild and the weather-effects step), the
-`water`/`flood` console verbs and `crates/harness/tests/water.rs` (13 checks, with the
-full 4050-frame suite still green at 193). This section is the whole design, not a
-summary of one; the rest of the build is M20b (the surface mesh), M20c (the waves),
-M20d (the interactions), M20e (the reflections), M20f (the wire audit, the mod surface
-and the guards) and M20g (swimming, buoyancy and drinking), which is **the next
-planned step** rather than a deferral. The calls to confirm are gathered at the end;
-read those first.
+**Status:** 🚧 **In progress** -- **M20a** (the field and the fill), **M20b** (the
+surface) and **M20c** (the chop and the fresnel) have landed. M20a: `water.js`,
+`TUNING.water`, the two hooks (the terrain rebuild and the weather-effects step) and the
+`water`/`flood` console verbs. M20b: the surface mesh, the water program (a sibling of
+`LIT_FS`, in `lighting.js`) and the shore. M20c: the wave field as a fragment-side normal,
+the tight specular lobe and the fresnel. `crates/harness/tests/water.rs` is 28 checks
+over four cases, and the rest of the suite is still green: `scene_logic` 193, `skinning`
+22, `celestial` 7, `observations` 3, and `birds` 41 in release. This section is the whole
+design, not a summary of one; the rest of the build is M20d (the interactions), M20e
+(the reflections), M20f (the wire audit, the mod surface and the guards) and M20g
+(swimming, buoyancy and drinking), which is **the next planned step** rather than a
+deferral. The calls to confirm are gathered at the end; read those first.
 
 **Why.** The field has hollows but no lakes or streams -- M8's own *Deferred* line,
 and open question 8. Everything a pool needs already exists, and water is mostly
@@ -3688,6 +3691,82 @@ target). It is the first thing to measure under `PERF.md`'s protocol.
    discipline: a throwaway probe and a case in the `rl` surface test) or lean on the
    shader.
 
+### The surface, as landed (M20b)
+
+The split the design asked for is what shipped, and the numbers are measured rather
+than guessed: on the spawn field (`low -1.452`, `high 1.487`) the surface is **476 of
+the grid's 2304 quads** -- the ones whose ground stands under its own spill level --
+and the heaviest rain raises the table **0.441 m**.
+
+- **The mesh carries the ground and the potential.** `positions.y` is the ground under
+the vertex and `texcoord.x` is `max(0, W_F - terrain)`, that vertex's basin's own depth.
+The level is one uniform, so `WATER_VS` places the surface and the mesh is rebuilt only
+when the *ground* changes. The index list is trimmed in place, and the arrays are the
+same objects every build, which is what keeps a `makeModel` re-upload at the cheap end
+of the range `world.js` measured.
+- **The surface is lit like the ground.** The normal comes from the chop (M20c) and
+the hemisphere term from its tilt; the sun, the shadow map and the blast light are the
+shared uniforms. The shore is the alpha (`fragDepth / waterShore`), so a pool fades out
+instead of ending on a drawn line, and a dry cell is not drawn at all.
+- **It is the scene's only transparent model**, drawn last in the 3D pass with
+`beginBlendMode(BLEND_ALPHA)` around it, and only in the lit branch: the surface height
+comes from the water program, so a build without it simulates the field and draws no
+water rather than drawing it at the ground's height.
+- **`fill` was retuned, 1.0 to 0.15.** At 1.0 the table rose the field's whole relief
+range and the deepest basin became a lake metres deep -- which is M20g's problem, not
+M20b's. The case now asserts the rise stays inside `maxDepth`, so a later change to
+`fill` or to the terrain's relief cannot quietly submerge the goat.
+
+Two harness facts this landed with, both worth keeping:
+
+- **`waterRebuild` runs *before* `terrainUpload`.** The harness reads the terrain's
+facts off the *last* `makeModel` (`Observations::mesh`), and the water surface is a
+`makeModel` mesh in the same handle range, so the terrain has to be the last mesh the
+engine is handed. `skinning.rs` learned to tell the water's routes from the terrain's
+(both are `>= 1000`; the water is told by its program).
+- **`Harness::reset_frame` is how a case drives a frame after the scripted run.**
+`run()` leaves the stub's frame budget spent, so `windowShouldClose` reports true and
+`sceneFrame` returns before it draws; the table and the draw order here are asserted
+through one such frame. **The same thing means `celestial.rs`'s own `sceneFrame` call
+draws nothing** -- its assertions hold because the run's clock is still at midnight, so
+what they read is the last frame of the run. That is a latent weakness in that test,
+not in this one, and it is left for whoever next touches it.
+
+### The chop, as landed (M20c)
+
+The design asked for Gerstner waves on the geometry, and that is the one thing the water
+mesh cannot carry: it is the terrain's own **2 m grid**, and a wave 60 cm from crest to
+crest is a third of a cell. A displaced mesh would alias that into moiré, and subdividing
+the water to the half-metre such a wave needs is a `makeModel` at sixteen times the
+vertices -- 147k of them, each needing the terrain's noise sampled again -- on every
+rebuild. So the height field is kept and its **derivative** is what the surface is shaded
+by, evaluated per fragment: the same normals a displaced mesh would have had, with none
+of the resolution problem, because a fragment is smaller than a wave. `wave.height` and
+`wave.scale` keep their physical meaning; only the silhouette is missing, and at 5 cm of
+chop on a pool there is no silhouette to miss.
+
+- **Two crossed directions**, so the chop does not read as stripes, the second finer and
+  faster than the first. The amplitude falls away where the water is thin
+  (`depth / waterShore`), so a puddle does not chop while a pool does.
+- **It rides the same gust the grass sways to** (`windSway`), as a share of the amplitude
+  (`wave.wind`, so a dead calm still has chop), and it is advected by a clock of the
+  water's own rather than `worldTime`: the day's clock wraps at midnight, and a phase that
+  jumped with it would be a visible pop once a game-day.
+- **The specular lobe is tight** -- 160, against the ground's 24 -- and the wave normals
+  are what spread it, which is what turns the sun's reflection from a glow into a path.
+- **The fresnel is the one that sells it**: the reflectivity runs from `fresnel` (0.02,
+  seen from above, where a pool is transparent) to a mirror (seen along the surface), and
+  the body is mixed into whatever the reflection sees. Until M20e has a real mirror to
+  sample, that is the scene's own daylight grade dimmed with the sky
+  (`ambR/G/B * skyLight`, world.js), so night water reflects a dark sky.
+
+`crates/harness/tests/water.rs` gains `the_surface_has_waves`, which holds both halves of
+what a stub with no GL can: the **source** carries the wave field and the fresnel, and the
+**frame pushes** `waterWave`/`waterWind`/`waterTime`/`waterFresnel`/`waterSky` under the
+names the source declares. That pair is the only place a uniform's name can be checked at
+all here, because a misspelling is silent on both sides -- the stub invents an id where a
+real engine returns `-1` and drops the write.
+
 ### Interaction with the goat
 
 - **Ripples and the wake are not a simulation.** A small fixed set of expanding,
@@ -3752,18 +3831,25 @@ an engine binding (see *Engine work*), and it is why a mod's water is a mod's bu
 ```
 water: {
     enabled: 1,          // 0 disables the whole system (a frame-cost bisect)
-    fill: 1,             // share of the basins' spill range at rain 1
+    fill: 0.15,          // share of the basins' spill range at rain 1
     seep: 0.15,          // rain below this leaves the ground dry
     maxDepth: 0.6,       // metres; v1 keeps pools wading depth (M20g lifts it)
+    shore: 0.25,         // metres of depth the surface fades out over
+    wave: {              // the chop's height field (M20c)
+        height: 0.05,    // metres, crest to trough
+        scale: 0.6,      // metres between crests
+        speed: 1.2,      // the phase speed, times the gust
+        wind: 0.8,       // how much the gust drives the amplitude
+    },
+    fresnel: 0.02,       // the reflectance at normal incidence (M20c)
 }
 ```
 
-**M20a ships the four above.** The rest of the designed tree arrives with the slice that
-reads it, so a knob is never one that does nothing: `wave.{height,scale,speed,wind}` with
-M20c; `fresnel`/`absorb`/`caustics`/`shore` with M20c-M20d; `reflection` with M20e; and
-`drag`/`dragEnergy` with M20d. The grid step is deliberately **not** a knob -- it is the
-terrain's own `TERRAIN_CELL`, structural like `CLOUD_WRAP`, because the arrays are sized
-at load.
+**M20a-M20c ship the above.** The rest of the designed tree arrives with the slice that
+reads it, so a knob is never one that does nothing: `absorb`/`caustics` with M20d,
+`reflection` with M20e, and `drag`/`dragEnergy` with M20d. The grid step is deliberately
+**not** a knob -- it is the terrain's own `TERRAIN_CELL`, structural like `CLOUD_WRAP`,
+because the arrays are sized at load.
 
 `reflection` will be the quality knob and the frame-cost lever; `enabled` and `caustics`
 are the bisects, on the pattern `explosions.enabled` and `crater.scorch` already set.
@@ -3830,14 +3916,20 @@ work, it is a wasm candidate -- and a measured decision, not an upfront one.
 
 ### Slices
 
-- **M20a -- the field and the fill.** `F`, `depth`, `W` and `sceneWater()`; no draw.
-  The harness asserts a hollow fills, a hill does not, a crater becomes a puddle, and
-  two basins merge at their saddle.
-- **M20b -- the surface and the level.** The decimated mesh, the transparent surface at
-  `surface(x, z)`, the shore fade; rain raises the table and `clear` returns it. `clear`
-  with no water stays exactly neutral.
-- **M20c -- the waves.** Gerstner plus analytic normals, fresnel, the specular lobe,
-  coupled to the wind and to depth.
+- **M20a -- the field and the fill. ✅ Done.** `F` (the priority-flood spill level),
+  `depth`, the level `W` and `sceneWater()`; no draw. The cases assert a dry spell is
+  *exactly* dry, that rain below `seep` is too, that a downpour fills the hollows, that
+  the level is monotone in the rain and covers more ground as it rises, and that a
+  crater becomes a puddle. Two things the design named that the cases do not: that a
+  *hill* stays dry (the dry-spell case implies it) and that two basins merge at their
+  saddle (which would need a constructed terrain to show).
+- **M20b -- the surface and the level. ✅ Done.** The decimated mesh, the transparent
+  surface at `surface(x, z)`, the shore fade, and the lit look -- the reflections are
+  M20e and the chop is M20c. Rain raises the table and `clear` returns it, and a dry
+  field draws nothing, so `clear` stays exactly neutral. See *The surface, as landed*.
+- **M20c -- the waves. ✅ Done.** The chop as a fragment-side normal field (the mesh is
+  too coarse to displace -- see *The chop, as landed*), the tight specular lobe, and the
+  fresnel, all driven by the gust the grass sways to and falling away in shallow water.
 - **M20d -- the interactions.** The ripple and wake uniforms, the splash pool, the drag
   and energy coupling (gated), and the submerged-tuft culling.
 - **M20e -- the reflections.** Tier 1 (the heightmap raymarch), then tier 2 (the planar

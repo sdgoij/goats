@@ -218,3 +218,220 @@ fn a_crater_becomes_a_puddle() {
 
     checks.finish();
 }
+
+/// The stub's row kind for a model draw (`harness_rl.js`'s `LAYER_MODEL`), and the
+/// handle it gives the water surface's own program -- the pool is a `makeModel` mesh
+/// like the terrain and the celestial spheres, so it shares their handle range and is
+/// told apart by the program it is routed to.
+const LAYER_MODEL: i64 = 1;
+const WATER_SHADER: i64 = 9;
+
+/// Where in one frame's draw order each model of a kind was drawn. An empty
+/// `handles` matches any.
+fn rows_of(layers: &[[i64; 3]], handles: &[i64]) -> Vec<usize> {
+    layers
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            row[0] == LAYER_MODEL && (handles.is_empty() || handles.contains(&row[1]))
+        })
+        .map(|(position, _)| position)
+        .collect()
+}
+
+#[test]
+fn the_pools_are_drawn() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    let surface = water(&mut harness);
+    checks.check(
+        "the surface has a program of its own",
+        surface["shader"].as_i64() == Some(WATER_SHADER),
+        &surface,
+    );
+    checks.check(
+        "the mesh covers ground that can hold water",
+        surface["mesh"].as_i64().is_some_and(|m| m >= 0)
+            && surface["quads"].as_u64().is_some_and(|q| q > 0),
+        &surface,
+    );
+    checks.check(
+        "...and only a decimated share of the grid",
+        surface["quads"].as_u64().is_some_and(|q| q < 48 * 48),
+        surface["quads"].clone(),
+    );
+
+    // The geometry the table is mapped onto. It is printed because a change to `fill`,
+    // `seep` or the terrain's relief moves it and nothing else reports it -- and it is
+    // the number to read before touching those.
+    eprintln!(
+        "water: low {} high {} floor {} quads {} of {}",
+        surface["low"],
+        surface["high"],
+        surface["floor"],
+        surface["quads"],
+        48 * 48
+    );
+
+    // Bring the rain, and make sure the lighting is on: the scripted timeline the
+    // harness drives presses `L`, and the surface is only drawn in the lit pass.
+    harness.command("lighting on").expect("lighting on");
+    rain(&mut harness, 1.0);
+    let flooded = water(&mut harness);
+    checks.check(
+        "the table rises into the basins",
+        flooded["on"].as_bool() == Some(true)
+            && flooded["rise"].as_f64().is_some_and(|rise| rise > 0.05),
+        &flooded,
+    );
+    // The v1 promise: the heaviest rain is still wading depth, wherever the window's
+    // relief happens to sit (`TUNING.water.maxDepth`).
+    checks.check(
+        "...and it stays a wading depth",
+        flooded["rise"].as_f64().is_some_and(|rise| rise <= 0.6)
+            && flooded["deepest"].as_f64().is_some_and(|deep| deep <= 0.6),
+        (&flooded["rise"], &flooded["deepest"]),
+    );
+
+    // One frame with the water in, then the same frame without it. Two things have to
+    // be handled to make a frame happen at all: `run` leaves the stub's frame budget
+    // spent (so `windowShouldClose` reports true and `sceneFrame` returns before it
+    // draws -- `reset_frame` is the harness's own door for one more frame), and the
+    // scripted timeline presses `L`, while the surface is only drawn in the lit pass.
+    // The handles are read *after* the frame, because a crater could have rebuilt the
+    // grid during it.
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("one wet frame");
+    let wet = harness.observe().expect("observe");
+    let mesh = water(&mut harness)["mesh"].as_i64().unwrap_or(-1);
+    let ground = harness
+        .eval("terrainMesh")
+        .expect("terrainMesh")
+        .as_i64()
+        .unwrap_or(-1);
+    let surface_rows = rows_of(&wet.layers, &[mesh]);
+    let ground_rows = rows_of(&wet.layers, &[ground]);
+    checks.check(
+        "the surface is one model draw",
+        mesh >= 0 && surface_rows.len() == 1,
+        (&surface_rows, mesh),
+    );
+    checks.check(
+        "...drawn over the ground it covers",
+        surface_rows
+            .first()
+            .zip(ground_rows.first())
+            .is_some_and(|(surface, ground)| surface > ground),
+        (&surface_rows, &ground_rows),
+    );
+
+    // A dry field draws no surface at all: `clear` is exactly neutral, which is what
+    // keeps the weather's own gait assertions honest.
+    rain(&mut harness, 0.0);
+    let dry = water(&mut harness);
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("one dry frame");
+    let clear = harness.observe().expect("observe");
+    checks.check(
+        "a dry field draws nothing",
+        dry["on"].as_bool() == Some(false) && rows_of(&clear.layers, &[mesh]).is_empty(),
+        (&dry, &clear.layers),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_surface_has_waves() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // The chop is a tuning leaf like any other, and it is clamped like one.
+    let wave = harness.eval("tuningGet('water.wave')").expect("water.wave");
+    let wide = harness
+        .eval("tuningSet('water.wave.scale', 999)")
+        .expect("a clamp");
+    checks.check(
+        "the chop is a tree of its own",
+        wave["height"].as_f64().is_some_and(|h| h > 0.0)
+            && wave["scale"].as_f64().is_some_and(|s| s > 0.0)
+            && wave["speed"].as_f64().is_some()
+            && wave["wind"].as_f64().is_some(),
+        &wave,
+    );
+    checks.check(
+        "...and its knobs are clamped like the rest of the tree",
+        wide.as_f64().is_some_and(|s| s <= 8.0),
+        wide,
+    );
+    // Put it back: the harness is this case's own, but the read below is the tree's.
+    harness
+        .eval("tuningSet('water.wave.scale', 0.6)")
+        .expect("restore");
+
+    // Where the chop actually lives. There is no GPU here, so the *source* is what a case
+    // can hold: the height field's normal and the fresnel both have to be in it.
+    let source = harness.observe().expect("observe").water_fs;
+    checks.check(
+        "the surface shades from a wave height field",
+        source.contains("waterNormal")
+            && source.contains("uniform vec3 waterWave")
+            && source.contains("uniform float waterTime")
+            && source.contains("uniform vec3 waterWind"),
+        source.len(),
+    );
+    checks.check(
+        "...and mixes its reflection in by the fresnel term",
+        source.contains("uniform float waterFresnel")
+            && source.contains("reflect(-viewDir, n)")
+            && source.contains("color = mix(color, sky, fres)"),
+        source.len(),
+    );
+
+    // ...and the frame pushes them, under the names the source declares -- the one thing a
+    // stub with no GL can say about a uniform, since a misspelling is silent on both sides
+    // (the stub invents an id where a real engine returns -1 and drops the write).
+    harness.command("lighting on").expect("lighting on");
+    rain(&mut harness, 1.0);
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("one wet frame");
+    let obs = harness.observe().expect("observe");
+    checks.check(
+        "the clock and the fresnel reach the program",
+        obs.uniform_values.contains_key("waterTime")
+            && obs
+                .uniform_values
+                .get("waterFresnel")
+                .is_some_and(|f| *f > 0.0),
+        (
+            &obs.uniform_values.get("waterTime"),
+            &obs.uniform_values.get("waterFresnel"),
+        ),
+    );
+    checks.check(
+        "the chop's own numbers reach it, and the gust is a share",
+        obs.uniform_vectors
+            .get("waterWave")
+            .is_some_and(|w| w.len() == 3 && w[1] > 0.0)
+            && obs
+                .uniform_vectors
+                .get("waterWind")
+                .is_some_and(|w| w.len() == 3 && w[2] >= 0.0 && w[2] <= 1.0),
+        (
+            &obs.uniform_vectors.get("waterWave"),
+            &obs.uniform_vectors.get("waterWind"),
+        ),
+    );
+    checks.check(
+        "the reflection dims with the sky rather than with the sun alone",
+        obs.uniform_vectors
+            .get("waterSky")
+            .is_some_and(|s| s.len() == 3 && s.iter().all(|c| *c >= 0.0)),
+        obs.uniform_vectors.get("waterSky"),
+    );
+
+    checks.finish();
+}

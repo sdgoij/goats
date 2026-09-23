@@ -39,6 +39,31 @@ let waterLevel = 0;         // `W`, in metres
 let waterLevelMin = 0;      // the lowest ground in the field
 let waterLevelMax = 0;      // the highest spill level in the field
 let waterForce = -1;        // `flood <h>`: a level set by hand; -1 = derive from rain
+let waterFloor = 0;         // the table's low end, smoothed across rebuilds
+let waterOn = false;        // the table stands above the ground: there is water to draw
+let waterClock = 0;         // the waves' own seconds, and deliberately not `worldTime`
+let waterMesh = -1;         // the surface mesh (M20b)
+let waterQuads = 0;         // how many of the grid's quads can hold water at all
+let waterLogX = NaN;        // the last anchor this reported on, like the terrain's
+let waterLogZ = NaN;
+
+// The surface's colours, as multipliers on the light the ground gets: a pale
+// green-blue where a puddle is thin enough to see the bottom through, and a dark
+// teal where a basin is full. The alpha is the deep water's.
+const W_SHALLOW = [0.40, 0.58, 0.53, 0.55];
+const W_DEEP = [0.05, 0.15, 0.19, 0.85];
+// How fast the table's floor follows the window's lowest ground, per rebuild. The
+// grid follows the goat, so that minimum steps when a deeper hollow enters or leaves
+// the window; at 1.0 the whole field's water would step with it.
+const WATER_FLOOR_EASE = 0.25;
+// The grid's own arrays for the mesh, reused on every build: the engine's `makeModel`
+// re-uploads arrays it has already seen far more cheaply than freshly allocated ones
+// (world.js).
+const W_VERTS = new Array(WATER_N * WATER_N * 3);
+const W_NORM = new Array(WATER_N * WATER_N * 3);
+const W_COL = new Array(WATER_N * WATER_N * 4);
+const W_TEX = new Array(WATER_N * WATER_N * 2);
+const W_IDX = new Array(TERRAIN_QUADS * TERRAIN_QUADS * 6);
 
 // ---- the priority flood ---------------------------------------------------
 //
@@ -159,8 +184,14 @@ function waterRebuild() {
     }
     waterLevelMin = lo;
     waterLevelMax = hi;
+    // The table's floor is smoothed across rebuilds (see `WATER_FLOOR_EASE`): the
+    // window's lowest ground is not the world's, and it steps as the grid follows the
+    // goat. A dry spell is still *exactly* dry -- `waterUpdate` pins the level to the
+    // unsmoothed minimum when there is nothing to pool.
+    waterFloor = waterReady ? waterFloor + (lo - waterFloor) * WATER_FLOOR_EASE : lo;
     waterReady = true;
     waterUpdate();
+    waterBuild();
 }
 
 // The level for this frame, from the weather alone (see the header). `fill` is how
@@ -172,16 +203,17 @@ function waterUpdate() {
     const t = TUNING.water;
     if (t.enabled === 0) {
         waterLevel = waterLevelMin;
-        return;
-    }
-    if (waterForce >= 0) {
+    } else if (waterForce >= 0) {
         waterLevel = waterForce;
-        return;
+    } else {
+        let wetted = (rainAmount - t.seep) / (1 - t.seep);
+        if (wetted < 0) wetted = 0;
+        if (wetted > 1) wetted = 1;
+        waterLevel = wetted <= 0
+            ? waterLevelMin
+            : waterFloor + wetted * t.fill * (waterLevelMax - waterFloor);
     }
-    let wetted = (rainAmount - t.seep) / (1 - t.seep);
-    if (wetted < 0) wetted = 0;
-    if (wetted > 1) wetted = 1;
-    waterLevel = waterLevelMin + wetted * t.fill * (waterLevelMax - waterLevelMin);
+    waterOn = waterLevel > waterLevelMin + 1e-6;
 }
 
 // The `flood <h>` debug override, for a demo or a screenshot review. Anything below
@@ -190,6 +222,122 @@ function waterUpdate() {
 function waterSetForce(level) {
     waterForce = level < 0 ? -1 : level;
     waterUpdate();
+}
+
+// ---- the surface (M20b) ---------------------------------------------------
+//
+// The mesh carries the *ground* in its positions and, in its texcoord, the deepest
+// water each vertex's basin can hold. That split is the point: the level is a uniform
+// the shader applies (`lighting.js`, `WATER_VS`), so the mesh is rebuilt only when the
+// *ground* changes -- a new anchor or a crater -- and never as the rain rises.
+//
+// The vertices are the whole grid (any of them can be under water); the index list is
+// cut down to the quads a basin's own ground touches, which is what decimates the
+// draw: a dry field costs one empty draw rather than the terrain's again.
+function waterBuild() {
+    const n = WATER_N;
+    const x0 = terrainAnchorX - WATER_HALF;
+    const z0 = terrainAnchorZ - WATER_HALF;
+    for (let j = 0; j < n; j++) {
+        const wz = z0 + j * WATER_CELL;
+        for (let i = 0; i < n; i++) {
+            const k = j * n + i;
+            const ground = T_H[k];
+            let maxDepth = W_F[k] - ground;
+            if (maxDepth < 0) maxDepth = 0;
+            W_VERTS[k * 3] = x0 + i * WATER_CELL;
+            W_VERTS[k * 3 + 1] = ground;
+            W_VERTS[k * 3 + 2] = wz;
+            W_NORM[k * 3] = 0;
+            W_NORM[k * 3 + 1] = 1;
+            W_NORM[k * 3 + 2] = 0;
+            W_COL[k * 4] = 255;
+            W_COL[k * 4 + 1] = 255;
+            W_COL[k * 4 + 2] = 255;
+            W_COL[k * 4 + 3] = 255;
+            W_TEX[k * 2] = maxDepth;
+            W_TEX[k * 2 + 1] = 0;
+        }
+    }
+    // Wound like the terrain's own grid (and raylib's `GenMeshPlane`), so the surface
+    // faces up. A quad is worth drawing if any corner of it is under its own spill
+    // level; `W_IDX` is then trimmed in place, which keeps the array's identity while
+    // shrinking what the engine is asked to upload.
+    let t = 0;
+    for (let j = 0; j < TERRAIN_QUADS; j++) {
+        for (let i = 0; i < TERRAIN_QUADS; i++) {
+            const a = j * n + i;
+            const b = a + 1;
+            const c = a + n;
+            const d = c + 1;
+            if (W_TEX[a * 2] <= 0 && W_TEX[b * 2] <= 0 &&
+                W_TEX[c * 2] <= 0 && W_TEX[d * 2] <= 0) continue;
+            W_IDX[t++] = a; W_IDX[t++] = c; W_IDX[t++] = b;
+            W_IDX[t++] = b; W_IDX[t++] = c; W_IDX[t++] = d;
+        }
+    }
+    waterQuads = t / 6;
+    W_IDX.length = t;
+    if (waterMesh >= 0) rl.unloadModel(waterMesh);
+    waterMesh = rl.makeModel(W_VERTS, W_IDX, W_NORM, W_COL, W_TEX);
+    // A fresh model starts on raylib's default shader, and the water needs its own (it
+    // is where the surface height comes from), plus the shadow map. Exactly what
+    // `terrainUpload` re-applies for the ground.
+    if (waterShader >= 0) rl.setModelShader(waterMesh, waterShader);
+    if (shadowColor >= 0) rl.setModelTexture(waterMesh, SHADOW_MAP_INDEX, shadowColor);
+    if (terrainAnchorX !== waterLogX || terrainAnchorZ !== waterLogZ) {
+        waterLogX = terrainAnchorX;
+        waterLogZ = terrainAnchorZ;
+        console.log("water: mesh " + waterMesh + " " + waterQuads + " quads of " +
+            (TERRAIN_QUADS * TERRAIN_QUADS) + ", level " + netRound3(waterLevel));
+    }
+}
+
+// The level, the colours and the chop, pushed as the surface is drawn. The light, the
+// ambient, the shadow and the blast light are the shared ones (`setLitUniforms`,
+// lighting.js).
+function waterSetUniforms() {
+    const shader = waterShader;
+    const u = waterUniforms;
+    if (shader < 0 || u === null) return;
+    const t = TUNING.water;
+    const wave = t.wave;
+    rl.setShaderValue(shader, u.level, waterLevel, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValueVector4(shader, u.shallow, W_SHALLOW[0], W_SHALLOW[1], W_SHALLOW[2], W_SHALLOW[3]);
+    rl.setShaderValueVector4(shader, u.deep, W_DEEP[0], W_DEEP[1], W_DEEP[2], W_DEEP[3]);
+    rl.setShaderValue(shader, u.shore, t.shore, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(shader, u.time, waterClock, rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValue(shader, u.fresnel, t.fresnel, rl.SHADER_UNIFORM_FLOAT);
+    // The chop rides the same gust the grass sways to. The direction is a unit vector
+    // whatever the wind is doing -- a dead calm still has chop, and the shader
+    // normalises it again anyway.
+    const wx = windX;
+    const wz = windZ;
+    const len = Math.sqrt(wx * wx + wz * wz);
+    const dx = len > 1e-3 ? wx / len : 1.0;
+    const dz = len > 1e-3 ? wz / len : 0.0;
+    const gustNorm = clamp(windSway / TUNING.weather.windNorm, 0, 1);
+    rl.setShaderValueVector3(shader, u.wind, dx, dz, (1 - wave.wind) + wave.wind * gustNorm);
+    rl.setShaderValueVector3(shader, u.wave, wave.height, wave.scale, wave.speed);
+    // What the fresnel reflects, until M20e has a real mirror to sample: the scene's own
+    // daylight grade, dimmed with the sky, so night water reflects a dark sky and the
+    // pool's colour matches the hour (~-ish, `ambR/G/B` and `skyLight`, world.js).
+    rl.setShaderValueVector3(shader, u.sky, ambR * skyLight, ambG * skyLight, ambB * skyLight);
+}
+
+// The surface, drawn last in the 3D pass so it blends over the ground and over
+// anything standing in it. Blending has to be asked for: a model draw leaves whatever
+// blend state it found, and this is the scene's only transparent model.
+function waterDraw() {
+    if (!waterOn || waterMesh < 0 || waterShader < 0) return;
+    // The wave clock advances here, once per frame that draws water: `worldTime` wraps at
+    // midnight, and a phase that jumped with it would be a visible pop once a game-day.
+    waterClock += sceneDt();
+    waterSetUniforms();
+    const blend = typeof rl.beginBlendMode === "function";
+    if (blend) rl.beginBlendMode(rl.BLEND_ALPHA);
+    rl.drawModelEx(waterMesh, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, rl.WHITE);
+    if (blend) rl.endBlendMode();
 }
 
 // ---- reading it -----------------------------------------------------------
@@ -261,6 +409,7 @@ function sceneWater() {
         level: netRound3(isFinite(level) ? level : 0),
         enabled: TUNING.water.enabled !== 0,
         forced: waterForce >= 0,
+        on: waterOn,
         wet: wet,
         cells: count,
         volume: netRound3(volume),
@@ -270,5 +419,10 @@ function sceneWater() {
         goatDepth: netRound3(waterDepthAt(goat.px, goat.pz)),
         low: netRound3(waterLevelMin),
         high: netRound3(waterLevelMax),
+        floor: netRound3(waterFloor),
+        rise: netRound3(waterLevel - waterLevelMin),
+        mesh: waterMesh,
+        quads: waterQuads,
+        shader: waterShader,
     };
 }
