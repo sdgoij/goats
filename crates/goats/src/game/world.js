@@ -336,6 +336,10 @@ function terrainBuildRects(rects) {
         for (let j = rect.j0; j <= rect.j1; j++) terrainAttrRow(j, rect.i0, rect.i1);
     }
     terrainUpload();
+    // The ground the fill is a function of has just changed -- a new anchor or a
+    // crater -- so the water table is recomputed with it (water.js). A step and a
+    // crater both reach the mesh through here, which is what makes it the one hook.
+    waterRebuild();
 }
 
 function terrainBuild(i0, i1, j0, j1) {

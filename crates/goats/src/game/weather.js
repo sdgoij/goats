@@ -270,6 +270,9 @@ function updateWeatherEffects() {
         Math.sqrt(windX * windX + windZ * windZ).toFixed(1) + " m/s";
     if (rainAmount > 0.02) weatherText = weatherText + "   rain " + Math.round(rainAmount * 100) + "%";
     if (weatherSpeed < 0.98) weatherText = weatherText + "   slowed " + Math.round((1 - weatherSpeed) * 100) + "%";
+    // The water table follows the rain, and this is the one place both a local
+    // weather step and a mirroring client's applied weather pass through (water.js).
+    waterUpdate();
 }
 
 // C jumps to the next state, for previewing the cycle.

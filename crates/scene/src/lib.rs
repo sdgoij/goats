@@ -25,6 +25,7 @@ scene_bundle!(
     "../../goats/src/game/core.js",
     "../../goats/src/game/model.js",
     "../../goats/src/game/world.js",
+    "../../goats/src/game/water.js",
     "../../goats/src/game/lighting.js",
     "../../goats/src/game/sky.js",
     "../../goats/src/game/audio.js",
@@ -56,14 +57,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_parts_are_all_present_and_in_order() {
-        // Every part opens with a `// Part N/16` banner. Finding all of them in
-        // the joined scene proves the list and the files still agree -- a part
-        // dropped from the list, or a renumbering, leaves a gap.
-        assert_eq!(PARTS.len(), 16);
-        for n in 1..=PARTS.len() {
-            let banner = format!("// Part {n}/{}", PARTS.len());
-            assert!(SCENE.contains(&banner), "the scene is missing `{banner}`");
-        }
+    fn the_parts_are_all_listed() {
+        // `SCENE` is these files joined, so the list and the scene agree by
+        // construction; what this holds is the count, so the list is not quietly
+        // emptied or truncated. The parts used to open with a `// Part N/N` banner
+        // and this test looked for all of them, which was the guard against a single
+        // *line* dropped from the list too; the banners have since been removed, so
+        // that half is now caught only by the scene failing to run (the harness),
+        // not here.
+        assert_eq!(PARTS.len(), 17);
     }
 }

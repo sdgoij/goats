@@ -9,6 +9,7 @@
 //   core.js      tuning, stats, palette, maths helpers
 //   model.js     the animated goat model and the cube-skeleton fallback
 //   world.js     grass, the day/night curve, sky colours, sun/moon/stars
+//   water.js     the water table, the fill and the pools it makes (M20a)
 //   lighting.js  lit shader, directional light, planar + shadow-map shadows
 //   sky.js       2.5D procedural cloud shader
 //   audio.js     music streams, weather beds, goat bleats
@@ -21,6 +22,7 @@
 //   console.js   the in-game console overlay (M9)
 //   net.js       the network bridge to the Rust host (M10)
 //   mods.js      the mod table and the `goats` API (M14b)
+//   explosions.js landmines, boobytraps, craters and a flung goat (M19)
 //
 // The goat is `goat_animated.glb`, baked from the Blender rig and loaded through
 // the `rl` model surface. Every clip bakes its forward travel as *in-place*
@@ -355,6 +357,18 @@ const TUNING = {
         snap: 24,                  // rebuild when the goat has moved this far
         uv: 0.06,                  // texture tiles per world unit
     },
+    // Water (M20a). `fill` is how much of the basins' spill range the heaviest rain
+    // reaches and `seep` is the rain below which the ground stays dry -- the level is
+    // the weather's own, not an integral over time (water.js), so these two are the
+    // whole of "how wet does it get". The wave, fresnel, absorption, shore and
+    // reflection knobs arrive with the slices that read them (M20c-M20e); `maxDepth`
+    // is the wading cap M20g lifts for swimming.
+    water: {
+        enabled: 1,                // 0 disables the system (the frame-cost bisect)
+        fill: 1,                   // share of the basins' spill range at rain 1
+        seep: 0.15,                // rain below this leaves the ground dry
+        maxDepth: 0.6,             // metres; v1 keeps pools wading depth
+    },
     world: {
         dayLength: 240,            // real seconds for one 24 h day
         timeFast: 40,              // hold T to advance time this many times faster
@@ -482,6 +496,12 @@ const TUNING_CLAMP = {
     "explosions.shake.speed": [0, 80],
     "explosions.pulse.decay": [0, 20],
     "explosions.pulse.damage": [0, 100],
+    // The water table (M20a). `seep` stops just short of 1, since the wetted fraction
+    // divides by `1 - seep`; `fill` is a share of the range; `maxDepth` is the wading
+    // cap (up to a few metres, which M20g's swimming is what would use).
+    "water.fill": [0, 1],
+    "water.seep": [0, 0.99],
+    "water.maxDepth": [0, 8],
 };
 
 // Leaves that must stay whole numbers (counts and pixel sizes). Integer-ness is

@@ -25,8 +25,8 @@ const HELP_GROUPS = [
     ["basics", "help ping"],
     ["state", "state stats time weather bots camera pos phase features fps"],
     ["move", "jump sleep wake walk trot run back stop turn yaw"],
-    ["vitals", "health energy heal eat grass traps craters restart kill"],
-    ["view", "lighting shadows sky mute settings setting tune perf ui console screenshot"],
+    ["vitals", "health energy heal eat grass traps craters water restart kill"],
+    ["view", "lighting shadows sky flood mute settings setting tune perf ui console screenshot"],
     ["session", "host connect leave who net copy say msg"],
     ["mods", "mod"],
     ["flow", "pause resume step quit"],
@@ -455,6 +455,26 @@ function sceneCommand(line) {
                 });
             }
             return "ok " + JSON.stringify({ range: range, craters: near, live: all.length });
+        }
+        // The water table (water.js): the level, how much of the field it covers,
+        // where the deepest point is, and how deep it is under the goat -- the readout
+        // a mod's own water logic wants, and the one the harness asserts against.
+        case "water": {
+            return "ok " + JSON.stringify(sceneWater());
+        }
+        // Force the water table, for a demo or a review: `flood 0.4` sets a level,
+        // `flood off` (or `flood rain`) hands it back to the weather. The same shape as
+        // `C` forcing the weather cycle, and the bisect for the whole system.
+        case "flood": {
+            const arg = parts[1];
+            if (arg === undefined || arg === "off" || arg === "rain") {
+                waterSetForce(-1);
+                return "ok flood off";
+            }
+            const level = Number(arg);
+            if (!isFinite(level)) return "error flood: expects a number or 'off'";
+            waterSetForce(level);
+            return "ok flood " + ctlRound(level);
         }
         // The frame-cost benchmark (goat.js): `perf` prints the phase breakdown
         // gathered since the last print, `perf on` logs it every 240 frames,
