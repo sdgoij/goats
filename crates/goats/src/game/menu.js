@@ -22,6 +22,7 @@ const KEYMAP_ROWS = [
     ["L", "toggle lighting"],
     ["K", "cycle shadows"],
     ["B", "toggle the sky shader"],
+    ["J", "toggle the water"],
     ["M", "mute audio"],
     ["F11", "toggle fullscreen"],
     ["Mouse drag", "orbit the camera"],

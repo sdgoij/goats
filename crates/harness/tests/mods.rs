@@ -271,6 +271,19 @@ fn the_mod_surface_works() {
         &boom,
     );
 
+    // ---- M20f: the water surface -------------------------------------------
+    let water = staged("the water block", water_block(&mut harness));
+    checks.check(
+        "a mod reads the level, the depth and the pools the scene has",
+        water.reads,
+        &water,
+    );
+    checks.check(
+        "...and can drive the table, hand it back and switch the system off",
+        water.drives,
+        &water,
+    );
+
     // ---- one mod's entities, seen by another -------------------------------
     let pair = staged("the entities block", entities_block(&mut harness));
     checks.check(
@@ -571,6 +584,58 @@ struct ModBoom {
     disarmed: bool,
     event: bool,
     reported: bool,
+}
+
+/// The water, through the surface M20f added (APIv1.md §4.17): a mod reads the level, the
+/// depth under a point and the pools, drives the table and hands it back. It is deliberately
+/// a *mod* block rather than a scene-side read -- the per-mod handle is where a surface gets
+/// wired and the global is not, which is the one thing a wrapper can catch.
+const WATER_ENTRY: &str = r#"(function (goats) {
+    globalThis.__waterLevel = goats.water.level();
+    globalThis.__waterSame = goats.water.state().level === globalThis.__waterLevel;
+    globalThis.__waterDepth = goats.water.depthAt(goat.px, goat.pz);
+    globalThis.__waterPools = goats.water.pools().length;
+    goats.water.setLevel(-1.4);
+    globalThis.__waterForced = sceneWater().forced && sceneWater().level === -1.4;
+    goats.water.clear();
+    globalThis.__waterCleared = sceneWater().forced === false;
+    goats.water.enabled(false);
+    globalThis.__waterOff = sceneWater().enabled === false;
+    goats.water.enabled(true);
+})(goats.begin("com.water"))"#;
+
+const TABLE_WATER: &str = r#"[{"id":"com.water","name":"Water","version":"1","api":1,"side":"world","enabled":true,"hash":"0"}]"#;
+
+/// What the M20f water surface found.
+#[derive(Debug, Default)]
+struct ModWater {
+    reads: bool,
+    drives: bool,
+}
+
+fn water_block(harness: &mut Harness) -> Result<ModWater, String> {
+    let mut water = ModWater::default();
+    harness.call("sceneMods", &[json!(TABLE_WATER)])?;
+    harness.eval(WATER_ENTRY)?;
+    harness.call(
+        "sceneModResult",
+        &[json!("com.water"), json!(true), json!("")],
+    )?;
+
+    // It reads the same water the scene has: the level the frame is using, the depth under
+    // the goat that the drag is computed from, and the pools the console's `pools` lists.
+    water.reads = bool_of(harness.eval(
+        "globalThis.__waterSame && globalThis.__waterLevel === sceneWater().level && \
+         globalThis.__waterDepth === sceneWater().goatDepth && globalThis.__waterPools >= 0",
+    )?);
+
+    // ...and it can drive the table, from the wrapper, with the scene seeing the level it
+    // asked for -- and `clear` handing it back, and the switch turning the system off.
+    water.drives =
+        bool_of(harness.eval(
+            "globalThis.__waterForced && globalThis.__waterCleared && globalThis.__waterOff",
+        )?);
+    Ok(water)
 }
 
 /// A mod's own devices, through the surface M19g added: it listens for the `blast`

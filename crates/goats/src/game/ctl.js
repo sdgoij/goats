@@ -25,7 +25,7 @@ const HELP_GROUPS = [
     ["basics", "help ping"],
     ["state", "state stats time weather bots camera pos phase features fps"],
     ["move", "jump sleep wake walk trot run back stop turn yaw"],
-    ["vitals", "health energy heal eat grass traps craters water restart kill"],
+    ["vitals", "health energy heal eat grass traps craters water pools restart kill"],
     ["view", "lighting shadows sky flood mute settings setting tune perf ui console screenshot"],
     ["session", "host connect leave who net copy say msg"],
     ["mods", "mod"],
@@ -472,8 +472,35 @@ function sceneCommand(line) {
         // The water table (water.js): the level, how much of the field it covers,
         // where the deepest point is, and how deep it is under the goat -- the readout
         // a mod's own water logic wants, and the one the harness asserts against.
+        // `water on|off` is the whole system's bisect, which is also what `J` presses.
         case "water": {
+            if (parts[1] === "on" || parts[1] === "off") {
+                const on = waterSetEnabled(parts[1] === "on");
+                return "ok water " + (on ? "on" : "off");
+            }
             return "ok " + JSON.stringify(sceneWater());
+        }
+        // The pools in the field, as the connected regions they are (M20f): the list
+        // `craters` keeps for the ground, so "is that one lake or two?" has an answer
+        // that is not the number of hollows.
+        case "pools": {
+            const range = ctlArg(parts, 1) || 30;
+            const all = sceneWaterPools();
+            const range2 = range * range;
+            const near = [];
+            for (let i = 0; i < all.length; i++) {
+                const p = all[i];
+                const dx = p.x - goat.px;
+                const dz = p.z - goat.pz;
+                const d2 = dx * dx + dz * dz;
+                if (d2 > range2) continue;
+                near.push({
+                    x: p.x, z: p.z, r: p.r, cells: p.cells,
+                    deepest: p.deepest, deepX: p.deepX, deepZ: p.deepZ,
+                    dist: ctlRound(Math.sqrt(d2)),
+                });
+            }
+            return "ok " + JSON.stringify({ range: range, pools: near, live: all.length });
         }
         // Force the water table, for a demo or a review: `flood -0.9` sets a level --
         // this field's water lives below zero, the ground being a metre or two of relief

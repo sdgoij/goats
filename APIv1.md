@@ -373,6 +373,10 @@ reported, not silently ignored).
 > **Added with the fatguy:** `goats.entities` (`offer`, `near`, §4.16), so one mod
 > can collide with another's -- the birds' flock and the fat guy's run are the pair
 > it was added for.
+>
+> **Added in M20f:** `goats.water` (`state`, `level`, `depthAt`, `pools`,
+> `setLevel`, `clear`, `enabled`, §4.17) -- the read-out over M20a-M20e's water, and
+> the door a mod drives the table through.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
@@ -810,6 +814,54 @@ Rules that fall out of the shape:
   travels is what a mod chooses to publish through `world.extend` (§4.13). A
   `side: "client"` mod's entities exist on that client, so two clients can
   disagree about where the fat guy is -- which is the same thing they already do.
+
+### 4.17 Water
+
+> **Added in M20f.** The read-out over the water M20a-M20e built (the surface, the
+> chop, the interactions and the reflection) and the door a mod drives its table
+> through. `water.js` is the scene part; this is the surface over it.
+
+```js
+goats.water.state()          // the whole read-out, the object the `water` verb prints
+goats.water.level()          // the table, in metres (this field's water sits below zero)
+goats.water.depthAt(x, z)    // the water over a point, in metres; 0 where there is none
+goats.water.pools()          // the pools, as connected regions (see below)
+goats.water.setLevel(-1.1)   // a level by hand, for a review or a mod's own water
+goats.water.clear()          // hand it back to the weather
+goats.water.enabled(false)   // the whole system off, which is also what `J` presses
+```
+
+| Member | Description |
+| --- | --- |
+| `goats.water.state()` | The read-out `sceneWater()` returns and the `water` verb prints: the level, the wetted share, how many cells are wet, the deepest point, the table's own band, the reflection tier and the drag. |
+| `goats.water.level()` | The table, in metres. |
+| `goats.water.depthAt(x, z)` | The water over a point, bilinear over the grid, 0 off the built grid or where the ground stands above the table. |
+| `goats.water.pools()` | The pools as regions: `{ x, z, r, cells, deepest, deepX, deepZ }` each -- the centroid, the radius of the circle with the region's area, and where it is deepest. |
+| `goats.water.setLevel(h)` | Forces the table to `h` metres and stops deriving it from the rain until `clear()`. Returns the level. |
+| `goats.water.clear()` | Hands the table back to the weather. Returns the level. |
+| `goats.water.enabled(on)` | `false` disables the whole system, which is the frame-cost bisect. Returns whether it is on. |
+
+Rules that fall out of the shape:
+
+- **The level is data, not a device.** One scalar the weather sets and the ground turns
+  into pools, so a mod can *drive* it -- a dam, a fountain, a bucket, a raft, fish --
+  with nothing to register and nothing to hand back except `clear`.
+- **A driven level does not travel.** Nothing about the water is on the wire: every peer
+  derives its table from the seed's own rain, so what a peer sends is its weather and its
+  streams and never a level. A mod that forces a level is forcing *its own process's*, and
+  the two ends of a session will disagree about it until the next rain takes it back. That
+  is the same honesty `setWeather` already has on a client, and it is why `setLevel` is a
+  door rather than a feature.
+- **The pools are computed, not stored.** `pools()` walks the grid on the call -- a
+  four-neighbour flood fill over the wet cells, two cells touching at a corner being
+  two pools -- so it is a read for a console line or a mod's own map, not something to
+  call per frame.
+- **The goat's own drag is the scene's.** The wading slowdown, the splashes and the
+  wake belong to `water.js`, not to a mod, which is what keeps the gait and determinism
+  cases where they were.
+- **It is not a new wire field, and that is deliberate.** `state()` reports what the
+  frame already computes rather than a second derivation of it, so a mod reading the
+  water cannot make the two ends disagree about it.
 
 ---
 

@@ -1693,6 +1693,12 @@ mod tests {
         // with most of the budget still free. This is the guard against the
         // budget eroding again -- the next field added to `WorldState` has to
         // argue for its bytes.
+        //
+        // The water (M20) is the third system to argue for none: the level is a
+        // function of the seed's rain on both ends rather than a state, so nothing
+        // about it is in `WorldState` at all, and the scene holds the other half of
+        // that claim (`water.rs`'s `the_world_snapshot_carries_no_water`, which pins
+        // the keys a host actually publishes).
         let mut world = a_running_world(20);
         world.bots = (0..10).map(bot).collect();
         let size = datagram_size(&world);

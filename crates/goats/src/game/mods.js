@@ -1032,6 +1032,34 @@ function modExplosionsFor(id) {
     };
 }
 
+// The water (M20f). The level is *data* rather than a device -- one scalar the weather sets
+// and the ground turns into pools -- so a mod may drive it: a dam, a fountain, a bucket, a
+// raft, fish. The door is deliberately open, and it is the reason the *level* is what is
+// exposed: a mod writing a height is writing the same number the weather writes, so nothing
+// in the model has to be told about it.
+//
+// What a mod cannot do is make it *travel*. The level is not on the wire (nothing about
+// water is -- see the ROADMAP's *The wire*), so a driven level is this process's own: in a
+// session the two ends would disagree about it until the next rain reset it. That is the
+// honest shape of a derived quantity, and it is the same caveat a client's weather has.
+const goatsWater = {
+    state: function () { return sceneWater(); },
+    level: function () { return waterLevel; },
+    depthAt: function (x, z) { return waterDepthAt(Number(x), Number(z)); },
+    pools: function () { return sceneWaterPools(); },
+    // A level by hand, in metres -- this field's water sits below zero -- until `clear`
+    // hands it back to the weather.
+    setLevel: function (height) {
+        waterSetForce(Number(height));
+        return waterLevel;
+    },
+    clear: function () {
+        waterForceOff();
+        return waterLevel;
+    },
+    enabled: function (on) { return waterSetEnabled(on !== false); },
+};
+
 // ---- entities -------------------------------------------------------------
 //
 // What one mod may know about another's: a mod *offers* the entities it simulates
@@ -1168,6 +1196,7 @@ function goatsBegin(id) {
         net: goatsNet,
         assets: modAssetsFor(id, meta),
         explosions: modExplosionsFor(id),
+        water: goatsWater,
         entities: modEntitiesFor(id),
     };
     modInstances.set(id, handle);
@@ -1252,6 +1281,7 @@ const goats = {
     net: goatsNet,
     assets: modAssetsFor("-", { assets: {} }),
     explosions: modExplosionsFor("-"),
+    water: goatsWater,
     entities: modEntitiesFor("-"),
 };
 

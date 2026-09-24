@@ -100,7 +100,7 @@ uses.
 | **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | ✅ **Done** — the fetch ALPN, the client's fetch/verify/install, the catalogue and the client wiring (consent, `--pull`, the one retry, and loading a mod that arrives after the freeze) |
 | **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
 | **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | ✅ **Done** — M19a (the engine additions), M19b (the devices and the blasts), M19c (the flung goat, the herd that dies to it, and the device that moves house), M19d (the craters), M19e (the wire), M19f (the look: the flipbook atlases, the light flash, the camera knock, the `GoatFlung` clip and the `py` field that finally puts a mirrored leap where it belongs) and M19g (the per-slot pools, the trigger's click, and the `goats.explosions` surface) have landed. The layout is derived from the seed, so nothing new on the handshake |
-| **M20** | Water: pools, waves and a reflected sky | M3 (rain), M4 (the lit program), M8 (the heightfield), M19d (the craters) | M–L | 🚧 **In progress** — M20a (the field: `water.js`, the priority-flood fill, `sceneWater()`, the two hooks and the console verbs), M20b (the surface and the level), M20c (the waves), M20d (the interactions: the wake, the splashes, the drag and the submerged grass), M20d′ (the feel, after the first play-through) and M20d″ (the table is the world's) have landed, with `water.rs` at 47 checks over eight cases and the rest of the suite green. What is left is M20e (the reflections) and M20f (the wire audit, the mod surface and the guards); **M20g (swimming, buoyancy and drinking) is the next planned step**, not a deferral. **Nothing on the wire**: the table's ends are declared, so the level is a stateless function of the seed's own rain, and the ground it pools on is derived |
+| **M20** | Water: pools, waves and a reflected sky | M3 (rain), M4 (the lit program), M8 (the heightfield), M19d (the craters) | M–L | 🚧 **In progress** — M20a (the field: `water.js`, the priority-flood fill, `sceneWater()`, the two hooks and the console verbs), M20b (the surface and the level), M20c (the waves), M20d (the interactions: the wake, the splashes, the drag and the submerged grass), M20d′ (the feel, after the first play-through), M20d″ (the table is the world's), M20e (the reflection, in three tiers) and M20f (the audit and the guards; the fill deleted) have landed, with `water.rs` at 85 checks over sixteen cases and the rest of the suite green. What is left is **M20g (swimming, buoyancy and drinking), the next planned step** rather than a deferral. **Nothing on the wire**: the table's ends are declared, so the level is a stateless function of the seed's own rain, the ground it pools on is derived, and the audit pins the snapshot's own keys to say so |
 
 ---
 
@@ -3519,7 +3519,8 @@ this milestone is a consequence of these, so they come first.
 
 **Status:** 🚧 **In progress** -- **M20a** (the field and the fill), **M20b** (the
 surface), **M20c** (the chop and the fresnel), **M20d** (the interactions), **M20d″**
-(the table is the world's) and **M20e** (the reflection) have landed.
+(the table is the world's), **M20e** (the reflection) and **M20f** (the audit and the
+guards) have landed.
 M20a: `water.js`, `TUNING.water`, the two hooks (the terrain rebuild and the
 weather-effects step) and the `water`/`flood` console verbs. M20b: the surface mesh, the
 water program (a sibling of `LIT_FS`, in `lighting.js`) and the shore. M20c: the wave field
@@ -3535,12 +3536,15 @@ and dry from the next (see *The table is the world's*, below). **M20e** gives th
 mirror it has been faking since M20b, in three tiers -- the sky alone, the ground baked into
 a texture the shader marches, and the scene rendered mirrored about the table -- with the
 middle one the default because it costs no pass (see *The reflection, as landed*, below).
-`crates/harness/tests/water.rs` is 67 checks over eleven cases, and the rest of the suite is
+**M20f** is the audit and the guards: the no-new-field proof and the two-peers
+measurement the design promised, the seam a mod reads, the pool list and the `J`
+bisect (see *The audit and the guards, as landed*, below).
+`crates/harness/tests/water.rs` is 85 checks over sixteen cases, and the rest of the suite is
 still green: `scene_logic` 193, `skinning` 22, `celestial` 7, `observations` 3, `spike` 4
 and `birds` 41 in release. This section is
 the whole design, not a summary of one; the rest of the build is
-M20f (the wire audit, the mod surface and the guards) and M20g (swimming, buoyancy and
-drinking), which is **the next planned step** rather than a deferral. The calls to confirm
+M20g (swimming, buoyancy and drinking), which is **the next planned step** rather than a
+deferral. The calls to confirm
 are gathered at the end; read those first.
 
 **Why.** The field has hollows but no lakes or streams -- M8's own *Deferred* line,
@@ -3654,9 +3658,11 @@ is the world's*. The difference from an accumulator is a **restoring force**: a 
 converges on the rain's own
 value, so it has no history to pull two peers apart with, and they can differ only by where
 their samples of the same shared signal fall. At `wetDown` 600 s and a handful of weather
-packets a second that is millimetres of level, and only while a front is moving -- an estimate
-rather than a measurement, and M20f's audit is where it gets proven, or where the level goes
-on the wire (call 4's fallback).
+packets a second that is millimetres of level, and only while a front is moving -- an
+estimate, and **M20f measured it**: the same five minutes of drain, driven in 50 ms frames
+and in hits of five seconds, lands **2 mm** apart (see *The audit and the guards, as
+landed*). That is the number call 4's quantized `waterLevel` has to beat to be worth its
+bytes.
 
 The properties the two ends of the mapping keep, and the cases hold:
 
@@ -4094,6 +4100,69 @@ noticed; its helper now asserts `forced`, so a future case cannot be quiet about
 A third: `fragWet`, the varying the tint used to ride, is gone -- the depth drives the tint
 itself, so nothing needs to carry the basin's fullness to the fragment.
 
+### The audit and the guards, as landed (M20f)
+
+The design's last claim was its strongest -- *nothing new on the wire* -- and M20f is where it
+stops being a claim.
+
+**Two peers, one table.** The level is a function of `rainAmount` and the declared band, so two
+contexts handed the same rain must agree about the *whole* report. The case runs two harnesses
+on two threads -- the repo's own "two contexts must agree" precedent -- gives both the same
+rain, and compares `sceneWater()` field for field, stub handles and all, with nothing between
+them.
+
+**The drain, measured.** The one part of the water that is *not* derived is the drain, and the
+design says so in as many words: the follower is stepped by each frame's own `dt`. So the case
+drives the same **five minutes** of clock in two shapes -- 50 ms frames (6000 steps) and hits
+of five seconds (60 steps) -- and reports the gap:
+
+```
+five minutes of drain -- 50 ms frames -1.145, 5 s frames -1.147, gap 0.002 m
+```
+
+**Two millimetres** after five minutes, at the shipped `wetDown` 600 s. That is the number
+call 4's quantized level has to beat to be worth its bytes, and it is why the answer stays
+"not sent": a two-millimetre disagreement between two peers that are both *draining* is a
+difference nobody can see, and the next rain resets the table exactly (the rise carries no
+memory).
+
+**The snapshot's own keys.** `the_world_snapshot_carries_no_water` makes the scene a host with
+the rain hard on and the goat wading, drains the session's outbox, and pins the world
+message's key set to exactly `bots`, `craters`, `eaten`, `spent`, `streams`, `type`,
+`weather`. A water field added to the snapshot fails that case before it costs anyone a byte,
+and `proto`'s budget guard carries the other half of the note, beside the sentence that asks
+the next field to argue for its bytes.
+
+**The seam, the pools and the switch.** `goats.water` (APIv1.md §4.17) is the mod surface:
+`state`, `level`, `depthAt`, `pools`, `setLevel`, `clear`, `enabled`. It reports what the
+frame already computed rather than a second derivation of it, which is what keeps a mod that
+reads the water from being able to put two peers in disagreement about it. The pools are
+`sceneWaterPools()`, exposed as a `pools [range]` console verb in the `craters` shape, and the
+case holds the invariants that tie them back to the state report: the regions' cells add up to
+the report's `wet` at two different tables, the deepest pool is the field's deepest point, a
+pool's radius is the circle with its own area, and the coordinates are the *world's* rather
+than the grid's indexes (a pool at (3, 17) is a pool at a grid square, which is the one way a
+flood fill's output goes quietly wrong).
+
+The console's third addition is `water on|off`, which is also what the `J` key presses: the
+whole system's bisect, and the leaf that completed the tree's clamps --
+`the_water_tree_is_clamped` *walks* `TUNING.water`, nested `wave` included, rather than
+listing it, so a knob added by a later slice is caught by the case and not by a reader.
+
+**Two things M20f did not do, both deliberately.** The `J` key is *documented* rather than
+held: it is a one-line binding to the same call the console verb makes, and the harness's key
+injection is the scripted timeline -- the only place a press can come from -- so a press late
+enough not to disturb the timeline's earlier assertions would cost every water case a
+forty-second run for one line. And the case that opens this section's third paragraph was
+*rewritten* by the audit rather than added to it:
+
+- **A claim that did not survive.** The first version of the pools case asserted that a
+  rising table *merges* pools, so the count is monotone in the level. It is not, and the case
+  failed for the right reason: a table that rises merges the regions it has already reached
+  **and** reaches new hollows, so the count can go either way -- and below the field's own
+  floor there are no pools at all. What holds is that a region never *splits*, and the case
+  now holds consequences of that instead of the count.
+
 ### Interaction with the goat
 
 - **Ripples and the wake are not a simulation.** A small fixed set of expanding,
@@ -4172,7 +4241,7 @@ mod's water is a mod's business.
 
 ```
 water: {
-    enabled: 1,          // 0 disables the whole system (a frame-cost bisect)
+    enabled: 1,          // 0 disables the whole system (a frame-cost bisect; clamped to 0/1)
     low: -2.1,           // metres; the table's floor, at `-terrain.relief` (M20d″: declared)
     high: 0,             // the table's ceiling: the field's midline (M20d″: declared)
     fill: 0.75,          // share of that declared band at rain 1 (M20d″: was 0.17 of a measured one)
@@ -4222,22 +4291,31 @@ costs the frame.
 - **The HUD** gains a water line beside the weather line -- whether the goat is in
   water, how deep, and the speed cost -- matching M6's slowdown readout.
 - **The console** gains `water` (the level, how much of the field it covers, where the
-  deepest point is and how deep it is under the goat), `flood <h>` (set the table, for
-  demos and reviews -- a *signed* height, since this field's water lives below zero, with
-  `flood off` or `flood rain` the way back), `setting reflect sky|ground|mirror` (M20e,
-  in the `settings` report beside the cloud level), and the pool list,
-  the way `craters` works today. A key toggles water off (say `J`), matching `C`, `K`,
-  `L` and `B`.
+  deepest point is and how deep it is under the goat) and `water on|off` (the system's own
+  bisect, which is what `J` presses), `flood <h>` (set the table, for demos and reviews -- a
+  *signed* height, since this field's water lives below zero, with `flood off` or
+  `flood rain` the way back), `setting reflect sky|ground|mirror` (M20e, in the `settings`
+  report beside the cloud level) and `pools [range]` (the pools as connected regions, M20f,
+  in the `craters` shape). A key toggles the water (M20f: `J`), matching `C`, `K`, `L`
+  and `B`.
 
 ### Mods
 
-- `TUNING.water` with `TUNING_CLAMP` is the whole surface for a data-only pack.
-- A **`sceneWater()` seam** like `sceneCraters()`: the level, the depth at a point, and
-  the pool list, read-only, for a mod and for the console.
+- `TUNING.water` with `TUNING_CLAMP` is the whole surface for a data-only pack, and every
+  leaf of it has a range (M20f), the system's own `enabled` included: walked by a case, not
+  listed, so a knob a later slice adds is clamped or the case says so.
+- A **`goats.water` seam** (M20f, `APIv1.md` §4.17) beside `goats.explosions`: `state`,
+  `level`, `depthAt`, `pools`, `setLevel`, `clear`, `enabled`. It reports what the frame
+  already computed rather than a second derivation, and a case holds it from inside a mod's
+  wrapper as well as from the scene.
 - Because the level is data and not a device, a mod can **drive it**: a dam, a fountain,
-  a bucket, a raft, fish -- through `goats.world.extend` and its own entities. The door
+  a bucket, a raft, fish -- through `setLevel`, with its own water objects beside it through
+  `world.extend`. The door
   is left open deliberately, and it is the reason `waterLevel` and `waterSetForce` are
   exposed rather than hidden.
+- **A driven level does not travel**, and that is the honest limit of the door: nothing
+  about the water is on the wire, so a mod that forces a level forces its own process's. The
+  same caveat a client's `setWeather` already carries.
 
 ### Engine work
 
@@ -4338,9 +4416,13 @@ milliseconds at the chosen resolution or off to wasm.
   viewport with no grass and no shadow pass. Nothing new on the wire -- a mirror is a
   draw -- and no engine work was needed. See *The reflection, as landed*, and `PERF.md`'s
   appendix for the A/B that has not been run yet.
-- **M20f -- the audit and the guards.** The determinism and no-new-field proof (or the
-  drift fallback if it fails), `TUNING.water`, the console verbs, the mod seam, and the
-  budget guard.
+- **M20f -- the audit and the guards. ✅ Done.** The no-new-field claim turned into cases: two
+  contexts on two threads deriving one table from one rain, the world snapshot's key set
+  pinned against a water field appearing in it, and the one estimate the design admits -- the
+  drain -- *measured* at 2 mm over five minutes between frames shaped 50 ms and 5 s apart. Plus
+  the seam (`goats.water`, APIv1.md §4.17), the pool list (`pools`, as connected regions), the
+  system's `water on|off` and `J`, and every leaf of the tree clamped. See *The audit and the
+  guards, as landed*.
 - **M20g -- swimming, buoyancy and drinking. The next planned step:** the `GoatSwim`
   clip, the buoyancy term, the *wading* cap lifted so a deep pool is swum rather than waded,
   and drinking at the edge.
@@ -4354,12 +4436,12 @@ One line each: the recommendation, and where the reasoning is.
 | 1 | Swimming in v1? | **Not in M20a--M20f**: the level is not held down, so a deep pool is waded at the full drag rather than swum; M20g adds the `GoatSwim` clip and lifts the wading cap -- and M20g is the next planned step, not a maybe |
 | 2 | The reflection default | **Tier 1 (the baked ground)**, with tier 2 opt-in -- as landed. It is the mirror that is the whole point (tier 2), but only behind a setting, because a second scene pass in a CPU-bound frame is the one item that can move the budget |
 | 3 | The water grid | **2 m, to match the terrain**, so a crater puddles; render a decimated mesh so the grid's resolution does not cost the draw |
-| 4 | The level on the wire | **Not sent.** It is the seed's rain, derived on both ends from the declared band; a quantized `waterLevel` is the fallback *if* drift shows, and it has to justify itself (see *The wire*) |
+| 4 | The level on the wire | **Not sent, and audited (M20f).** It is the seed's rain, derived on both ends from the declared band; the drain's own spread measured **2 mm over five minutes** between frames shaped 50 ms and 5 s apart, which is what a quantized `waterLevel` would have to beat to justify its bytes (see *The wire* and *The audit and the guards, as landed*) |
 | 5 | Does water wet and drain the goat like rain? | **Yes, as a second gated term** -- and gated so `clear` with no water is exactly neutral, or M6's gait assertions break |
 | 6 | A crater as a puddle | **Yes, and asserted.** It is the same table doing it -- a crater is land that is lower -- and it is the cheapest demonstration that water and the ground agree |
 | 7 | Does water cast a shadow? | **Not in v1.** It receives the terrain's shadow; a lakebed shadow is subtle and needs the terrain in the depth pass (still deferred from M8) |
 | 8 | Foam, caustics, a wet terrain band | **Foam and caustics yes** (shader-side, cheap); a **wet terrain band no** -- it would dirty the terrain's per-vertex colours on every level change, and the rebuild is the frame's worst event |
-| 9 | Water in a mod | **Allowed to drive the level** (`waterSetForce`) and its own water entities -- but anything of water's derivation a peer must compute identically is a compatibility burden if it lives in wasm, and that is the mod's (see *The wire*) |
+| 9 | Water in a mod | **Allowed to drive the level** (`goats.water.setLevel`, M20f) and its own water entities -- but anything of water's derivation a peer must compute identically is a compatibility burden if it lives in wasm, and that is the mod's (see *The wire*). A *driven* level is this process's alone, which is the door's honest limit |
 
 **Where it will live.**
 
@@ -4375,14 +4457,15 @@ One line each: the recommendation, and where the reasoning is.
 | The tufts under the surface | `crates/goats/src/game/weather.js` (`drawTufts`, which asks `waterSubmergedAt`) |
 | The drag, the depth and the HUD line | `crates/goats/src/game/water.js` (the depth helpers and `waterHudText`), `crates/goats/src/game/goat.js` (`groundSpeed`, `startJump`, `updateStats`, `drawHud`) and `crates/goats/src/game/weather.js` (the line it joins) |
 | Tuning | `crates/goats/src/game/core.js` (`TUNING`, `TUNING_CLAMP`) |
-| The console verbs | `crates/goats/src/game/ctl.js` (`water`, `flood`, `setting reflect`) |
-| The pool seam a mod reads (`sceneWater()`) | `crates/goats/src/game/water.js` |
+| The console verbs | `crates/goats/src/game/ctl.js` (`water`, `water on|off`, `flood`, `pools`, `setting reflect`) |
+| The pool seam a mod reads (`sceneWater()`, `sceneWaterPools()`) | `crates/goats/src/game/water.js` |
+| The mod surface (`goats.water`) | `crates/goats/src/game/mods.js` (`goatsWater`), documented in `APIv1.md` §4.17 |
 | The scene part list, `PARTS.len()` | `crates/scene/src/lib.rs` |
 | The engine additions | `slag/crates/runtime/src/raylib.rs` (depth-write, if wanted), with the stubs in `crates/scene/src/null_rl.js` and `crates/scene/src/harness_rl.js` |
 | The water clip and the Blender contract (M20g) | `goat.blend`, `goat_animated.glb`, `tools/goat_swim.py` |
-| The tests | `crates/harness/tests/water.rs` (eleven cases, 67 checks: the field, the table, the surface, the chop, the wading, the windows, the drain, the reflection) |
+| The tests | `crates/harness/tests/water.rs` (sixteen cases, 85 checks: the field, the table, the surface, the chop, the reflection, the wading, the windows, the drain, the pools, the audit, the snapshot, the seam), `crates/harness/tests/mods.rs` (the surface from inside a wrapper) and `crates/proto/src/lib.rs` (the budget guard's note) |
 | The frame measurements | `PERF.md` appendix B (the M20e tier 1-vs-2 A/B, not yet run; the `perf` phase `mirror`) |
-| The mod surface's documentation | `APIv1.md` §4 (`goats.water`), if a hook beyond the seam is added |
+| The mod surface's documentation | `APIv1.md` §4.17 (`goats.water`, landed in M20f), and §4's notes |
 
 ---
 

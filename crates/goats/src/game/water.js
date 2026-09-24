@@ -223,6 +223,14 @@ function waterForceOff() {
     waterUpdate();
 }
 
+// The `J` key and a bisect's own verb (`M20f`): the whole system off is one leaf, and it is
+// written through `tuningSet` so the console, the menu and a mod all see the same write.
+function waterSetEnabled(on) {
+    tuningSet("water.enabled", on ? 1 : 0);
+    waterUpdate();
+    return TUNING.water.enabled !== 0;
+}
+
 // ---- the surface (M20b) ---------------------------------------------------
 //
 // The mesh carries the *ground* in its positions, and the level is one uniform the shader
@@ -743,8 +751,9 @@ function waterActorStep(dt) {
     }
 }
 
-// One vertex's depth, from the table and the spill level. Capped at
-// `TUNING.water.maxDepth`: v1 keeps pools wading depth (M20g lifts it for swimming).
+// One vertex's depth, from the table and the ground under it. The water's own depth, in the
+// water's own terms: `maxDepth` is the *wading* cap and lives where wading is decided
+// (`waterDragFraction`), so a pool may stand deeper than the goat can walk.
 function waterVertexDepth(k) {
     // The surface is the *table*, at every vertex: a cell is wet exactly when the table stands
     // over its ground, and a basin whose rim the table has passed is simply submerged. The
@@ -845,4 +854,89 @@ function sceneWater() {
         mirrorH: waterMirrorH,
         mirrors: waterMirrorPasses,
     };
+}
+
+// ---- the pools, as regions (M20f) -----------------------------------------
+//
+// The state report above measures the field; this one names the *pools* in it. A pool is a
+// set of wet cells each of which reaches the next, so two hollows joined by a channel are
+// one pool and the same two with a ridge between them are two -- the question a player asks
+// of the water ("is that one lake or two?"), which the fill was once a by-product of
+// answering and which this answers from the table alone.
+//
+// A flood fill, on demand: a console verb and a mod read this, never the frame, so it walks
+// the grid twice at worst and keeps its own marks and queue allocated once, like the
+// terrain's stamps.
+const W_POOL = new Array(WATER_N * WATER_N);    // the fill's marks: 0, or a pool's number
+const W_QUEUE = new Array(WATER_N * WATER_N);   // the fill's queue, of vertex indices
+
+function sceneWaterPools() {
+    const n = WATER_N;
+    const count = n * n;
+    const area = WATER_CELL * WATER_CELL;
+    const level = waterLevel;
+    const x0 = terrainAnchorX - WATER_HALF;
+    const z0 = terrainAnchorZ - WATER_HALF;
+    const found = [];
+    for (let k = 0; k < count; k++) W_POOL[k] = 0;
+    for (let start = 0; start < count; start++) {
+        if (W_POOL[start] !== 0 || T_H[start] >= level) continue;
+        const id = found.length + 1;
+        let head = 0;
+        let tail = 0;
+        let cells = 0;
+        let sumX = 0;
+        let sumZ = 0;
+        let deepest = 0;
+        let di = 0;
+        let dj = 0;
+        W_POOL[start] = id;
+        W_QUEUE[tail++] = start;
+        while (head < tail) {
+            const k = W_QUEUE[head++];
+            const i = k % n;
+            const j = (k - i) / n;
+            const d = level - T_H[k];
+            cells += 1;
+            sumX += i;
+            sumZ += j;
+            if (d > deepest) {
+                deepest = d;
+                di = i;
+                dj = j;
+            }
+            // Four-neighbour, because two cells that only touch at a corner are two pools
+            // with a corner in common rather than one pool.
+            if (i > 0 && W_POOL[k - 1] === 0 && T_H[k - 1] < level) {
+                W_POOL[k - 1] = id;
+                W_QUEUE[tail++] = k - 1;
+            }
+            if (i < n - 1 && W_POOL[k + 1] === 0 && T_H[k + 1] < level) {
+                W_POOL[k + 1] = id;
+                W_QUEUE[tail++] = k + 1;
+            }
+            if (j > 0 && W_POOL[k - n] === 0 && T_H[k - n] < level) {
+                W_POOL[k - n] = id;
+                W_QUEUE[tail++] = k - n;
+            }
+            if (j < n - 1 && W_POOL[k + n] === 0 && T_H[k + n] < level) {
+                W_POOL[k + n] = id;
+                W_QUEUE[tail++] = k + n;
+            }
+        }
+        found.push({
+            // The centroid of the cells, and the radius of the circle with their area -- a
+            // pool's own size, so a console list or a mod's map can place it without the
+            // cells themselves.
+            x: netRound3(x0 + (sumX / cells) * WATER_CELL),
+            z: netRound3(z0 + (sumZ / cells) * WATER_CELL),
+            r: netRound3(Math.sqrt((cells * area) / Math.PI)),
+            cells: cells,
+            // ...and where it is deepest, which is the other thing a pool has.
+            deepest: netRound3(deepest),
+            deepX: netRound3(x0 + di * WATER_CELL),
+            deepZ: netRound3(z0 + dj * WATER_CELL),
+        });
+    }
+    return found;
 }

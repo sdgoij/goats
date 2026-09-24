@@ -555,6 +555,9 @@ const TUNING_CLAMP = {
     // The shore is a fade width, so a longer one is a softer edge and zero is a drawn
     // line at the water's rim.
     "water.shore": [0, 4],
+    // The system's own switch (M20f): a bisect wants a boolean, and any other number is a
+    // mod writing a state that is neither on nor off.
+    "water.enabled": [0, 1],
     // The reflection tier (M20e) is an index into three ways of answering the same
     // question, so it is a closed range and nothing else: 0 sky, 1 heightmap, 2 mirror.
     "water.reflection": [0, 2],

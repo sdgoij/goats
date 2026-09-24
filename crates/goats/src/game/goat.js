@@ -625,6 +625,9 @@ function sceneFrame() {
         useSkyShader = !useSkyShader;
         SETTINGS.sky = useSkyShader;
     }
+    // The water's own bisect (M20f): off is the whole system, which is the frame-cost
+    // comparison a review wants and the state a mod's own water would start from.
+    if (press(rl.KEY_J)) waterSetEnabled(TUNING.water.enabled === 0);
     perfMark("input");
     let move = 0;
     if (ctlKeyDown(rl.KEY_W)) move += 1;

@@ -1068,3 +1068,360 @@ fn the_mirror_pass_draws_the_world() {
 
     checks.finish();
 }
+
+#[test]
+fn the_pools_are_regions() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // Dry: a table on its floor covers nothing, so there is nothing to be a region of.
+    rain_settled(&mut harness, 0.0);
+    let dry = command_json(&mut harness, "pools");
+    checks.check(
+        "a dry field has no pools",
+        dry["live"].as_u64() == Some(0) && dry["pools"].as_array().is_some_and(|p| p.is_empty()),
+        &dry,
+    );
+
+    // A downpour. The pools are the connected wet cells, so their cells have to add up to
+    // everything the state report calls wet -- one field, two functions, one answer. (The
+    // range is wide enough to catch every pool on the grid rather than the goat's own.)
+    rain_settled(&mut harness, 1.0);
+    let wet = water(&mut harness);
+    let all = command_json(&mut harness, "pools 200");
+    let pools = all["pools"].as_array().cloned().unwrap_or_default();
+    let cells: u64 = pools.iter().filter_map(|p| p["cells"].as_u64()).sum();
+    checks.check(
+        "the pools are the wet cells and nothing else",
+        all["live"].as_u64().is_some_and(|n| n > 0) && wet["wet"].as_u64() == Some(cells),
+        (all["live"].clone(), wet["wet"].clone(), cells, pools.len()),
+    );
+
+    // ...and the deepest of them is the deepest the field has, which is the other number
+    // the two share.
+    let deepest = pools
+        .iter()
+        .filter_map(|p| p["deepest"].as_f64())
+        .fold(0.0f64, f64::max);
+    checks.check(
+        "...and the deepest pool is the field's deepest point",
+        (deepest - f64_of(wet["deepest"].clone())).abs() < 1e-3,
+        (deepest, &wet["deepest"]),
+    );
+
+    // A region's radius is the circle with its own area, so a caller can place a pool
+    // without walking its cells -- which is the whole point of reporting it.
+    let area = 2.0 * 2.0; // WATER_CELL ^ 2
+    let mut wrong = Vec::new();
+    for p in &pools {
+        let n = p["cells"].as_f64().unwrap_or(0.0);
+        let r = p["r"].as_f64().unwrap_or(0.0);
+        let back = r * r * std::f64::consts::PI / area;
+        if (back.round() - n).abs() > 1e-6 {
+            wrong.push((n, r, back));
+        }
+    }
+    checks.check(
+        "...and each pool's radius is its own area",
+        !pools.is_empty() && wrong.is_empty(),
+        (&wrong, pools.len()),
+    );
+
+    // A film over the window's lowest ground: the fill tracks the table it is *given*
+    // rather than a cached wet set, so the cells add up again at a level the rain did not
+    // make. (The expected count is the state report's again -- one field, two functions, one
+    // answer, which is why it is worth asserting at two very different tables.)
+    let ground = f64_of(water(&mut harness)["ground"].clone());
+    flood(&mut harness, ground + 0.15);
+    let film = command_json(&mut harness, "pools 200");
+    let film_cells: u64 = film["pools"]
+        .as_array()
+        .map(|ps| ps.iter().filter_map(|p| p["cells"].as_u64()).sum())
+        .unwrap_or(0);
+    let film_wet = water(&mut harness)["wet"].as_u64().unwrap_or(0);
+    checks.check(
+        "a film over the lowest ground is one pool at least, and its cells too",
+        film["live"].as_u64().is_some_and(|n| n >= 1)
+            && film_wet > 0
+            && film_wet < wet["wet"].as_u64().unwrap_or(0)
+            && film_cells == film_wet,
+        (&film["live"], film_cells, film_wet, &wet["wet"]),
+    );
+    flood_off(&mut harness);
+
+    // ...and every pool is *in the world*: the coordinates it reports are the field's own
+    // units rather than the grid's indices, which is the one way a flood fill's output goes
+    // quietly wrong (a pool at (3, 17) is a pool at a grid square). The built window is the
+    // anchor plus two half-widths, so anything outside it never got converted.
+    let x0 = f64_of(harness.eval("terrainAnchorX - WATER_HALF").expect("x0"));
+    let z0 = f64_of(harness.eval("terrainAnchorZ - WATER_HALF").expect("z0"));
+    let span = f64_of(harness.eval("WATER_N * WATER_CELL").expect("span"));
+    let mut outside: Vec<(f64, f64)> = Vec::new();
+    for p in &pools {
+        for (xs, zs) in [("x", "z"), ("deepX", "deepZ")] {
+            let x = p[xs].as_f64().unwrap_or(f64::NAN);
+            let z = p[zs].as_f64().unwrap_or(f64::NAN);
+            if x < x0 - 1.0 || x > x0 + span + 1.0 || z < z0 - 1.0 || z > z0 + span + 1.0 {
+                outside.push((x, z));
+            }
+        }
+    }
+    checks.check(
+        "...and its own coordinates are the world's, not the grid's",
+        !pools.is_empty() && outside.is_empty(),
+        (&outside, x0, z0, span),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_seam_a_mod_reads() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    rain(&mut harness, 1.0);
+
+    // `goats.water` (M20f, APIv1.md §4.17) is what a mod gets: the same numbers the frame
+    // uses, not a second derivation of them.
+    let state = water(&mut harness);
+    let level = f64_of(harness.eval("goats.water.level()").expect("level"));
+    let depth = f64_of(
+        harness
+            .eval("goats.water.depthAt(goat.px, goat.pz)")
+            .expect("depthAt"),
+    );
+    checks.check(
+        "the seam reads the numbers the frame uses",
+        (level - f64_of(state["level"].clone())).abs() < 1e-9
+            && (depth - f64_of(state["goatDepth"].clone())).abs() < 1e-3,
+        (level, &state["level"], depth, &state["goatDepth"]),
+    );
+    let seam = harness.eval("goats.water.state()").expect("state");
+    checks.check(
+        "...and the report it hands over is the console's own",
+        seam["level"] == state["level"] && seam["tier"] == state["tier"],
+        (&seam["level"], &state["level"]),
+    );
+
+    // The door a mod drives the table through: a level by hand, and `clear` to hand it back.
+    let forced = f64_of(
+        harness
+            .eval("goats.water.setLevel(-1.2)")
+            .expect("setLevel"),
+    );
+    let driven = water(&mut harness);
+    checks.check(
+        "a mod can drive the level",
+        (forced + 1.2).abs() < 1e-9
+            && driven["forced"].as_bool() == Some(true)
+            && (f64_of(driven["level"].clone()) + 1.2).abs() < 1e-3,
+        (forced, &driven["level"], &driven["forced"]),
+    );
+    harness.eval("goats.water.clear()").expect("clear");
+    checks.check(
+        "...and clear hands it back to the weather",
+        water(&mut harness)["forced"].as_bool() == Some(false),
+        water(&mut harness)["forced"].clone(),
+    );
+
+    // The whole system's switch, which is what `J` presses: off is off, and a dry field
+    // means no pools rather than a report about a table nothing is standing on.
+    harness.command("water off").expect("water off");
+    let off = water(&mut harness);
+    checks.check(
+        "`water off` is the whole system, and no pools come with it",
+        off["enabled"].as_bool() == Some(false)
+            && off["on"].as_bool() == Some(false)
+            && command_json(&mut harness, "pools")["live"].as_u64() == Some(0),
+        &off,
+    );
+    harness.command("water on").expect("water on");
+    checks.check(
+        "...and it comes back",
+        water(&mut harness)["enabled"].as_bool() == Some(true),
+        water(&mut harness)["enabled"].clone(),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_world_snapshot_carries_no_water() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // The claim the whole design rests on (M20f's audit): the water is derived on both ends
+    // from the seeded weather, so nothing about it is on the datagram. The scene's own world
+    // snapshot is the place that can be checked, and a host is what publishes one.
+    harness
+        .call(
+            "sceneNetEvent",
+            &[json!("{\"type\":\"session\",\"seed\":7}")],
+        )
+        .expect("a session");
+    harness
+        .call(
+            "sceneNetEvent",
+            &[json!("{\"type\":\"hosting\",\"name\":\"host\"}")],
+        )
+        .expect("hosting");
+    // The rain hard on, and the goat standing deep enough for the drag to bite: if the water
+    // had anything to say to the world, this is the frame it would say it in.
+    rain(&mut harness, 1.0);
+    let wet = water(&mut harness);
+    let drained = harness
+        .eval("sceneNetDrain()")
+        .expect("the outbox")
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let world = drained
+        .lines()
+        .find(|line| line.contains("\"type\":\"world\""))
+        .expect("a world snapshot");
+    let parsed: Value = serde_json::from_str(world).expect("the world line parses");
+    let mut keys: Vec<String> = parsed
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    keys.sort();
+    checks.check(
+        "the world snapshot is the seven things it always was",
+        keys == vec![
+            "bots", "craters", "eaten", "spent", "streams", "type", "weather",
+        ],
+        &keys,
+    );
+    checks.check(
+        "...and the water is not one of them",
+        wet["on"].as_bool() == Some(true)
+            && parsed.get("water").is_none()
+            && parsed.get("level").is_none(),
+        (&wet["on"], &parsed),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_water_tree_is_clamped() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // Every leaf of the water's tree has a range (M20f), and it is *walked* rather than
+    // listed so a knob added later is caught here rather than by a reader: `TUNING_CLAMP` is
+    // what a mod's write is checked against, so an unclamped leaf is a mod's lever on the
+    // frame. The nested tree (`water.wave`) is walked with it, which is where a leaf added
+    // by a later slice will land.
+    let unclamped = harness
+        .eval(
+            "(function () { const out = []; \
+             for (const k of Object.keys(TUNING.water)) { \
+             const v = TUNING.water[k]; \
+             if (typeof v === 'number') { \
+             if (TUNING_CLAMP['water.' + k] === undefined) out.push(k); \
+             } else if (v !== null && typeof v === 'object') { \
+             for (const j of Object.keys(v)) { \
+             if (typeof v[j] === 'number' && TUNING_CLAMP['water.' + k + '.' + j] === undefined) { \
+             out.push(k + '.' + j); \
+             } } } } return out; })()",
+        )
+        .expect("walk the tree");
+    checks.check(
+        "every leaf of the water's tree has a range",
+        unclamped.as_array().is_some_and(|leaves| leaves.is_empty()),
+        &unclamped,
+    );
+
+    // ...and the system's own switch is a boolean rather than a knob: anything a mod writes
+    // through the console's own route lands on on or off.
+    let wide = harness
+        .eval("tuningSet('water.enabled', 5)")
+        .expect("a clamp");
+    checks.check(
+        "...and the switch is held to on or off",
+        wide.as_f64() == Some(1.0),
+        wide,
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn two_peers_derive_the_same_table() {
+    let mut checks = Checks::new();
+
+    // The first half of M20f's audit. The claim is that the water needs no field on the wire
+    // because both ends *derive* it from the seeded weather, so two contexts -- the same
+    // script, the same rain, nothing between them -- have to agree about the whole report,
+    // handles and all.
+    let left = std::thread::spawn(|| {
+        let mut harness = Harness::start().expect("evaluate the scene");
+        harness.run(FRAMES).expect("run the scene");
+        rain(&mut harness, 1.0);
+        water(&mut harness)
+    });
+    let right = std::thread::spawn(|| {
+        let mut harness = Harness::start().expect("evaluate the scene");
+        harness.run(FRAMES).expect("run the scene");
+        rain(&mut harness, 1.0);
+        water(&mut harness)
+    });
+    let a = left.join().expect("the first peer");
+    let b = right.join().expect("the second peer");
+    checks.check(
+        "two peers with the same rain derive the same table",
+        a == b,
+        (&a, &b),
+    );
+
+    // The second half, and the one number the design admits is an estimate rather than a
+    // derivation: the *drain*. The rise is exact (it is `rainAmount` read through a curve),
+    // but the follower is stepped by each frame's own `dt`, so two peers whose frames are
+    // differently shaped converge on the same level from different directions. This drives
+    // the same five minutes of clock in two shapes -- 50 ms frames and hits of five seconds
+    // -- and reports the gap, which is the number call 4's quantized level would have to
+    // beat to be worth its bytes.
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    harness
+        .eval("tuningSet('water.wetDown', 600)")
+        .expect("the shipped drain");
+    let window = 300.0;
+
+    rain(&mut harness, 1.0);
+    rain(&mut harness, 0.0);
+    let mut clock = 0.0;
+    while clock < window {
+        age(&mut harness, 0.05);
+        clock += 0.05;
+    }
+    let fine = f64_of(water(&mut harness)["level"].clone());
+
+    // Six thousand steps back to full: the rise carries no memory, so setting the rain to 1
+    // again pins the wetting exactly and the second shape starts from the same place.
+    rain(&mut harness, 1.0);
+    rain(&mut harness, 0.0);
+    let mut clock = 0.0;
+    while clock < window {
+        age(&mut harness, 5.0);
+        clock += 5.0;
+    }
+    let coarse = f64_of(water(&mut harness)["level"].clone());
+
+    let gap = (fine - coarse).abs();
+    eprintln!(
+        "water: five minutes of drain -- 50 ms frames {fine:.6}, 5 s frames {coarse:.6}, gap {gap:.6} m"
+    );
+    checks.check(
+        "...and the drain stays inside a centimetre however the frames are shaped",
+        gap < 0.01 && fine > coarse,
+        (fine, coarse, gap),
+    );
+
+    checks.finish();
+}
