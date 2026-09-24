@@ -338,7 +338,13 @@ function botNewAction(b) {
     b.graze = false;
     const r = botRnd();
     if (r < 0.30 + 0.35 * b.spec.lazy) {
-        b.mode = botRnd() < 0.10 ? "sleep" : "idle";
+        // A bot does not doze in the water any more than the player's goat does (M20f′).
+        // The roll is the same roll and the stream is untouched either way -- the same one
+        // `botRnd` is spent on the mode and one on the timer, which is why the *timer* line
+        // still asks `b.mode` rather than a second draw. Reading the table is fair here:
+        // `net.js` has the host alone simulating the herd, so a client never takes this
+        // branch (`netApplyWorld` hands it the host's modes).
+        b.mode = botRnd() < 0.10 && !waterInWater(b.x, b.z) ? "sleep" : "idle";
         b.timer = b.mode === "sleep" ? 5 + botRnd() * 6 : 2 + botRnd() * 5;
         b.zoom = 0;
         // Rotate the variant so this bot does not always do the same clip.
@@ -393,6 +399,14 @@ function updateBots(dt) {
             continue;
         }
         b.timer -= dt;
+        // ...and one the rain reaches gets up, for the same reason and in the same way the
+        // player's goat does: `botNewAction` above is where a sleep is refused, and this is
+        // where one that has already started ends. No draw is taken -- the timer is set to
+        // zero, so the plan that follows is the ordinary one for this frame.
+        if (b.mode === "sleep" && waterInWater(b.x, b.z)) {
+            b.mode = "idle";
+            b.timer = 0;
+        }
         if (b.jumpCool > 0) b.jumpCool -= dt;
         if (b.eatCool > 0) b.eatCool -= dt;
         if (b.satiety > 0) b.satiety = Math.max(0, b.satiety - TUNING.food.satietyDecay * dt);

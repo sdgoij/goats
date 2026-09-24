@@ -447,10 +447,10 @@ const goatsPlayer = {
     },
     // Only the states a script may enter: jump and dead are the simulation's.
     setMode: function (next) {
-        if (next === "sleep") {
-            startSleep();
-            return true;
-        }
+        // `startSleep` is the water's gate as well as the mode's (a goat does not sleep in a
+        // pool), so a script that asks for `sleep` gets `false` where the key would do
+        // nothing -- APIv1 §4.5.
+        if (next === "sleep") return startSleep();
         if (next === "idle" || next === "walk" || next === "trot" || next === "run") {
             if (mode === "dead" || mode === "jump" || mode === "eat") return false;
             mode = next;

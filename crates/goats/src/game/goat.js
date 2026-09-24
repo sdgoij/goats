@@ -151,12 +151,19 @@ function flingProgress() {
     return Math.min(flingTime / flingFlight, 1);
 }
 
+// A goat does not sleep in the water (M20f's follow-on): the mode is refused where the goat
+// is standing in a pool, and a sleeping goat the rain reaches is woken. Both are the same
+// question -- `waterInWater`, the HUD's own line -- so the key, the console verb, the
+// auto-sleep after exhaustion and a mod's `setMode` all go through here and cannot disagree.
+// It returns whether the goat went to sleep, which is what the console prints.
 function startSleep() {
+    if (waterInWater(goat.px, goat.pz)) return false;
     mode = "sleep";
     cyclePlayerVariant("sleep");
     sleepTime = 0;
     idleTimer = 0;
     playBleat(0.45);
+    return true;
 }
 
 function wakeUp() {
@@ -648,7 +655,11 @@ function sceneFrame() {
     } else if (mode === "dead") {
         if (press(rl.KEY_R)) restart();
     } else if (mode === "sleep") {
-        if (press(rl.KEY_Z) || move !== 0 || stats.energy >= TUNING.stats.max) {
+        // The water can arrive under a sleeping goat -- the rain raises the table and the
+        // goat is not going anywhere -- so the same test that refuses to *start* a sleep
+        // ends one, which is the only way "no sleeping in the water" can hold.
+        if (press(rl.KEY_Z) || move !== 0 || stats.energy >= TUNING.stats.max ||
+            waterInWater(goat.px, goat.pz)) {
             wakeUp();
         }
     } else if (mode === "jump") {

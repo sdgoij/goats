@@ -375,7 +375,7 @@ function sceneCommand(line) {
         case "sleep":
             if (mode === "dead") return "error cannot sleep while dead";
             if (mode === "sleep") return "error already asleep";
-            startSleep();
+            if (!startSleep()) return "error cannot sleep in the water";
             return "ok sleep";
         case "wake":
             if (mode !== "sleep") return "error not asleep";

@@ -121,6 +121,14 @@ function rand(a, b) { return a + (b - a) * flockRnd(); }
 function r1(v) { return ROUND(v * 10) / 10; }
 function r2(v) { return ROUND(v * 100) / 100; }
 function groundAt(x, z) { return goats.world.terrainHeight(x, z); }
+
+// The water (the scene's `goats.water` seam): a bird stands on the *ground*, and the ground
+// is under the water wherever a pool is. `LEG` is the body's own height above that ground,
+// so the test is "would the water come over its feet" -- a bird may stand in a shallow
+// puddle, and may not walk off under a pool and vanish into it. Every state that puts a bird
+// on the ground asks this first, and a bird that is already down takes off when the water
+// finds it (which is what a rising table does under a standing bird).
+function dryAt(x, z) { return goats.water.depthAt(x, z) <= LEG; }
 function angleDelta(a, b) {
     let d = a - b;
     while (d > PI) d -= PI * 2;
@@ -668,6 +676,9 @@ function flapFor(b) {
 
 function stepIdle(b, dt) {
     if (tooFar(b)) { startTakeoff(b); return; }
+    // The water can arrive under a bird that is standing in it: the flock does not wait
+    // for the pool to drain, it leaves.
+    if (!dryAt(b.x, b.z)) { startTakeoff(b); return; }
     b.y += (groundAt(b.x, b.z) + LEG - b.y) * MIN(1, dt * 8);
     if (b.t < b.dur) return;
     const roll = flockRnd();
@@ -681,6 +692,10 @@ function stepWalk(b, dt) {
     b.y += (groundAt(b.x, b.z) + LEG - b.y) * MIN(1, dt * 8);
     b.yaw += SIN(b.t * 1.7 + b.size * 9) * 0.6 * dt;
     if (tooFar(b)) { startTakeoff(b); return; }
+    // ...and the same for a bird that walks *into* one: the step that puts its feet under
+    // the water is the step that lifts it off, so a pool is walked around rather than
+    // waded through.
+    if (!dryAt(b.x, b.z)) { startTakeoff(b); return; }
     const dx = HOME.x - b.x, dz = HOME.z - b.z;
     if (dx * dx + dz * dz > HOME_R * HOME_R) b.yaw = ATAN2(-dz, dx);
     if (b.t < b.dur) return;
@@ -718,6 +733,10 @@ function stepLand(b, dt) {
     b.yaw += angleDelta(ATAN2(-(tz - b.z), tx - b.x), b.yaw) * k;
 
     if (perch === null) {
+        // Over water there is nothing to stand on: the descent gives up rather than
+        // settling a centimetre under the surface, which is where the flock used to end up
+        // in a pool (a pair of wings and no bird).
+        if (!dryAt(b.x, b.z)) { startTakeoff(b); return; }
         // The ground target moves with the bird, so only the height can settle.
         if (ABS(b.y - ground) < 0.25) {
             setSt(b, flockRnd() < 0.4 ? ST.WALK : ST.IDLE, rand(2, 6));

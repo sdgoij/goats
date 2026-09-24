@@ -100,6 +100,12 @@ const ENTITY_MARGIN = 1.0;  // metres past `BUMP_DIST` the bird query reaches, f
                             // an offered entity carries (APIv1.md §4.16)
 
 const GROUNDED = 0.5;       // metres above the ground he still counts as standing
+// The water (the scene's `goats.water` seam). He can wade -- a shallow pool is a puddle to a
+// man that size -- but he is not built for it: `WATER_DROWN` seconds of it and he starts
+// *going off*, and a bang at his own feet throws him by his own `onBlast`, which is the
+// whole of the joke. `WET_DEPTH` is what counts as water under him rather than a damp film.
+const WATER_DROWN = 30.0;   // seconds in the water before the first bang
+const WET_DEPTH = 0.02;     // metres of water that count
 const FLUNG_GRAVITY = -72;  // m/s², the goat's own arc, so his throw looks like one
 const FLUNG_MAX = 4.0;      // seconds; a ceiling on the arc, as the birds keep one
 const FLUNG_SPIN = 1.6;     // forward somersaults a second, over the arc
@@ -147,6 +153,7 @@ let blasts = 0;
 let resting = CHAIN_RESET;
 let aimed = false;
 let warned = false;
+let wetFor = 0;             // seconds he has been standing in water (0 the moment he is dry)
 // His own luck, and his own voices. The scene's seeded streams belong to `side:
 // "world"` mods (a client mod may not register one) and `Math.random` would make a
 // run unreproducible for the harness, so the ladder rolls on a private xorshift32
@@ -560,6 +567,21 @@ goats.on("update", function (dt) {
     if (knock < 1e-3) knock = 0;
 
     trip();
+
+    // The water. He walks in it like anywhere else -- no drag, no splash of his own -- and
+    // the clock only runs while his feet are actually in it: a pool he crosses is a pool he
+    // crosses, and a film he stands in is nothing. Past `WATER_DROWN` he goes off at his own
+    // feet, and the bang throws him (his own `onBlast`, because the core path is the core
+    // path). What ends it is dry land, and *only* dry land: the clock is not reset by the
+    // bang and not while he flies, so a landing that is still in the water goes off again
+    // on the frame he lands. That is the whole rule -- he explodes until he lands back on
+    // dry land, and the arc is the only thing between one bang and the next.
+    if (goats.water.depthAt(x, z) > WET_DEPTH) wetFor += dt;
+    else wetFor = 0;
+    if (!flung && wetFor >= WATER_DROWN) {
+        goats.explosions.blast(x, z, "mine");
+        return;
+    }
 });
 
 goats.on("draw3d", function () {
@@ -618,6 +640,9 @@ goats.command("fatguy", function (parts) {
     if (verb !== "state") return "error fatguy: state or boom";
     // `chance` is what the *next* bang's aim will carry, so the ladder is readable
     // between bangs: 1.0 before the first, 0.75 after it, and 0 once it has run out.
+    // `wet` is the water's own clock -- the seconds he has stood in it, reset by dry
+    // land and by nothing else -- so the one rule with a thirty-second delay on it can
+    // be read without waiting thirty seconds to see where it is.
     return "ok " + JSON.stringify({
         x: Math.round(x * 100) / 100,
         z: Math.round(z * 100) / 100,
@@ -626,6 +651,7 @@ goats.command("fatguy", function (parts) {
         aimed: aimed,
         blasts: blasts,
         chance: blasts < CHAIN_CHANCE.length ? CHAIN_CHANCE[blasts] : 0,
+        wet: Math.round(wetFor * 100) / 100,
         knock: Math.round(knock * 100) / 100,
         panic: Math.round(panic * 100) / 100,
     });

@@ -107,6 +107,7 @@ for (let rippleInit = 0; rippleInit < RIPPLE_MAX; rippleInit++) {
     RIPPLE.push({ x: 0, z: 0, r: 0, s: 0 });
 }
 let waterCulled = 0;                // tufts the grass field skipped under the water
+let waterThrown = 0;                // splashes thrown, ever: the entries and the footfalls
 let splashTop = 0;
 let rippleLastX = NaN;              // where the goat's last ring was laid
 let rippleLastZ = NaN;
@@ -622,6 +623,16 @@ function waterDrainFactor() { return 1 + TUNING.water.dragEnergy * waterDragFrac
 // centimetre, because the drain leaves a film that thin behind for minutes after the rain
 // has gone, and a pool nobody can see should not have a read-out.
 const WATER_HUD_MIN = 0.01;
+
+// Whether a point is *in* the water rather than on a damp film: the HUD's own line, so the
+// read-out and the rules that read it cannot disagree about what "in the water" means. The
+// sleep rule uses it (`startSleep` refuses and a sleeping goat wakes), and so does the
+// splash. The *drag* is deliberately not on this test: it is a curve that starts at zero
+// depth, because a film does slow a goat a little.
+function waterInWater(x, z) {
+    return waterDepthAt(x, z) >= WATER_HUD_MIN;
+}
+
 function waterHudText() {
     const depth = waterDepthAt(goat.px, goat.pz);
     if (depth < WATER_HUD_MIN) return "";
@@ -662,6 +673,7 @@ function waterSplashLive() {
 function waterSplash(x, z, strength) {
     const surface = terrainHeight(x, z) + waterDepthAt(x, z);
     const count = Math.round(SPLASH_DROPS * strength);
+    waterThrown += 1;
     for (let i = 0; i < count; i++) {
         if (splashTop >= SPLASH_MAX) splashTop = 0;
         let slot = SPLASH[splashTop];
@@ -705,14 +717,18 @@ function waterSplashDraw() {
 }
 
 // One frame of the wake and the splashes. The goat's rings are laid by distance travelled,
-// so they are evenly spaced however fast it walks, and an actor *entering* the water throws
-// a splash and a stronger ring: that edge -- a step in, a landing -- is what matters, not
-// everything that is merely standing in a pool.
+// so they are evenly spaced however fast it walks, and each one comes with a splash: a
+// footfall in water is a ring *and* the drops it throws, which is the difference between the
+// surface moving and the goat's own feet moving it. An actor *entering* the water throws a
+// bigger one -- a step in, a landing, the edge that matters -- and standing still in a pool
+// throws none, which is what keeps a wading goat from snowing drops while it grazes.
 //
 // The herd is checked too, on every frame whatever the frame is doing: a bot is mirrored on
 // a client, and a splash is exactly the kind of thing that should not need a simulation to
 // see. The herd pays no drag for it (`waterSpeedFactor` is the player's), which keeps the
-// bot checks and the netplay determinism where they were.
+// bot checks and the netplay determinism where they were -- and the herd's footfalls throw
+// *drops* rather than rings, because `RIPPLE_MAX` is three slots and seven walking bots
+// would be the whole of the wake.
 function waterActorStep(dt) {
     for (let i = 0; i < RIPPLE_MAX; i++) {
         const r = RIPPLE[i];
@@ -725,27 +741,51 @@ function waterActorStep(dt) {
     const depth = waterDepthAt(goat.px, goat.pz);
     const wet = depth > RIPPLE_MIN_DEPTH && goat.py < depth;
     if (wet) {
+        // `rippleLast*` is where the last *ring* is, and it moves only when one is laid. It
+        // was written on every wet frame -- which measured one frame of travel against
+        // `RIPPLE_STEP`, so a goat at a walk (two centimetres a frame) never reached the gate
+        // at all: no wake and no footfall splash, and the only thing that ever tripped it was
+        // a teleport of a whole stride in one frame. The herd's own mark below copied it.
         if (!goatWet) {
             waterRippleAdd(goat.px, goat.pz, 1.0);
             waterSplash(goat.px, goat.pz, 0.7);
+            rippleLastX = goat.px;
+            rippleLastZ = goat.pz;
         } else {
             const dx = goat.px - rippleLastX;
             const dz = goat.pz - rippleLastZ;
             if (!(dx * dx + dz * dz < RIPPLE_STEP * RIPPLE_STEP)) {
                 waterRippleAdd(goat.px, goat.pz, 0.6);
+                // Smaller than a step in -- a stride is not an arrival.
+                waterSplash(goat.px, goat.pz, 0.3);
+                rippleLastX = goat.px;
+                rippleLastZ = goat.pz;
             }
         }
-        rippleLastX = goat.px;
-        rippleLastZ = goat.pz;
     }
     goatWet = wet;
     for (let i = 0; i < BOTS.length; i++) {
         const b = BOTS[i];
         const bd = waterDepthAt(b.x, b.z);
         const bw = bd > RIPPLE_MIN_DEPTH && b.py < bd;
-        if (bw && b.wet !== true) {
-            waterRippleAdd(b.x, b.z, 0.9);
-            waterSplash(b.x, b.z, 0.6);
+        if (bw) {
+            // The same mark, and the same correction: it is where the last *splash* was
+            // thrown, not where the bot was last frame -- else a bot at its gait never
+            // reaches `RIPPLE_STEP` either.
+            if (b.wet !== true) {
+                waterRippleAdd(b.x, b.z, 0.9);
+                waterSplash(b.x, b.z, 0.6);
+                b.wetX = b.x;
+                b.wetZ = b.z;
+            } else {
+                const bdx = b.x - b.wetX;
+                const bdz = b.z - b.wetZ;
+                if (!(bdx * bdx + bdz * bdz < RIPPLE_STEP * RIPPLE_STEP)) {
+                    waterSplash(b.x, b.z, 0.3);
+                    b.wetX = b.x;
+                    b.wetZ = b.z;
+                }
+            }
         }
         b.wet = bw;
     }
@@ -839,6 +879,9 @@ function sceneWater() {
         shader: waterShader,
         culled: waterCulled,
         splashes: waterSplashLive(),
+        // ...and how many splashes have been *thrown*, which the live count cannot say: a
+        // case drives one frame and wants to know an entry from a footfall.
+        thrown: waterThrown,
         ripples: waterRipplesLive(),
         drag: waterSpeedFactor(),
         drain: waterDrainFactor(),

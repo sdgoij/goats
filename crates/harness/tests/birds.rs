@@ -39,6 +39,13 @@ use support::{Checks, f64_of, net_feed, try_command_json};
 /// so the flock runs at the rate the game would.
 const DT: f64 = 1.0 / 60.0;
 
+/// `ST` in the mod, and the body height above the ground that "dry" is measured against
+/// (`dryAt` is `goats.water.depthAt <= LEG`). The state index is the fifth number in the
+/// row the flock publishes, which is the only per-bird state a case can read from here.
+const ST_IDLE: f64 = 0.0;
+const ST_WALK: f64 = 1.0;
+const BIRD_LEG: f64 = 0.13;
+
 /// The mod's entry, compiled in so a broken fixture fails at build time too.
 const BIRDS_SRC: &str = include_str!("../../../mods/birds/mod.js");
 
@@ -721,5 +728,115 @@ fn the_cases(checks: &mut Checks) {
             .counters
             .models_unloaded;
         checks.check("unloading frees the models", unloaded == 3, unloaded);
+    }
+
+    // ---- the water: the flock does not stand under it -------------------------
+    // A bird stands on the *ground*, and the ground is under the water wherever a pool is,
+    // so a bird already down takes off when the water reaches it and one that walks in
+    // takes off on the step that puts its feet under; a descent over a pool gives up
+    // rather than settling a centimetre under the surface, which is where the flock used to
+    // end up -- a pair of wings and no bird. The seam is `goats.water.depthAt`, a plain
+    // function, and it is the only half of the water reachable from here: `harnessStep`
+    // drives the mods' update rather than the scene's frame, so `sceneWater()` never
+    // advances and the depth has to be read per bird, from the ground each one is over.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.teleport(0.0, 0.0);
+        // The ground, built the way the load builds it. A harness that never runs a scene
+        // *frame* gets no grid and therefore no water field at all: `makeTerrain` is the
+        // scene's own init for the ground (`terrainDetail` is the handle it makes first,
+        // and `terrainEnsure` returns early until it exists), and it is what fills the grid
+        // `waterDepthAt` reads. Anchored on the goat, which is why the teleport comes first.
+        world.harness.eval("makeTerrain()").expect("makeTerrain");
+        // A dry field next, whatever the seeded sky has been doing: the flock is meant to
+        // *stand* before the pool arrives, or the check below has nothing to hold.
+        world.harness.eval("rainAmount = 0").expect("rain");
+        world
+            .harness
+            .call("waterStep", &[json!(1.0e6)])
+            .expect("waterStep");
+        world
+            .harness
+            .eval("goats.water.clear()")
+            .expect("the table back");
+        world.step(240);
+        world.harness.command("birds land").expect("birds land");
+        world.step(240);
+        let dry = world.status();
+        let down = count(&dry["states"], "idle") + count(&dry["states"], "walk");
+        checks.check("the flock stands on dry ground", down > 0.0, &dry["states"]);
+
+        // The pool. Big enough that the question cannot be "did the flock happen to be on
+        // high ground": the flock is held inside `HOME_R` of its home and turns back at
+        // `HOME_R + 6`, so the highest ground over a disc wider than that is the level which
+        // puts every bird over water -- measured, with half a metre over the highest of it,
+        // rather than guessed.
+        let level = f64_of(
+            world
+                .harness
+                .eval(
+                    "(function () { const p = goats.player.state(); let hi = -Infinity; \
+                     for (let z = -22; z <= 22; z += 1) { \
+                     for (let x = -22; x <= 22; x += 1) { \
+                     if (x * x + z * z > 22 * 22) continue; \
+                     const g = terrainHeight(p.x + x, p.z + z); if (g > hi) hi = g; } } \
+                     return hi; })()",
+                )
+                .expect("the highest ground the flock lives over"),
+        );
+        world
+            .harness
+            .eval(&format!("goats.water.setLevel({})", level + 0.5))
+            .expect("the pool");
+
+        // The grace, and it is a grace rather than a measurement: a bird that was standing
+        // when the water arrived needs the frames a takeoff takes, and this is not a case
+        // about the arc.
+        world.step(120);
+
+        // Every frame from there, per bird: no bird in a *ground* state with the water over
+        // its feet. `perch` is not one of them -- a bird on a goat's back is not standing on
+        // the ground -- and `land` is not either, because a descent over water is exactly
+        // what is supposed to be given up rather than completed.
+        let mut under = 0.0;
+        let mut settled = 0.0;
+        let mut wet = 0.0;
+        for _ in 0..240 {
+            world.step(1);
+            let states = world.status()["states"].clone();
+            settled += count(&states, "idle") + count(&states, "walk");
+            for row in world.flock() {
+                let st = row[4].as_f64().unwrap_or(-1.0);
+                let x = f64_of(row[0].clone());
+                let z = f64_of(row[2].clone());
+                let depth = f64_of(
+                    world
+                        .harness
+                        .eval(&format!("goats.water.depthAt({x}, {z})"))
+                        .expect("depth"),
+                );
+                if depth > BIRD_LEG {
+                    wet += 1.0;
+                    if st == ST_IDLE || st == ST_WALK {
+                        under += 1.0;
+                    }
+                }
+            }
+        }
+        checks.check(
+            "the pool is over the ground the flock lives on",
+            wet > 0.0,
+            (wet, level),
+        );
+        // Both halves of one statement, kept apart so a failure says which: no bird is
+        // *standing* in the water, and the flock does not settle on it at all. Without the
+        // gate in `stepIdle` and `stepWalk` the flood would simply leave them where they
+        // stood -- the flock it reached would go on grazing with its feet under the surface.
+        checks.check(
+            "no bird stands where the water is over its feet",
+            under == 0.0 && settled == 0.0,
+            (under, settled, wet),
+        );
     }
 }

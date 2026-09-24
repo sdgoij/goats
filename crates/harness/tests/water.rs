@@ -653,6 +653,381 @@ fn the_goat_wades() {
 }
 
 #[test]
+fn the_goat_does_not_sleep_in_the_water() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // A goat does not sleep in the water, and the question is one question: the mode is
+    // refused where the goat stands in a pool, and a goat the water *reaches* is woken --
+    // both `waterInWater`, the HUD's own line, so the key, this verb, the sleep that
+    // exhaustion forces and a mod's `setMode` cannot disagree about it.
+    rain(&mut harness, 1.0);
+    let flooded = water(&mut harness);
+    let (dx, dz) = (
+        f64_of(flooded["deepX"].clone()),
+        f64_of(flooded["deepZ"].clone()),
+    );
+    harness.command(&format!("pos {dx} {dz}")).expect("pos");
+    let in_water = harness
+        .eval("waterInWater(goat.px, goat.pz)")
+        .expect("in water");
+    checks.check(
+        "the goat is standing in the HUD's own water",
+        in_water == json!(true),
+        &in_water,
+    );
+
+    let refused = harness.command("sleep").expect("sleep");
+    let stayed = command_json(&mut harness, "state")["mode"].clone();
+    checks.check(
+        "a goat in the water is not allowed to sleep",
+        refused == "error cannot sleep in the water" && stayed != json!("sleep"),
+        (&refused, &stayed),
+    );
+
+    // Dry ground, *found* rather than guessed: the table is the weather's and the window
+    // is the goat's, so the first point on a lattice the water does not reach is the
+    // honest way to ask for one.
+    let dry = harness
+        .eval(
+            "(function () { for (let z = -24; z <= 24; z += 1) { \
+             for (let x = -24; x <= 24; x += 1) { \
+             if (!waterInWater(x, z)) return [x, z]; } } return null; })()",
+        )
+        .expect("dry ground");
+    let (gx, gz) = (f64_of(dry[0].clone()), f64_of(dry[1].clone()));
+    harness.command(&format!("pos {gx} {gz}")).expect("pos");
+    // The energy is taken down first, and it is not decoration: a goat at its cap sleeps
+    // for a fraction of a second whatever the water does (`sleepEnergyRecover` is 12 a
+    // second), and the case is about the water's wake rather than the recovery's.
+    harness.eval("stats.energy = 10").expect("energy");
+    let slept = harness.command("sleep").expect("sleep");
+    let asleep = command_json(&mut harness, "state")["mode"].clone();
+    checks.check(
+        "...and the same verb works on dry ground",
+        slept == "ok sleep" && asleep == json!("sleep"),
+        (&slept, &asleep),
+    );
+
+    // A frame asleep and still dry, so the wake that follows is the water's: the sleep
+    // also ends on its own at the cap, and on any input, and neither has moved here.
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("a dry frame");
+    let still = command_json(&mut harness, "state")["mode"].clone();
+    checks.check(
+        "the goat stays asleep while the ground is dry",
+        still == json!("sleep"),
+        (&still, harness.eval("stats.energy").ok()),
+    );
+
+    // ...and the rain arrives under it. The level is forced rather than waited for -- the
+    // table under a goat is the weather's business and this case is about the rule -- and
+    // `flood` lifts exactly the level the rain would.
+    let ground = f64_of(
+        harness
+            .eval(&format!("terrainHeight({gx}, {gz})"))
+            .expect("ground"),
+    );
+    flood(&mut harness, ground + 0.3);
+    harness.reset_frame().expect("a frame to drive");
+    harness
+        .call("sceneFrame", &[])
+        .expect("the frame the water arrives");
+    let woken = command_json(&mut harness, "state")["mode"].clone();
+    let at_wake = harness
+        .eval("waterInWater(goat.px, goat.pz)")
+        .expect("in water");
+    checks.check(
+        "...and a pool rising under a sleeping goat wakes it",
+        at_wake == json!(true) && woken != json!("sleep"),
+        (&woken, &at_wake),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_herd_does_not_sleep_in_the_water() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    // The herd is put back, and that is not a detail to skip: `run` ends by closing the
+    // window, and `sceneShutdown` is where `unloadBots` is called, so every case in this
+    // file starts next to an *empty* meadow however many goats the load built.
+    harness.eval("setHerdSize(7)").expect("the herd");
+
+    // The herd are goats too, and the gate is the player's own -- `waterInWater`, the HUD's
+    // line. It is legitimate in a bot's *AI* for the reason `net.js` gives: the host is the
+    // one simulating the herd, so a peer's own table never decides what a bot does, and the
+    // client is handed the host's modes.
+    rain(&mut harness, 1.0);
+    let flooded = water(&mut harness);
+    let (dx, dz) = (
+        f64_of(flooded["deepX"].clone()),
+        f64_of(flooded["deepZ"].clone()),
+    );
+    checks.check(
+        "the rain makes a pool to put the herd in",
+        flooded["deepest"].as_f64().is_some_and(|d| d > 0.0),
+        &flooded,
+    );
+
+    // The *plan* is sampled rather than waited for, and that is the shape the roll wants:
+    // a bot re-plans when its timer runs out and only one roll in ten dozes, so a case that
+    // waited for one of seven bots to pick this basin would be testing its own random stream
+    // and not the water. Calling `botNewAction` in a loop is the same roll a frame makes,
+    // four hundred times over, with the bot standing in the pool.
+    let rolls = |harness: &mut Harness| -> (f64, f64) {
+        let read = harness
+            .eval(&format!(
+                "(function () {{ const b = BOTS[0]; b.x = {dx}; b.z = {dz}; \
+                 const wet = waterInWater(b.x, b.z); let slept = 0; \
+                 for (let i = 0; i < 400; i++) {{ \
+                 b.mode = 'idle'; b.timer = 0; botNewAction(b); \
+                 if (b.mode === 'sleep') slept += 1; }} \
+                 return [wet ? 1 : 0, slept]; }})()",
+            ))
+            .expect("the plans");
+        // `[wet, slept]`, in that order -- which is the order the check below wants them in
+        // and not the order they read as names in.
+        (f64_of(read[1].clone()), f64_of(read[0].clone()))
+    };
+    let (wet_slept, in_the_pool) = rolls(&mut harness);
+    checks.check(
+        "the herd's own plans, rolled standing in the pool, are never a sleep",
+        in_the_pool == 1.0 && wet_slept == 0.0,
+        (in_the_pool, wet_slept),
+    );
+
+    // ...and the same roll on ground the water has left does doze, which is what makes the
+    // check above mean anything: the branch it samples is live, and the water is the whole of
+    // the difference between them.
+    rain(&mut harness, 0.0);
+    age(&mut harness, SETTLE);
+    let (dry_slept, dry_pool) = rolls(&mut harness);
+    checks.check(
+        "...while the same plans on dry ground put it to sleep",
+        dry_pool == 0.0 && dry_slept > 0.0,
+        (dry_pool, dry_slept),
+    );
+
+    // The water is put back before the last half, because the check above took it away: the
+    // rise carries no memory at all (`waterUpdate`), so one call is a pool again.
+    rain(&mut harness, 1.0);
+
+    // The other half of the rule, which is what an exhausted goat meets: a bot already asleep
+    // when the water arrives gets up. The plan above is refused; this is the sleep that had
+    // already started, and it ends on the frame that finds it.
+    let asleep = harness
+        .eval(&format!(
+            "(function () {{ const b = BOTS[0]; b.x = {dx}; b.z = {dz}; \
+             b.mode = 'sleep'; b.timer = 5; return [waterInWater(b.x, b.z), b.mode]; }})()",
+        ))
+        .expect("put to sleep");
+    checks.check(
+        "a bot put to sleep in the pool is asleep before the frame",
+        asleep[0] == json!(true) && asleep[1] == json!("sleep"),
+        &asleep,
+    );
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("a frame of herd");
+    let after = harness.eval("BOTS[0].mode").expect("mode");
+    checks.check("...and is not, after it", after != json!("sleep"), &after);
+
+    checks.finish();
+}
+
+#[test]
+fn a_stride_in_the_water_throws_a_splash() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    harness.command("lighting on").expect("lighting on");
+
+    // The goat's splash is thrown from `waterActorStep`, which runs off the draw -- so the
+    // lit branch is part of the set-up -- and `sceneWater().thrown` counts splashes
+    // *thrown*, which is the only way a case can tell an entry from a footfall (the drops
+    // themselves come and go in `SPLASH_LIFE`). The herd is not emptied here for the
+    // reason the herd case below has to *rebuild* it: `run` ends in `sceneShutdown`, which
+    // unloads the bots, so the meadow this case measures is already the goat's alone.
+    rain(&mut harness, 1.0);
+    let flooded = water(&mut harness);
+    let (dx, dz) = (
+        f64_of(flooded["deepX"].clone()),
+        f64_of(flooded["deepZ"].clone()),
+    );
+    let thrown = |harness: &mut Harness| water(harness)["thrown"].as_u64().unwrap_or(0);
+
+    // ---- one step in ---------------------------------------------------------
+    harness.command(&format!("pos {dx} {dz}")).expect("pos");
+    let before = thrown(&mut harness);
+    harness.reset_frame().expect("a frame to drive");
+    harness
+        .call("sceneFrame", &[])
+        .expect("the frame it steps in");
+    let entered = thrown(&mut harness);
+    checks.check(
+        "stepping into a pool throws a splash",
+        entered > before,
+        (before, entered),
+    );
+
+    // ---- and standing still throws nothing ------------------------------------
+    // The wake is laid by distance travelled rather than by the frame, so a goat grazing
+    // in a pool is not a fountain.
+    harness.reset_frame().expect("a frame to drive");
+    harness
+        .call("sceneFrame", &[])
+        .expect("a frame on the spot");
+    let stood = thrown(&mut harness);
+    checks.check(
+        "...but standing in one throws nothing",
+        stood == entered,
+        (entered, stood),
+    );
+
+    // ---- and walking through it throws them ------------------------------------
+    // *Walking* is what this rule is about, and walking is not a teleport: the gate is
+    // `RIPPLE_STEP` (0.45 m) of travel, and a goat covers about two centimetres of that in a
+    // frame. So the goat is walked in small steps -- a first version of this case moved it a
+    // whole stride in one frame, which is the one thing a frame-vs-ring comparison would also
+    // pass, and that is why it passed while a walking goat threw nothing at all.
+    let reach = harness
+        .eval(&format!(
+            "(function () {{ let last = null; for (let d = 0.6; d <= 4; d += 0.1) {{ \
+             if (waterDepthAt({dx} + d, {dz}) > 0.06) last = [{dx} + d, {dz}, d]; }} \
+             return last; }})()",
+        ))
+        .expect("a walk inside the pool");
+    checks.check(
+        "there is a stride of water to walk along",
+        reach.is_array() && f64_of(reach[2].clone()) >= 0.9,
+        &reach,
+    );
+    let (rx, rz, span) = (
+        f64_of(reach[0].clone()),
+        f64_of(reach[1].clone()),
+        f64_of(reach[2].clone()),
+    );
+    let (mut dry_steps, mut kept) = (0u32, 0u32);
+    for step in 1..=30u32 {
+        let t = f64::from(step) / 30.0;
+        let (wx, wz) = (dx + (rx - dx) * t, dz + (rz - dz) * t);
+        harness.command(&format!("pos {wx} {wz}")).expect("pos");
+        harness.reset_frame().expect("a frame to drive");
+        harness.call("sceneFrame", &[]).expect("a walking frame");
+        if depth(&mut harness, wx, wz) > 0.04 {
+            kept += 1;
+        } else {
+            dry_steps += 1;
+        }
+    }
+    let walked = thrown(&mut harness);
+    checks.check(
+        "...and walking it throws one per stride",
+        dry_steps == 0 && walked >= stood + 2,
+        (dry_steps, kept, stood, walked, span),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn a_bot_walking_the_pool_throws_a_splash() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    harness.command("lighting on").expect("lighting on");
+    // `run` ends in `sceneShutdown`, which unloads the herd: the bots are put back here, and
+    // this case is the herd's, so the goat is not moved -- it stays where it loaded, which is
+    // also the window the pool is read from. **One** bot, not seven: the others wander in and
+    // out of the pool on their own, and an arrival of theirs is a splash this count would
+    // take for the walk's.
+    harness.eval("setHerdSize(1)").expect("a bot");
+
+    // The herd's half of the splash rule, and its own mark: the bots lay no rings
+    // (`RIPPLE_MAX` is three slots), so what a bot crossing a pool throws is *drops*, one
+    // set per `RIPPLE_STEP` of its own travel. The goat's walk is the other case's: keeping
+    // them apart is what makes either count mean something.
+    rain(&mut harness, 1.0);
+    let flooded = water(&mut harness);
+    let (dx, dz) = (
+        f64_of(flooded["deepX"].clone()),
+        f64_of(flooded["deepZ"].clone()),
+    );
+    // A stride of *contiguous* water to cross, measured from the deepest point rather than
+    // assumed: the walk below must not reach the pool's edge, or an arrival would be counted
+    // as a footfall.
+    let run = f64_of(
+        harness
+            .eval(&format!(
+                "(function () {{ let run = 0; for (let d = 0.1; d <= 3; d += 0.1) {{ \
+                 if (waterDepthAt({dx} + d, {dz}) > 0.06) run = d; else break; }} \
+                 return run; }})()",
+            ))
+            .expect("a walk in the pool"),
+    );
+    checks.check("there is water for a bot to walk in", run >= 1.0, run);
+
+    // The bot arrives from wherever the herd built it, and its height above the ground is
+    // *eased* rather than set, so the frame it is moved into the pool is not reliably the
+    // frame it counts as wet. The splash that arrival throws is therefore given its own
+    // frames here, and `wet` in the report is what says it has happened -- without that the
+    // arrival lands inside the count below and passes for a footfall, which is exactly how a
+    // first version of this case passed on a mark that never fired while walking.
+    harness
+        .eval(&format!(
+            "(function () {{ const b = BOTS[0]; b.x = {dx}; b.z = {dz}; \
+             b.mode = 'idle'; b.timer = 9; }})()",
+        ))
+        .expect("a bot to walk");
+    for _ in 0..30 {
+        harness.reset_frame().expect("a frame to drive");
+        harness.call("sceneFrame", &[]).expect("a settling frame");
+    }
+    let settled = harness
+        .eval("[BOTS[0].wet, BOTS[0].py, waterInWater(BOTS[0].x, BOTS[0].z)]")
+        .expect("the bot");
+    let goat_before = harness.eval("goat.px + goat.pz").expect("the goat");
+    let before = water(&mut harness)["thrown"].as_u64().unwrap_or(0);
+
+    // ...and then the bot is *walked*, ten centimetres at a time, which is what a footfall is
+    // made of: a bot's own frame of travel is a hundredth of `RIPPLE_STEP`, so the step is
+    // taken by hand here the way the goat is `pos`ed in the case above.
+    let steps = (run * 10.0).floor().min(30.0) as u32;
+    for step in 1..=steps {
+        let wx = dx + 0.1 * f64::from(step);
+        harness
+            .eval(&format!(
+                "(function () {{ const b = BOTS[0]; b.x = {wx}; b.z = {dz}; b.timer = 9; }})()",
+            ))
+            .expect("a step");
+        harness.reset_frame().expect("a frame to drive");
+        harness.call("sceneFrame", &[]).expect("a walking frame");
+    }
+    let after = water(&mut harness)["thrown"].as_u64().unwrap_or(0);
+    // The count is the bot's: the goat never moved (a shove would be a splash of its own, and
+    // the two of them are metres apart).
+    let goat_after = harness.eval("goat.px + goat.pz").expect("the goat");
+    checks.check(
+        "a bot walking through the pool throws its own splashes",
+        settled[0] == json!(true) && after >= before + 2 && goat_after == goat_before,
+        (
+            before,
+            after,
+            run,
+            steps,
+            &settled,
+            &goat_before,
+            &goat_after,
+        ),
+    );
+
+    checks.finish();
+}
+
+#[test]
 fn the_table_is_the_same_in_every_window() {
     let mut checks = Checks::new();
     let mut harness = Harness::start().expect("evaluate the scene");

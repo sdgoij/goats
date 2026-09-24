@@ -510,7 +510,11 @@ goats.player.restart();           // only meaningful in "dead"
 
 `setMode` accepts `idle`, `walk`, `trot`, `run`, `sleep`, `eat`. Entering
 `sleep`/`eat` goes through the same helpers the keys use; `jump` and `dead` are
-driven by the simulation and cannot be forced.
+driven by the simulation and cannot be forced. Every mode write reports whether it
+took, and a refusal leaves the goat exactly as it was -- `setMode("sleep")` is
+`false` where the goat is standing in the water (`goats.water.depthAt` at its own
+position, the line the HUD's water read-out is drawn from), which is the same
+refusal the `Z` key and the `sleep` console verb get.
 
 ### 4.6 Camera
 

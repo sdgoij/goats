@@ -4018,13 +4018,18 @@ cosmetic and local and nothing about it should travel.
   however fast it walks.
 - **A splash is pooled drops** drawn with `drawSphereEx`, the way the explosion's grit is
   drawn with `drawCube`: fixed slots, no allocation, and each drop's direction from the same
-  `hash` the rest of the scene uses so no two are identical. It fires on the *edge* -- feet
-  crossing the surface, a step in or a landing -- rather than on everything that is merely
-  standing in a pool.
+  `hash` the rest of the scene uses so no two are identical. As landed it fired on the *edge*
+  -- feet crossing the surface, a step in or a landing -- rather than on everything that is
+  merely standing in a pool; M20f′ gave it the footfall as well (see *The rules the water
+  made, as landed*), so a stride in water throws one and only standing still does not -- and
+  that is also where the ring's own distance gate had to move off the last *frame* and onto
+  the last *ring*, without which neither the wake nor the footfall ever fired at a walk.
 - **The herd gets the same edge**, checked in the draw so a client's mirrored bots splash
-  too, which is the one item here that would otherwise need a simulation to see. The herd
-  pays no *drag*: the wet-speed terms are the player's, as M6's rain terms are, which keeps
-  the bot checks and the netplay determinism where they were.
+  too, which is the one item here that would otherwise need a simulation to see -- and M20f′
+  gave the bots the *footfall* on the same footing (drops rather than rings, since
+  `RIPPLE_MAX` is three slots). The herd pays no *drag*: the wet-speed terms are the player's,
+  as M6's rain terms are, which keeps the bot checks and the netplay determinism where they
+  were.
 - **The drag is gated on the depth, not the weather.** `1 - drag * depth/maxDepth` and
   `1 + dragEnergy * depth/maxDepth` are both exactly 1 with no water under the goat, so a
   `clear` frame on dry ground is bit-for-bit the frame it has always been -- M6's own rule,
@@ -4163,6 +4168,100 @@ forty-second run for one line. And the case that opens this section's third para
   floor there are no pools at all. What holds is that a region never *splits*, and the case
   now holds consequences of that instead of the count.
 
+### The rules the water made, as landed (M20f′)
+
+M20f closed the *wire* claim. This is the other half of the same play-through: not what the
+water *sends*, but what it *means* to the things that walk through it. Four rules, all of
+them small, none of them on the wire -- and each one held by a case that was made to fail
+without it rather than trusted to the source.
+
+- **A goat does not sleep in the water.** The question is one question -- `waterInWater(x, z)`
+  (`water.js`), which is `waterDepthAt(x, z) >= WATER_HUD_MIN`, the 0.01 m line at which the
+  HUD starts reporting a depth -- so the key, the `sleep` verb, the sleep exhaustion forces
+  (`autoSleepDelay`) and a mod's `setMode` cannot disagree about what "in the water" means.
+  `startSleep` refuses where it is true and returns whether it slept: that boolean is
+  `ctl.js`'s `error cannot sleep in the water`, `goats.player.setMode`'s `false`
+  (APIv1.md §4.5), and the *sleeping* branch of `sceneFrame` reads the same test as well --
+  the rain can raise the table under a goat that is not going anywhere, so "no sleeping in
+  the water" has to end a sleep as well as refuse one, and that wake is the gate's only exit.
+  `the_goat_does_not_sleep_in_the_water` holds both halves: refused standing in the deepest
+  pool, allowed on dry ground, and woken when the level is *forced* up under it. The frame in
+  the middle is the point of it -- one frame asleep and still dry, so the wake cannot be the
+  energy cap -- and the case sets `stats.energy = 10` before it starts, because
+  `sleepEnergyRecover` is 12 a second and any sleep that begins at the cap would end within a
+  frame whatever the water did.
+  **The herd are goats too.** The same test gates `botNewAction`'s doze roll and wakes a
+  sleeping bot in `updateBots`, which is the one place the level steers *behaviour* rather
+  than a draw -- legitimate because `net.js` has the host alone simulating the herd, so a
+  peer's own table never decides what a bot does, and the client is handed the host's modes.
+  `the_herd_does_not_sleep_in_the_water` samples that roll directly: `botNewAction` called
+  four hundred times with a bot standing in the pool (the same roll a frame makes, where
+  waiting for seven bots to pick this basin would be testing `botRnd`), which finds no sleep
+  in it and five on the same ground once the water has gone -- and six, of four hundred, with
+  the gate removed.
+- **A stride in the water throws a splash.** `waterActorStep` lays the goat's rings by
+  distance travelled; the same `RIPPLE_STEP` (0.45 m) now throws a splash with each one
+  (0.3, against 0.7 for a step in), so the goat's own feet move the surface and not only the
+  edge of an arrival. Standing still throws nothing, which is what keeps a grazing goat from
+  snowing drops. The herd's footfalls throw *drops and no rings* -- `RIPPLE_MAX` is three
+  slots and seven walking bots would be the whole wake -- and the bots needed `wetX`/`wetZ`
+  of their own, having no ring pool to read "where the last one was" off. `sceneWater().thrown`
+  is new to make it visible: a count of splashes *thrown*, because the live count cannot tell
+  an entry from a footfall (a drop lives `SPLASH_LIFE`, 0.55 s).
+  `a_stride_in_the_water_throws_a_splash` reads it across three frames -- one step in, one on
+  the spot, one stride -- and searches for a wet point a stride away rather than assuming the
+  deepest point of a basin has water half a metre to its side.
+  **The gate was measured against the wrong mark, and this is the one place a play-through
+  found a bug the milestone's own cases had blessed.** `rippleLastX/Z` -- where the *last
+  ring* is -- was written on every wet frame, so the distance it measured was one frame of
+  travel against a stride's worth of it: a goat at a walk (two centimetres a frame) never
+  tripped it, and the wake and the footfall were only ever seen by something that moved a
+  whole stride in a single frame. That is a *teleport*, and it is what the first version of
+  the case did -- `pos`, a whole stride, one frame -- so the case passed while a walking goat
+  threw nothing at all, and the report ("I see no splashes when walking in the water") is what
+  found it. The mark moves when a ring or a splash is laid and at no other time, for the herd
+  as well; the case now *walks* the goat, thirty steps of three centimetres, and a second
+  case walks a bot the same way, ten centimetres at a time, because a bot's own frame of
+  travel is a hundredth of the gate. Both fail on the old mark: the goat throws nothing in
+  3.9 m of walking, the bot nothing in 2.9 m, and the bot's case has to give the *arrival* its
+  own frames first (`py` is eased, not set, so the frame a bot is moved into a pool is not
+  reliably the frame it counts as wet) or the arrival splash passes for a footfall.
+- **A bird does not stand under it.** `mods/birds/mod.js` gains `dryAt(x, z)` --
+  `goats.water.depthAt(x, z) <= LEG`, 0.13 m, the body's own height above the ground -- and
+  `stepIdle`, `stepWalk` and `stepLand`'s non-perch branch all take off when it is false. A
+  pool is walked *around* rather than waded through, and a descent over one gives up instead
+  of settling a centimetre under the surface, which is where the flock used to end up: a pair
+  of wings and no bird. Perching on a goat's back is untouched. `the_birds_mod_works`
+  (release-only, `#[ignore]`d) lands the flock on dry ground, floods the level above the
+  *highest ground over the disc the flock lives on* -- measured over a 22 m radius, wider
+  than the `HOME_R + 6` it turns back at -- and then reads the depth per bird from the
+  flock's published rows for four seconds: no bird in a ground state anywhere the water is
+  over its feet, and no bird settling on it at all. With the gate removed, 649 bird-frames
+  of exactly that. One
+  harness detail is worth knowing, since it is the shape of every case like this:
+  `harnessStep` drives the mods' update and not the scene's frame, so a harness that never
+  runs a frame has **no grid and no water field at all** -- the case builds them the way the
+  load does, with `makeTerrain()`.
+- **The fat guy goes off after thirty seconds in it.** `mods/fatguy/mod.js` runs its own clock
+  while `goats.water.depthAt` is over `WET_DEPTH` (0.02 m: water rather than a damp film), and
+  past `WATER_DROWN` (30 s) bangs at his own feet through
+  `goats.explosions.blast(x, z, "mine")` -- the core path, so it is a crater, a report and an
+  event like every other bang, and it throws him through his own `onBlast`. He wades it like
+  anywhere else: no drag, and no splash of his own. What ends it is dry land and *only* dry
+  land -- the clock is not cleared by the bang, and not while he flies -- so a landing still
+  over water goes off again on the frame he lands, and the arc is the whole of the gap
+  between one bang and the next. `mods.rs`'s fatguy block drives the episode at the *scene's
+  own frame cap* (`sceneFrame` is `min(rl.getFrameTime(), 0.05)`, so thirty seconds is 600
+  frames rather than the stub's 1800), holds the field dry and drained first, floats the table
+  over the highest ground he can reach (measured once, over 40 m), and reads `wet` -- the
+  clock, which his `fatguy` verb now reports -- against the depth the *scene* reports: 120 wet
+  frames with the clock inside 0.02 s of 6.0 s, zero on the frame after the table is taken out
+  from under him, the first bang at frame 600--610, and the second inside 200. The reset that
+  would have made the last of those "one bang per thirty seconds" was caught while the case
+  was being written: put `wetFor = 0` back beside the bang and it fails with
+  `drowned: true, again: false`, which is the reason the check is a second *bang* rather than
+  a second clock.
+
 ### Interaction with the goat
 
 - **Ripples and the wake are not a simulation.** A small fixed set of expanding,
@@ -4173,6 +4272,8 @@ forty-second run for one line. And the case that opens this section's third para
 - **The splash** fires when the goat's height above the ground (`py`) crosses the
   surface going down, or on a step in the shallows: pooled particles exactly like
   `explosions`' debris and the rain, drawn with the M0 primitives. Cosmetic and local.
+  **A footfall too (M20f′):** one per `RIPPLE_STEP` of travel in water, so it is walking
+  through a pool that moves the surface and standing in one that does not.
 - **Drag and wading.** Water past a depth threshold applies a speed multiplier and an
   energy drain -- a second wet term beside M6's. It **must be gated so `clear` with no
   water is exactly neutral**, or the gait-speed assertions in the harness break; that
@@ -4286,8 +4387,9 @@ costs the frame.
 
 - **The pool** in the low ground, rising through a storm and shrinking as it clears;
   the sky and the ground moving in it -- the ground for real from M20e, not as a shade;
-  the sun sparkling across the chop; the goat's own wake as it wades; and, when it steps
-  in, a splash.
+  the sun sparkling across the chop; the goat's own wake as it wades, with a splash on
+  every stride and a bigger one as it steps in (M20f′); and goats that cannot sleep in it,
+  the herd's no more than the player's.
 - **The HUD** gains a water line beside the weather line -- whether the goat is in
   water, how deep, and the speed cost -- matching M6's slowdown readout.
 - **The console** gains `water` (the level, how much of the field it covers, where the
@@ -4423,6 +4525,15 @@ milliseconds at the chosen resolution or off to wasm.
   the seam (`goats.water`, APIv1.md §4.17), the pool list (`pools`, as connected regions), the
   system's `water on|off` and `J`, and every leaf of the tree clamped. See *The audit and the
   guards, as landed*.
+- **M20f′ -- the rules the water made. ✅ Done.** The other half of the same play-through: a
+  goat does not sleep in it (one test -- the HUD's own line -- refusing the mode, the verb and
+  the key that asks for it, waking a goat the table reaches, and gating the herd's own doze
+  roll with it); a *stride* in it throws a
+  splash and not only a step in -- which took a second pass, because the distance the gate
+  measured was one frame's rather than the last ring's, so a walking goat threw nothing at all
+  and only a teleport could trip it; the birds' flock does not stand under it, and gives up a
+  descent over it; and the fat guy, thirty seconds in it, goes off at his own feet and keeps
+  going off until he lands on dry land. See *The rules the water made, as landed*.
 - **M20g -- swimming, buoyancy and drinking. The next planned step:** the `GoatSwim`
   clip, the buoyancy term, the *wading* cap lifted so a deep pool is swum rather than waded,
   and drinking at the edge.
@@ -4460,12 +4571,13 @@ One line each: the recommendation, and where the reasoning is.
 | The console verbs | `crates/goats/src/game/ctl.js` (`water`, `water on|off`, `flood`, `pools`, `setting reflect`) |
 | The pool seam a mod reads (`sceneWater()`, `sceneWaterPools()`) | `crates/goats/src/game/water.js` |
 | The mod surface (`goats.water`) | `crates/goats/src/game/mods.js` (`goatsWater`), documented in `APIv1.md` §4.17 |
+| The rules the water made (M20f′) | `crates/goats/src/game/water.js` (`waterInWater`, the footfall splash, `thrown`), `crates/goats/src/game/goat.js` (`startSleep`, and the waking branch of the *sleeping* mode), `crates/goats/src/game/ctl.js` (`sleep`), `crates/goats/src/game/mods.js` (`setMode`), `crates/goats/src/game/bots.js` (`botNewAction` and the wake in `updateBots`), `mods/birds/mod.js` (`dryAt`), `mods/fatguy/mod.js` (the wet clock, and the bang it owes) |
 | The scene part list, `PARTS.len()` | `crates/scene/src/lib.rs` |
 | The engine additions | `slag/crates/runtime/src/raylib.rs` (depth-write, if wanted), with the stubs in `crates/scene/src/null_rl.js` and `crates/scene/src/harness_rl.js` |
 | The water clip and the Blender contract (M20g) | `goat.blend`, `goat_animated.glb`, `tools/goat_swim.py` |
-| The tests | `crates/harness/tests/water.rs` (sixteen cases, 85 checks: the field, the table, the surface, the chop, the reflection, the wading, the windows, the drain, the pools, the audit, the snapshot, the seam), `crates/harness/tests/mods.rs` (the surface from inside a wrapper) and `crates/proto/src/lib.rs` (the budget guard's note) |
+| The tests | `crates/harness/tests/water.rs` (twenty cases, 101 checks: the field, the table, the surface, the chop, the reflection, the wading, the windows, the drain, the pools, the audit, the snapshot, the seam, the sleep gate, the herd's, the goat's walk in the water and a bot's), `crates/harness/tests/mods.rs` (the surface from inside a wrapper, and the fatguy's water clock), `crates/harness/tests/birds.rs` (release-only: the flock staying dry) and `crates/proto/src/lib.rs` (the budget guard's note) |
 | The frame measurements | `PERF.md` appendix B (the M20e tier 1-vs-2 A/B, not yet run; the `perf` phase `mirror`) |
-| The mod surface's documentation | `APIv1.md` §4.17 (`goats.water`, landed in M20f), and §4's notes |
+| The mod surface's documentation | `APIv1.md` §4.17 (`goats.water`, landed in M20f), §4.5 (the mode write that can be refused, M20f′) and §4's notes |
 
 ---
 

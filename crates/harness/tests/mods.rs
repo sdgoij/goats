@@ -325,6 +325,16 @@ fn the_mod_surface_works() {
         &guy,
     );
     checks.check(
+        "the water's clock runs while he wades, and lets go the moment he is out",
+        guy.waded && guy.released,
+        &guy,
+    );
+    checks.check(
+        "thirty seconds of it sets him off, and again until he is on dry land",
+        guy.drowned && guy.again,
+        &guy,
+    );
+    checks.check(
         "a bird on the ground shoves him, and one in the air does not",
         guy.bird && guy.airborne,
         &guy,
@@ -1343,6 +1353,10 @@ struct FatGuy {
     ladder: bool,
     chained: bool,
     reset: bool,
+    waded: bool,
+    released: bool,
+    drowned: bool,
+    again: bool,
     bird: bool,
     airborne: bool,
     goat: bool,
@@ -1415,6 +1429,28 @@ fn fatguy_settled(harness: &mut Harness, frames: u32) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The water he wades. `WATER_DROWN` seconds of it and he goes off at his own feet, and
+/// `WET_DEPTH` is what counts as water under him rather than a damp film -- both the mod's
+/// own numbers, repeated here so the case is about the rule rather than about the file.
+const WATER_DROWN: f64 = 30.0;
+const WET_DEPTH: f64 = 0.02;
+
+/// The frame this episode drives at: the scene caps its own step (`sceneFrame` is
+/// `min(rl.getFrameTime(), 0.05)`), so thirty seconds is 600 frames rather than 1800, and
+/// the clock the case reads is the sum of this over the frames the depth was over the line.
+const FATGUY_DT: f64 = 0.05;
+
+/// The depth under the guy, from the scene's own seam (`goats.water.depthAt`), at the
+/// position his verb reported -- which is where the clock read it too, since he moves
+/// before the frame tests the water.
+fn fatguy_depth(harness: &mut Harness, state: &serde_json::Value) -> Result<f64, String> {
+    let x = state["x"].as_f64().unwrap_or(0.0);
+    let z = state["z"].as_f64().unwrap_or(0.0);
+    Ok(f64_of(
+        harness.eval(&format!("goats.water.depthAt({x}, {z})"))?,
+    ))
 }
 
 fn fatguy_row(harness: &mut Harness, state: &serde_json::Value, lift: f64) -> Result<(), String> {
@@ -1504,6 +1540,134 @@ fn fatguy_block(harness: &mut Harness) -> Result<FatGuy, String> {
         }
     }
     guy.reset = settled;
+
+    // ---- the water ---------------------------------------------------------
+    // A shallow pool is a puddle to a man that size, and he wades it like anywhere else;
+    // thirty seconds of it and he goes off at his own feet -- at his own feet, through his
+    // own `onBlast`, so the arm he is thrown into is the same one a device throws him into.
+    // What *ends* it is dry land rather than the bang: the clock is the mod's and the depth
+    // is the scene's (`goats.water.depthAt`), and both are in his verb, so the case can read
+    // the rule from the outside.
+    {
+        // The devices are out of the field for this episode, so every bang below is the
+        // water's rather than a mine he happens to run over -- the same reason the bird
+        // phase takes them out further down. Handed back with the frame time, at the end.
+        harness.eval("goats.explosions.armed(false)")?;
+        // A twenty-a-second frame for this episode only. The clock is real seconds and the
+        // bang waits on thirty of them; the scene caps its own step, so driving at the cap
+        // is 600 frames rather than the stub's 1800. Restored before the next phase.
+        harness.eval(
+            "globalThis.__fatguyTime = rl.getFrameTime; \
+             rl.getFrameTime = function () { return 0.05; }",
+        )?;
+        // Dry first, and by the weather's own hand: whatever the seeded sky has been doing
+        // while the rest of this block ran, the table is handed back and drained before
+        // anything is measured -- "he is on dry ground" is a claim about him, not about a
+        // shower nobody in this case chose.
+        harness.eval("rainAmount = 0")?;
+        harness.call("waterStep", &[json!(1.0e6)])?;
+        harness.eval("goats.water.clear()")?;
+        let standing = fatguy_frame(harness)?;
+        let stand_depth = fatguy_depth(harness, &standing)?;
+        let stand_clock = standing["wet"].as_f64().unwrap_or(-1.0);
+
+        // The pool. `setLevel` is one table for the whole *field*, so the level that keeps a
+        // moving man wet is the highest ground he can reach, forced: he is steered inside
+        // `FIELD_RADIUS` (26 m) and a bang throws him a dozen metres further, so the disc
+        // below is the ground he can occupy. Measured rather than guessed, with the margin
+        // a 1 m lattice wants -- and one call, so the table only changes twice in the whole
+        // episode (here, and out from under him below).
+        let pool = f64_of(harness.eval(
+            "(function () { let hi = -Infinity; \
+             for (let z = -40; z <= 40; z += 1) { \
+             for (let x = -40; x <= 40; x += 1) { \
+             if (x * x + z * z > 40 * 40) continue; \
+             const g = terrainHeight(x, z); if (g > hi) hi = g; } } \
+             return goats.water.setLevel(hi + 0.8); })()",
+        )?);
+
+        // ---- the clock, while his feet are wet -------------------------------
+        // Sampled every frame against the depth the *scene* reports, because the clock is
+        // the frame's own dt summed over exactly the frames that depth was over his line --
+        // which is the one comparison that says the rule and the read-out are one rule. He
+        // is under `pool` everywhere he can walk, so every frame of this is a wet one, and
+        // six seconds of it is nowhere near thirty.
+        let mut wet_frames = 0u32;
+        for _ in 0..120 {
+            let state = fatguy_frame(harness)?;
+            if fatguy_depth(harness, &state)? > WET_DEPTH {
+                wet_frames += 1;
+            }
+        }
+        let wading = fatguy_state(harness)?;
+        let clock = wading["wet"].as_f64().unwrap_or(-1.0);
+        let expected = f64::from(wet_frames) * FATGUY_DT;
+        guy.waded = stand_depth == 0.0
+            && stand_clock == 0.0
+            && wet_frames == 120
+            && (clock - expected).abs() < 0.02
+            && wading["blasts"].as_i64() == Some(0);
+
+        // ---- and zero the moment he is out of it ------------------------------
+        // The table is taken *under his feet* rather than handed back to the weather: the
+        // seeded sky is a machine this case would have to interrogate to know what it did
+        // with the rain, and "the water is not there any more" is the thing under test. One
+        // frame of it, so the clock's own reset is the only thing that can have moved.
+        let under = f64_of(harness.eval(&format!(
+            "terrainHeight({}, {})",
+            wading["x"].as_f64().unwrap_or(0.0),
+            wading["z"].as_f64().unwrap_or(0.0)
+        ))?);
+        harness.eval(&format!("goats.water.setLevel({})", under - 1.0))?;
+        let out = fatguy_frame(harness)?;
+        let out_depth = fatguy_depth(harness, &out)?;
+        guy.released = out["wet"].as_f64() == Some(0.0) && out_depth == 0.0;
+
+        // ---- thirty seconds of it, and he goes off ----------------------------
+        // The clock starts at the zero above and the pool is put back over him; from there
+        // the only thing that moves it is time. The *frame* is what says when: `WATER_DROWN`
+        // at `FATGUY_DT` a frame is 600, so a bang much before that would be one that did
+        // not wait for the clock, and one much later would be a clock that had stopped --
+        // either way, not this rule. Ten frames of slack, because 0.05 is not exact in
+        // binary and thirty of them may tip either side of the comparison.
+        harness.eval(&format!("goats.water.setLevel({pool})"))?;
+        // The frame the clock should reach the threshold on, from the two numbers rather
+        // than from a number written down twice.
+        let want = (WATER_DROWN / FATGUY_DT) as u32;
+        let mut drowned_at = 0u32;
+        let mut flung = false;
+        for frame in 1..=900u32 {
+            let state = fatguy_frame(harness)?;
+            if state["blasts"].as_i64().unwrap_or(0) >= 1 {
+                drowned_at = frame;
+                flung = state["flung"] == json!(true);
+                break;
+            }
+        }
+        guy.drowned = (want..=want + 10).contains(&drowned_at) && flung;
+
+        // ---- and again, while he is still in it -------------------------------
+        // Dry land is what ends it and the bang is not: the clock is not cleared by going
+        // off, and it is not cleared while he flies, so a landing that is still over water
+        // pops again on the frame he lands -- and the arc is the whole of the gap between
+        // them. A clock that reset with the bang would put this second one 600 frames out
+        // instead, which is the shape this check is drawn to catch.
+        let mut again_at = 0u32;
+        for frame in 1..=400u32 {
+            let state = fatguy_frame(harness)?;
+            if state["blasts"].as_i64().unwrap_or(0) >= 2 {
+                again_at = frame;
+                break;
+            }
+        }
+        guy.again = again_at > 0 && again_at < 200;
+
+        // The scene is handed back as it was found: the frame at the stub's own step, the
+        // table back to the weather, and the devices re-armed for the phases below.
+        harness.eval("rl.getFrameTime = globalThis.__fatguyTime")?;
+        harness.eval("goats.water.clear()")?;
+        harness.eval("goats.explosions.armed(true)")?;
+    }
 
     // A bird, offered by a mod the case controls and tracking him, so the contact is the
     // collision rather than the two of them happening to meet. The herd goes home first,
