@@ -1209,15 +1209,23 @@ decisions behind it and the constraints that shape it.
   1.0.0#3c9d2e5f10ab7742)` -- and `goatsd` and the client each log their set at
   startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
   diagnosis one look rather than a guess. Opaque assets are still compared byte
-  for byte, since the loader cannot know what they are. `mods/birds` itself is
-  pinned at `de6ce23124a07ca4` by a test, because a release ships it and an
-  older client refuses a server whose birds differs. That pin has moved three
+  byte, since the loader cannot know what they are. `mods/birds` itself is
+  pinned at `4f3291755f0c1837` by a test, because a release ships it and an
+  older client refuses a server whose birds differs. That pin has moved five
   times: once when the mod's arithmetic was rewritten to stop naming `Math`
-  (PERF.md §4b), again when the flock learned to set devices off, to sit on the
-  goat and to squawk (M19's surface, below), and now because it offers the flock
-  to other mods so the fat guy can collide with a bird (APIv1.md §4.16) --
-  deliberate changes all three, and a compatibility boundary: a peer on the older
-  birds cannot join a host on the newer one.
+  (PERF.md §4b), again when the flock learned to set devices off, to sit on
+  the goat and to squawk (M19's surface, below), then because it offers the
+  flock to other mods so the fat guy can collide with a bird (APIv1.md
+  §4.16), then when the flock's pose stopped building a quaternion a wing a
+  frame (the per-frame allocation pass, PERF.md appendix B), and now because
+  the flock does not stand under the water (M20f′, *The rules the water
+  made*) -- deliberate changes all five, and a compatibility boundary: a peer
+  on the older birds cannot join a host on the newer one. The test's failure
+  message prints the new digest in the source's own form, so the next move is
+  a paste rather than another decimal-to-hex conversion by hand. (A note in
+  the fixture itself would be the surest place for the warning, and it is the
+  one place it cannot go: the entry's *text* is a digest input, so a comment
+  there would move the pin again.)
 - **M14d2 — World-mod simulation. ✅ Done.** `goats.world.registerStream` and
   `goats.rng` own a seeded PRNG stream per `side: "world"` mod; `sceneUseSeed`
   re-derives them from the session seed, and their state travels in the

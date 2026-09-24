@@ -1695,6 +1695,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&zipped);
     }
 
+    /// A digest the way the source writes it, so the constant can be pasted straight in.
+    /// `assert_eq!` prints both numbers in decimal, and every move of the pin so far has
+    /// started with someone converting one by hand.
+    fn pin(hash: u64) -> String {
+        format!(
+            "0x{:04x}_{:04x}_{:04x}_{:04x}",
+            (hash >> 48) & 0xffff,
+            (hash >> 32) & 0xffff,
+            (hash >> 16) & 0xffff,
+            hash & 0xffff
+        )
+    }
+
     #[test]
     fn the_birds_fixture_digest_is_pinned() {
         // A release ships this mod, and a client refuses a server whose `birds`
@@ -1702,8 +1715,9 @@ mod tests {
         // implementation detail: editing the fixture, or the inputs
         // `hash_manifest` folds in, decides who can play with whom, and it
         // should be a deliberate act rather than a surprise on the next release.
-        // If this fails and the change is intended, update the constant and say
-        // so in the release notes.
+        // If this fails and the change is intended, update the constant (the message
+        // below prints it ready to paste), add the move to the list in the ROADMAP's
+        // M14d write-up, and say so in the release notes.
         let mods_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -1717,10 +1731,15 @@ mod tests {
             .expect("the birds fixture");
 
         assert_eq!(
-            birds.hash, 0xbb77_c875_8d25_e5a1,
-            "the birds digest changed: {}@{}",
-            birds.id, birds.version
+            birds.hash,
+            0x4f32_9175_5f0c_1837,
+            "the birds digest changed: {}@{} -- if that is intended, pin {} and write \
+             the move up in the ROADMAP's M14d",
+            birds.id,
+            birds.version,
+            pin(birds.hash)
         );
+        assert_eq!(pin(0x4f32_9175_5f0c_1837), "0x4f32_9175_5f0c_1837");
     }
 
     #[test]
