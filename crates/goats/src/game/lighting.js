@@ -201,10 +201,19 @@ const LIT_FS = [
     "uniform vec3 blastPos;",
     "uniform vec4 blastColor;",
     "uniform float blastEnergy;",
+    // The water's mirror pass (M20e). That pass renders the world from under the table, and
+    // everything below the waterline has no reflection to contribute -- it would be drawn
+    // where the sky belongs, since mirroring puts it above the plane. So it throws those
+    // fragments away, and this is the uniform that says so. It is a `vec4` rather than a
+    // float so the *default* (all zeroes) is "off": a lit program that never hears from the
+    // mirror pass behaves exactly as it did before M20e, which is the shape `blastEnergy`
+    // and `shadowStrength` already use for an optional light.
+    "uniform vec4 mirrorClip;",
     "out vec4 finalColor;",
     // Depth is packed across RGB so 8-bit channels give ~24-bit precision.
     "float unpackDepth(vec3 c) { return dot(c, vec3(1.0, 1.0/255.0, 1.0/65025.0)); }",
     "void main() {",
+    "    if (mirrorClip.x > 0.5 && fragWorldPos.y < mirrorClip.y) discard;",
     "    vec4 texel = texture(texture0, fragTexCoord) * colDiffuse * fragColor;",
     "    vec3 n = normalize(fragNormal);",
     "    vec3 viewDir = normalize(camPos - fragWorldPos);",
@@ -324,7 +333,16 @@ const WATER_FS = [
     "uniform vec3 waterWave;",     // height, scale, speed
     "uniform vec3 waterWind;",     // the wind's direction (unit) and the gust's share
     "uniform float waterFresnel;",
-    "uniform vec3 waterSky;",      // what a reflection sees, until M20e mirrors the world
+    "uniform vec3 waterSky;",      // what a reflection sees where it meets nothing
+    "uniform sampler2D texture2;", // the reflection's own source (M20e)
+    // The reflection (M20e): one sampler, three answers to the same question, and the four
+    // numbers that say which one this frame is using and where to read it. `waterMapA` is
+    // the baked ground's xz origin and its width in metres, `waterMapB` that bake's floor,
+    // its range and one texel in uv, `waterReflect` the tier, `waterScreen` the viewport.
+    "uniform vec3 waterMapA;",
+    "uniform vec3 waterMapB;",
+    "uniform float waterReflect;",
+    "uniform vec2 waterScreen;",
     // The wake and the splashes (M20d). Three sources at once, named rather than an
     // array on purpose: `getShaderLocation` takes a name, and a fixed handful of
     // uniforms is a question the engine surface can already answer.
@@ -375,6 +393,41 @@ const WATER_FS = [
     "    grad *= 1.0 - smoothstep(0.5, 1.6, phase);",
     "    return normalize(vec3(-grad.x * amp, 1.0, -grad.y * amp));",
     "}",
+    // The ground under a point of the baked window, or a metre under the bake's floor where
+    // the point lies outside it -- so a reflected ray that leaves the field meets nothing,
+    // which is what a ray into the sky is. The bake's alpha is the height there.
+    "float groundAt(vec2 p) {",
+    "    vec2 uv = (p - waterMapA.xy) / waterMapA.z + 0.5 * waterMapB.z;",
+    "    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return waterMapB.x - 1.0;",
+    "    return waterMapB.x + texture(texture2, uv).a * waterMapB.y;",
+    "}",
+    // ...and the ground's own colour there. The bake carries the terrain's vertex colours
+    // in rgb beside the height in alpha, so a reflected slope is shaded in the palette the
+    // ground itself is drawn in rather than in a guess about it.
+    "vec3 groundTintAt(vec2 p) {",
+    "    vec2 uv = clamp((p - waterMapA.xy) / waterMapA.z + 0.5 * waterMapB.z, 0.0, 1.0);",
+    "    return texture(texture2, uv).rgb;",
+    "}",
+    // Tier 1: one reflected ray, marched against the baked ground. A fixed step over the
+    // window's own width is the whole of it -- the bake *is* the terrain's 2 m grid, so a
+    // four-metre step is at the resolution of the thing it is marching against, and a finer
+    // one would only find the same texel twice. There is no refinement pass and no normal:
+    // the hit's own colour is what the reflection is shaded with, the sun's elevation stands
+    // in for its slope, and both errors are a texel or two of a reflection seen through a
+    // ripple. A miss returns a negative red, which no ground tint can be.
+    "vec3 groundReflect(vec3 dir) {",
+    "    float step = waterMapA.z / 24.0;",
+    "    for (int i = 1; i <= 24; i++) {",
+    "        vec3 hit = fragWorldPos + dir * (float(i) * step);",
+    "        if (hit.y < groundAt(hit.xz)) {",
+    "            float sun = max(normalize(lightDir).y, 0.0);",
+    "            return groundTintAt(hit.xz) *",
+    "                (ambientColor.rgb + lightColor.rgb * (0.30 + 0.70 * sun)) *",
+    "                (0.55 + 0.45 * clamp(dir.y, 0.0, 1.0));",
+    "        }",
+    "    }",
+    "    return vec3(-1.0);",
+    "}",
     "void main() {",
     // A pool is flat only until it is not: the normal comes from the chop, and between
     // them the view, the light and the reflection are all measured against it.
@@ -403,9 +456,8 @@ const WATER_FS = [
     "    }",
     // The absorption: the tint runs from the shallow one to the deep one with the water's
     // own *depth*, so a puddle reads thin and a pool reads deep -- the depth, and not how
-    // full the basin is, which is what a real pool does (Beer-Lambert). The depth is
-    // capped in the vertex shader at the basin's own potential, so a basin filled to its
-    // rim reaches the deep tint exactly. `shore` is that share, and the alpha's below.
+    // full the basin is, which is what a real pool does (Beer-Lambert). `shore` is that
+    // share, and the alpha's below.
     "    float shore = clamp(fragDepth / max(waterShore, 1e-4), 0.0, 1.0);",
     "    vec3 texel = mix(waterShallow.rgb, waterDeep.rgb, shore);",
     "    vec3 diffuse = lightColor.rgb * ndl * shadow;",
@@ -424,12 +476,31 @@ const WATER_FS = [
     "    }",
     // The fresnel (M20c): a thin sheet of water is nearly transparent seen from above
     // and nearly a mirror seen along it, which is the single biggest "wet" cue there is.
-    // `waterSky` is what the reflection sees until M20e has a real mirror to sample, and
-    // it dims with the clock, so night water reflects a dark sky.
     "    float ndv = max(dot(n, viewDir), 0.0);",
     "    float fres = waterFresnel + (1.0 - waterFresnel) * pow(1.0 - ndv, 5.0);",
     "    vec3 refl = reflect(-viewDir, n);",
+    // What the reflection sees (M20e), and the three tiers are three answers to it. Tier 0
+    // never samples anything: the sky alone, dimmed toward the horizon, which is what
+    // M20b-M20d shipped and what the setting falls back to. Tier 1 marches the baked ground
+    // and keeps the sky wherever the ray escapes. Tier 2 reads the scene the mirror pass
+    // rendered, masked by what that pass actually drew (its alpha), so a ray that met
+    // nothing still shows the sky rather than the clear colour.
     "    vec3 sky = waterSky * (0.55 + 0.45 * clamp(refl.y, 0.0, 1.0));",
+    "    if (waterReflect > 0.5 && waterReflect < 1.5) {",
+    "        if (refl.y > 0.01) {",
+    "            vec3 hit = groundReflect(refl);",
+    "            if (hit.r >= 0.0) sky = hit;",
+    "        }",
+    "    } else if (waterReflect >= 1.5) {",
+    // The mirror is read at the fragment's own screen position: the pass renders the world
+    // from the camera the table mirrors this one into, so the reflected view ray leaves the
+    // same pixel it entered. Both `gl_FragCoord` and a render texture's texel space start at
+    // the bottom-left, so the row needs no flip here -- which is why this is a sample and
+    // not a `drawTexture`, where raylib's top-left origin would need the usual negative
+    // source height.
+    "        vec4 mirrored = texture(texture2, gl_FragCoord.xy / waterScreen);",
+    "        sky = mix(sky, mirrored.rgb, mirrored.a);",
+    "    }",
     "    color = mix(color, sky, fres);",
     // The shore: the same share as the tint's -- a sheet a few centimetres deep is barely
     // there, so the alpha runs out with the depth and the water's edge is a fade rather
@@ -629,6 +700,13 @@ function makeLighting() {
             ripple0: rl.getShaderLocation(waterShader, "waterRipple0"),
             ripple1: rl.getShaderLocation(waterShader, "waterRipple1"),
             ripple2: rl.getShaderLocation(waterShader, "waterRipple2"),
+            // The reflection (M20e): the sampler is a material map (`WATER_MAP_INDEX`),
+            // so it is bound by `setModelTexture` rather than by a location -- but the
+            // *tier* and the bake's own frame are numbers the frame pushes.
+            mapA: rl.getShaderLocation(waterShader, "waterMapA"),
+            mapB: rl.getShaderLocation(waterShader, "waterMapB"),
+            reflect: rl.getShaderLocation(waterShader, "waterReflect"),
+            screen: rl.getShaderLocation(waterShader, "waterScreen"),
         };
         console.log("water: surface shader " + waterShader);
     }
@@ -691,6 +769,11 @@ function litLocations(shader) {
         blastPos: rl.getShaderLocation(shader, "blastPos"),
         blastColor: rl.getShaderLocation(shader, "blastColor"),
         blastEnergy: rl.getShaderLocation(shader, "blastEnergy"),
+        // Not pushed by `setLitUniformsOn` with the rest: the mirror pass is the only
+        // caller, and the uniform's own default is "off" (see the shader), so the lit
+        // programs never carry a stale clip. Looked up here because the location is per
+        // program, like every other name in this object.
+        mirrorClip: rl.getShaderLocation(shader, "mirrorClip"),
     };
 }
 
@@ -832,6 +915,20 @@ function setLitUniformsOn(program, cx, cy, cz) {
     // the batch path.
     if (shadowStrengthNow > 0.001 && program.sampler >= 0) {
         rl.setShaderValueTexture(shader, program.sampler, shadowColor);
+    }
+}
+
+// The water's mirror pass clips everything under the table (M20e): mirroring the world about
+// the waterline puts the ground that is *below* it where the sky belongs, so the pass throws
+// those fragments away. Pushed only by that pass and taken back the moment it ends -- the
+// uniform's own default is "off", so a frame that never runs the pass never carries a clip,
+// and the sentinel is an explicit flag rather than a level because the table is *negative*
+// for this field and "below zero" would mean "clip everything".
+function setMirrorClip(on, level) {
+    const x = on ? 1.0 : 0.0;
+    for (let i = 0; i < litPrograms.length; i++) {
+        const program = litPrograms[i];
+        rl.setShaderValueVector4(program.shader, program.uniforms.mirrorClip, x, level, 0, 0);
     }
 }
 

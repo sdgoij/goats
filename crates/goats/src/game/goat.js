@@ -842,6 +842,12 @@ function sceneFrame() {
     // The shadow-map pass must run before the main 3D pass, since it swaps
     // render targets and leaves the model pointing back at the lit shader.
     if (lit) renderShadowMap();
+    // ...and so must the water's mirror (M20e), for the same reason and one more: raylib's
+    // `endTextureMode` restores the *screen's* projection, so a texture pass that nested
+    // inside the 3D one would leave everything after it flat. It draws nothing unless the
+    // reflection setting asks for the mirror and there is water to reflect.
+    if (lit) renderWaterMirror(vx, vy, vz, lookX, lookY, lookZ);
+    perfMark("mirror");
     rl.beginMode3D(vx, vy, vz, lookX, lookY, lookZ, 55);
     drawStars();
     drawCelestial(cx, cy, cz);

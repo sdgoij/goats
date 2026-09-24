@@ -385,6 +385,15 @@ const TUNING = {
         // to see: at 0.25 m, below a downpour, not one vertex of the spawn field's grid
         // reached it (the measured histogram is in the ROADMAP).
         shore: 0.08,
+        // The reflection the surface samples (M20e), and the one knob here that is a quality
+        // level rather than a feel number: 0 is the sky and the ambient grade alone, which is
+        // what M20b-M20d shipped and the fallback if a mirror ever reads wrong; 1 bakes the
+        // ground into a texture the surface raymarches, which is the default because it costs
+        // no pass and no state; 2 renders the scene mirrored about the table into a texture,
+        // which reflects everything -- the goat included -- and is the second scene
+        // submission the setting exists to gate. `setting reflect <sky|map|mirror>` and the
+        // menu's combo box write this leaf, the way they write `herd.count`.
+        reflection: 1,
         // The chop (M20c): the wave height field's own numbers, a 3 cm crest every 60 cm. It
         // is never *displaced* -- the water mesh is the terrain's 2 m grid and a wave is
         // centimetres across -- so the surface is shaded by the normal taken from this field
@@ -546,6 +555,9 @@ const TUNING_CLAMP = {
     // The shore is a fade width, so a longer one is a softer edge and zero is a drawn
     // line at the water's rim.
     "water.shore": [0, 4],
+    // The reflection tier (M20e) is an index into three ways of answering the same
+    // question, so it is a closed range and nothing else: 0 sky, 1 heightmap, 2 mirror.
+    "water.reflection": [0, 2],
     // The chop and the fresnel (M20c). `scale` is the one that matters to what can be
     // seen: at the water mesh's 2 m cells a crest much finer than the grid cannot be
     // resolved by anything but the fragment shader, which is where the normal lives.

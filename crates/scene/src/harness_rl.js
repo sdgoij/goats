@@ -56,6 +56,7 @@
     let splashTitle = false;
     let splashStep = '';
     let shadowPass = false;
+    let renderTextureCount = 0;
     let skyFs = '';
     let waterFs = '';
     let goatDraw = null;
@@ -408,8 +409,14 @@
         setShaderValueVector2: (_s, location, x, y) => recordVector(location, [x, y]),
         setShaderValueVector3: (_s, location, x, y, z) => recordVector(location, [x, y, z]),
         setShaderValueVector4: (_s, location, x, y, z, w) => recordVector(location, [x, y, z, w]),
-        loadRenderTexture: () => 5, isRenderTextureValid: () => true,
-        renderTextureColor: () => 6, renderTextureDepth: () => 7,
+        // One handle per target, and a colour/depth texture derived from it: the shadow map
+        // and the water's mirror (M20e) are two live render textures, and a stub that handed
+        // both the same handles could not tell a mirror bound to the wrong one from a mirror
+        // bound to the right one. The first target keeps the handles it always had (5, and a
+        // colour of 6, which `scene_logic` reads as a literal), and the next one gets 6 and 7.
+        loadRenderTexture: () => { renderTextureCount += 1; return 4 + renderTextureCount; },
+        isRenderTextureValid: () => true,
+        renderTextureColor: (rt) => rt + 1, renderTextureDepth: (rt) => 50 + rt,
         renderTextureSize: () => ({ x: 1024, y: 1024 }),
         beginTextureMode: () => { shadowPass = true; },
         endTextureMode: () => { shadowPass = false; },

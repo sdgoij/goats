@@ -818,3 +818,253 @@ fn the_water_outlives_the_rain() {
 
     checks.finish();
 }
+
+#[test]
+fn the_reflection_is_a_setting() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // A quality level rather than a feel number: 0 is the sky the surface has always faked,
+    // 1 the ground it bakes and marches, 2 the scene it renders mirrored. The middle one is
+    // the default because it costs no pass and no state.
+    let leaf = harness
+        .eval("tuningGet('water.reflection')")
+        .expect("water.reflection");
+    checks.check(
+        "the surface reflects the ground by default",
+        leaf.as_f64() == Some(1.0),
+        &leaf,
+    );
+    let wide = harness
+        .eval("tuningSet('water.reflection', 9)")
+        .expect("a clamp");
+    checks.check(
+        "...and the tier is clamped to the three there are",
+        wide.as_f64() == Some(2.0),
+        wide,
+    );
+
+    // The frame's answer is the promise, and on this build it can keep a wish of 2: the
+    // engine has the render texture the mirror needs.
+    let full = water(&mut harness);
+    checks.check(
+        "the frame reports the tier it is using",
+        full["reflect"].as_i64() == Some(2) && full["tier"].as_i64() == Some(2),
+        (&full["reflect"], &full["tier"]),
+    );
+
+    // The console's own spelling of the tiers -- which is the route the menu's combo box
+    // takes as well, so the two cannot disagree about what "ground" means.
+    harness
+        .command("setting reflect sky")
+        .expect("setting reflect");
+    let none = water(&mut harness);
+    checks.check(
+        "...and `setting reflect` writes the leaf",
+        none["reflect"].as_i64() == Some(0) && none["tier"].as_i64() == Some(0),
+        (&none["reflect"], &none["tier"]),
+    );
+    harness
+        .command("setting reflect ground")
+        .expect("setting reflect");
+    let ground = water(&mut harness);
+    checks.check(
+        "...and it can put the reflection back on the ground",
+        ground["tier"].as_i64() == Some(1) && ground["heightTex"].as_i64().is_some_and(|t| t >= 0),
+        (&ground["tier"], &ground["heightTex"]),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_ground_is_baked_for_the_surface() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // The middle tier's whole cost is one texture, baked from the grid the terrain already
+    // has and rebuilt whenever the mesh is -- so there is no pass to count, and the bake is
+    // what a case can look at.
+    let surface = water(&mut harness);
+    checks.check(
+        "the ground is baked for the surface to march",
+        surface["tier"].as_i64() == Some(1)
+            && surface["heightTex"].as_i64().is_some_and(|t| t >= 0),
+        (&surface["tier"], &surface["heightTex"]),
+    );
+    checks.check(
+        "...and the mirror waits for the tier that asks for it",
+        surface["mirrors"].as_u64() == Some(0) && surface["mirror"].as_i64() == Some(-1),
+        (&surface["mirror"], &surface["mirrors"]),
+    );
+
+    // The bake is bound where the shader reads it: material map 2 -- the sampler raylib
+    // names `texture2`, beside the shadow map's map 1 -- and the stub records every bind
+    // with its index, which is the only place a bind is visible without a GPU.
+    let height = surface["heightTex"].as_i64().unwrap_or(-1);
+    let obs = harness.observe().expect("observe");
+    checks.check(
+        "the bake is bound to the surface's second map",
+        obs.model_texture_calls
+            .iter()
+            .any(|call| call == &vec![2, height]),
+        (&obs.model_texture_calls, height),
+    );
+
+    // What the source does with it, which is the half a stub with no GL can hold.
+    let source = obs.water_fs.clone();
+    checks.check(
+        "the surface declares the reflection's own source",
+        source.contains("uniform sampler2D texture2")
+            && source.contains("uniform vec3 waterMapA")
+            && source.contains("uniform vec3 waterMapB")
+            && source.contains("uniform float waterReflect")
+            && source.contains("uniform vec2 waterScreen"),
+        source.len(),
+    );
+    checks.check(
+        "...and marches the reflected ray against it",
+        source.contains("vec3 groundReflect(vec3 dir)")
+            && source.contains("groundAt(")
+            && source.contains("groundTintAt(")
+            && source.contains("reflect(-viewDir, n)"),
+        source.len(),
+    );
+    checks.check(
+        "...and reads the mirror at the fragment's own screen position",
+        source.contains("gl_FragCoord.xy / waterScreen"),
+        source.len(),
+    );
+
+    // ...and the frame pushes the numbers under the names the source declares. A misspelling
+    // is silent on both sides here -- the stub invents an id where a real engine returns -1
+    // -- so the pair of checks is what says the uniform is real.
+    harness.command("lighting on").expect("lighting on");
+    rain(&mut harness, 1.0);
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("one wet frame");
+    let wet = harness.observe().expect("observe");
+    checks.check(
+        "the tier and the bake's own frame reach the program",
+        wet.uniform_values
+            .get("waterReflect")
+            .is_some_and(|t| *t == 1.0)
+            && wet
+                .uniform_vectors
+                .get("waterMapA")
+                .is_some_and(|m| m.len() == 3 && m[2] > 0.0)
+            && wet
+                .uniform_vectors
+                .get("waterMapB")
+                .is_some_and(|m| m.len() == 3 && m[1] > 0.0),
+        (
+            &wet.uniform_values.get("waterReflect"),
+            &wet.uniform_vectors.get("waterMapA"),
+            &wet.uniform_vectors.get("waterMapB"),
+        ),
+    );
+    checks.check(
+        "...and so does the viewport the mirror would be read through",
+        wet.uniform_vectors
+            .get("waterScreen")
+            .is_some_and(|s| s.len() == 2 && s[0] > 0.0 && s[1] > 0.0),
+        wet.uniform_vectors.get("waterScreen"),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_mirror_pass_draws_the_world() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    harness.command("lighting on").expect("lighting on");
+
+    // The top tier is the only one that costs a second scene submission, and it is the one
+    // item in M20 that could move the frame's budget, so what a case can hold about it is
+    // that the submission happens: exactly once a frame, and only when the tier asks and
+    // there is water to reflect.
+    rain(&mut harness, 1.0);
+    harness
+        .command("setting reflect mirror")
+        .expect("setting reflect");
+    harness.reset_frame().expect("a frame to drive");
+    harness
+        .call("sceneFrame", &[])
+        .expect("one frame with the mirror");
+    let mirrored = harness.observe().expect("observe");
+    let water_mesh = water(&mut harness)["mesh"].as_i64().unwrap_or(-1);
+    let mirror = water(&mut harness);
+    let ground = harness
+        .eval("terrainMesh")
+        .expect("terrainMesh")
+        .as_i64()
+        .unwrap_or(-1);
+    let ground_rows = rows_of(&mirrored.layers, &[ground]);
+    checks.check(
+        "the mirror pass ran once, into a target of its own",
+        mirror["mirror"].as_i64().is_some_and(|rt| rt >= 0)
+            && mirror["mirrors"].as_u64() == Some(1),
+        (&mirror["mirror"], &mirror["mirrors"]),
+    );
+    checks.check(
+        "...made at half the viewport across",
+        mirror["mirrorW"].as_u64().is_some_and(|w| w > 0)
+            && mirror["mirrorH"].as_u64().is_some_and(|h| h > 0),
+        (&mirror["mirrorW"], &mirror["mirrorH"]),
+    );
+    checks.check(
+        "...and it draws the world a second time",
+        ground >= 0 && ground_rows.len() == 2,
+        (&ground_rows, ground),
+    );
+    checks.check(
+        "...for a surface that is still one draw",
+        rows_of(&mirrored.layers, &[water_mesh]).len() == 1,
+        (&mirrored.layers, water_mesh),
+    );
+
+    // A tier below the mirror spends no pass at all, and the surface is drawn anyway: the
+    // tier chooses what the reflection shows, not whether there is water.
+    harness
+        .command("setting reflect ground")
+        .expect("setting reflect");
+    harness.reset_frame().expect("a frame to drive");
+    harness
+        .call("sceneFrame", &[])
+        .expect("one frame without it");
+    let flat = harness.observe().expect("observe");
+    let after = water(&mut harness);
+    checks.check(
+        "a lower tier spends no pass",
+        after["mirrors"].as_u64() == Some(1) && after["tier"].as_i64() == Some(1),
+        (&after["mirrors"], &after["tier"]),
+    );
+    checks.check(
+        "...and draws the world once, with the surface still in it",
+        rows_of(&flat.layers, &[ground]).len() == 1
+            && rows_of(&flat.layers, &[water_mesh]).len() == 1,
+        (&rows_of(&flat.layers, &[ground]), water_mesh),
+    );
+
+    // Nothing to reflect and nothing to reflect in: a dry field runs no pass however the
+    // tier is set, which is the same rule the surface itself follows.
+    harness
+        .command("setting reflect mirror")
+        .expect("setting reflect");
+    rain(&mut harness, 0.0);
+    age(&mut harness, SETTLE);
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("one dry frame");
+    let dry = water(&mut harness);
+    checks.check(
+        "a dry field runs no mirror at all",
+        dry["on"].as_bool() == Some(false) && dry["mirrors"].as_u64() == Some(1),
+        (&dry["on"], &dry["mirrors"]),
+    );
+
+    checks.finish();
+}

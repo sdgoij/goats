@@ -1321,3 +1321,41 @@ build once measured nothing at all (19.9k before and after) and was reverted rat
 kept as a tidy-up; at a 0.6 m trigger the scan is 3x3 and only a tuft inside it improves,
 so that object was created at most once a call. And `tuftKey` is a *number*, not a string
 (both were suspected), so the cell bookkeeping Maps allocate nothing.
+
+### The water's mirror: the protocol, and the number this record does not have (M20e)
+
+M20e gives the water surface a reflection in three tiers (`TUNING.water.reflection`), and
+the top one is the only new *draw* M20 added: one more submission of the terrain, the player
+and the herd, into a half-resolution render texture, from the camera the water table mirrors
+the frame's own into. The middle tier -- the default -- adds **no draw at all**: a 49x49
+texture baked from the grid the terrain already has, rebuilt with the mesh, and 24 steps of
+raymarch per water pixel. So the A/B is one line of the tree, on the same client:
+
+```
+setting reflect ground     # tier 1, the default
+perf                       # the phase breakdown since the last print
+setting reflect mirror     # tier 2, the second submission
+perf
+```
+
+What to read is the `mirror` phase, which `perfMark` now reports beside
+`terrain`/`goat`/`bots`/`peers`, **and the frame total underneath it**. The phase is a
+timer around the pass; the pass draws the same models the main pass draws, so the honest
+number is the difference between the two frames rather than the phase alone. Three things
+have to be held constant or the comparison means nothing: the **anchor** (a step rebuild is
+the frame's own high-water mark and would swamp a pass), the **rain** (the mirror runs only
+where there is water to reflect -- a dry field skips it by design, which is a case), and the
+**resolution** (the target is half the viewport, so a different window is a different pass).
+One term belongs in the difference rather than being held out: the player and the herd are
+**posed twice** in a mirror frame -- once for the mirror, once for the main pass -- because
+the mirror draws them lit and a pose lives in the mesh. On a CPU-skinning build that is the
+deform twice as well as the draw twice, and the depth pass does not pay it (it borrows a
+frame-old pose) so no existing phase shows it either.
+
+The measurement is not here, and the gap is named rather than filled: everything in M20 was
+designed and asserted on a machine with no GPU in it, and a frame cost that only exists on a
+GPU is the one number that machine cannot produce. What *is* known without one, from the
+harness (`water.rs`): the pass runs **exactly once a frame** while the tier asks and there is
+water, the terrain is drawn **twice** in such a frame against once without it, the target is
+half the viewport, and the grass and the shadow pass are not in it. When the A/B is run, the
+two frame totals and their difference belong in this section.

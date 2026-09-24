@@ -96,6 +96,11 @@ function ctlToggle(current, arg) {
 
 const CTL_SHADOWS = { off: SHADOW_OFF, planar: SHADOW_PLANAR, map: SHADOW_MAP };
 const CTL_CLOUDS = { low: 0, medium: 1, high: 2 };
+// The reflection tier (M20e): what the water's mirror shows, in the order the tiers are
+// defined in water.js. The names are the console's and the menu's, which is why they live
+// here beside the other two lists rather than in the water.
+const CTL_REFLECT = { sky: 0, ground: 1, mirror: 2 };
+const REFLECT_NAMES = ["sky", "ground", "mirror"];
 
 function sceneCommand(line) {
     const parts = String(line).trim().split(/\s+/);
@@ -218,6 +223,7 @@ function sceneCommand(line) {
                 shadow: SETTINGS.shadow === SHADOW_MAP ? "map" : SETTINGS.shadow === SHADOW_PLANAR ? "planar" : "off",
                 sky: SETTINGS.sky,
                 cloud: CLOUD_LEVELS[cloudLevel()],
+                reflect: REFLECT_NAMES[Math.round(TUNING.water.reflection)],
                 fullscreen: SETTINGS.fullscreen,
                 herd: TUNING.herd.count
             });
@@ -239,6 +245,13 @@ function sceneCommand(line) {
                 const level = CTL_CLOUDS[parts[2]];
                 if (level === undefined) return "error setting cloud expects low|medium|high";
                 SETTINGS.cloud = level;
+            } else if (key === "reflect") {
+                // The reflection is the water's, and `TUNING.water.reflection` is where it
+                // lives (M20e), so this writes the leaf rather than a copy of it -- the
+                // same route `setting herd` takes to `herd.count`.
+                const tier = CTL_REFLECT[parts[2]];
+                if (tier === undefined) return "error setting reflect expects sky|ground|mirror";
+                tuningSet("water.reflection", tier);
             } else if (key === "herd") {
                 const v = ctlArg(parts, 2);
                 if (v === null) return "error setting herd expects a number";

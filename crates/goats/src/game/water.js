@@ -32,9 +32,9 @@
 // wire (the ROADMAP's call 4).
 //
 // The level is M20a; the surface, the chop, the wake and the drag are M20b-M20d; the shore,
-// the filling rate and the drain were retuned by eye in M20d′; and M20d″ is where the table
-// stopped being read off the window. `sceneWater()` is the seam the harness reads and a mod
-// will; the reflections are M20e.
+// the filling rate and the drain were retuned by eye in M20d′; M20d″ is where the table stopped
+// being read off the window; and M20e is the reflection -- the surface's own mirror, in three
+// tiers (below). `sceneWater()` is the seam the harness reads and a mod will.
 //
 // **The priority flood M20a shipped is gone (M20d″).** It computed `W_F`, the spill level of
 // every vertex's basin, and the level used to be read off it -- which is what made the level a
@@ -291,6 +291,215 @@ function waterBuild() {
         console.log("water: mesh " + waterMesh + " " + waterQuads + " quads of " +
             (TERRAIN_QUADS * TERRAIN_QUADS) + ", level " + netRound3(waterLevel));
     }
+    waterHeightBake();
+}
+
+// ---- the reflection (M20e) ------------------------------------------------
+//
+// The surface has been able to *fake* a reflection since M20b: the fresnel mixed in the
+// scene's own daylight grade for the sky (`waterSky`), which reads as a shiny sheet and is
+// the right answer for a level pool under an open sky. What it is not is a mirror of
+// anything in particular -- the sky cannot move in it -- which is what this slice is. Three
+// tiers, each costing what it is worth:
+//
+//   REFLECT_SKY     the sky and the ambient grade alone: M20b's look, no sample at all.
+//                   The fallback the setting degrades to.
+//   REFLECT_MAP     the ground, baked into a texture the fragment shader marches the
+//                   reflected ray against. One texture, rebuilt with the terrain, and no
+//                   pass at all: deterministic, and it reflects the ground and the sky
+//                   with nothing else in the frame's way. It does not reflect the goat.
+//   REFLECT_MIRROR  the world, rendered from the camera the table mirrors the player's
+//                   into and read back at each fragment's own screen position. Reflects
+//                   everything -- the goat, the herd, the clouds -- and is the one tier
+//                   that costs a second scene submission.
+//
+// The tier is `TUNING.water.reflection`; `waterReflectTier` is what the frame actually
+// gets, and a tier the build cannot support degrades to the one below it rather than
+// failing -- the way `applySettings` degrades a shadow mode the engine has no map for.
+const REFLECT_SKY = 0;
+const REFLECT_MAP = 1;
+const REFLECT_MIRROR = 2;
+
+// The water mesh's second material map, MATERIAL_MAP_NORMAL, which raylib binds to the
+// sampler named `texture2`. Index 1 is the shadow map (`SHADOW_MAP_INDEX`). It is a
+// material map rather than a sampler pushed by hand because the batch has four texture
+// units and this is the route that already holds one of them.
+const WATER_MAP_INDEX = 2;
+
+let waterHeightTex = -1;        // the baked ground (tier 1), rebuilt with the terrain
+let waterMapFloor = 0;          // the bake's own floor and range, in metres
+let waterMapRange = 1;
+let waterMirrorRT = -1;         // the mirrored scene (tier 2)
+let waterMirrorColor = -1;
+let waterMirrorW = 0;           // the size it was made at, so a resize remakes it
+let waterMirrorH = 0;
+let waterMirrorPasses = 0;      // how many times the pass has run (the harness's count)
+let waterBoundTex = -2;         // which texture map 2 currently points at
+
+// Bake the ground into the texture the surface's own mirror reads: rgb is the terrain's
+// own vertex colour at that grid vertex (`T_COLS`, world.js -- the same k, the same grid,
+// and already up to date because the terrain's attributes are derived before
+// `waterRebuild` runs) and the alpha is the height across the window's own floor..ceiling.
+// One channel carries the ground and three carry its colour, so a ray that meets the
+// ground is shaded in the palette the ground is drawn in rather than in a guess about it.
+//
+// The bake is the terrain's 2 m grid at one texel per vertex: a finer one would invent
+// detail the ground does not have, and the shader's march is at that resolution anyway.
+// It is rebuilt whenever the mesh is, which is whenever the ground changes.
+//
+// It is baked whatever the tier is, too: the tier can move under a running frame -- the menu
+// is a combo box and a mod may write the leaf -- and a reflection that has to wait for the
+// next terrain rebuild before it can come back is a bug the player sees. The texture is the
+// cheap half of the two tiers.
+function waterHeightBake() {
+    if (typeof rl.makeTexture !== "function") return;
+    const count = WATER_N * WATER_N;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let k = 0; k < count; k++) {
+        const h = T_H[k];
+        if (h < lo) lo = h;
+        if (h > hi) hi = h;
+    }
+    if (!isFinite(lo)) return;
+    if (!(hi > lo)) hi = lo + 1;        // flat ground still needs a range to divide by
+    const range = hi - lo;
+    let hex = "";
+    for (let k = 0; k < count; k++) {
+        const c = k * 4;
+        const a = Math.round(clamp((T_H[k] - lo) / range, 0, 1) * 255);
+        hex += HEX256[Math.round(clamp(T_COLS[c], 0, 255))] +
+            HEX256[Math.round(clamp(T_COLS[c + 1], 0, 255))] +
+            HEX256[Math.round(clamp(T_COLS[c + 2], 0, 255))] + HEX256[a];
+    }
+    const tex = rl.makeTexture(WATER_N, WATER_N, hex);
+    if (tex < 0) return;
+    // `makeTexture` deliberately comes back point-sampled (that is what a mod's chunky
+    // atlas wants); the reflection wants the ground's slope, so it asks for the filter.
+    if (typeof rl.TEXTURE_FILTER_BILINEAR === "number") {
+        rl.setTextureFilter(tex, rl.TEXTURE_FILTER_BILINEAR);
+    }
+    if (waterHeightTex >= 0 && typeof rl.unloadTexture === "function") {
+        rl.unloadTexture(waterHeightTex);
+    }
+    waterHeightTex = tex;
+    waterMapFloor = lo;
+    waterMapRange = range;
+    waterBindReflection();
+}
+
+// Whether the mirror tier could run at all: the bindings it needs, and a window to size
+// its target to.
+function waterMirrorOK() {
+    return typeof rl.loadRenderTexture === "function" &&
+        typeof rl.beginTextureMode === "function" &&
+        typeof rl.renderTextureColor === "function" &&
+        screenW > 0 && screenH > 0;
+}
+
+// Which way this frame answers "what does the surface reflect". The tuning leaf is the
+// wish and this is the promise: no texture, no bake; no render texture, no mirror.
+function waterReflectTier() {
+    const want = Math.round(TUNING.water.reflection);
+    if (want >= REFLECT_MIRROR && waterMirrorOK()) return REFLECT_MIRROR;
+    if (want >= REFLECT_MAP && waterHeightTex >= 0) return REFLECT_MAP;
+    return REFLECT_SKY;
+}
+
+// Point the water model's second map at whichever texture this tier reads -- and only when
+// it changes, because a `setModelTexture` a frame would be a native call for nothing.
+function waterBindReflection() {
+    if (waterMesh < 0 || typeof rl.setModelTexture !== "function") return;
+    const tex = waterReflectTier() === REFLECT_MIRROR ? waterMirrorColor : waterHeightTex;
+    if (tex === waterBoundTex) return;
+    waterBoundTex = tex;
+    rl.setModelTexture(waterMesh, WATER_MAP_INDEX, tex);
+}
+
+// The mirror's own render target, at half the viewport. Made lazily -- on the first frame
+// that has water in it -- and remade if the window changes size under it, which is the one
+// thing the shadow map never has to think about because its box is a fixed number of
+// metres rather than a share of the screen.
+function waterMirrorEnsure() {
+    if (!waterMirrorOK()) return false;
+    const w = Math.max(16, Math.ceil(screenW / 2));
+    const h = Math.max(16, Math.ceil(screenH / 2));
+    if (waterMirrorRT >= 0 && w === waterMirrorW && h === waterMirrorH) return true;
+    if (waterMirrorRT >= 0 && typeof rl.unloadRenderTexture === "function") {
+        rl.unloadRenderTexture(waterMirrorRT);
+    }
+    waterMirrorRT = rl.loadRenderTexture(w, h);
+    if (waterMirrorRT < 0 ||
+        (typeof rl.isRenderTextureValid === "function" && !rl.isRenderTextureValid(waterMirrorRT))) {
+        waterMirrorRT = -1;
+        waterMirrorColor = -1;
+        waterMirrorW = 0;
+        waterMirrorH = 0;
+        console.log("water: no render texture for the mirror - the reflection stays on the ground");
+        return false;
+    }
+    waterMirrorColor = rl.renderTextureColor(waterMirrorRT);
+    waterMirrorW = w;
+    waterMirrorH = h;
+    waterBoundTex = -2;                 // the texture under map 2 is a new one
+    waterBindReflection();
+    console.log("water: mirror " + waterMirrorRT + " " + w + "x" + h +
+        " color " + waterMirrorColor);
+    return true;
+}
+
+// The mirror pass (tier 2): the world as seen from the camera the table mirrors the
+// player's into, into a half-resolution texture that the surface reads back by screen
+// position. `ex/ey/ez` is the frame's own camera and `tx/ty/tz` what it looks at, exactly
+// as goat.js hands them to `beginMode3D` -- the *shaken* ones, because a camera the blast
+// has knocked must knock its reflection with it.
+//
+// It has to run **before** the frame's `beginMode3D`, which is why goat.js calls it beside
+// `renderShadowMap` rather than from `waterDraw`: raylib's `beginTextureMode` sets an
+// orthographic projection and `endTextureMode` restores the screen's, so a texture pass
+// nested inside the 3D one would leave everything drawn after it flat. (The shadow map's
+// own comment says the same thing, which is why it lives there too.)
+//
+// What it draws is the terrain, the player and the herd: no grass -- a tuft is two cubes of
+// noise in a reflection and the grass is the frame's largest phase -- and no shadow pass,
+// at half the resolution. The ground under the table is clipped by the lit program's
+// `mirrorClip`, because mirroring puts it above the plane where the sky belongs, and the
+// clear is *transparent*, which is how the shader can tell what the pass actually drew: it
+// mixes the sky in wherever the alpha says nothing was.
+//
+// One cost this pass does *not* dodge, named so the A/B does not have to find it: the herd
+// and the player are **posed twice** in a mirror frame, because they are drawn lit here and
+// lit again in the main pass, and the pose lives in the mesh (or the bone matrices) rather
+// than in the draw. The depth pass gets away with one pose because it runs *before* the
+// frame's own and the pose it inherits is a frame old; the mirror runs before the main pass
+// and would be borrowing a pose from *last* frame, which a walking goat shows. On a
+// CPU-skinning build the deform is the expensive half of that.
+function renderWaterMirror(ex, ey, ez, tx, ty, tz) {
+    if (waterReflectTier() !== REFLECT_MIRROR) return;
+    if (!waterOn || waterMesh < 0) return;      // nothing to reflect, nothing to reflect in
+    if (!waterMirrorEnsure()) return;
+    const level = waterLevel;
+    // A horizontal plane mirrors y and leaves xz alone, so the eye and what it looks at
+    // both flip through `2*level - y`. What comes out is the view a level sheet of water at
+    // `level` would show from this camera, which is what lets a fragment read it at its own
+    // screen position instead of through a projection of its own.
+    rl.beginTextureMode(waterMirrorRT);
+    rl.clearBackground(rl.color(0, 0, 0, 0));
+    rl.beginMode3D(ex, 2 * level - ey, ez, tx, 2 * level - ty, tz, 55);
+    // The lit programs still hold last frame's numbers -- this runs before the frame's own
+    // `setLitUniforms` -- so push this frame's. The *real* camera's, because what the mirror
+    // shows is the scene lit as the scene is lit; the mirrored eye is only where it is seen
+    // from.
+    setLitUniforms(ex, ey, ez);
+    setMirrorClip(true, level);
+    if (terrainMesh >= 0) drawTerrain(rl.WHITE);
+    if (haveModel) drawModelGoat(goat, rl.WHITE);
+    drawBots(rl.WHITE);
+    drawPeers(rl.WHITE);
+    setMirrorClip(false, 0);
+    rl.endMode3D();
+    rl.endTextureMode();
+    waterMirrorPasses += 1;
 }
 
 // The level, the colours and the chop, pushed as the surface is drawn. The light, the
@@ -328,6 +537,21 @@ function waterSetUniforms() {
     rl.setShaderValueVector4(shader, u.ripple0, RIPPLE[0].x, RIPPLE[0].z, RIPPLE[0].r, RIPPLE[0].s);
     rl.setShaderValueVector4(shader, u.ripple1, RIPPLE[1].x, RIPPLE[1].z, RIPPLE[1].r, RIPPLE[1].s);
     rl.setShaderValueVector4(shader, u.ripple2, RIPPLE[2].x, RIPPLE[2].z, RIPPLE[2].r, RIPPLE[2].s);
+    // The reflection (M20e): which tier this frame is, the bake's own frame in the world
+    // and in its texture, and the viewport the mirror is read through. The tier is pushed
+    // rather than told to the model once, because the setting can move under a running
+    // frame and the shader is the one place the answer has to be current.
+    //
+    // `waterMapA.z` is the bake's width in metres -- `WATER_N * WATER_CELL`, not the mesh's
+    // own `2 * WATER_HALF` -- because the texture has one texel *per vertex*, so its domain
+    // is one cell wider than the grid it was sampled from. Getting that wrong slides the
+    // whole reflection by a texel.
+    waterBindReflection();
+    rl.setShaderValue(shader, u.reflect, waterReflectTier(), rl.SHADER_UNIFORM_FLOAT);
+    rl.setShaderValueVector3(shader, u.mapA,
+        terrainAnchorX - WATER_HALF, terrainAnchorZ - WATER_HALF, WATER_N * WATER_CELL);
+    rl.setShaderValueVector3(shader, u.mapB, waterMapFloor, waterMapRange, 1 / WATER_N);
+    rl.setShaderValueVector2(shader, u.screen, screenW, screenH);
 }
 
 // The surface, drawn last in the 3D pass so it blends over the ground and over
@@ -609,5 +833,16 @@ function sceneWater() {
         ripples: waterRipplesLive(),
         drag: waterSpeedFactor(),
         drain: waterDrainFactor(),
+        // The reflection (M20e): the setting's wish and the frame's promise, the bake the
+        // middle tier reads, and the mirror the top one does. `mirrors` counts passes
+        // rather than saying where the pass is: a case reads the difference across one
+        // frame, the way it counts draws.
+        reflect: Math.round(TUNING.water.reflection),
+        tier: waterReflectTier(),
+        heightTex: waterHeightTex,
+        mirror: waterMirrorRT,
+        mirrorW: waterMirrorW,
+        mirrorH: waterMirrorH,
+        mirrors: waterMirrorPasses,
     };
 }

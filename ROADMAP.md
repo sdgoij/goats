@@ -3518,8 +3518,8 @@ this milestone is a consequence of these, so they come first.
 ## M20 — Water: pools, waves and a reflected sky
 
 **Status:** 🚧 **In progress** -- **M20a** (the field and the fill), **M20b** (the
-surface), **M20c** (the chop and the fresnel), **M20d** (the interactions) and
-**M20d″** (the table is the world's) have landed.
+surface), **M20c** (the chop and the fresnel), **M20d** (the interactions), **M20d″**
+(the table is the world's) and **M20e** (the reflection) have landed.
 M20a: `water.js`, `TUNING.water`, the two hooks (the terrain rebuild and the
 weather-effects step) and the `water`/`flood` console verbs. M20b: the surface mesh, the
 water program (a sibling of `LIT_FS`, in `lighting.js`) and the shore. M20c: the wave field
@@ -3531,11 +3531,14 @@ rather than the whole pool (see *The feel, after the first play-through*, below)
 closes the report that pass opened and could not: the table is the *world's* now, its two ends
 declared in `TUNING.water` rather than read off the window the goat is standing in, so one
 rain is one level everywhere and the same world point cannot be under water from one window
-and dry from the next (see *The table is the world's*, below).
-`crates/harness/tests/water.rs` is 47 checks over eight cases, and the rest of the suite is
+and dry from the next (see *The table is the world's*, below). **M20e** gives the surface the
+mirror it has been faking since M20b, in three tiers -- the sky alone, the ground baked into
+a texture the shader marches, and the scene rendered mirrored about the table -- with the
+middle one the default because it costs no pass (see *The reflection, as landed*, below).
+`crates/harness/tests/water.rs` is 67 checks over eleven cases, and the rest of the suite is
 still green: `scene_logic` 193, `skinning` 22, `celestial` 7, `observations` 3, `spike` 4
 and `birds` 41 in release. This section is
-the whole design, not a summary of one; the rest of the build is M20e (the reflections),
+the whole design, not a summary of one; the rest of the build is
 M20f (the wire audit, the mod surface and the guards) and M20g (swimming, buoyancy and
 drinking), which is **the next planned step** rather than a deferral. The calls to confirm
 are gathered at the end; read those first.
@@ -3550,7 +3553,7 @@ and open question 8. Everything a pool needs already exists, and water is mostly
 | Rain that rises and falls, on every peer | `rainAmount`, the eased 0..1 the weather machine produces (M3) |
 | A level every peer agrees on, with nothing sent | The streams are seeded and adopted (`sceneUseSeed`/`sceneUseStreams`), so both ends derive the same rain (M12b, M14d) |
 | A light to reflect and be lit by | The lit program, shared by every drawn thing, plus the blast light as a uniform (M4, M19f) |
-| A second offscreen pass as precedent | The shadow map, rendered into a render texture and sampled back (M4b) |
+| A second offscreen pass as precedent | The shadow map, rendered into a render texture and sampled back (M4b); an image made from a hex string (`makeTexture`, M19a) |
 | A transparent pass that sorts correctly | The sky's layered, premultiplied blending, and the blend-mode set M19a exposed |
 | A mesh built from flat arrays | `rl.makeModel`, which is what the heightfield already is (M8) |
 | Splash and foam primitives | `drawTriangle3D`, `drawLine3D`, `drawPoint3D` (M0) |
@@ -3560,7 +3563,9 @@ and open question 8. Everything a pool needs already exists, and water is mostly
 than measured; a cell is under water exactly when the ground beneath it is below the table,
 which makes pools merge wherever they meet and a crater just ground that is lower; the
 surface is one transparent mesh whose vertices carry the ground and are lifted to the table
-by their own depth; and waves, fresnel and reflections are a sibling of the lit shader.
+by their own depth; and its reflection, its chop and its fresnel are three tiers of a sibling
+of the lit shader -- the sky, a baked ground the shader marches, or the world rendered
+mirrored about the table.
 
 ### The mechanics
 
@@ -3753,7 +3758,7 @@ a light in the engine. The realism is five terms:
 | --- | --- | --- |
 | **Fresnel** | grazing angle is a mirror, steep angle is see-through -- the single biggest "wet vs. glass" cue | fragment |
 | **Waves** | two or three Gerstner/sine terms, amplitude scaled by the wind the grass already sways to and by depth (shallow water chops less), with analytic normals -- landed as a *fragment-side normal field*, because the mesh is the terrain's 2 m grid and a wave is a third of a cell (M20c) | vertex / fragment |
-| **Reflection** | a mirror of the sky, the ground and the goat, perturbed by the normal field | the tiers below |
+| **Reflection** | a mirror of the sky, the ground and the goat, perturbed by the normal field -- landed in three tiers, the middle one the default (M20e) | the tiers below |
 | **Absorption** | tint and darken the submerged ground by depth (Beer-Lambert), so a puddle reads *thin* and a pool *deep* | fragment |
 | **Glitter and the shore** | a Blinn-Phong specular lobe across the ripple normals; a shore band where depth falls to zero, and a wet-darkening at the terrain's edge | fragment |
 
@@ -3761,22 +3766,24 @@ Optional and cheap, and a large realism win: **caustics** on the submerged groun
 procedural texture, modulated by depth and time).
 
 **Reflections are a setting**, on the pattern the repo already uses (Clouds Low /
-Medium / High; shadows map / planar / off):
+Medium / High; shadows map / planar / off), and this is what landed in M20e:
 
-- **Tier 0 -- sky and ambient only.** No scene reflection. Reads as "shiny", and it
-  is the fallback that ships if nothing else works.
-- **Tier 1 -- the heightmap raymarch (recommended default).** Bake the terrain grid
-  into a **heightmap texture** and, per water pixel, march the reflected view ray
-  against it, shading the hit with the sun. Real reflections of the ground and the
-  sky, **no extra scene pass**, deterministic. It does not reflect the goat.
-- **Tier 2 -- the planar render texture.** Render the scene mirrored about the level
-  plane into a render texture and project it in the water shader. This reflects
-  *everything* -- the goat, the herd, the clouds, the grass -- and is the true "real
-  pool". It is also the expensive one, and the only item here that can move the
-  frame's budget: it is a **second scene submission**, and the frame is CPU-bound in
-  the scene, not GPU-bound (`PERF.md` section 0). Mitigate by drawing a *reduced*
-  reflection scene (terrain + goat + herd, no grass, no shadow pass, half-res
-  target). It is the first thing to measure under `PERF.md`'s protocol.
+- **Tier 0 -- sky and ambient only.** No scene reflection, no sample at all. Reads as
+  "shiny", and it is what M20b-M20d shipped and the fallback a build without the
+  reflection's own bindings degrades to.
+- **Tier 1 -- the baked-ground raymarch (the default).** The terrain grid is baked into a
+  texture -- the ground's own vertex colour in rgb and its height in the alpha -- and the
+  fragment shader marches the reflected view ray against it, shading the hit in that
+  colour and the sun. Real reflections of the ground and the sky, **no extra scene pass**,
+  deterministic, and rebuilt only when the ground is. It does not reflect the goat.
+- **Tier 2 -- the planar mirror.** The world is rendered from the camera the table mirrors
+  the player's into, and the shader reads it back at each fragment's own screen position.
+  This reflects *everything* -- the goat, the herd, the clouds -- and is the true "real
+  pool". It is also the expensive one, and the only item in M20 that can move the frame's
+  budget: it is a **second scene submission**, and the frame is CPU-bound in the scene,
+  not GPU-bound (`PERF.md` section 0). What mitigates it is what shipped: a *reduced*
+  reflection scene (terrain + goat + herd, no grass, no shadow pass, half-res target),
+  drawn only when the tier asks and there is water to reflect.
 
 **Two engine-surface risks, both learned the hard way in M5b:**
 
@@ -3784,14 +3791,19 @@ Medium / High; shadows map / planar / off):
    raylib's four units are full, and that starvation is what once darkened the whole
    ground by ~9%. Water wants a normal/detail map + a reflection source + the shadow
    map. The mitigation is the route the shadow map already takes -- draw water as a
-   **model** and deliver maps through **material maps** (`setModelTexture`), which is
-   what map 1 is doing for the shadow -- and do **refraction analytically** (recompute
-   the submerged colour from the heightmap) rather than sampling a screen copy, so the
-   budget holds.
+   **model** and deliver maps through **material maps** (`setModelTexture`) -- and it is
+   the one M20e exercised rather than argued about: a water draw binds raylib's own map 0
+   beside the shadow map on map 1 and its reflection on map 2, and the surface asks for
+   **nothing else**, because the chop is a *field* evaluated per fragment (M20c) rather
+   than a normal map sampled, and the refraction is analytical. The three terms that would
+   normally want a texture -- a normal map, a detail map and a screen copy -- are all
+   absent, and M20e added one map rather than two: the reflection is one sampler whose
+   meaning the tier changes, which is why nothing here is waiting for a unit to free up.
 2. **Depth-write control.** A transparent water pass usually wants depth writes off.
    If the `rl` surface does not expose it, either add an engine binding (with the M0
    discipline: a throwaway probe and a case in the `rl` surface test) or lean on the
-   shader.
+   shader. Still open after M20e, and still not biting: the surface draws last in the 3D
+   pass and nothing has been drawn after it that a depth write into it could spoil.
 
 ### The surface, as landed (M20b)
 
@@ -3878,9 +3890,10 @@ on a pool there is no silhouette to miss (it was 5 cm until the first play-throu
   *screen* rather than the water.
 - **The fresnel is the one that sells it**: the reflectivity runs from `fresnel` (0.02,
   seen from above, where a pool is transparent) to a mirror (seen along the surface), and
-  the body is mixed into whatever the reflection sees. Until M20e has a real mirror to
-  sample, that is the scene's own daylight grade dimmed with the sky
-  (`ambR/G/B * skyLight`, world.js), so night water reflects a dark sky.
+  the body is mixed into whatever the reflection sees. Until M20e, that was the scene's own
+  daylight grade dimmed with the sky (`ambR/G/B * skyLight`, world.js), so night water
+  reflected a dark sky; **M20e is what made `sky` in that mix mean the reflection the
+  setting asks for** rather than a stand-in for one.
 
 `crates/harness/tests/water.rs` gains `the_surface_has_waves`, which holds both halves of
 what a stub with no GL can: the **source** carries the wave field and the fresnel, and the
@@ -3888,6 +3901,101 @@ what a stub with no GL can: the **source** carries the wave field and the fresne
 names the source declares. That pair is the only place a uniform's name can be checked at
 all here, because a misspelling is silent on both sides -- the stub invents an id where a
 real engine returns `-1` and drops the write.
+
+### The reflection, as landed (M20e)
+
+The design asked for three tiers and a setting over them, and that is what shipped: the sky
+alone, the ground baked into a texture the shader marches, and the world rendered mirrored
+about the table. `TUNING.water.reflection` is the leaf -- 0, 1, 2, clamped to that -- and it
+is a *tuning* leaf rather than a `SETTINGS` entry on the `herd.count` precedent: the menu's
+combo box and `setting reflect sky|ground|mirror` both write the leaf through `tuningSet`,
+so a mod sets the same number the player does. The tuning value is the **wish** and the frame
+reports the **promise**:
+
+```
+want >= 2 and the render texture is there   -> the mirror
+the bake was made                           -> the ground map
+otherwise                                   -> the sky
+```
+
+so a build without the mirror's bindings, or a bake that failed, degrades a tier rather than
+drawing nothing -- the shape `applySettings` already uses for a shadow mode the engine has no
+map for. `sceneWater()` reports both (`reflect`, `tier`) because they can differ.
+
+**Tier 1, and why it is the default.** One texture, one texel per grid vertex, rebuilt
+whenever the mesh is:
+
+- **rgb is the terrain's own vertex colour** (`T_COLS`, world.js -- the same `k`, the same
+grid) and **the alpha is the height** across the window's own floor..ceiling. So a ray that
+meets the ground is shaded in the palette the ground is *drawn* in rather than in a guess
+about it, and one 8-bit channel carries the slope.
+- **The march is 24 steps over the window's own width.** The bake *is* the terrain's 2 m
+grid, so a four-metre step is at the resolution of the thing being marched against and a
+finer one would find the same texel twice. There is no refinement pass and no normal: the
+sun's elevation stands in for the slope, and both errors are a texel or two of a reflection
+seen through a ripple. A ray that leaves the field, or that points downward, keeps the sky.
+- **Two numbers frame it, and one of them is a trap.** `waterMapA` is the bake's origin in
+xz and its width, and the width is `WATER_N * WATER_CELL` -- **one cell wider than the mesh
+it covers**, because one texel per vertex means the texture's domain is one cell longer than
+the grid it was sampled from. `2 * WATER_HALF` slides the whole reflection by a texel.
+`waterMapB` is the floor, the range and one texel in uv, so `groundAt` can put a point of
+the world on a texel centre rather than on a corner.
+- **`makeTexture` comes back point-sampled** (deliberately: that is what a mod's chunky
+atlas wants, and M19a says so), so the bake asks for `TEXTURE_FILTER_BILINEAR` -- a
+reflection wants the ground's slope, not its texels.
+- **It is baked whatever the tier is.** A tier change can happen under a running frame --
+a combo box, a `setting`, a mod -- and a reflection that had to wait for the next terrain
+rebuild to come back would be a bug the player sees. The bake is the cheap half of the two
+tiers, and it is why a build with no render texture still has a real reflection.
+
+**Tier 2, and the one thing that constrained it.** The pass renders the world from the
+camera the table mirrors the player's into -- a horizontal plane mirrors y and leaves xz
+alone, so both the eye and what it looks at flip through `2 * level - y` -- and the shader
+reads it back at the fragment's own screen position (`gl_FragCoord.xy / waterScreen`). Both
+`gl_FragCoord` and a render texture's texel space start at the bottom-left, so the row needs
+**no flip**; the usual negative source height a raylib *draw* needs is about raylib's
+top-left 2D origin, which sampling never touches.
+
+- **It runs before the frame's `beginMode3D`, beside `renderShadowMap`.** raylib's
+`beginTextureMode` sets an orthographic projection and `endTextureMode` restores the
+*screen's*, so a texture pass nested inside the 3D one would leave everything drawn after it
+flat. That is why the shadow map lives out there too, and it is the constraint this slice
+spent the longest on.
+- **The lit program gained one uniform for it, and only one.** Everything below the
+waterline has no reflection to contribute -- mirroring puts it above the plane, where the
+sky belongs -- so `LIT_FS` discards `fragWorldPos.y < mirrorClip.y` while the pass runs. It
+is a `vec4` whose all-zero default is "off" and whose flag is explicit rather than a level,
+because **this field's table is negative** and "below zero" would clip the world. It is the
+only change the pass made to the shared program, and its default is inert.
+- **The clear is transparent, and that is the mask.** The pass draws terrain, player and
+herd -- no grass (a tuft is two cubes of noise in a reflection, and the grass is the frame's
+largest phase), no shadow pass, half the viewport, remade when the window resizes -- and
+clears to alpha 0, so the shader mixes the sky in wherever the pass drew nothing. It is the
+same channel the bake uses for its height, which is not a coincidence worth hiding: the
+sampler carries "the one number the tier needs".
+- **One cost it does not dodge, named rather than left for the A/B to find:** the player and
+the herd are **posed twice** in a mirror frame. They are drawn lit there and lit again in
+the main pass, and a pose lives in the mesh (or the bone matrices) rather than in the draw.
+The shadow pass gets away with one pose because it runs before the frame's own and borrows a
+pose a frame old; the mirror cannot, because it runs *before* the main pass and would be
+borrowing *last* frame's pose, which a walking goat shows. On a CPU-skinning build the deform
+is the expensive half of that, and it is part of what the tier costs.
+
+**What a case can hold here, and what it cannot.** The harness has no GPU, so what
+`water.rs` holds about M20e is structural: the leaf and its clamp, the console route to it,
+that the frame's tier is the one the build can keep (the tier only reports the ground map
+if the bake was made), the bind landing on **material map 2** (`texture2`, beside the
+shadow's map 1),
+the source declaring `texture2`/`waterMapA`/`waterMapB`/`waterReflect`/`waterScreen`, the
+frame pushing them under those names, and -- for the mirror -- that the pass runs **once** a
+frame, into a target of its own at half the viewport, that the terrain is drawn a **second**
+time while it runs and once when it does not, and that a dry field runs no pass however the
+tier is set. What no case can hold is how any of it *looks*, and that is the same gap M20b
+and M20c shipped with.
+
+**One stale comment this pass had to fix**, on the way past: `WATER_FS` still said its depth
+"is capped in the vertex shader at the basin's own potential", which M20d″ had removed. The
+cap is gone, and the comment says so now.
 
 ### The interactions, as landed (M20d)
 
@@ -4043,7 +4151,9 @@ The design goal is **zero new fields**, and it is reachable because water is der
   That is an estimate; M20f's audit is where it gets measured, and call 4's quantized
   `waterLevel` is the fallback if it turns out to matter. Splashes and ripples are cosmetic
   and local, like the rain drops and the explosion particles; the goat's own drag is its
-  owner's business, which is M12b's rule.
+  owner's business, which is M12b's rule -- and so is the reflection (M20e), which is a
+  *draw*: each peer's mirror is its own camera's, of the ground both peers derive, so it is
+  local by construction and cannot put anything on a datagram.
 
 So the honest claim is "nothing new on the datagram, and the M16 guard proves it" -- if
 float drift across peers ever shows, the fallback is a quantized `waterLevel` in the
@@ -4077,17 +4187,18 @@ water: {
         wind: 0.8,       // how much the gust drives the amplitude
     },
     fresnel: 0.02,       // the reflectance at normal incidence (M20c)
+    reflection: 1,       // 0 the sky, 1 the baked ground, 2 the mirrored scene (M20e)
     drag: 0.35,          // the share of its speed the goat loses at the cap (M20d)
     dragEnergy: 0.25,    // the extra energy it burns wading (M20d)
 }
 ```
 
-**M20a-M20d″ ship the above.** `low` and `high` are the two knobs M20d″ added, and
+**M20a-M20e ship the above.** `low` and `high` are the two knobs M20d″ added, and
 they are what a mod moves to put the waterline where it likes -- clamped to ±8 m, and
 `low` has to stay at or under the field's deepest ground or a dry spell leaves puddles,
 which is what the dry-spell case holds it to. The rest of the designed tree arrives with
 the slice that reads it, so a knob is never one that does nothing: `absorb`/`caustics`
-with M20d's successor work and `reflection` with M20e. The grid step is deliberately
+with M20d's successor work. The grid step is deliberately
 **not** a knob -- it is the terrain's own `TERRAIN_CELL`, structural like `CLOUD_WRAP`,
 because the arrays are sized at load. `wetDown` drags a boundary with it: it is a
 *duration*, so `0` is legal and means "the water answers the rain with no lag at all",
@@ -4095,22 +4206,26 @@ which is exactly M20b's behaviour -- the one-line way back if the drain ever rea
 And `maxDepth` no longer holds anything down: it is where the drag, the splash and the HUD
 reach full strength, not a ceiling on the level or on a reported depth.
 
-`reflection` will be the quality knob and the frame-cost lever; `enabled` and `caustics`
-are the bisects, on the pattern `explosions.enabled` and `crater.scorch` already set.
-`TUNING_CLAMP` holds each range, so a mod cannot turn a puddle into a lake that costs
-the frame.
+`reflection` is the quality knob and the frame-cost lever (M20e), and the one leaf here
+whose *range* is not a physical bound: three ways of answering one question, clamped to the
+three there are. `enabled` and `caustics` are the bisects, on the pattern
+`explosions.enabled` and `crater.scorch` already set. `TUNING_CLAMP` holds each range, so a
+mod cannot turn a puddle into a lake -- or a pool into a second scene submission -- that
+costs the frame.
 
 ### What the player sees, and the console
 
 - **The pool** in the low ground, rising through a storm and shrinking as it clears;
-  the sky and the ground moving in it; the sun sparkling across the chop; the goat's
-  own wake as it wades; and, when it steps in, a splash.
+  the sky and the ground moving in it -- the ground for real from M20e, not as a shade;
+  the sun sparkling across the chop; the goat's own wake as it wades; and, when it steps
+  in, a splash.
 - **The HUD** gains a water line beside the weather line -- whether the goat is in
   water, how deep, and the speed cost -- matching M6's slowdown readout.
 - **The console** gains `water` (the level, how much of the field it covers, where the
   deepest point is and how deep it is under the goat), `flood <h>` (set the table, for
   demos and reviews -- a *signed* height, since this field's water lives below zero, with
-  `flood off` or `flood rain` the way back), and the pool list,
+  `flood off` or `flood rain` the way back), `setting reflect sky|ground|mirror` (M20e,
+  in the `settings` report beside the cloud level), and the pool list,
   the way `craters` works today. A key toggles water off (say `J`), matching `C`, `K`,
   `L` and `B`.
 
@@ -4133,8 +4248,9 @@ test, and stubs in `null_rl.js`/`harness_rl.js`):
 | Binding | Why |
 | --- | --- |
 | ~~Addressing a **uniform array**~~ | **Settled in M20d, and no engine work was needed**: `getShaderLocation` takes a name, so the ripples are three named `vec4`s |
-| **Depth-write control** for a transparent pass | the water surface, unless the shader alone can carry it (still open, and still not biting) |
-| Nothing else, ideally | the level, the mesh, the uniforms, the shader, the wake and the splashes all run on the surface as it stands today -- and with the fill deleted (M20d″) a rebuild is one scan for the window's lowest ground |
+| ~~An **image made in the scene** and a **render texture sampled back**~~ | **Settled in M20e, and no engine work was needed either**: M19a's `makeTexture` builds the bake from a hex string, and `loadRenderTexture`/`beginTextureMode`/`renderTextureColor` plus a material map do the mirror -- the same route the shadow map took in M4b |
+| **Depth-write control** for a transparent pass | the water surface, unless the shader alone can carry it (still open, and still not biting with M20e's tiers in: nothing is drawn after the surface that a depth write into it would spoil) |
+| Nothing else, ideally | the level, the mesh, the uniforms, the shader, the reflection, the wake and the splashes all run on the surface as it stands today -- and with the fill deleted (M20d″) a rebuild is one scan for the window's lowest ground |
 
 **On native code and wasm, since it is the question this milestone invites.** The
 repo has already answered the general version, in M17: **wasm is not (yet) a speed
@@ -4187,7 +4303,7 @@ milliseconds at the chosen resolution or off to wasm.
   since the shader took the level as a uniform. The rebuild is now one `O(cells)` scan for the
   window's lowest ground.
 - **M20b -- the surface and the level. ✅ Done.** The decimated mesh, the transparent
-  surface standing at the table, the shore fade, and the lit look -- the reflections are
+  surface standing at the table, the shore fade, and the lit look -- the reflection is
   M20e and the chop is M20c. Rain raises the table and `clear` returns it, and a dry
   field draws nothing, so `clear` stays exactly neutral. See *The surface, as landed*.
 - **M20c -- the waves. ✅ Done.** The chop as a fragment-side normal field (the mesh is
@@ -4214,8 +4330,14 @@ milliseconds at the chosen resolution or off to wasm.
   `maxDepth` is the wading cap alone now. The second half of a storm buys 0.49 m where it
   used to buy 0.15, and the decimation grew from 476 quads to 1078 of 2304. See *The table is
   the world's*.
-- **M20e -- the reflections.** Tier 1 (the heightmap raymarch), then tier 2 (the planar
-  pass) behind the setting, and the A/B in `PERF.md`.
+- **M20e -- the reflection. ✅ Done.** The three tiers and the setting over them: the
+  sky alone (what M20b shipped), the ground baked into a texture the shader marches
+  (the default, because it costs one 49×49 texture a rebuild and no pass at all), and
+  the world rendered from the camera the table mirrors the player's into, read back at
+  each fragment's screen position, clipped under the waterline and drawn at half the
+  viewport with no grass and no shadow pass. Nothing new on the wire -- a mirror is a
+  draw -- and no engine work was needed. See *The reflection, as landed*, and `PERF.md`'s
+  appendix for the A/B that has not been run yet.
 - **M20f -- the audit and the guards.** The determinism and no-new-field proof (or the
   drift fallback if it fails), `TUNING.water`, the console verbs, the mod seam, and the
   budget guard.
@@ -4230,7 +4352,7 @@ One line each: the recommendation, and where the reasoning is.
 | # | Question | Recommended |
 | --- | --- | --- |
 | 1 | Swimming in v1? | **Not in M20a--M20f**: the level is not held down, so a deep pool is waded at the full drag rather than swum; M20g adds the `GoatSwim` clip and lifts the wading cap -- and M20g is the next planned step, not a maybe |
-| 2 | The reflection default | **Tier 1 (the heightmap raymarch)**, with tier 2 opt-in. It is the mirror that is the whole point (tier 2), but only behind a setting, because a second scene pass in a CPU-bound frame is the one item that can move the budget |
+| 2 | The reflection default | **Tier 1 (the baked ground)**, with tier 2 opt-in -- as landed. It is the mirror that is the whole point (tier 2), but only behind a setting, because a second scene pass in a CPU-bound frame is the one item that can move the budget |
 | 3 | The water grid | **2 m, to match the terrain**, so a crater puddles; render a decimated mesh so the grid's resolution does not cost the draw |
 | 4 | The level on the wire | **Not sent.** It is the seed's rain, derived on both ends from the declared band; a quantized `waterLevel` is the fallback *if* drift shows, and it has to justify itself (see *The wire*) |
 | 5 | Does water wet and drain the goat like rain? | **Yes, as a second gated term** -- and gated so `clear` with no water is exactly neutral, or M6's gait assertions break |
@@ -4246,18 +4368,20 @@ One line each: the recommendation, and where the reasoning is.
 | The field, the level and the mesh | `crates/goats/src/game/water.js` (the seventeenth scene part, slotted after `world.js`; the docs' part count moved to 17 with it) |
 | `terrainHeight` and the terrain rebuild `waterRebuild` hooks into | `crates/goats/src/game/world.js` (`terrainHeight`, `terrainBuildRects`, the patch rects) |
 | The rain the level follows | `crates/goats/src/game/weather.js` (`rainAmount`, and the streams) |
-| The water program and the shared uniforms | `crates/goats/src/game/lighting.js` (a sibling of `LIT_FS`, sharing `lightDir`/`lightColor`/`ambientColor`/`camPos` and the shadow map); the tier 2 reflection pass joins it in M20e |
+| The water program, the mirror pass and the shared uniforms | `crates/goats/src/game/lighting.js` (a sibling of `LIT_FS`, sharing `lightDir`/`lightColor`/`ambientColor`/`camPos` and the shadow map); M20e added `WATER_FS`'s three tiers, the `mirrorClip` uniform the pass clips with, and `setMirrorClip` |
+| The bake, the mirror pass and the tier | `crates/goats/src/game/water.js` (`waterHeightBake`, `waterReflectTier`, `renderWaterMirror`, and the call beside `renderShadowMap` in `goats/src/game/goat.js`) |
+| The reflection setting | `crates/goats/src/game/core.js` (`TUNING.water.reflection`, `TUNING_CLAMP`), `crates/goats/src/game/ctl.js` (`setting reflect`, the `settings` report) and `crates/goats/src/game/menu.js` (the combo box) |
 | The ripples, the splash and the wake | `crates/goats/src/game/water.js` (the ring and splash pools, driven from the goat and the herd's positions) |
 | The tufts under the surface | `crates/goats/src/game/weather.js` (`drawTufts`, which asks `waterSubmergedAt`) |
 | The drag, the depth and the HUD line | `crates/goats/src/game/water.js` (the depth helpers and `waterHudText`), `crates/goats/src/game/goat.js` (`groundSpeed`, `startJump`, `updateStats`, `drawHud`) and `crates/goats/src/game/weather.js` (the line it joins) |
 | Tuning | `crates/goats/src/game/core.js` (`TUNING`, `TUNING_CLAMP`) |
-| The console verbs | `crates/goats/src/game/ctl.js` (`water`, `flood`) |
+| The console verbs | `crates/goats/src/game/ctl.js` (`water`, `flood`, `setting reflect`) |
 | The pool seam a mod reads (`sceneWater()`) | `crates/goats/src/game/water.js` |
 | The scene part list, `PARTS.len()` | `crates/scene/src/lib.rs` |
 | The engine additions | `slag/crates/runtime/src/raylib.rs` (depth-write, if wanted), with the stubs in `crates/scene/src/null_rl.js` and `crates/scene/src/harness_rl.js` |
 | The water clip and the Blender contract (M20g) | `goat.blend`, `goat_animated.glb`, `tools/goat_swim.py` |
-| The tests | `crates/harness/tests/water.rs` (eight cases, 47 checks: the field, the table, the surface, the chop, the wading, the windows, the drain) |
-| The frame measurements | `PERF.md` (the fill's cost at a rebuild, the M20e tier 2 A/B) |
+| The tests | `crates/harness/tests/water.rs` (eleven cases, 67 checks: the field, the table, the surface, the chop, the wading, the windows, the drain, the reflection) |
+| The frame measurements | `PERF.md` appendix B (the M20e tier 1-vs-2 A/B, not yet run; the `perf` phase `mirror`) |
 | The mod surface's documentation | `APIv1.md` §4 (`goats.water`), if a hook beyond the seam is added |
 
 ---

@@ -34,6 +34,9 @@ const KEYMAP_ROWS = [
 
 const SHADOW_LIST = "None;Planar;Shadow map";
 const CLOUD_LIST = "Low;Medium;High";
+// What the water reflects, in tier order (the names are ctl.js's too, which is where the
+// console spells them).
+const REFLECT_LIST = "Sky only;Ground;Mirror";
 
 // A menu is showing: the world is frozen and the game ignores its input.
 function uiIsOpen() {
@@ -120,7 +123,7 @@ function drawSettings(sw, sh) {
     if (Math.round(sfx.value) !== SETTINGS.sfx) SETTINGS.sfx = Math.round(sfx.value);
     cy += 46;
 
-    rl.guiGroupBox(lx, cy, lw, 178, "Graphics");
+    rl.guiGroupBox(lx, cy, lw, 208, "Graphics");
     cy += 26;
     const light = rl.guiToggle(lx + 10, cy, lw - 20, 24, "Light", SETTINGS.light);
     if (light.value !== SETTINGS.light) {
@@ -144,6 +147,15 @@ function drawSettings(sw, sh) {
     if (clouds.value >= 0 && clouds.value !== SETTINGS.cloud) {
         SETTINGS.cloud = clouds.value;
         applySettings();
+    }
+    cy += 30;
+    // The water's reflection (M20e) is a tuning leaf rather than a SETTINGS entry, like the
+    // herd size: it is a quality knob a mod may set too, so the menu writes it where the
+    // console and a mod write it rather than keeping a second copy of the answer.
+    const reflect = rl.guiComboBox(lx + 10, cy, lw - 20, 24, REFLECT_LIST,
+        Math.round(TUNING.water.reflection));
+    if (reflect.value >= 0 && reflect.value !== Math.round(TUNING.water.reflection)) {
+        tuningSet("water.reflection", reflect.value);
     }
     cy += 30;
     const full = rl.guiToggle(lx + 10, cy, lw - 20, 24, "Fullscreen", SETTINGS.fullscreen);
