@@ -1,12 +1,12 @@
-//! The water table: the fill, the level the weather sets, and the pools it makes.
+//! The water table: the level the weather sets, and the pools it makes.
 //!
-//! M20a is the field and the fill -- no draw -- so everything a test can hold is a
+//! M20a is the field and the level -- no draw -- so everything a test can hold is a
 //! number. `sceneWater()` reports the level, how much of the grid is wet and where
 //! the deepest point is; `waterDepthAt(x, z)` reports the depth under a point. The
 //! field is a pure function of the ground, so these cases are about that ground:
-//! rain fills the hollows, a dry spell empties them exactly, the table walks
+//! rain pools in the hollows, a dry spell empties them exactly, the table walks
 //! monotonically with the rain, and a crater -- a hole a blast put in the ground --
-//! is just another basin the water fills.
+//! is just another basin the water pools in.
 //!
 //! The level is *derived* from the weather's `rainAmount`, never integrated over
 //! time, which is what lets the two cases drive it with `rainAmount` directly: there
@@ -139,7 +139,7 @@ fn window_at(harness: &mut Harness, x: f64, z: f64) -> (Vec<f64>, Vec<f64>) {
 }
 
 #[test]
-fn the_fill_makes_pools() {
+fn the_table_makes_pools() {
     let mut checks = Checks::new();
     let mut harness = Harness::start().expect("evaluate the scene");
     harness.run(FRAMES).expect("run the scene");
@@ -184,7 +184,7 @@ fn the_fill_makes_pools() {
         &damp,
     );
 
-    // A downpour fills every hollow to its spill, so there is water somewhere and a
+    // A downpour brings the table up over the hollows, so there is water somewhere and a
     // deepest point that is deeper than nothing.
     rain_settled(&mut harness, 1.0);
     let flooded = water(&mut harness);
@@ -256,8 +256,8 @@ fn a_crater_becomes_a_puddle() {
     let before = depth(&mut harness, CRATER_X, CRATER_Z);
 
     // A bang's dish is a term in `terrainHeight`, so laying one down and rebuilding
-    // the mesh is the whole of making the hole; the water follows from the fill, which
-    // the rebuild re-runs. The `flood` level survives the rebuild, so the extra depth
+    // the mesh is the whole of making the hole; the water follows from the ground, which
+    // the rebuild re-measures. The `flood` level survives the rebuild, so the extra depth
     // is the crater's and nothing else's.
     harness
         .call(

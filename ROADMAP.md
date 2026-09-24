@@ -3599,9 +3599,12 @@ cost two things. A pool stopped *deepening* at its own rim while the table over 
 climbing -- a storm raised the level and the deepest pool in the field sat at 0.443 m and did
 not move. And `F` is computed from the loaded grid, so a cell the flood lets drain out of the
 grid's edge read dry with water standing over it. Both were symptoms of the same mistake,
-which was reading the *window* at all: see *The table is the world's*, below. The fill still
-runs at a rebuild and still writes the mesh's texcoord; **nothing reads it**, and deleting it
-is the next thing to do here.
+which was reading the *window* at all: see *The table is the world's*, below. **The fill
+itself went with them (M20d″):** it ran at every rebuild and wrote its per-vertex answer into
+the mesh's texcoord, and nothing ever read either one -- the level is a uniform, the depth is
+`level - ground`, and the grass cull compares the ground with the table -- so the flood, its
+heap, its rim seeding and the texcoord are all deleted, and `T_H` is the only field the water
+reads now.
 
 The consequence that makes it cheap: the only thing the mesh carries is the **ground**, which
 is static between terrain rebuilds, and the table rides as **one uniform**. Per frame, water
@@ -3800,12 +3803,12 @@ the table's declared ceiling (`high`), measured. M20b landed at 476, asking the 
 per-vertex spill instead; that question went with the fill's answer (see *The table is the
 world's*), and `high` is the knob behind both numbers.
 
-- **The mesh carries the ground.** `positions.y` is the ground under the vertex.
-  `texcoord.x` still holds the fill's per-vertex basin depth (`max(0, W_F - terrain)`) and
-  **nothing reads it any more** -- it is the last thing keeping `waterFill` alive, and
-  deleting the two together is the first thing to do here. The index list is trimmed in
-  place, and the arrays are the same objects every build, which is what keeps a `makeModel`
-  re-upload at the cheap end of the range `world.js` measured.
+- **The mesh carries the ground.** `positions.y` is the ground under the vertex. There is no
+  texcoord: the surface's height comes from the level uniform and its depth from
+  `level - ground`, so a per-vertex channel would be written and never read -- which is what
+  the fill's own answer was, until M20d″ deleted it. The index list is trimmed in place, and
+  the arrays are the same objects every build, which is what keeps a `makeModel` re-upload at
+  the cheap end of the range `world.js` measured.
 - **The surface stands at the table, and its body is the water's own depth.** `WATER_VS`
   lifts a vertex to `level`, so the fragment's depth is `max(0, level - ground)`. The
   normal comes from the chop (M20c) and the hemisphere term from its tilt; the sun, the
@@ -4131,7 +4134,7 @@ test, and stubs in `null_rl.js`/`harness_rl.js`):
 | --- | --- |
 | ~~Addressing a **uniform array**~~ | **Settled in M20d, and no engine work was needed**: `getShaderLocation` takes a name, so the ripples are three named `vec4`s |
 | **Depth-write control** for a transparent pass | the water surface, unless the shader alone can carry it (still open, and still not biting) |
-| Nothing else, ideally | the level, the mesh, the uniforms, the shader, the wake and the splashes all run on the surface as it stands today -- and the vestigial fill will run even less once it is deleted |
+| Nothing else, ideally | the level, the mesh, the uniforms, the shader, the wake and the splashes all run on the surface as it stands today -- and with the fill deleted (M20d″) a rebuild is one scan for the window's lowest ground |
 
 **On native code and wasm, since it is the question this milestone invites.** The
 repo has already answered the general version, in M17: **wasm is not (yet) a speed
@@ -4160,10 +4163,11 @@ water splits as:
 **The number to beat.** Water per frame is a scalar and a handful of uniforms, and per
 *rebuild* it is the mesh -- a 2401-vertex pass and a trimmed index list, handed to
 `makeModel` as the same array objects every time -- so it is not a per-cell scan and not a
-kernel. The fill is the only such kernel this milestone ever had, and it is still run today
-with nothing reading it: the measurement it owes is not "how fast is the fill" but "what
-does deleting it save". If a real fill comes back, it earns its place all over again -- a
-couple of milliseconds at the chosen resolution, or off to wasm.
+kernel. The fill was the only such kernel this milestone ever had: it ran at every rebuild
+with nothing reading it, and M20d″ deleted it, so the measurement it owes is what *that*
+saved rather than how fast it was. If a real fill comes back -- the storage curve *Rain, and
+the level* leaves on the table -- it earns its place all over again, under a couple of
+milliseconds at the chosen resolution or off to wasm.
 
 ### Slices
 
@@ -4178,9 +4182,10 @@ couple of milliseconds at the chosen resolution, or off to wasm.
   is where the field drains, so it is not a basin -- a table a quarter of a metre above it
   ponds nothing at all. `flood` wants a level taken from a hollow's own rim, not from
   `low`, and `the_goat_wades` drives its pool from rain for exactly that reason.
-  **And the fill's own answer is no longer read (M20d″):** `W_F` is still computed, heap
-  and all, and still written into the mesh's texcoord, and nothing consumes it -- deleting
-  the flood, the heap and the texcoord is the first cleanup this milestone owes.
+  **And the fill's own answer is no longer read (M20d″):** it was deleted outright -- the
+  flood, the heap, the rim seeding and the mesh's texcoord -- since nothing had consumed it
+  since the shader took the level as a uniform. The rebuild is now one `O(cells)` scan for the
+  window's lowest ground.
 - **M20b -- the surface and the level. ✅ Done.** The decimated mesh, the transparent
   surface standing at the table, the shore fade, and the lit look -- the reflections are
   M20e and the chop is M20c. Rain raises the table and `clear` returns it, and a dry
@@ -4238,7 +4243,7 @@ One line each: the recommendation, and where the reasoning is.
 
 | Piece | Path |
 | --- | --- |
-| The field, the level and the mesh (and the fill, while it lasts) | `crates/goats/src/game/water.js` (the seventeenth scene part, slotted after `world.js`; the docs' part count moved to 17 with it) |
+| The field, the level and the mesh | `crates/goats/src/game/water.js` (the seventeenth scene part, slotted after `world.js`; the docs' part count moved to 17 with it) |
 | `terrainHeight` and the terrain rebuild `waterRebuild` hooks into | `crates/goats/src/game/world.js` (`terrainHeight`, `terrainBuildRects`, the patch rects) |
 | The rain the level follows | `crates/goats/src/game/weather.js` (`rainAmount`, and the streams) |
 | The water program and the shared uniforms | `crates/goats/src/game/lighting.js` (a sibling of `LIT_FS`, sharing `lightDir`/`lightColor`/`ambientColor`/`camPos` and the shadow map); the tier 2 reflection pass joins it in M20e |

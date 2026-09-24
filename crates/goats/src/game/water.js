@@ -1,16 +1,15 @@
 // ---- water (M20a) ---------------------------------------------------------
 //
 // Rain does not run downhill here. A pool's surface is *level*, so the model is
-// hydrostatic: one priority-flood pass over the terrain grid gives `W_F`, the spill
-// level of every vertex's basin, and the water then sits where
+// hydrostatic and the whole of it is
 //
-//     depth(x, z) = max(0, min(W, W_F) - terrainHeight(x, z))
+//     depth(x, z)   = max(0, W - terrainHeight(x, z))
+//     surface(x, z) = terrainHeight(x, z) + depth(x, z)
 //
-// That one expression is the whole of "water pools in the lowest parts". A cell
-// above the table is dry; a basin fills up to the table; two basins merge when the
-// table passes their shared saddle; and a basin stops rising at its spill level and
-// overflows instead of climbing. A crater (explosions.js) is just another basin, so
-// a fresh hole becomes a puddle for free.
+// That one expression is the whole of "water pools in the lowest parts". A cell is under
+// water exactly when the table stands over its ground, so pools merge wherever they meet
+// and a crater (explosions.js) is simply ground that is lower -- a fresh hole becomes a
+// puddle for free.
 //
 // The level `W` is a function of the weather's `rainAmount` and of nothing else that would
 // have to be sent: the rain is already seeded, eased and mirrored to clients (weather.js).
@@ -32,22 +31,27 @@
 // measurement, and M20f's audit is where it gets proven or where the level moves onto the
 // wire (the ROADMAP's call 4).
 //
-// The fill and the level are M20a; the surface, the chop, the wake and the drag are
-// M20b-M20d; the shore, the filling rate and the drain were retuned by eye in M20d'.
-// `sceneWater()` is the seam the harness reads and a mod will; the reflections are M20e.
+// The level is M20a; the surface, the chop, the wake and the drag are M20b-M20d; the shore,
+// the filling rate and the drain were retuned by eye in M20d′; and M20d″ is where the table
+// stopped being read off the window. `sceneWater()` is the seam the harness reads and a mod
+// will; the reflections are M20e.
+//
+// **The priority flood M20a shipped is gone (M20d″).** It computed `W_F`, the spill level of
+// every vertex's basin, and the level used to be read off it -- which is what made the level a
+// property of the loaded window rather than of the world. Its last reader was the mesh's
+// texcoord, which nothing has read since the shader took the level as a uniform, so the heap,
+// the rim seeding, the relax step and the sweep all went with it. Nothing about the level, the
+// surface, the per-vertex depth or the grass cull ever asked it anything: `T_H` is the only
+// field the water reads now, and one `O(cells)` scan of it at a rebuild is what is left.
 
-// The fill runs on the terrain's own grid, because that is where the ground it is a
-// function of lives: `W_F` is indexed exactly as `T_H` (world.js). The arrays are the
-// grid's, allocated once, like the terrain's.
+// The grid is the terrain's own (world.js), because that is where the ground it is a function
+// of lives: the arrays here are indexed exactly as `T_H`. They are allocated once, like the
+// terrain's.
 const WATER_N = T_N;                    // vertices per side
 const WATER_CELL = TERRAIN_CELL;        // world units per cell
 const WATER_HALF = T_HALF;              // half the field's width
-const W_F = new Array(WATER_N * WATER_N);       // the spill (filled) height per vertex
-const W_SEEN = new Array(WATER_N * WATER_N);    // the flood's visited flags
-const W_HEAP = new Array(WATER_N * WATER_N);    // the flood's min-heap, of vertex indices
 
-let waterHeapN = 0;
-let waterReady = false;     // the fill has run at least once
+let waterReady = false;     // the rebuild has run at least once
 let waterLevel = 0;         // `W`, in metres
 let waterWet = 0;           // the water's own wetting, 0..1 (`waterStep`)
 let waterGround = 0;        // the window's lowest ground, and only ever a *test*: nothing
@@ -79,7 +83,6 @@ const WATER_DRY_EPS = 1e-4;
 const W_VERTS = new Array(WATER_N * WATER_N * 3);
 const W_NORM = new Array(WATER_N * WATER_N * 3);
 const W_COL = new Array(WATER_N * WATER_N * 4);
-const W_TEX = new Array(WATER_N * WATER_N * 2);
 const W_IDX = new Array(TERRAIN_QUADS * TERRAIN_QUADS * 6);
 
 // ---- the wake and the splashes (M20d) -------------------------------------
@@ -109,113 +112,17 @@ let rippleLastX = NaN;              // where the goat's last ring was laid
 let rippleLastZ = NaN;
 let goatWet = false;                // the goat's feet were under the surface last frame
 
-// ---- the priority flood ---------------------------------------------------
-//
-// Barnes et al.'s fill: seed the window's rim at the rim's own height, then pop the
-// lowest filled vertex and relax its neighbours to the higher of their own ground
-// and the water that reached them. Seeding the rim at *its own height* rather than
-// at infinity gives the field an outlet, so water that reaches the edge leaves
-// instead of stacking against a wall -- which is what keeps a lake near the window's
-// edge honest as the window follows the goat.
-//
-// The heap and the relax step are small functions of their own, with the arrays
-// passed in: the engine's JIT compiles a small parameter-only body and interprets a
-// large one (PERF.md section 7.2), and the flood calls these a few thousand times.
-
-function waterHeapPush(heap, key, i) {
-    let c = waterHeapN++;
-    heap[c] = i;
-    while (c > 0) {
-        const p = (c - 1) >> 1;
-        if (key[heap[p]] <= key[heap[c]]) break;
-        const t = heap[p];
-        heap[p] = heap[c];
-        heap[c] = t;
-        c = p;
-    }
-}
-
-function waterHeapPop(heap, key) {
-    const top = heap[0];
-    const n = --waterHeapN;
-    heap[0] = heap[n];
-    let c = 0;
-    for (;;) {
-        const l = c + c + 1;
-        if (l >= n) break;
-        const r = l + 1;
-        let m = c;
-        if (key[heap[l]] < key[heap[m]]) m = l;
-        if (r < n && key[heap[r]] < key[heap[m]]) m = r;
-        if (m === c) break;
-        const t = heap[m];
-        heap[m] = heap[c];
-        heap[c] = t;
-        c = m;
-    }
-    return top;
-}
-
-// Relax one neighbour: its filled height is the higher of its own ground and the
-// water that arrived. The `seen` flag is what keeps the flood to one visit a vertex.
-function waterVisit(h, f, seen, heap, k, level) {
-    if (seen[k] === 1) return;
-    seen[k] = 1;
-    const ground = h[k];
-    const next = ground > level ? ground : level;
-    f[k] = next;
-    waterHeapPush(heap, f, k);
-}
-
-function waterFill() {
-    const n = WATER_N;
-    const last = n - 1;
-    const count = n * n;
-    const h = T_H;
-    const f = W_F;
-    const seen = W_SEEN;
-    const heap = W_HEAP;
-    waterHeapN = 0;
-    for (let k = 0; k < count; k++) {
-        f[k] = h[k];
-        seen[k] = 0;
-    }
-    // The rim, at its own height. The `seen` guard covers the corners, which the two
-    // tests would both claim.
-    for (let j = 0; j < n; j++) {
-        for (let i = 0; i < n; i++) {
-            if (i !== 0 && i !== last && j !== 0 && j !== last) continue;
-            const k = j * n + i;
-            if (seen[k] === 1) continue;
-            seen[k] = 1;
-            waterHeapPush(heap, f, k);
-        }
-    }
-    while (waterHeapN > 0) {
-        const k = waterHeapPop(heap, f);
-        const level = f[k];
-        const i = k % n;
-        const j = (k - i) / n;
-        if (i > 0) waterVisit(h, f, seen, heap, k - 1, level);
-        if (i < last) waterVisit(h, f, seen, heap, k + 1, level);
-        if (j > 0) waterVisit(h, f, seen, heap, k - n, level);
-        if (j < last) waterVisit(h, f, seen, heap, k + n, level);
-    }
-}
-
 // ---- the field, from the ground -------------------------------------------
 
 // Rebuild the field from the ground. Called wherever the terrain mesh is rebuilt
 // (world.js `terrainBuildRects`) -- a step to a new anchor, or a crater dinting the
-// grid -- because the fill is a function of the heights and a crater is a new basin.
+// grid -- because the field is a function of the heights, and it is `terrainHeight`
+// that the depth, the surface and the grass cull all read.
 function waterRebuild() {
     if (!TERRAIN_MESH_OK) {
         waterReady = false;
         return;
     }
-    // The fill is still run: the surface is decimated by it and `waterSubmergedAt` still asks
-    // it whether a vertex can hold water. Nothing about the *level* is read off it any more.
-    waterFill();
     const count = WATER_N * WATER_N;
     // The window's lowest ground, which is the one thing a rebuild still measures: it is the
     // "is anything wet" test in `waterUpdate`, and nothing in the window is lower than it. It
@@ -233,11 +140,10 @@ function waterRebuild() {
     waterBuild();
 }
 
-// The rain, as the share of the basins' spill range it can reach. Nothing below `seep`
+// The rain, as the share of the table's own band it can reach. Nothing below `seep`
 // -- the ground drinks the first of it, and a dry spell stays exactly dry -- and above
 // it a *concave* curve, so the first of a shower is most of what pools. The table then
-// walks `0..fill` of the range from the lowest ground that can hold water to the highest
-// spill, which stays monotone in the rain at every step.
+// walks `0..fill` of the band `low..high`, which stays monotone in the rain at every step.
 function wetnessFor(rain) {
     const t = TUNING.water;
     const raw = (rain - t.seep) / (1 - t.seep);
@@ -265,9 +171,10 @@ function waterStep(dt) {
 }
 
 // The level for this frame, from the wetting above (see the header). `fill` is how much
-// of the basins' spill range the heaviest rain reaches, so the deepest hollows hold the
+// of the table's own band the heaviest rain reaches, so the deepest hollows hold the
 // first water and the shallow ones only fill in a downpour: the level rises monotonically
-// from the lowest ground that can hold water to the highest spill.
+// from the band's floor to `fill` of the way to its ceiling, and a dry spell sits on the
+// floor -- under every point of the field, so nothing is wet.
 function waterUpdate() {
     if (!waterReady) return;
     // The grass field counts its own skips for the frame about to be drawn (below).
@@ -321,8 +228,7 @@ function waterForceOff() {
 // The mesh carries the *ground* in its positions, and the level is one uniform the shader
 // applies (`lighting.js`, `WATER_VS`): a vertex is lifted to the table by its own depth, so
 // the mesh is rebuilt only when the *ground* changes -- a new anchor or a crater -- and never
-// as the rain rises. The texcoord still carries the fill's per-vertex basin depth, and
-// nothing reads it any more: it is the last thing keeping `waterFill` alive.
+// as the rain rises.
 //
 // The vertices are the whole grid (any of them can be under water); the index list is cut
 // down to the quads whose ground stands under the table's ceiling, which is what decimates
@@ -336,8 +242,6 @@ function waterBuild() {
         for (let i = 0; i < n; i++) {
             const k = j * n + i;
             const ground = T_H[k];
-            let maxDepth = W_F[k] - ground;
-            if (maxDepth < 0) maxDepth = 0;
             W_VERTS[k * 3] = x0 + i * WATER_CELL;
             W_VERTS[k * 3 + 1] = ground;
             W_VERTS[k * 3 + 2] = wz;
@@ -348,18 +252,13 @@ function waterBuild() {
             W_COL[k * 4 + 1] = 255;
             W_COL[k * 4 + 2] = 255;
             W_COL[k * 4 + 3] = 255;
-            W_TEX[k * 2] = maxDepth;
-            W_TEX[k * 2 + 1] = 0;
         }
     }
     // Wound like the terrain's own grid (and raylib's `GenMeshPlane`), so the surface
     // faces up. A quad is worth drawing if any corner of it stands under the highest level
     // the weather can make -- the table's own ceiling, since nothing above it can ever be
-    // wet. Decimating by the fill's per-vertex basin instead was right while the level was
-    // the window's; with the table the world's it would punch holes, because a cell the
-    // flood lets drain out of the grid's edge can be under water and is no basin at all.
-    // `W_IDX` is trimmed in place, which keeps the array's identity while shrinking what the
-    // engine is asked to upload.
+    // wet. `W_IDX` is trimmed in place, which keeps the array's identity while shrinking
+    // what the engine is asked to upload.
     let t = 0;
     const top = TUNING.water.high;
     for (let j = 0; j < TERRAIN_QUADS; j++) {
@@ -377,7 +276,10 @@ function waterBuild() {
     waterQuads = t / 6;
     W_IDX.length = t;
     if (waterMesh >= 0) rl.unloadModel(waterMesh);
-    waterMesh = rl.makeModel(W_VERTS, W_IDX, W_NORM, W_COL, W_TEX);
+    // Four arrays, not five: the engine's texcoords are optional, and nothing here wants a
+    // UV -- the level is a uniform and the depth is `level - positions.y`, so the surface
+    // needs no per-vertex channel at all.
+    waterMesh = rl.makeModel(W_VERTS, W_IDX, W_NORM, W_COL);
     // A fresh model starts on raylib's default shader, and the water needs its own (it
     // is where the surface height comes from), plus the shadow map. Exactly what
     // `terrainUpload` re-applies for the ground.
@@ -450,11 +352,11 @@ function waterDraw() {
 // ---- reading it, and what it does to a goat (M20d) ------------------------
 
 // Whether a tuft standing at (x, z) is under the water, for the grass field to skip.
-// It is a lookup rather than a comparison with the table alone: a cell that *drains* --
-// its spill level is its own ground -- is dry even where the table is above it, which is
-// the gully between two pools, and `W_TEX` already holds that per-vertex answer as
-// `max(0, W_F - terrain)`. `waterCulled` counts what it skipped, for the HUD's sake and
-// the harness's.
+// One comparison with the table: the grid's ground under the tuft against the level, which is
+// the same test the surface and the per-vertex depth read. It was a lookup into the fill's own
+// per-vertex answer (`max(0, W_F - terrain)`) until M20d″ retired the fill, and that lookup
+// made a cell the flood lets drain read dry under standing water. `waterCulled` counts what it
+// skipped, for the HUD's sake and the harness's.
 function waterSubmergedAt(x, z) {
     if (!waterOn) return false;
     const i = Math.round((x - (terrainAnchorX - WATER_HALF)) / WATER_CELL);
