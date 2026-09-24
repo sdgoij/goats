@@ -95,8 +95,9 @@ function groundSpeed() {
     } else {
         base = walkSpeed();
     }
-    // Rain and wind slow the goat: it works harder for the same clip.
-    return base * weatherSpeed;
+    // Rain and wind slow the goat: it works harder for the same clip. So does wading
+    // (M20d), which is exactly 1 out of water, so `clear` on dry ground is untouched.
+    return base * weatherSpeed * waterSpeedFactor();
 }
 
 function startJump(move, gait) {
@@ -116,7 +117,7 @@ function startJump(move, gait) {
     } else {
         jumpSpeed = walkSpeed();
     }
-    jumpSpeed *= weatherSpeed;   // a wet goat does not jump as far
+    jumpSpeed *= weatherSpeed * waterSpeedFactor();   // a wet goat does not jump as far
     stats.energy = Math.max(0, stats.energy - TUNING.stats.jumpEnergyCost);
     playBleat(0.9);
 }
@@ -213,6 +214,7 @@ function updateStats(dt) {
     else if (mode === "walk") drain = TUNING.stats.energyDrain.walk;
     if (skyLight < 0.25) drain *= TUNING.world.nightDrainMult;   // cold nights burn energy faster
     drain *= weatherDrain;                            // ...and so does being soaked
+    drain *= waterDrainFactor();                      // ...and so does wading (M20d)
     stats.energy = Math.max(0, stats.energy - drain * dt);
     if (stats.energy <= 0) {
         exhausted = true;
@@ -551,6 +553,12 @@ function sceneFrame() {
         swayTime += dt;
         updateWeatherEffects();
     }
+    // The water's own clock, once a frame on either path (water.js): the table follows
+    // the rain down through this and up through it instantly, so a shower leaves standing
+    // water behind it. It is not in `updateWeatherEffects`, which a client can also reach
+    // from an arriving packet: that is the same frame, and one frame of a follower is all
+    // there is to give it.
+    waterStep(dt);
     perfMark("weather");
     updateClouds(dt);
     perfMark("clouds_upd");

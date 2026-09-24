@@ -12,16 +12,23 @@
 // overflows instead of climbing. A crater (explosions.js) is just another basin, so
 // a fresh hole becomes a puddle for free.
 //
-// The level `W` is a *pure function of the weather's `rainAmount`*, not an integral
-// over time, and that is deliberate: it is the whole reason water needs nothing on
-// the wire. An accumulator would integrate a rate over each peer's own frame times
-// and drift apart; `rainAmount` is already seeded, eased and mirrored to clients
-// (weather.js), so a host and a client, an offline session and the harness all put
-// the same water in the same hollows with no field to send.
+// The level `W` is a function of the weather's `rainAmount` and of nothing else that would
+// have to be sent: the rain is already seeded, eased and mirrored to clients (weather.js).
+// What the water adds of its own is *wetting* -- one scalar, 0..1 -- and it is a **follower
+// rather than an accumulator**: the table rises the instant the rain does (`waterUpdate`)
+// and falls back slowly (`waterStep`), so a shower leaves standing water behind it instead
+// of taking its puddles away with it. That distinction is the whole of why this still needs
+// no field on the wire. An accumulator of `rain * rate * dt` -- the first cut of this design
+// -- integrates each peer's own frame times and drifts apart without bound; a follower has
+// a *restoring force*, so it converges on the rain's own value and two peers can only differ
+// by how far apart their samples of the same shared signal fall -- millimetres of level, at
+// these time constants, and only while a front is moving. That is an estimate, not a
+// measurement, and M20f's audit is where it gets proven or where the level moves onto the
+// wire (the ROADMAP's call 4).
 //
-// M20a is the field and the fill only -- no draw. `sceneWater()` is the seam the
-// harness reads and a mod will; the surface mesh, the waves and the reflections are
-// M20b to M20e.
+// The fill and the level are M20a; the surface, the chop, the wake and the drag are
+// M20b-M20d; the shore, the filling rate and the drain were retuned by eye in M20d'.
+// `sceneWater()` is the seam the harness reads and a mod will; the reflections are M20e.
 
 // The fill runs on the terrain's own grid, because that is where the ground it is a
 // function of lives: `W_F` is indexed exactly as `T_H` (world.js). The arrays are the
@@ -36,9 +43,12 @@ const W_HEAP = new Array(WATER_N * WATER_N);    // the flood's min-heap, of vert
 let waterHeapN = 0;
 let waterReady = false;     // the fill has run at least once
 let waterLevel = 0;         // `W`, in metres
+let waterWet = 0;           // the water's own wetting, 0..1 (`waterStep`)
 let waterLevelMin = 0;      // the lowest ground in the field
 let waterLevelMax = 0;      // the highest spill level in the field
-let waterForce = -1;        // `flood <h>`: a level set by hand; -1 = derive from rain
+let waterPond = 0;          // the lowest ground in the field that can *hold* water
+let waterPonds = false;     // ...there is any: the window has a basin in it
+let waterForce = NaN;       // `flood <h>`: a level set by hand; a non-number = from the rain
 let waterFloor = 0;         // the table's low end, smoothed across rebuilds
 let waterOn = false;        // the table stands above the ground: there is water to draw
 let waterClock = 0;         // the waves' own seconds, and deliberately not `worldTime`
@@ -52,10 +62,18 @@ let waterLogZ = NaN;
 // teal where a basin is full. The alpha is the deep water's.
 const W_SHALLOW = [0.40, 0.58, 0.53, 0.55];
 const W_DEEP = [0.05, 0.15, 0.19, 0.85];
-// How fast the table's floor follows the window's lowest ground, per rebuild. The
-// grid follows the goat, so that minimum steps when a deeper hollow enters or leaves
-// the window; at 1.0 the whole field's water would step with it.
+// How fast the table's floor follows the window's lowest *basin* ground, per rebuild, on
+// the way down. The grid follows the goat, so that ground steps when a hollow enters or
+// leaves the window; at 1.0 the whole field's water would step with it. On the way up the
+// floor does not lag at all -- see `waterRebuild`.
 const WATER_FLOOR_EASE = 0.25;
+// The wetting's shape, and the point where a draining table is called dry. The wetting
+// is *concave* in the rain (`wetnessFor`), which is what makes a moderate shower leave a
+// pool rather than a film. The floor is exact rather than asymptotic because a follower
+// never reaches its own target, and `waterUpdate` needs a real zero to pin the level to
+// the lowest ground -- which is what keeps a dry spell *exactly* dry, M6's own rule.
+const WATER_WET_CURVE = 0.5;
+const WATER_DRY_EPS = 1e-4;
 // The grid's own arrays for the mesh, reused on every build: the engine's `makeModel`
 // re-uploads arrays it has already seen far more cheaply than freshly allocated ones
 // (world.js).
@@ -64,6 +82,33 @@ const W_NORM = new Array(WATER_N * WATER_N * 3);
 const W_COL = new Array(WATER_N * WATER_N * 4);
 const W_TEX = new Array(WATER_N * WATER_N * 2);
 const W_IDX = new Array(TERRAIN_QUADS * TERRAIN_QUADS * 6);
+
+// ---- the wake and the splashes (M20d) -------------------------------------
+//
+// Both are cosmetic and local -- nothing about them travels -- so they live beside the
+// draw rather than in the simulation, and a client gets them for the herd it mirrors.
+// The wake is a few rings the shader carries as uniforms; a splash is a handful of
+// pooled drops drawn with the M0 primitives, the way the explosion's grit is.
+const RIPPLE_MAX = 3;               // the rings `WATER_FS` carries at once
+const RIPPLE_LIFE = 1.6;            // seconds a ring lasts
+const RIPPLE_SPEED = 1.1;           // m/s the front travels
+const RIPPLE_STEP = 0.45;           // metres of travel between the goat's rings
+const RIPPLE_MIN_DEPTH = 0.04;      // metres of water before a hoof leaves anything
+const SPLASH_MAX = 24;              // drops in the pool; each is a draw
+const SPLASH_DROPS = 8;             // drops one splash throws
+const SPLASH_LIFE = 0.55;           // seconds a drop lives
+const SPLASH_GRAVITY = 14;          // m/s^2, so a drop is gone before it is a puddle
+
+const RIPPLE = [];                  // { x, z, r, s }: the front's radius and strength
+const SPLASH = [];                  // { x, y, z, vx, vy, vz, life }
+for (let rippleInit = 0; rippleInit < RIPPLE_MAX; rippleInit++) {
+    RIPPLE.push({ x: 0, z: 0, r: 0, s: 0 });
+}
+let waterCulled = 0;                // tufts the grass field skipped under the water
+let splashTop = 0;
+let rippleLastX = NaN;              // where the goat's last ring was laid
+let rippleLastZ = NaN;
+let goatWet = false;                // the goat's feet were under the surface last frame
 
 // ---- the priority flood ---------------------------------------------------
 //
@@ -171,56 +216,132 @@ function waterRebuild() {
     }
     waterFill();
     const count = WATER_N * WATER_N;
-    // The range the table walks: from the lowest *ground* -- so a dry spell is exactly
-    // dry, the lowest vertex reading depth 0 and every other cell less -- to the
-    // highest *spill*, so the heaviest rain fills every basin to its rim.
-    let lo = T_H[0];
-    let hi = W_F[0];
-    for (let k = 1; k < count; k++) {
+    // The two ends the table walks between, and the one that took a walk across the field
+    // to find. The low one is the lowest ground that can **hold** water -- `W_F > ground`,
+    // a basin rather than a cell the fill lets drain -- and not the window's lowest ground,
+    // which is very often a gully running out of the field's edge. A table anchored to the
+    // gully sits *under* every basin in the window, so the window holds no water at all, at
+    // any rain: the surface reports itself on (the table is above the gully's floor) and
+    // every cell in it is dry (`the_pools_are_there_wherever_the_goat_stands`). The high
+    // end is the highest *spill*, so the heaviest rain fills every basin to its rim.
+    let lo = Infinity;
+    let hi = -Infinity;
+    let pond = Infinity;
+    for (let k = 0; k < count; k++) {
         const g = T_H[k];
         if (g < lo) lo = g;
         const f = W_F[k];
         if (f > hi) hi = f;
+        if (f > g && g < pond) pond = g;
     }
     waterLevelMin = lo;
     waterLevelMax = hi;
-    // The table's floor is smoothed across rebuilds (see `WATER_FLOOR_EASE`): the
-    // window's lowest ground is not the world's, and it steps as the grid follows the
-    // goat. A dry spell is still *exactly* dry -- `waterUpdate` pins the level to the
+    waterPonds = pond !== Infinity;
+    // With no basin anywhere in the window there is nothing to pool in, and the anchor has
+    // no answer: the lowest ground stands in, which leaves the table (and the report) a real
+    // number. `waterPonds` is what says the field is empty, and nothing draws either way.
+    waterPond = waterPonds ? pond : lo;
+    // The anchor is smoothed across rebuilds when it *falls* (see `WATER_FLOOR_EASE`): the
+    // window follows the goat, so the basins in it change. It never lags *below* the anchor
+    // it is on, though -- a floor under the lowest ground that can hold water is the same
+    // empty field by another route, and the walk that found the first one found this one
+    // too. A dry spell is still *exactly* dry: `waterUpdate` pins the level to the
     // unsmoothed minimum when there is nothing to pool.
-    waterFloor = waterReady ? waterFloor + (lo - waterFloor) * WATER_FLOOR_EASE : lo;
+    waterFloor = waterReady
+        ? Math.max(waterPond, waterFloor + (waterPond - waterFloor) * WATER_FLOOR_EASE)
+        : waterPond;
     waterReady = true;
     waterUpdate();
     waterBuild();
 }
 
-// The level for this frame, from the weather alone (see the header). `fill` is how
-// much of the basins' spill range the heaviest rain reaches, so the deepest hollows
-// hold the first water and the shallow ones only fill in a downpour: the level rises
-// monotonically from the lowest ground to the highest spill.
+// The rain, as the share of the basins' spill range it can reach. Nothing below `seep`
+// -- the ground drinks the first of it, and a dry spell stays exactly dry -- and above
+// it a *concave* curve, so the first of a shower is most of what pools. The table then
+// walks `0..fill` of the range from the lowest ground that can hold water to the highest
+// spill, which stays monotone in the rain at every step.
+function wetnessFor(rain) {
+    const t = TUNING.water;
+    const raw = (rain - t.seep) / (1 - t.seep);
+    if (raw <= 0) return 0;
+    return Math.pow(raw > 1 ? 1 : raw, WATER_WET_CURVE);
+}
+
+// One frame of the water's *drain*, the one half of its clock that has to age: the table
+// answers the rain the instant the rain moves (see `waterUpdate`), but it lets go
+// slowly, so a pool stands for `TUNING.water.wetDown` seconds after the rain that filled
+// it has gone. `dt` is the frame's own (goat.js), from the one place a local weather step
+// and a mirroring client's applied weather both pass through -- and it is the frame's
+// rather than the hook's because a client can reach the hook twice in one frame, from an
+// arriving packet and from the frame itself. A paused UI hands in 0, so the water waits
+// with everything else.
+function waterStep(dt) {
+    const target = wetnessFor(rainAmount);
+    if (target < waterWet) {
+        const down = TUNING.water.wetDown;
+        const k = down > 1e-6 ? Math.min(1, dt / down) : 1;
+        waterWet += (target - waterWet) * k;
+        if (waterWet < WATER_DRY_EPS) waterWet = 0;
+    }
+    waterUpdate();
+}
+
+// The level for this frame, from the wetting above (see the header). `fill` is how much
+// of the basins' spill range the heaviest rain reaches, so the deepest hollows hold the
+// first water and the shallow ones only fill in a downpour: the level rises monotonically
+// from the lowest ground that can hold water to the highest spill.
 function waterUpdate() {
     if (!waterReady) return;
+    // The grass field counts its own skips for the frame about to be drawn (below).
+    waterCulled = 0;
+    // The rise is immediate, so it lives here rather than in the frame's step: there is
+    // no lag in it to age, every caller can be trusted with it, and the water answers the
+    // rain the moment the rain is set -- which is also the half of the water's clock that
+    // cannot differ between two peers, since it carries no memory at all.
+    const target = wetnessFor(rainAmount);
+    if (target > waterWet) waterWet = target;
     const t = TUNING.water;
     if (t.enabled === 0) {
         waterLevel = waterLevelMin;
-    } else if (waterForce >= 0) {
+    } else if (isFinite(waterForce)) {
         waterLevel = waterForce;
     } else {
-        let wetted = (rainAmount - t.seep) / (1 - t.seep);
-        if (wetted < 0) wetted = 0;
-        if (wetted > 1) wetted = 1;
-        waterLevel = wetted <= 0
-            ? waterLevelMin
-            : waterFloor + wetted * t.fill * (waterLevelMax - waterFloor);
+        if (waterWet <= 0) {
+            waterLevel = waterLevelMin;
+        } else {
+            // The table's own promise, and the second thing the walk case holds: whatever the
+            // window's relief does, the water never stands more than `maxDepth` above the
+            // ground it sits on, so a pool is wading depth. It is the *clamp* that keeps it
+            // rather than the arithmetic -- the floor lags a falling anchor on purpose (see
+            // `waterRebuild`), and an unclamped level then climbs to `fill` of a range that
+            // has grown underneath it: 1.13 m, measured along the walk case's own line.
+            const level = waterFloor + waterWet * t.fill * (waterLevelMax - waterFloor);
+            const cap = waterPond + t.maxDepth;
+            waterLevel = level < cap ? level : cap;
+        }
     }
-    waterOn = waterLevel > waterLevelMin + 1e-6;
+    // There is water to draw when the window has ground that can *hold* it and the table
+    // stands above the lowest of that ground -- which is the same statement as "the deepest
+    // pool has a depth". Testing the level against the window's lowest *ground* instead was
+    // what let a window of gullies report a live surface with nothing under it.
+    waterOn = waterPonds && waterLevel > waterPond + 1e-6;
+    // No water is also no wake: the goat cannot be standing in what is not there, and the
+    // step that would notice is only reached when there is a surface to draw (M20d).
+    if (!waterOn) goatWet = false;
 }
 
-// The `flood <h>` debug override, for a demo or a screenshot review. Anything below
-// zero hands the level back to the weather, the way `C` hands the weather back to the
-// seeded machine.
+// The `flood <h>` debug override, for a demo or a screenshot review, and the bisect for
+// the whole system. A *level* is any finite number: this field's water lives below zero --
+// the ground is a metre or two of relief either side of it -- so a sign cannot double as
+// the off switch. `waterForceOff` is the way back, the way `C` hands the weather back to
+// the seeded machine.
 function waterSetForce(level) {
-    waterForce = level < 0 ? -1 : level;
+    waterForce = isFinite(level) ? level : NaN;
+    waterUpdate();
+}
+
+function waterForceOff() {
+    waterForce = NaN;
     waterUpdate();
 }
 
@@ -323,6 +444,11 @@ function waterSetUniforms() {
     // daylight grade, dimmed with the sky, so night water reflects a dark sky and the
     // pool's colour matches the hour (~-ish, `ambR/G/B` and `skyLight`, world.js).
     rl.setShaderValueVector3(shader, u.sky, ambR * skyLight, ambG * skyLight, ambB * skyLight);
+    // The wake: every slot pushed, a spent one as nothing, so a ring cannot linger in the
+    // shader after its strength reached zero (M20d).
+    rl.setShaderValueVector4(shader, u.ripple0, RIPPLE[0].x, RIPPLE[0].z, RIPPLE[0].r, RIPPLE[0].s);
+    rl.setShaderValueVector4(shader, u.ripple1, RIPPLE[1].x, RIPPLE[1].z, RIPPLE[1].r, RIPPLE[1].s);
+    rl.setShaderValueVector4(shader, u.ripple2, RIPPLE[2].x, RIPPLE[2].z, RIPPLE[2].r, RIPPLE[2].s);
 }
 
 // The surface, drawn last in the 3D pass so it blends over the ground and over
@@ -330,17 +456,190 @@ function waterSetUniforms() {
 // blend state it found, and this is the scene's only transparent model.
 function waterDraw() {
     if (!waterOn || waterMesh < 0 || waterShader < 0) return;
+    const dt = sceneDt();
     // The wave clock advances here, once per frame that draws water: `worldTime` wraps at
     // midnight, and a phase that jumped with it would be a visible pop once a game-day.
-    waterClock += sceneDt();
+    waterClock += dt;
+    // The wake and the splashes, before the surface they belong to (M20d).
+    waterActorStep(dt);
     waterSetUniforms();
     const blend = typeof rl.beginBlendMode === "function";
     if (blend) rl.beginBlendMode(rl.BLEND_ALPHA);
     rl.drawModelEx(waterMesh, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, rl.WHITE);
     if (blend) rl.endBlendMode();
+    waterSplashDraw();
 }
 
-// ---- reading it -----------------------------------------------------------
+// ---- reading it, and what it does to a goat (M20d) ------------------------
+
+// Whether a tuft standing at (x, z) is under the water, for the grass field to skip.
+// It is a lookup rather than a comparison with the table alone: a cell that *drains* --
+// its spill level is its own ground -- is dry even where the table is above it, which is
+// the gully between two pools, and `W_TEX` already holds that per-vertex answer as
+// `max(0, W_F - terrain)`. `waterCulled` counts what it skipped, for the HUD's sake and
+// the harness's.
+function waterSubmergedAt(x, z) {
+    if (!waterOn) return false;
+    const i = Math.round((x - (terrainAnchorX - WATER_HALF)) / WATER_CELL);
+    const j = Math.round((z - (terrainAnchorZ - WATER_HALF)) / WATER_CELL);
+    if (i < 0 || j < 0 || i >= WATER_N || j >= WATER_N) return false;
+    const k = j * WATER_N + i;
+    if (W_TEX[k * 2] <= 0) return false;
+    if (T_H[k] >= waterLevel) return false;
+    waterCulled += 1;
+    return true;
+}
+
+// How much of the water's effect applies where the goat is standing: 0 dry, 1 at the
+// wading cap. Both factors below are exactly 1 when it is 0, which is what keeps `clear`
+// neutral and the harness's gait speeds exact -- M6's own rule, and the reason the drag is
+// gated on the depth rather than on the weather.
+function waterDragFraction() {
+    const depth = waterDepthAt(goat.px, goat.pz);
+    if (depth <= 0) return 0;
+    const cap = TUNING.water.maxDepth;
+    if (cap <= 0) return 1;
+    return depth / cap > 1 ? 1 : depth / cap;
+}
+
+function waterSpeedFactor() { return 1 - TUNING.water.drag * waterDragFraction(); }
+
+function waterDrainFactor() { return 1 + TUNING.water.dragEnergy * waterDragFraction(); }
+
+// The HUD's water read-out, for the weather line it belongs beside: whether the goat is
+// standing in water, how deep, and what it costs it. Empty when it is dry, so a `clear`
+// frame's weather line is exactly the line it has always been -- and empty under a
+// centimetre, because the drain leaves a film that thin behind for minutes after the rain
+// has gone, and a pool nobody can see should not have a read-out.
+const WATER_HUD_MIN = 0.01;
+function waterHudText() {
+    const depth = waterDepthAt(goat.px, goat.pz);
+    if (depth < WATER_HUD_MIN) return "";
+    return "water " + depth.toFixed(2) + " m   slowed " +
+        Math.round(TUNING.water.drag * waterDragFraction() * 100) + "%";
+}
+
+// One live ring. The weakest slot is the oldest, because a ring's strength decays with its
+// age -- so there is no index to keep.
+function waterRippleAdd(x, z, strength) {
+    let at = 0;
+    for (let i = 1; i < RIPPLE_MAX; i++) if (RIPPLE[i].s < RIPPLE[at].s) at = i;
+    const slot = RIPPLE[at];
+    slot.x = x;
+    slot.z = z;
+    slot.r = 0;
+    slot.s = strength;
+}
+
+function waterRipplesLive() {
+    let n = 0;
+    for (let i = 0; i < RIPPLE_MAX; i++) if (RIPPLE[i].s > 0) n += 1;
+    return n;
+}
+
+function waterSplashLive() {
+    let n = 0;
+    for (let i = 0; i < SPLASH_MAX; i++) {
+        const d = SPLASH[i];
+        if (d !== undefined && d.life > 0) n += 1;
+    }
+    return n;
+}
+
+// A splash: a few drops leaving the surface in a shallow cone, from the same hash the rest
+// of the scene uses for variation, so no two are the same and nothing is stored per drop
+// beyond the slot it is in.
+function waterSplash(x, z, strength) {
+    const surface = terrainHeight(x, z) + waterDepthAt(x, z);
+    const count = Math.round(SPLASH_DROPS * strength);
+    for (let i = 0; i < count; i++) {
+        if (splashTop >= SPLASH_MAX) splashTop = 0;
+        let slot = SPLASH[splashTop];
+        if (slot === undefined) {
+            slot = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0 };
+            SPLASH[splashTop] = slot;
+        }
+        splashTop += 1;
+        const a = hash(x * 7.1 + z * 3.7 + i * 1.9) * 6.283185307179586;
+        const out = 0.5 + hash(x * 4.7 + z * 8.3 + i * 3.1) * 0.9;
+        const up = 1.4 + hash(x * 2.3 + z * 5.9 + i * 2.7) * 1.6;
+        slot.x = x + Math.cos(a) * 0.18;
+        slot.y = surface + 0.02;
+        slot.z = z + Math.sin(a) * 0.18;
+        slot.vx = Math.cos(a) * out;
+        slot.vz = Math.sin(a) * out;
+        slot.vy = up;
+        slot.life = SPLASH_LIFE;
+    }
+}
+
+function waterSplashStep(dt) {
+    for (let i = 0; i < SPLASH_MAX; i++) {
+        const d = SPLASH[i];
+        if (d === undefined || d.life <= 0) continue;
+        d.life -= dt;
+        d.x += d.vx * dt;
+        d.z += d.vz * dt;
+        d.vy -= SPLASH_GRAVITY * dt;
+        d.y += d.vy * dt;
+    }
+}
+
+function waterSplashDraw() {
+    for (let i = 0; i < SPLASH_MAX; i++) {
+        const d = SPLASH[i];
+        if (d === undefined || d.life <= 0) continue;
+        const fade = d.life / SPLASH_LIFE;
+        rl.drawSphereEx(d.x, d.y, d.z, 0.035, 4, 4, rl.color(232, 244, 248, Math.round(200 * fade)));
+    }
+}
+
+// One frame of the wake and the splashes. The goat's rings are laid by distance travelled,
+// so they are evenly spaced however fast it walks, and an actor *entering* the water throws
+// a splash and a stronger ring: that edge -- a step in, a landing -- is what matters, not
+// everything that is merely standing in a pool.
+//
+// The herd is checked too, on every frame whatever the frame is doing: a bot is mirrored on
+// a client, and a splash is exactly the kind of thing that should not need a simulation to
+// see. The herd pays no drag for it (`waterSpeedFactor` is the player's), which keeps the
+// bot checks and the netplay determinism where they were.
+function waterActorStep(dt) {
+    for (let i = 0; i < RIPPLE_MAX; i++) {
+        const r = RIPPLE[i];
+        if (r.s <= 0) continue;
+        r.r += RIPPLE_SPEED * dt;
+        r.s -= dt / RIPPLE_LIFE;
+        if (r.s < 0) r.s = 0;
+    }
+    waterSplashStep(dt);
+    const depth = waterDepthAt(goat.px, goat.pz);
+    const wet = depth > RIPPLE_MIN_DEPTH && goat.py < depth;
+    if (wet) {
+        if (!goatWet) {
+            waterRippleAdd(goat.px, goat.pz, 1.0);
+            waterSplash(goat.px, goat.pz, 0.7);
+        } else {
+            const dx = goat.px - rippleLastX;
+            const dz = goat.pz - rippleLastZ;
+            if (!(dx * dx + dz * dz < RIPPLE_STEP * RIPPLE_STEP)) {
+                waterRippleAdd(goat.px, goat.pz, 0.6);
+            }
+        }
+        rippleLastX = goat.px;
+        rippleLastZ = goat.pz;
+    }
+    goatWet = wet;
+    for (let i = 0; i < BOTS.length; i++) {
+        const b = BOTS[i];
+        const bd = waterDepthAt(b.x, b.z);
+        const bw = bd > RIPPLE_MIN_DEPTH && b.py < bd;
+        if (bw && b.wet !== true) {
+            waterRippleAdd(b.x, b.z, 0.9);
+            waterSplash(b.x, b.z, 0.6);
+        }
+        b.wet = bw;
+    }
+}
 
 // One vertex's depth, from the table and the spill level. Capped at
 // `TUNING.water.maxDepth`: v1 keeps pools wading depth (M20g lifts it for swimming).
@@ -408,8 +707,9 @@ function sceneWater() {
     return {
         level: netRound3(isFinite(level) ? level : 0),
         enabled: TUNING.water.enabled !== 0,
-        forced: waterForce >= 0,
+        forced: isFinite(waterForce),
         on: waterOn,
+        wetting: netRound3(waterWet),
         wet: wet,
         cells: count,
         volume: netRound3(volume),
@@ -418,11 +718,18 @@ function sceneWater() {
         deepZ: netRound3(z0 + dj * WATER_CELL),
         goatDepth: netRound3(waterDepthAt(goat.px, goat.pz)),
         low: netRound3(waterLevelMin),
+        pond: netRound3(waterPond),
+        ponds: waterPonds,
         high: netRound3(waterLevelMax),
         floor: netRound3(waterFloor),
-        rise: netRound3(waterLevel - waterLevelMin),
+        rise: netRound3(waterLevel - waterPond),
         mesh: waterMesh,
         quads: waterQuads,
         shader: waterShader,
+        culled: waterCulled,
+        splashes: waterSplashLive(),
+        ripples: waterRipplesLive(),
+        drag: waterSpeedFactor(),
+        drain: waterDrainFactor(),
     };
 }

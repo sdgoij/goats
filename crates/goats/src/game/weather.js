@@ -270,9 +270,13 @@ function updateWeatherEffects() {
         Math.sqrt(windX * windX + windZ * windZ).toFixed(1) + " m/s";
     if (rainAmount > 0.02) weatherText = weatherText + "   rain " + Math.round(rainAmount * 100) + "%";
     if (weatherSpeed < 0.98) weatherText = weatherText + "   slowed " + Math.round((1 - weatherSpeed) * 100) + "%";
-    // The water table follows the rain, and this is the one place both a local
-    // weather step and a mirroring client's applied weather pass through (water.js).
+    // The water table follows the rain, and this is the one place both a local weather
+    // step and a mirroring client's applied weather pass through (water.js).
     waterUpdate();
+    // ...and the water the goat is standing in joins the same line (M20d). It is empty
+    // when it is dry, so a `clear` frame reads exactly as it always has.
+    const water = waterHudText();
+    if (water !== "") weatherText = weatherText + "   " + water;
 }
 
 // C jumps to the next state, for previewing the cycle.
@@ -462,6 +466,9 @@ function drawTufts(g, tuftCol, cull2, detail2) {
         cx0, cz0, cx1, cz1, g.px, g.pz, cull2, detail2, swayTime, windSway);
     for (let i = 0; i < n; i++) {
         const t = TUFT_POOL[i];
+        // A tuft standing under the water is skipped (M20d): the surface is drawn over
+        // the ground, so a tuft inside a pool would stand out of it.
+        if (waterSubmergedAt(t.ax, t.az)) continue;
         perfCubes += t.d ? 2 : 1;
         rl.drawCube(t.ax, t.ay, t.az, 0.14, 0.16, 0.14, tuftCol);
         if (t.d) rl.drawCube(t.bx, t.by, t.bz, 0.11, 0.16, 0.11, tuftCol);

@@ -357,29 +357,40 @@ const TUNING = {
         snap: 24,                  // rebuild when the goat has moved this far
         uv: 0.06,                  // texture tiles per world unit
     },
-    // Water (M20a). `fill` is how much of the basins' spill range the heaviest rain
-    // reaches and `seep` is the rain below which the ground stays dry -- the level is
-    // the weather's own, not an integral over time (water.js), so these two are the
-    // whole of "how wet does it get". The wave, fresnel, absorption, shore and
-    // reflection knobs arrive with the slices that read them (M20c-M20e); `maxDepth`
-    // is the wading cap M20g lifts for swimming.
+    // Water (M20a). `seep` is the rain below which the ground stays dry, `fill` how much
+    // of the basins' spill range the heaviest rain reaches, and `wetDown` the seconds the
+    // table takes to drain once the rain that filled it has gone -- the water *follows*
+    // the weather rather than integrating it (water.js), so those three are the whole of
+    // "how wet does it get, and for how long". The wave, fresnel, absorption, shore and
+    // reflection knobs arrive with the slices that read them (M20c-M20e); `maxDepth` is
+    // the wading cap M20g lifts for swimming.
     water: {
         enabled: 1,                // 0 disables the system (the frame-cost bisect)
-        fill: 0.15,                // share of the basins' spill range at rain 1
-        seep: 0.15,                // rain below this leaves the ground dry
+        fill: 0.17,                // share of the basins' spill range at rain 1
+        seep: 0.05,                // rain below this leaves the ground dry
+        wetDown: 600,              // seconds the table takes to drain (water.js)
         maxDepth: 0.6,             // metres; v1 keeps pools wading depth (M20g lifts it)
-        shore: 0.25,               // metres of depth the surface fades out over
-        // The chop (M20c): the wave height field's own numbers, a 5 cm crest every 60 cm.
-        // It is never *displaced* -- the water mesh is the terrain's 2 m grid and a wave
-        // is centimetres across -- so the surface is shaded by the normal taken from
-        // this field per fragment (`WATER_FS`, lighting.js).
+        // The shore is the band at the water's edge, in metres of depth: the surface fades
+        // in over it and the chop ramps up across it. It has to stay *small against the
+        // pools this model makes*, or the whole pool is the fade and there is nothing left
+        // to see: at 0.25 m, below a downpour, not one vertex of the spawn field's grid
+        // reached it (the measured histogram is in the ROADMAP).
+        shore: 0.08,
+        // The chop (M20c): the wave height field's own numbers, a 3 cm crest every 60 cm. It
+        // is never *displaced* -- the water mesh is the terrain's 2 m grid and a wave is
+        // centimetres across -- so the surface is shaded by the normal taken from this field
+        // per fragment (`WATER_FS`, lighting.js), and faded out where a pixel spans a crest
+        // rather than a ripple. `height` is the strength knob; it was 5 cm until the first
+        // play-through called the ripple too strong (M20d′).
         wave: {
-            height: 0.05,          // metres, crest to trough
+            height: 0.03,          // metres, crest to trough
             scale: 0.6,            // metres between crests
             speed: 1.2,            // the phase speed, times the gust
             wind: 0.8,             // how much the gust drives the amplitude (0 = not at all)
         },
-        fresnel: 0.02,             // the reflectance at normal incidence
+        fresnel: 0.02,             // the reflectance at normal incidence (M20c)
+        drag: 0.35,                // the share of its speed the goat loses at the cap (M20d)
+        dragEnergy: 0.25,          // the extra energy it burns wading (M20d)
     },
     world: {
         dayLength: 240,            // real seconds for one 24 h day
@@ -513,6 +524,10 @@ const TUNING_CLAMP = {
     // cap (up to a few metres, which M20g's swimming is what would use).
     "water.fill": [0, 1],
     "water.seep": [0, 0.99],
+    // The drain: zero is the M20b behaviour exactly -- the water answers the rain with no
+    // lag at all, which is what a case pins -- and the ceiling is a quarter of an hour,
+    // long enough that nothing is left to look at anyway.
+    "water.wetDown": [0, 900],
     "water.maxDepth": [0, 8],
     // The shore is a fade width, so a longer one is a softer edge and zero is a drawn
     // line at the water's rim.
@@ -525,6 +540,10 @@ const TUNING_CLAMP = {
     "water.wave.speed": [0, 20],
     "water.wave.wind": [0, 1],
     "water.fresnel": [0, 1],
+    // The drag (M20d) is a share of the goat's speed and a share of its energy, and
+    // neither may reach a total stop or a total drain at the wading cap.
+    "water.drag": [0, 1],
+    "water.dragEnergy": [0, 2],
 };
 
 // Leaves that must stay whole numbers (counts and pixel sizes). Integer-ness is
@@ -743,4 +762,3 @@ function toWorld(p, g) {
 function segEnd(from, ang, len) {
     return { x: from.x + Math.sin(ang) * len, y: from.y - Math.cos(ang) * len, z: from.z };
 }
-

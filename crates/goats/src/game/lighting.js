@@ -281,18 +281,12 @@ const WATER_VS = [
     "uniform float waterLevel;",
     "out vec3 fragWorldPos;",
     "out float fragDepth;",
-    "out float fragWet;",
     "void main() {",
     "    float ground = vertexPosition.y;",
     "    float maxDepth = vertexTexCoord.x;",
     "    float depth = waterLevel - ground;",
     "    if (depth > maxDepth) depth = maxDepth;",
     "    if (depth < 0.0) depth = 0.0;",
-    // How full this vertex's basin is, 0 at the rim and 1 where the water reaches the
-    // ground's own brim -- computed here rather than in the fragment, because at the
-    // rim both the depth and the potential are nothing and the division has to be
-    // guarded where the inputs are known.
-    "    fragWet = maxDepth > 1e-4 ? clamp(depth / maxDepth, 0.0, 1.0) : 0.0;",
     "    fragDepth = depth;",
     // The surface is the ground plus the water standing on it: a level pool, because
     // `depth` is the same everywhere the ground is below the table.
@@ -306,7 +300,6 @@ const WATER_FS = [
     "#version 330",
     "in vec3 fragWorldPos;",
     "in float fragDepth;",
-    "in float fragWet;",
     "uniform vec3 lightDir;",
     "uniform vec4 lightColor;",
     "uniform vec4 ambientColor;",
@@ -329,8 +322,25 @@ const WATER_FS = [
     "uniform vec3 waterWind;",     // the wind's direction (unit) and the gust's share
     "uniform float waterFresnel;",
     "uniform vec3 waterSky;",      // what a reflection sees, until M20e mirrors the world
+    // The wake and the splashes (M20d). Three sources at once, named rather than an
+    // array on purpose: `getShaderLocation` takes a name, and a fixed handful of
+    // uniforms is a question the engine surface can already answer.
+    "uniform vec4 waterRipple0;",  // (x, z, the front's radius in metres, strength)
+    "uniform vec4 waterRipple1;",
+    "uniform vec4 waterRipple2;",
     "out vec4 finalColor;",
     "float unpackDepth(vec3 c) { return dot(c, vec3(1.0, 1.0/255.0, 1.0/65025.0)); }",
+    // One ripple's gradient: an expanding front with a damped wave train behind it, which
+    // is what a hoof in water leaves. It is summed into the same gradient the chop uses,
+    // so a ring tips the reflection and spreads the glitter exactly as a wave does -- and
+    // its `strength` is already decayed by the emitter, which keeps the shader stateless
+    // about time.
+    "vec2 rippleGrad(vec2 p, vec4 r, float w) {",
+    "    if (r.w <= 0.001) return vec2(0.0);",
+    "    vec2 d = p - r.xy;",
+    "    float dist = max(length(d), 1e-3);",
+    "    return (d / dist) * (cos((dist - r.z) * w) * w * exp(-dist * 1.2) * r.w);",
+    "}",
     // The wave height field, differentiated. It is not *displaced*: the water mesh is the
     // terrain's own 2 m grid and a wave is centimetres across, which no quad that size
     // can carry, so the surface is shaded by the normal the same height field would have
@@ -346,6 +356,20 @@ const WATER_FS = [
     "    float p1 = dot(d1, p) * k + t;",
     "    float p2 = dot(d2, p) * k * 1.7 + t * 1.3;",
     "    vec2 grad = d1 * (cos(p1) * k) + d2 * (cos(p2) * k * 1.7 * 0.6);",
+    // The rings ride the same amplitude, so one in thin water is as subtle as the chop
+    // around it. Three crests per `wave.scale`, which is what a splash looks like.
+    "    float rw = 6.2831853 / max(waterWave.y * 3.0, 0.05);",
+    "    grad += rippleGrad(p, waterRipple0, rw) + rippleGrad(p, waterRipple1, rw)",
+    "        + rippleGrad(p, waterRipple2, rw);",
+    // ...and the whole field is faded out where one pixel spans a wave. Every pool past a few
+    // metres is seen at a grazing angle, where a pixel covers many crests; a normal field
+    // sampled that far below its own frequency does not read as chop, it reads as stripes and
+    // glitter *tearing* across the water. `fwidth` is exactly the phase one pixel covers, so
+    // the fade lands where the sampling does and the distance settles back into the flat
+    // mirror the chop averages to. (Nyquist is a phase step of pi; the fade starts well under
+    // it because the specular is a point sample of a tight lobe.)
+    "    float phase = max(fwidth(p1), fwidth(p2));",
+    "    grad *= 1.0 - smoothstep(0.5, 1.6, phase);",
     "    return normalize(vec3(-grad.x * amp, 1.0, -grad.y * amp));",
     "}",
     "void main() {",
@@ -374,9 +398,13 @@ const WATER_FS = [
     "            shadow = 1.0 - (sum/9.0)*shadowStrength;",
     "        }",
     "    }",
-    // The deep tint where the basin is full and the shallow one at the rim, so a
-    // puddle reads thin and a pool reads deep.
-    "    vec3 texel = mix(waterShallow.rgb, waterDeep.rgb, fragWet);",
+    // The absorption: the tint runs from the shallow one to the deep one with the water's
+    // own *depth*, so a puddle reads thin and a pool reads deep -- the depth, and not how
+    // full the basin is, which is what a real pool does (Beer-Lambert). The depth is
+    // capped in the vertex shader at the basin's own potential, so a basin filled to its
+    // rim reaches the deep tint exactly. `shore` is that share, and the alpha's below.
+    "    float shore = clamp(fragDepth / max(waterShore, 1e-4), 0.0, 1.0);",
+    "    vec3 texel = mix(waterShallow.rgb, waterDeep.rgb, shore);",
     "    vec3 diffuse = lightColor.rgb * ndl * shadow;",
     "    vec3 halfV = normalize(l + viewDir);",
     // The glitter. A tight lobe over the wave normals is what makes a pool sparkle
@@ -400,9 +428,9 @@ const WATER_FS = [
     "    vec3 refl = reflect(-viewDir, n);",
     "    vec3 sky = waterSky * (0.55 + 0.45 * clamp(refl.y, 0.0, 1.0));",
     "    color = mix(color, sky, fres);",
-    // The shore: a sheet a few centimetres deep is barely there, so the alpha runs out
-    // with the depth and the water's edge is a fade rather than a drawn line.
-    "    float shore = clamp(fragDepth / max(waterShore, 1e-4), 0.0, 1.0);",
+    // The shore: the same share as the tint's -- a sheet a few centimetres deep is barely
+    // there, so the alpha runs out with the depth and the water's edge is a fade rather
+    // than a drawn line.
     "    finalColor = vec4(color, waterDeep.a * shore);",
     "}",
 ].join("\n");
@@ -595,6 +623,9 @@ function makeLighting() {
             wind: rl.getShaderLocation(waterShader, "waterWind"),
             fresnel: rl.getShaderLocation(waterShader, "waterFresnel"),
             sky: rl.getShaderLocation(waterShader, "waterSky"),
+            ripple0: rl.getShaderLocation(waterShader, "waterRipple0"),
+            ripple1: rl.getShaderLocation(waterShader, "waterRipple1"),
+            ripple2: rl.getShaderLocation(waterShader, "waterRipple2"),
         };
         console.log("water: surface shader " + waterShader);
     }

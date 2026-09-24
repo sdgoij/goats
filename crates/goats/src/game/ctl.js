@@ -462,13 +462,15 @@ function sceneCommand(line) {
         case "water": {
             return "ok " + JSON.stringify(sceneWater());
         }
-        // Force the water table, for a demo or a review: `flood 0.4` sets a level,
-        // `flood off` (or `flood rain`) hands it back to the weather. The same shape as
-        // `C` forcing the weather cycle, and the bisect for the whole system.
+        // Force the water table, for a demo or a review: `flood -0.9` sets a level --
+        // this field's water lives below zero, the ground being a metre or two of relief
+        // either side of it -- and `flood off` (or `flood rain`) hands it back to the
+        // weather. The same shape as `C` forcing the weather cycle, and the bisect for the
+        // whole system.
         case "flood": {
             const arg = parts[1];
             if (arg === undefined || arg === "off" || arg === "rain") {
-                waterSetForce(-1);
+                waterForceOff();
                 return "ok flood off";
             }
             const level = Number(arg);

@@ -10,7 +10,7 @@
 //! so the test is `#[ignore]`d and driven explicitly:
 //!
 //! ```text
-//! cargo test --release -p harness --test scene_logic -- --ignored --nocapture
+//! cargo test --profile fast -p harness --test scene_logic -- --ignored --nocapture
 //! ```
 
 mod support;

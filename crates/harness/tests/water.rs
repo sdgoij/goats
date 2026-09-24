@@ -14,7 +14,7 @@
 //! the frame would use.
 //!
 //! ```text
-//! cargo test --release -p harness --test water -- --nocapture
+//! cargo test --profile fast -p harness --test water -- --nocapture
 //! ```
 
 mod support;
@@ -31,6 +31,12 @@ const FRAMES: u32 = 30;
 const CRATER_X: f64 = 12.0;
 const CRATER_Z: f64 = 8.0;
 
+/// The lattice the window case samples. Two anchors one `TUNING.terrain.snap` apart -- the
+/// step the grid takes as the goat walks -- share x `-48..24` and z `-144..-48`; this is
+/// that band 12 m inside every edge, so no point on it is draining out of either window.
+const SHARED_LO: (f64, f64) = (-36.0, -132.0);
+const SHARED_HI: (f64, f64) = (12.0, -60.0);
+
 /// `sceneWater`, parsed.
 fn water(harness: &mut Harness) -> Value {
     command_json(harness, "water")
@@ -46,7 +52,8 @@ fn depth(harness: &mut Harness, x: f64, z: f64) -> f64 {
 }
 
 /// Set the rain and push it through the one hook both a local weather step and a
-/// mirroring client use, so the table is recomputed the way the frame does it.
+/// mirroring client use, so the table is recomputed the way the frame does it. Nothing has
+/// to age: the water's rise carries no memory at all (`waterStep` is the draining half).
 fn rain(harness: &mut Harness, amount: f64) {
     harness
         .eval(&format!("rainAmount = {amount}"))
@@ -56,15 +63,79 @@ fn rain(harness: &mut Harness, amount: f64) {
         .expect("updateWeatherEffects");
 }
 
-/// `flood <level>`, asserting it was accepted.
+/// Age the water by `seconds` of its own clock -- the frame's step, given whole. The table
+/// drains on that clock rather than with the rain, so "the rain has stopped" is not yet
+/// "the field is dry".
+fn age(harness: &mut Harness, seconds: f64) {
+    harness
+        .call("waterStep", &[json!(seconds)])
+        .expect("waterStep");
+}
+
+/// Long enough to settle the water onto the rain's own value whatever `wetDown` is: one step
+/// past the time constant takes the follower *to* its target, and a case that walks the rain
+/// *down* has no frame loop here to age it through (`waterStep` is the drain's only clock). A
+/// fixed number would only be pinning today's default.
+const SETTLE: f64 = 1.0e6;
+
+/// The level the rain alone implies: set it, then let the water settle onto it whichever way
+/// it has to move. `rain` on its own is enough for a *rise* -- the rise carries no memory --
+/// but a fall waits on the water's own clock, so a case that walks the rain *down* has to
+/// age it or it reads the shower before this one.
+fn rain_settled(harness: &mut Harness, amount: f64) {
+    rain(harness, amount);
+    age(harness, SETTLE);
+}
+
+/// `flood <level>`, asserting it was accepted *and took*. A level is a signed height and
+/// this field's water lives below zero, so a write that silently read as "off" is the
+/// failure worth a check of its own.
 fn flood(harness: &mut Harness, level: f64) {
     let reply = harness.command(&format!("flood {level}")).expect("flood");
     assert!(reply.starts_with("ok "), "{reply}");
+    let forced = water(harness)["forced"].as_bool() == Some(true);
+    assert!(forced, "flood {level} did not take");
 }
 
 fn flood_off(harness: &mut Harness) {
     let reply = harness.command("flood off").expect("flood off");
     assert!(reply.starts_with("ok "), "{reply}");
+}
+
+/// A JSON array of numbers as a flat list, NaN for anything that is not a number.
+fn numbers(value: &Value) -> Vec<f64> {
+    value
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|n| n.as_f64().unwrap_or(f64::NAN))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The ground and the water's depth on the lattice [`SHARED_LO`]..[`SHARED_HI`], as two
+/// lists in one order -- one read, so two windows can be compared point for point.
+fn sample(harness: &mut Harness) -> (Vec<f64>, Vec<f64>) {
+    let probe = format!(
+        "(function () {{ const g = [], d = []; \
+         for (let z = {}; z <= {}; z += 2) {{ \
+         for (let x = {}; x <= {}; x += 2) {{ \
+         g.push(terrainHeight(x, z)); d.push(waterDepthAt(x, z)); }} }} \
+         return {{ g: g, d: d }}; }})()",
+        SHARED_LO.1, SHARED_HI.1, SHARED_LO.0, SHARED_HI.0,
+    );
+    let read = harness.eval(&probe).expect("sample the shared band");
+    (numbers(&read["g"]), numbers(&read["d"]))
+}
+
+/// Stand the goat at an anchor and read the shared band from the window that makes.
+fn window_at(harness: &mut Harness, x: f64, z: f64) -> (Vec<f64>, Vec<f64>) {
+    harness.command(&format!("pos {x} {z}")).expect("pos");
+    harness
+        .call("terrainEnsure", &[json!(x), json!(z)])
+        .expect("terrainEnsure");
+    sample(harness)
 }
 
 #[test]
@@ -92,7 +163,7 @@ fn the_fill_makes_pools() {
 
     // A rainless sky holds no water: the level sits on the lowest ground, so the
     // lowest vertex reads depth zero and every other cell stands above it.
-    rain(&mut harness, 0.0);
+    rain_settled(&mut harness, 0.0);
     let empty = water(&mut harness);
     checks.check(
         "a dry spell leaves the ground dry",
@@ -102,7 +173,7 @@ fn the_fill_makes_pools() {
 
     // Drizzle below `seep` is still dry; the knob is what keeps a damp morning from
     // flooding the field.
-    rain(&mut harness, 0.1);
+    rain_settled(&mut harness, 0.04);
     let damp = water(&mut harness);
     checks.check(
         "rain below `seep` is still dry",
@@ -112,7 +183,7 @@ fn the_fill_makes_pools() {
 
     // A downpour fills every hollow to its spill, so there is water somewhere and a
     // deepest point that is deeper than nothing.
-    rain(&mut harness, 1.0);
+    rain_settled(&mut harness, 1.0);
     let flooded = water(&mut harness);
     checks.check(
         "a downpour fills the hollows",
@@ -128,12 +199,13 @@ fn the_fill_makes_pools() {
     );
 
     // The table walks with the rain. This is the monotone property the whole
-    // rain-to-level mapping is, and the one the drift-free derivation depends on.
-    rain(&mut harness, 0.3);
+    // rain-to-level mapping is, and the one the drift-free derivation depends on -- read
+    // *settled*, since the rain walked down through a downpour to get here (`rain_settled`).
+    rain_settled(&mut harness, 0.3);
     let lowish = water(&mut harness)["level"].as_f64().unwrap_or(f64::NAN);
-    rain(&mut harness, 0.7);
+    rain_settled(&mut harness, 0.7);
     let highish = water(&mut harness)["level"].as_f64().unwrap_or(f64::NAN);
-    rain(&mut harness, 1.0);
+    rain_settled(&mut harness, 1.0);
     let full = water(&mut harness)["level"].as_f64().unwrap_or(f64::NAN);
     checks.check(
         "more rain means a higher table",
@@ -143,9 +215,9 @@ fn the_fill_makes_pools() {
 
     // ...and a higher table covers more ground: a level at the bottom wets less than
     // one at the top.
-    rain(&mut harness, 0.35);
+    rain_settled(&mut harness, 0.35);
     let narrow = water(&mut harness)["wet"].as_u64().unwrap_or(0);
-    rain(&mut harness, 1.0);
+    rain_settled(&mut harness, 1.0);
     let wide = water(&mut harness)["wet"].as_u64().unwrap_or(0);
     checks.check(
         "a higher table covers more ground",
@@ -328,8 +400,12 @@ fn the_pools_are_drawn() {
     );
 
     // A dry field draws no surface at all: `clear` is exactly neutral, which is what
-    // keeps the weather's own gait assertions honest.
+    // keeps the weather's own gait assertions honest. The rain stopping is not the field
+    // dries, though -- the table falls on the water's own clock -- so the water is aged
+    // far past `TUNING.water.wetDown` first, which is how a spell of clear weather arrives at
+    // the same place.
     rain(&mut harness, 0.0);
+    age(&mut harness, SETTLE);
     let dry = water(&mut harness);
     harness.reset_frame().expect("a frame to drive");
     harness.call("sceneFrame", &[]).expect("one dry frame");
@@ -390,6 +466,14 @@ fn the_surface_has_waves() {
             && source.contains("color = mix(color, sky, fres)"),
         source.len(),
     );
+    // The chop has to be *sampled* honestly as well as drawn: a normal field whose phase one
+    // pixel cannot resolve reads as tearing across the water rather than as chop, and what
+    // says so is the fade on the screen-space phase.
+    checks.check(
+        "...and the chop is faded where a pixel cannot resolve it",
+        source.contains("fwidth(p1)") && source.contains("smoothstep(0.5, 1.6, phase)"),
+        source.len(),
+    );
 
     // ...and the frame pushes them, under the names the source declares -- the one thing a
     // stub with no GL can say about a uniform, since a misspelling is silent on both sides
@@ -431,6 +515,278 @@ fn the_surface_has_waves() {
             .get("waterSky")
             .is_some_and(|s| s.len() == 3 && s.iter().all(|c| *c >= 0.0)),
         obs.uniform_vectors.get("waterSky"),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_goat_wades() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    harness.command("lighting on").expect("lighting on");
+
+    // ---- nothing on dry ground, and *exactly* nothing ------------------------
+    // The drag is gated on the depth rather than on the weather, so a `clear` frame on
+    // dry ground is the frame it has always been: the factors are 1 to the last bit, the
+    // grass is not culled, and the weather line gains no water.
+    rain(&mut harness, 0.0);
+    let dry = water(&mut harness);
+    checks.check(
+        "dry ground is exactly neutral",
+        dry["on"].as_bool() == Some(false)
+            && f64_of(harness.eval("waterSpeedFactor()").expect("speed")) == 1.0
+            && f64_of(harness.eval("waterDrainFactor()").expect("drain")) == 1.0,
+        (&dry["on"], harness.eval("waterSpeedFactor()").ok()),
+    );
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("one dry frame");
+    let clear = water(&mut harness);
+    let clear_text = harness.eval("weatherText").expect("weatherText");
+    checks.check(
+        "a dry field culls no grass and shows no water line",
+        clear["culled"].as_u64() == Some(0) && !clear_text.as_str().unwrap_or("").contains("water"),
+        (&clear["culled"], &clear_text),
+    );
+
+    // ---- wade: put the goat in the deepest pool -------------------------------
+    // The rain is what raises the table here rather than `flood`: the window's *lowest*
+    // ground is where the field drains, so a table a quarter of a metre above it ponds
+    // nothing at all. A downpour is the level the other cases already prove pools, and the
+    // goto is the deepest one it made.
+    rain(&mut harness, 1.0);
+    let flooded = water(&mut harness);
+    checks.check(
+        "the rain makes a pool to stand in",
+        flooded["deepest"].as_f64().is_some_and(|d| d > 0.0),
+        &flooded,
+    );
+    let (dx, dz) = (
+        f64_of(flooded["deepX"].clone()),
+        f64_of(flooded["deepZ"].clone()),
+    );
+    harness.command(&format!("pos {dx} {dz}")).expect("pos");
+    let wading = water(&mut harness);
+    checks.check(
+        "the goat standing in a pool is slowed and works harder",
+        wading["goatDepth"].as_f64().is_some_and(|d| d > 0.0)
+            && f64_of(harness.eval("waterSpeedFactor()").expect("speed")) < 1.0
+            && f64_of(harness.eval("waterDrainFactor()").expect("drain")) > 1.0,
+        (
+            &wading["goatDepth"],
+            harness.eval("waterSpeedFactor()").ok(),
+        ),
+    );
+
+    // ...and the frame it steps in throws a splash and lays a wake ring, the grass inside
+    // the pool is skipped, and the water reaches the weather line. The wake is asserted
+    // through the uniform the shader reads, which is the only place it can be seen here.
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("one wet frame");
+    let obs = harness.observe().expect("observe");
+    let wet = water(&mut harness);
+    let ring = obs.uniform_vectors.get("waterRipple0").cloned();
+    checks.check(
+        "stepping in throws a splash and a ring",
+        wet["splashes"].as_u64().is_some_and(|n| n > 0)
+            && wet["ripples"].as_u64().is_some_and(|n| n > 0)
+            && ring.as_ref().is_some_and(|r| r.len() == 4 && r[3] > 0.0),
+        (&wet["splashes"], &wet["ripples"], &ring),
+    );
+    checks.check(
+        "...the grass in the pool is culled",
+        wet["culled"].as_u64().is_some_and(|n| n > 0),
+        wet["culled"].clone(),
+    );
+    let wade_text = f64_of(
+        harness
+            .eval("waterDepthAt(goat.px, goat.pz)")
+            .expect("depth"),
+    );
+    let line = harness.eval("weatherText").expect("weatherText");
+    checks.check(
+        "...and the HUD says so",
+        wade_text > 0.0 && line.as_str().unwrap_or("").contains("water"),
+        (&line, wade_text),
+    );
+
+    // ---- and it is dry again when the water goes -----------------------------
+    // Aged rather than merely rainless: the table holds on after the shower, which is the
+    // feature (see `the_water_outlives_the_rain`), and it has to be *exactly* dry at the
+    // end of it or the factors do not come back to 1 to the last bit.
+    rain(&mut harness, 0.0);
+    age(&mut harness, SETTLE);
+    harness.reset_frame().expect("a frame to drive");
+    harness.call("sceneFrame", &[]).expect("a dry frame");
+    let after = water(&mut harness);
+    checks.check(
+        "taking the water away puts it all back",
+        after["on"].as_bool() == Some(false)
+            && f64_of(harness.eval("waterSpeedFactor()").expect("speed")) == 1.0
+            && after["culled"].as_u64() == Some(0),
+        (&after["on"], &after["culled"]),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_pools_are_there_wherever_the_goat_stands() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    rain(&mut harness, 1.0);
+
+    // Walk a line of anchors east with the rain hard on, the way a player wanders. Every
+    // window holds ground and the table is built from that ground's own low end, so every
+    // one of them holds water -- unless the table and the ground have come apart. They do:
+    // the window's lowest ground is very often a gully that drains out of the field's edge,
+    // and a table anchored to *that* sits below every basin in the window. `(0, -96)` and
+    // `(24, -96)` are two windows where a downpour had nothing at all to show for itself.
+    let mut empty: Vec<f64> = Vec::new();
+    let mut deepest_rise = 0.0f64;
+    for i in 0..9 {
+        let x = -96.0 + 24.0 * i as f64;
+        harness.command(&format!("pos {x} -96")).expect("pos");
+        harness
+            .call("terrainEnsure", &[json!(x), json!(-96.0)])
+            .expect("terrainEnsure");
+        let f = water(&mut harness);
+        if f["on"].as_bool() != Some(true) || f["wet"].as_u64() == Some(0) {
+            empty.push(x);
+        }
+        let rise = f["rise"].as_f64().unwrap_or(f64::NAN);
+        if rise > deepest_rise {
+            deepest_rise = rise;
+        }
+    }
+    checks.check(
+        "a downpour puts water in every window the goat stands in",
+        empty.is_empty(),
+        &empty,
+    );
+    // ...and never deeper than the wading cap the milestone promises: the table's anchor
+    // eases down, so a level that is not clamped to the anchor climbs with the range that
+    // has grown under it (1.13 m, measured along this line before the clamp).
+    checks.check(
+        "...and it is a wading depth in every one of them",
+        deepest_rise > 0.0 && deepest_rise <= 0.6,
+        deepest_rise,
+    );
+
+    checks.finish();
+}
+
+#[test]
+#[ignore = "known-bad: the level is still a window statistic, and this is the spec for the change that lands next"]
+fn the_water_at_a_fixed_point_is_the_same_from_two_windows() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    rain(&mut harness, 1.0);
+
+    // The window follows the goat, so one world point gets read from two of them here: two
+    // anchors one snap step apart, and a lattice of points well inside both. The water is
+    // supposed to be a fact about the *ground* -- the rain fills the hollows that ground has
+    // -- and the ground does not move when the goat does, so two windows have to agree about
+    // every point they share. They do not. The table is derived from the window's own
+    // extremes (`waterRebuild`), so the level walks with the anchor: over this one step the
+    // level moves 0.855 m and the wetted count goes 50 to 30, and a point whose ground and
+    // spill the two windows agree about to the last bit is 0.11 m under water in one and dry
+    // in the other. Reading the ground the same way is the control -- a window that
+    // disagrees about that is failing this case for a reason it is not about.
+    let (a_ground, a_depth) = window_at(&mut harness, -24.0, -96.0);
+    let (b_ground, b_depth) = window_at(&mut harness, 0.0, -96.0);
+
+    checks.check(
+        "both windows sampled the same points",
+        !a_ground.is_empty()
+            && a_ground.len() == a_depth.len()
+            && b_ground.len() == b_depth.len()
+            && a_ground.len() == b_ground.len(),
+        (a_ground.len(), a_depth.len(), b_ground.len(), b_depth.len()),
+    );
+
+    let mut moved = 0usize;
+    let mut wet = 0usize;
+    let mut disagree = 0usize;
+    let mut worst = 0.0f64;
+    for ((ga, gb), (da, db)) in a_ground
+        .iter()
+        .zip(b_ground.iter())
+        .zip(a_depth.iter().zip(b_depth.iter()))
+    {
+        if (ga - gb).abs() > 1e-6 {
+            moved += 1;
+        }
+        if *da > 0.0 || *db > 0.0 {
+            wet += 1;
+            let gap = (da - db).abs();
+            if gap > worst {
+                worst = gap;
+            }
+            if gap > 1e-6 {
+                disagree += 1;
+            }
+        }
+    }
+    checks.check("both windows stand on the same ground", moved == 0, moved);
+    checks.check("the shared band has water in it to compare", wet > 0, wet);
+    checks.check(
+        "...and which window reads a point does not change the water at it",
+        disagree == 0,
+        (disagree, worst, wet),
+    );
+
+    checks.finish();
+}
+
+#[test]
+fn the_water_outlives_the_rain() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // This case is about the *shape* of the drain -- that a shower's water outlives it and
+    // then lets go exactly -- so it pins the time constant it describes rather than
+    // borrowing whatever the tree happens to carry.
+    harness
+        .eval("tuningSet('water.wetDown', 100)")
+        .expect("pin the drain");
+
+    // It answers the rain at once -- no frame, no aging: the rise is the half of the water's
+    // clock that carries no memory, and so the half that agrees between peers with nothing
+    // between them.
+    rain(&mut harness, 1.0);
+    let full = water(&mut harness);
+    checks.check(
+        "the table is up the moment the rain is",
+        full["on"].as_bool() == Some(true) && full["wetting"].as_f64() == Some(1.0),
+        &full,
+    );
+
+    // ...and the rain stopping does not take it away. Five seconds in -- a twentieth of
+    // `wetDown` -- most of it is still standing.
+    rain(&mut harness, 0.0);
+    age(&mut harness, 5.0);
+    let damp = water(&mut harness);
+    checks.check(
+        "the rain stopping does not empty it",
+        damp["on"].as_bool() == Some(true) && damp["deepest"].as_f64().is_some_and(|d| d > 0.2),
+        &damp,
+    );
+
+    // ...and left alone it does drain, to the last bit: a rainless field is the field it
+    // has always been, which is what the gait cases downstream of `clear` rely on.
+    age(&mut harness, SETTLE);
+    let dry = water(&mut harness);
+    checks.check(
+        "...and left alone it drains, exactly",
+        dry["on"].as_bool() == Some(false)
+            && dry["wetting"].as_f64() == Some(0.0)
+            && f64_of(harness.eval("waterSpeedFactor()").expect("speed")) == 1.0,
+        &dry,
     );
 
     checks.finish();
