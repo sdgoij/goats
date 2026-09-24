@@ -1028,6 +1028,151 @@ fn a_bot_walking_the_pool_throws_a_splash() {
 }
 
 #[test]
+fn a_crater_patches_the_water_and_the_bake_exactly() {
+    // A rebuild over the rectangles the ground changed in -- one the terrain passes down
+    // (`terrainBuildRects`) -- has to leave the mesh and the bake *the same bytes* a
+    // whole-grid rebuild would. The patch path writes one number a vertex (the height: `x`,
+    // `z`, the normal and the colour are the anchor's) and splices one run of pixels per row
+    // of the bake, and both are places where "almost the same" arrives as a surface standing
+    // at the wrong height or a reflection marching a slope the ground does not have. Nothing
+    // else in this file can hold it: the depths the other cases read come from `T_H`, which
+    // both paths share.
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+
+    // The water's own bytes: the mesh's three channels, the index list, and the bake's pixels
+    // -- summed rather than compared, because they are 20 000 numbers and one string, and the
+    // harness moves JSON. A rolled sum of every element is enough to catch a vertex missed, a
+    // run spliced at the wrong offset, or a cut that took a different quad.
+    let digest = |harness: &mut Harness| -> Vec<f64> {
+        numbers(
+            &harness
+                .eval(
+                    "(function () { \
+                     let v = 0, n = 0, c = 0, i = 0, b = 0; \
+                     for (let k = 0; k < W_VERTS.length; k++) v = (v * 31 + Math.round(W_VERTS[k] * 1000)) % 2147483647; \
+                     for (let k = 0; k < W_NORM.length; k++) n = (n * 31 + Math.round(W_NORM[k] * 1000)) % 2147483647; \
+                     for (let k = 0; k < W_COL.length; k++) c = (c * 31 + W_COL[k]) % 2147483647; \
+                     for (let k = 0; k < W_IDX.length; k++) i = (i * 31 + W_IDX[k]) % 2147483647; \
+                     for (let k = 0; k < waterBakeHex.length; k++) b = (b * 31 + waterBakeHex.charCodeAt(k)) % 2147483647; \
+                     return [v, n, c, i, b, W_IDX.length, waterBakeHex.length, waterQuads, waterMapFloor, waterMapRange]; \
+                     })()",
+                )
+                .expect("the water's bytes"),
+        )
+    };
+    // ...and the expensive answer to compare it with: the whole grid, rebuilt.
+    let whole = |harness: &mut Harness| {
+        harness
+            .eval("terrainBuildRects([{ i0: 0, i1: T_N - 1, j0: 0, j1: T_N - 1 }])")
+            .expect("a whole-grid rebuild");
+    };
+
+    let before = digest(&mut harness);
+    whole(&mut harness);
+    let settled = digest(&mut harness);
+    checks.check(
+        "a whole-grid rebuild is a fixpoint of itself",
+        settled == before,
+        (&settled, &before),
+    );
+
+    // A bang cuts a hole, which is the ground change a player makes most often -- and the
+    // next frame's `terrainEnsure` flushes it as a patch. Two holes, in the two places that
+    // choose the bake's path: the lowest ground the window holds, where the dish lowers the
+    // field and has to *widen* the span (every texel re-encoded, so the bake is whole), and a
+    // middling one, whose dish bottoms out above that new low and whose lip stays under the
+    // field's ceiling -- which is the patch path, and what a crater's healing steps take for
+    // the rest of their four minutes. (A hole on the *highest* ground is no good for this: a
+    // dish's lip is 0.12 m of ground it raises, so that one widens the span too.)
+    let low = harness
+        .eval(
+            "(function () { let best = null, lo = Infinity; \
+             for (let z = -44; z <= 44; z += 2) { \
+             for (let x = -44; x <= 44; x += 2) { \
+             const g = terrainHeight(x, z); if (g < lo) { lo = g; best = [x, z]; } } } \
+             return best; })()",
+        )
+        .expect("the lowest ground");
+    let mid = harness
+        .eval(
+            "(function () { let lo = Infinity, hi = -Infinity; \
+             for (let z = -44; z <= 44; z += 2) { \
+             for (let x = -44; x <= 44; x += 2) { \
+             const g = terrainHeight(x, z); if (g < lo) lo = g; if (g > hi) hi = g; } } \
+             for (let z = -44; z <= 44; z += 2) { \
+             for (let x = -44; x <= 44; x += 2) { \
+             const g = terrainHeight(x, z); \
+             if (g > lo + 0.6 && g < hi - 0.2) return [x, z, lo, hi]; } } \
+             return null; })()",
+        )
+        .expect("a middling spot");
+    let (lx, lz) = (f64_of(low[0].clone()), f64_of(low[1].clone()));
+    let (hx, hz) = (f64_of(mid[0].clone()), f64_of(mid[1].clone()));
+    checks.check(
+        "there is ground between the floor and the ceiling to dig in",
+        mid.is_array(),
+        &mid,
+    );
+
+    harness
+        .eval(&format!("goats.explosions.blast({lx}, {lz}, \"mine\")"))
+        .expect("a bang in the low ground");
+    let whole_before = water(&mut harness)["bakeWhole"].as_u64().unwrap_or(0);
+    harness.reset_frame().expect("a frame to drive");
+    harness
+        .call("sceneFrame", &[])
+        .expect("the frame the patch lands in");
+    let patched = digest(&mut harness);
+    let whole_after = water(&mut harness)["bakeWhole"].as_u64().unwrap_or(0);
+    checks.check(
+        "the crater moved the water's mesh",
+        patched != before,
+        (&patched, &before),
+    );
+    // ...and it lowered the field's floor, so this bake is whole: a span that widens
+    // invalidates every texel already built, which is the one thing a patch may not do.
+    checks.check(
+        "...a hole that lowers the ground re-bakes the bake whole",
+        whole_after > whole_before,
+        (whole_before, whole_after, lx, lz),
+    );
+    whole(&mut harness);
+    let rebuilt = digest(&mut harness);
+    checks.check(
+        "...and the patched mesh and bake are what the whole rebuild is",
+        rebuilt == patched,
+        (&patched, &rebuilt),
+    );
+
+    harness
+        .eval(&format!("goats.explosions.blast({hx}, {hz}, \"mine\")"))
+        .expect("a bang on the high ground");
+    let rect_before = water(&mut harness)["bakeRect"].as_u64().unwrap_or(0);
+    harness.reset_frame().expect("a frame to drive");
+    harness
+        .call("sceneFrame", &[])
+        .expect("the frame the patch lands in");
+    let spliced = digest(&mut harness);
+    let rect_after = water(&mut harness)["bakeRect"].as_u64().unwrap_or(0);
+    checks.check(
+        "a patch inside the span splices the bake instead of rebuilding it",
+        spliced != patched && rect_after > rect_before,
+        (rect_before, rect_after, hx, hz),
+    );
+    whole(&mut harness);
+    let whole_again = digest(&mut harness);
+    checks.check(
+        "...and a spliced bake is what the whole rebuild is, to the byte",
+        whole_again == spliced,
+        (&spliced, &whole_again),
+    );
+
+    checks.finish();
+}
+
+#[test]
 fn the_table_is_the_same_in_every_window() {
     let mut checks = Checks::new();
     let mut harness = Harness::start().expect("evaluate the scene");

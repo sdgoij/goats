@@ -580,18 +580,65 @@ const CRATER_LIP_OUT = 1.45;
 // quantized value, so what the goat walks on is exactly what the mesh shows.
 const CRATER_STEP = 0.1;
 
+// Where each crater is, so a point query can answer without scanning the list (M20 perf).
+// `craterDipAt` is read by `terrainHeight`, which is read by every goat, every bird, every
+// tuft and every vertex of a terrain rebuild; at the cap of 24 craters that was ~20 object
+// reads a call, and it measured 190-450 us -- the whole of what the explosions left in the
+// frame once the rebuilds were made to pay only for the ground they changed.
+//
+// The index is a hash of the ground's own cells (`TERRAIN_CELL`, world.js) rather than a
+// keyed map: a query must not allocate, and this is a read that happens thousands of times a
+// frame. Each crater is registered in *every* cell its reach box touches, so a query looks at
+// exactly one slot -- and the `reach2` test below still does the arithmetic, which is what
+// makes a collision only a slower answer rather than a wrong one.
+const CRATER_BUCKETS = 1024;                // power of two, so the hash is a mask
+const CRATER_BUCKET = new Array(CRATER_BUCKETS);
+function craterBucketAt(x, z) {
+    const cx = Math.floor(x / TERRAIN_CELL);
+    const cz = Math.floor(z / TERRAIN_CELL);
+    return ((cx * 73856093) ^ (cz * 19349663)) & (CRATER_BUCKETS - 1);
+}
+
+// Rebuilt whole whenever the set changes -- a bang, a retirement, a mirrored crater's radius
+// -- rather than updated in place: it is 24 craters over at most nine cells each, it happens
+// on events rather than per frame, and a bucket that is merely rebuilt cannot drift out of
+// step with the list it indexes.
+function craterIndexRebuild() {
+    for (let s = 0; s < CRATER_BUCKETS; s++) CRATER_BUCKET[s] = undefined;
+    for (let i = 0; i < CRATERS.length; i++) {
+        const c = CRATERS[i];
+        const reach = Math.sqrt(c.reach2);
+        const i0 = Math.floor((c.x - reach) / TERRAIN_CELL);
+        const i1 = Math.floor((c.x + reach) / TERRAIN_CELL);
+        const j0 = Math.floor((c.z - reach) / TERRAIN_CELL);
+        const j1 = Math.floor((c.z + reach) / TERRAIN_CELL);
+        for (let ci = i0; ci <= i1; ci++) {
+            for (let cj = j0; cj <= j1; cj++) {
+                const slot = ((ci * 73856093) ^ (cj * 19349663)) & (CRATER_BUCKETS - 1);
+                const list = CRATER_BUCKET[slot];
+                if (list === undefined) CRATER_BUCKET[slot] = [c];
+                else list.push(c);
+            }
+        }
+    }
+}
+
 // The craters' own contribution to the ground: a bowl with a raised rim, eased back to
 // flat as it heals. Called from `terrainHeight` for every goat, every tuft cell and
 // every shadow vertex, so the shape is: nothing at all when there are no craters, two
-// multiplies and a compare for one that is nowhere near the query.
+// multiplies and a compare for one that is nowhere near the query -- and the list it walks
+// is the handful of craters whose reach box holds the point (see `craterBucketAt`), not
+// every crater on the field.
 function craterDipAt(x, z) {
+    const list = CRATER_BUCKET[craterBucketAt(x, z)];
+    if (list === undefined) return 0;
     let dip = 0;
     // The count is hoisted rather than re-read: a read of a global binding inside an
     // interpreted loop is this engine's worst operation (~3.9 us measured), and this
     // loop was paying it once per crater per call -- 31% of the function at the cap.
-    const nc = CRATERS.length;
+    const nc = list.length;
     for (let i = 0; i < nc; i++) {
-        const c = CRATERS[i];
+        const c = list[i];
         const dx = x - c.x;
         const dz = z - c.z;
         const d2 = dx * dx + dz * dz;
@@ -734,6 +781,7 @@ function retireCrater(c) {
     markCraterTufts(c, false);
     c.dip = 0;
     craterDropCells(c);
+    craterIndexRebuild();
 }
 
 // Dig one. The radius varies a little per bang -- a minefield of identical holes reads
@@ -762,6 +810,7 @@ function addCrater(x, z, seed) {
     CRATERS.push(c);
     markCraterTufts(c, true);
     craterDropCells(c);
+    craterIndexRebuild();
     return c;
 }
 
@@ -795,6 +844,7 @@ function updateCraters(dt) {
 function sceneResetCraters() {
     for (let i = 0; i < CRATERS.length; i++) retireCrater(CRATERS[i]);
     CRATERS.length = 0;
+    craterIndexRebuild();
 }
 
 // The host's craters (M19e): state rather than events, because a joiner has to see the
@@ -847,6 +897,7 @@ function mirrorCrater(s) {
     CRATERS.push(c);
     markCraterTufts(c, true);
     craterDropCells(c);
+    craterIndexRebuild();
     return c;
 }
 
@@ -859,6 +910,7 @@ function adoptCrater(c, s) {
     c.depth = s.depth;
     c.r = s.r;
     c.reach2 = (s.r * CRATER_LIP_OUT) * (s.r * CRATER_LIP_OUT);
+    craterIndexRebuild();
     if (!wider && next === c.drop) return;
     c.drop = next;
     c.dip = next;

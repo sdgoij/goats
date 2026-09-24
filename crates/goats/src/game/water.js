@@ -84,6 +84,11 @@ const W_VERTS = new Array(WATER_N * WATER_N * 3);
 const W_NORM = new Array(WATER_N * WATER_N * 3);
 const W_COL = new Array(WATER_N * WATER_N * 4);
 const W_IDX = new Array(TERRAIN_QUADS * TERRAIN_QUADS * 6);
+// One byte a vertex: whether the ground there stands under the table's ceiling, which is the
+// whole of what the index cut tests. It is kept -- not derived -- because a *patch* has to
+// know whether it flipped that answer, and the cut is the one part of a rebuild a rectangle
+// cannot do (see `waterCut`).
+const W_CEIL = new Array(WATER_N * WATER_N);
 
 // ---- the wake and the splashes (M20d) -------------------------------------
 //
@@ -116,10 +121,15 @@ let goatWet = false;                // the goat's feet were under the surface la
 // ---- the field, from the ground -------------------------------------------
 
 // Rebuild the field from the ground. Called wherever the terrain mesh is rebuilt
-// (world.js `terrainBuildRects`) -- a step to a new anchor, or a crater dinting the
-// grid -- because the field is a function of the heights, and it is `terrainHeight`
-// that the depth, the surface and the grass cull all read.
-function waterRebuild() {
+// (world.js `terrainBuildRects`, which passes the rectangles it was given) -- a step to a new
+// anchor, or a crater dinting the grid -- because the field is a function of the heights, and
+// it is `terrainHeight` that the depth, the surface and the grass cull all read.
+//
+// `rects` is that difference, and it is the whole of why this is cheap: a crater reaches a
+// couple of cells, its healing step reaches fewer, and the mesh and the bake are updated
+// *over the rectangles* rather than rebuilt. `undefined` means the whole grid -- an anchor
+// step, a first build, or a caller that wants the expensive answer.
+function waterRebuild(rects) {
     if (!TERRAIN_MESH_OK) {
         waterReady = false;
         return;
@@ -129,7 +139,8 @@ function waterRebuild() {
     // "is anything wet" test in `waterUpdate`, and nothing in the window is lower than it. It
     // is a test and never a level, which is the whole of the difference -- a level taken from
     // the window is a level that changes when the goat walks, and the next window's lowest
-    // ground is a different number over ground that has not moved.
+    // ground is a different number over ground that has not moved. It stays whole-grid even
+    // for a patch (four milliseconds), because any vertex in the grid can lower it.
     let ground = Infinity;
     for (let k = 0; k < count; k++) {
         const g = T_H[k];
@@ -138,7 +149,7 @@ function waterRebuild() {
     waterGround = ground;
     waterReady = true;
     waterUpdate();
-    waterBuild();
+    waterBuildRects(rects);
 }
 
 // The rain, as the share of the table's own band it can reach. Nothing below `seep`
@@ -242,14 +253,46 @@ function waterSetEnabled(on) {
 // The vertices are the whole grid (any of them can be under water); the index list is cut
 // down to the quads whose ground stands under the table's ceiling, which is what decimates
 // the draw: a dry field costs one empty draw rather than the terrain's again.
-function waterBuild() {
+//
+// A *patch* writes one number a vertex -- the height, which is the only thing that moved.
+// `x`, `z`, the normal and the colour are the grid's own and are written by the whole-grid
+// build alone, which is what a rectangle of a crater's size gets out of a rebuild: `T_H` is
+// where the ground is, and everything else here is derived from the anchor.
+function waterHeightRow(j, i0, i1) {
+    const n = WATER_N;
+    const top = TUNING.water.high;
+    const k0 = j * n;
+    // Every vertex of the run is written whatever happens: returning at the first flip would
+    // leave the rest of the row stale, and the flip is only *reported* -- it is one answer for
+    // the whole list (see `waterCut`), so it cannot stop the fill.
+    let flipped = false;
+    for (let i = i0; i <= i1; i++) {
+        const k = k0 + i;
+        const ground = T_H[k];
+        W_VERTS[k * 3 + 1] = ground;
+        // ...and the one thing a patch *can* invalidate: whether this vertex counts as under
+        // the ceiling, which is the whole of what the cut tests.
+        const under = ground < top ? 1 : 0;
+        if (W_CEIL[k] !== under) {
+            W_CEIL[k] = under;
+            flipped = true;
+        }
+    }
+    return flipped;
+}
+
+// The whole mesh, from the whole grid: an anchor step, a first build, or a caller that asks
+// for it. Every channel is written, because a step moves the window and `x`/`z` come from it.
+function waterBuildAll() {
     const n = WATER_N;
     const x0 = terrainAnchorX - WATER_HALF;
     const z0 = terrainAnchorZ - WATER_HALF;
+    const top = TUNING.water.high;
     for (let j = 0; j < n; j++) {
         const wz = z0 + j * WATER_CELL;
+        const k0 = j * n;
         for (let i = 0; i < n; i++) {
-            const k = j * n + i;
+            const k = k0 + i;
             const ground = T_H[k];
             W_VERTS[k * 3] = x0 + i * WATER_CELL;
             W_VERTS[k * 3 + 1] = ground;
@@ -261,15 +304,25 @@ function waterBuild() {
             W_COL[k * 4 + 1] = 255;
             W_COL[k * 4 + 2] = 255;
             W_COL[k * 4 + 3] = 255;
+            W_CEIL[k] = ground < top ? 1 : 0;
         }
     }
-    // Wound like the terrain's own grid (and raylib's `GenMeshPlane`), so the surface
-    // faces up. A quad is worth drawing if any corner of it stands under the highest level
-    // the weather can make -- the table's own ceiling, since nothing above it can ever be
-    // wet. `W_IDX` is trimmed in place, which keeps the array's identity while shrinking
-    // what the engine is asked to upload.
+    waterCut();
+}
+
+// The index list, cut to the quads whose ground stands under the ceiling. `W_IDX` is trimmed
+// in place, which keeps the array's identity while shrinking what the engine is asked to
+// upload. It is *not* incremental, and it is not rebuilt for a patch either: the list is
+// compact, so a quad entering it lengthens every index after it -- a rectangle's worth of work
+// cannot be done a rectangle at a time. It is 29 ms of a patch's 170, and a crater crossing
+// the ceiling is the only patch that owes it.
+function waterCut() {
+    const n = WATER_N;
     let t = 0;
     const top = TUNING.water.high;
+    // Wound like the terrain's own grid (and raylib's `GenMeshPlane`), so the surface faces
+    // up. A quad is worth drawing if any corner of it stands under the highest level the
+    // weather can make -- the table's own ceiling, since nothing above it can ever be wet.
     for (let j = 0; j < TERRAIN_QUADS; j++) {
         for (let i = 0; i < TERRAIN_QUADS; i++) {
             const a = j * n + i;
@@ -284,6 +337,30 @@ function waterBuild() {
     }
     waterQuads = t / 6;
     W_IDX.length = t;
+}
+
+// One rebuild's mesh, over the rectangles the terrain just changed. A rectangle that covers
+// the grid *is* the whole grid -- `terrainBuild` makes one of those for a step -- and takes
+// the whole-grid path, which is the only one that writes `x`/`z`: a step is the one thing
+// that moves the window.
+function waterBuildRects(rects) {
+    if (rects === undefined ||
+        (rects.length === 1 && rects[0].i0 === 0 && rects[0].j0 === 0 &&
+            rects[0].i1 === WATER_N - 1 && rects[0].j1 === WATER_N - 1)) {
+        waterBuildAll();
+    } else {
+        let flipped = false;
+        for (let r = 0; r < rects.length; r++) {
+            const rect = rects[r];
+            for (let j = rect.j0; j <= rect.j1; j++) {
+                if (waterHeightRow(j, rect.i0, rect.i1)) flipped = true;
+            }
+        }
+        // The cut is one answer for the whole list, so it is done once, after every rectangle
+        // has been filled -- and only when one of them flipped a vertex across the ceiling,
+        // because nothing else can change it.
+        if (flipped) waterCut();
+    }
     if (waterMesh >= 0) rl.unloadModel(waterMesh);
     // Four arrays, not five: the engine's texcoords are optional, and nothing here wants a
     // UV -- the level is a uniform and the depth is `level - positions.y`, so the surface
@@ -294,13 +371,14 @@ function waterBuild() {
     // `terrainUpload` re-applies for the ground.
     if (waterShader >= 0) rl.setModelShader(waterMesh, waterShader);
     if (shadowColor >= 0) rl.setModelTexture(waterMesh, SHADOW_MAP_INDEX, shadowColor);
+    perfMark("rb_mesh");
     if (terrainAnchorX !== waterLogX || terrainAnchorZ !== waterLogZ) {
         waterLogX = terrainAnchorX;
         waterLogZ = terrainAnchorZ;
         console.log("water: mesh " + waterMesh + " " + waterQuads + " quads of " +
             (TERRAIN_QUADS * TERRAIN_QUADS) + ", level " + netRound3(waterLevel));
     }
-    waterHeightBake();
+    waterHeightBake(rects);
 }
 
 // ---- the reflection (M20e) ------------------------------------------------
@@ -338,6 +416,16 @@ const WATER_MAP_INDEX = 2;
 let waterHeightTex = -1;        // the baked ground (tier 1), rebuilt with the terrain
 let waterMapFloor = 0;          // the bake's own floor and range, in metres
 let waterMapRange = 1;
+// The bake's own pixels, kept between rebuilds so a patch writes only the texels that moved,
+// and the span they were encoded across -- sticky, only ever widening (see `waterHeightBake`).
+let waterBakeHex = "";
+let waterBakeLo = Infinity;
+let waterBakeHi = -Infinity;
+// How the bake has been built, for the harness: a whole one, or one spliced over the
+// rectangles the ground changed in. The counts are what says the cheap path is the one a
+// patch takes, since both paths end in the same texture.
+let waterBakeWhole = 0;
+let waterBakeRect = 0;
 let waterMirrorRT = -1;         // the mirrored scene (tier 2)
 let waterMirrorColor = -1;
 let waterMirrorW = 0;           // the size it was made at, so a resize remakes it
@@ -354,13 +442,25 @@ let waterBoundTex = -2;         // which texture map 2 currently points at
 //
 // The bake is the terrain's 2 m grid at one texel per vertex: a finer one would invent
 // detail the ground does not have, and the shader's march is at that resolution anyway.
-// It is rebuilt whenever the mesh is, which is whenever the ground changes.
+// It is rebuilt whenever the mesh is, which is whenever the ground changes -- over the
+// rectangles that changed, like the mesh (see `waterHeightBake`).
 //
 // It is baked whatever the tier is, too: the tier can move under a running frame -- the menu
 // is a combo box and a mod may write the leaf -- and a reflection that has to wait for the
 // next terrain rebuild before it can come back is a bug the player sees. The texture is the
 // cheap half of the two tiers.
-function waterHeightBake() {
+
+// One texel's eight hex digits: the ground's own colour in rgb, and the height across the
+// span in alpha -- the same span the shader decodes with.
+function bakeTexel(k, lo, range) {
+    const c = k * 4;
+    const a = Math.round(clamp((T_H[k] - lo) / range, 0, 1) * 255);
+    return HEX256[Math.round(clamp(T_COLS[c], 0, 255))] +
+        HEX256[Math.round(clamp(T_COLS[c + 1], 0, 255))] +
+        HEX256[Math.round(clamp(T_COLS[c + 2], 0, 255))] + HEX256[a];
+}
+
+function waterHeightBake(rects) {
     if (typeof rl.makeTexture !== "function") return;
     const count = WATER_N * WATER_N;
     let lo = Infinity;
@@ -371,17 +471,42 @@ function waterHeightBake() {
         if (h > hi) hi = h;
     }
     if (!isFinite(lo)) return;
+    // The span is *sticky*, and that is what makes the bake patchable at all: the alpha is
+    // (h - lo) / range and `lo`/`range` are the shader's own two numbers, so a texel stays
+    // valid exactly while the span does. A crater healing back up raises the field's low end,
+    // and a span that followed it would re-bake all 2401 texels for a step nobody can see.
+    // Widening costs the alpha some precision and nothing else, because the encode and the
+    // decode move together; a *narrower* span would make every texel already built wrong,
+    // which is the one thing this must not do.
+    if (waterBakeHi > hi) hi = waterBakeHi;
+    if (waterBakeLo < lo) lo = waterBakeLo;
     if (!(hi > lo)) hi = lo + 1;        // flat ground still needs a range to divide by
     const range = hi - lo;
-    let hex = "";
-    for (let k = 0; k < count; k++) {
-        const c = k * 4;
-        const a = Math.round(clamp((T_H[k] - lo) / range, 0, 1) * 255);
-        hex += HEX256[Math.round(clamp(T_COLS[c], 0, 255))] +
-            HEX256[Math.round(clamp(T_COLS[c + 1], 0, 255))] +
-            HEX256[Math.round(clamp(T_COLS[c + 2], 0, 255))] + HEX256[a];
+    const span = lo !== waterBakeLo || hi !== waterBakeHi;
+    if (rects === undefined || span || waterBakeHex.length !== count * 8) {
+        let hex = "";
+        for (let k = 0; k < count; k++) hex += bakeTexel(k, lo, range);
+        waterBakeHex = hex;
+        waterBakeWhole += 1;
+    } else {
+        // The texels the rectangles moved, which is one run of a row each: the string is
+        // row-major and a texel is its own eight digits, so a run within a row is contiguous
+        // and the row can be spliced rather than rebuilt.
+        let hex = waterBakeHex;
+        const n = WATER_N;
+        for (let r = 0; r < rects.length; r++) {
+            const rect = rects[r];
+            for (let j = rect.j0; j <= rect.j1; j++) {
+                let run = "";
+                for (let i = rect.i0; i <= rect.i1; i++) run += bakeTexel(j * n + i, lo, range);
+                const at = (j * n + rect.i0) * 8;
+                hex = hex.slice(0, at) + run + hex.slice(at + run.length);
+            }
+        }
+        waterBakeHex = hex;
+        waterBakeRect += 1;
     }
-    const tex = rl.makeTexture(WATER_N, WATER_N, hex);
+    const tex = rl.makeTexture(WATER_N, WATER_N, waterBakeHex);
     if (tex < 0) return;
     // `makeTexture` deliberately comes back point-sampled (that is what a mod's chunky
     // atlas wants); the reflection wants the ground's slope, so it asks for the filter.
@@ -394,7 +519,10 @@ function waterHeightBake() {
     waterHeightTex = tex;
     waterMapFloor = lo;
     waterMapRange = range;
+    waterBakeLo = lo;
+    waterBakeHi = hi;
     waterBindReflection();
+    perfMark("rb_bake");
 }
 
 // Whether the mirror tier could run at all: the bindings it needs, and a window to size
@@ -892,6 +1020,11 @@ function sceneWater() {
         reflect: Math.round(TUNING.water.reflection),
         tier: waterReflectTier(),
         heightTex: waterHeightTex,
+        // ...and how that texture has been built: whole, or spliced over the rectangles a
+        // patch changed. Both end in the same pixels, so the counts are the only thing that
+        // says the cheap path is the one a crater takes.
+        bakeWhole: waterBakeWhole,
+        bakeRect: waterBakeRect,
         mirror: waterMirrorRT,
         mirrorW: waterMirrorW,
         mirrorH: waterMirrorH,

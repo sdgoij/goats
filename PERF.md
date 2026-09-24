@@ -121,7 +121,10 @@ slow 5 slowms 1022.6 frames over 30 ms (a dropped 60 Hz frame), and their total
 The phase marks live in `sceneFrame` (`crates/goats/src/game/goat.js`), in
 `renderShadowMap` (`lighting.js`) and in the grass loop (`weather.js`); the block
 itself is at the end of `goat.js`. Each mark is two `rl.getTime()` calls, so
-turning the probe off leaves one boolean test per mark.
+turning the probe off leaves one boolean test per mark. `rb_mesh` and `rb_bake`
+(water.js) are marks *inside* a rebuild and cost nothing on a frame that does not
+rebuild anything -- there is one at most every 24 m of travel, and a crater's own
+patches are ~1 ms each (*What a crater costs in the frame*).
 
 Two things to read the numbers with:
 
@@ -1149,11 +1152,13 @@ the field.
 What is left: the vertex pass, 2401 vertices × 11 array stores against a plain store loop
 of the same size at ~24 ms, so it is at the interpreter's floor. These edits do not touch
 it — the 29.9 → 36.5 spread in that row is this machine's run-to-run noise (see §8), not
-a regression — and it is now crater-count independent: 36.2 ms at the cap against 28.0 ms
-with no craters at all. The readers are the next lever: `craterDipAt` is still ~190 us a
+a regression -- and it is now crater-count independent: 36.2 ms at the cap against 28.0 ms
+with no craters at all. ~~The readers are the next lever: `craterDipAt` is still ~190 us a
 call at the cap, and a bucket index would let a point query test the craters near it
-rather than all of them. Below that, a step stops costing 30 ms only by not rebuilding
-the field for it — keeping the mesh in local coordinates and moving it, so a step
+rather than all of them.~~ **Done** -- the bucket index landed with the water's rectangle
+work, and the whole of what a crater costs a frame is in *What a crater costs in the frame*
+below. Below that, a step stops costing 30 ms only by not rebuilding
+the field for it -- keeping the mesh in local coordinates and moving it, so a step
 computes one band instead of 2401 vertices.
 
 `terrainprobe` was temporary and is not in the tree; the numbers above are its output.
@@ -1359,3 +1364,108 @@ harness (`water.rs`): the pass runs **exactly once a frame** while the tier asks
 water, the terrain is drawn **twice** in such a frame against once without it, the target is
 half the viewport, and the grass and the shadow pass are not in it. When the A/B is run, the
 two frame totals and their difference belong in this section.
+
+### What a crater costs in the frame, and the two fixes that took it out (scene-side)
+
+A play-through found this, not a benchmark: *"it starts at 60 fps, but after a few minutes and
+a bunch of explosions it really drops"* -- to ~30. Two costs, both in the *ground change* a
+bang makes, and both of them in code that had never been read off a clock: the water's mesh
+and its bake were rebuilt **whole** for a crater's 2 m dish, and `craterDipAt` walked the
+**whole** crater list for every point anyone asked about.
+
+**The bangs were made on demand.** `mods/fatguy` is loaded by the client and its own verb
+teleports it onto a mine -- `fatguy boom mine` -- so a run can dig as many holes as it likes,
+one a frame apart (a burst of the command in one frame trips *one* mine: the console drains
+what is pending before the frame's trigger test). 24 craters is `crater.max`, and they live
+240 s, so a minute of that leaves the field at the cap: the state this section is about.
+
+**The rebuild, before.** `terrain_upd` carries the whole rebuild, and one `pos` step in an
+otherwise idle client reads:
+
+```
+perf  n=49  terrain_upd 3.72  ...  worst 199.7 slow 1 slowms 199.7
+```
+
+A **200 ms frame** -- and with craters healing (a step every ~27 s each, 24 of them) the
+storm's windows read `worst 178-230`, `slow` up to 13, `slowms` up to 458 per 240-frame
+window, and fps 38-45. Temporary marks inside the rebuild split it, ms in that one frame
+(the printed per-frame average x 49):
+
+| part | ms |
+| --- | ---: |
+| `terrainHeightRow` + `terrainStampCraters` + `terrainAttrRow` (the terrain's own) | 18 |
+| the water mesh's vertex fill, 2401 vertices x 10 stores | 42 |
+| the water mesh's index cut, 2304 quads | 29 |
+| the bake's low/high scan | 4 |
+| the bake's hex string, 2401 texels x 4 lookups and 4 concatenations | **87** |
+| `makeModel`, `makeTexture`, the filter and the unload | ~1 |
+
+So 162 of the 200 ms was the water, and 87 of it a *string* built one concatenation at a
+time -- the interpreter's worst operation, ~0.8 us an operation (§5b).
+
+**Both are now a function of the rectangles that changed.** `terrainBuildRects` already
+derives a crater's dish over the couple of cells it reaches; the water now takes the same
+`rects` (`waterRebuild(rects)`) and does the same: `waterHeightRow` writes one number a vertex
+(the height -- `x`, `z`, the normal and the colour are the anchor's and never move for a
+patch), and the index cut is skipped unless a vertex *crossed the ceiling*, which is the only
+thing that can change it. `W_CEIL` is one byte a vertex, kept for exactly that question. A
+rectangle that covers the grid -- which is what `terrainBuild` makes for a step -- takes the
+whole-grid path, and that is the only path that writes `x`/`z`.
+
+The bake is the same idea with one more term, and the term is the interesting one: its alpha
+is `(h - lo) / range`, and `lo`/`range` are the *shader's* numbers (`waterMapB`), so a texel
+already built stays valid exactly while the span does. The span is therefore **sticky** -- it
+only ever widens. A crater healing back up raises the field's low end, and a span that
+followed it would re-encode all 2401 texels for a step nobody can see; widening instead costs
+some of the alpha's precision and nothing else, because the encode and the decode move
+together. A patch then *splices* one contiguous run of the pixel string per row it touched
+(`slice` + `+`, native, once per rectangle) instead of building 19 KB of hex.
+
+What that is worth, `perf` on the same client with the field at the cap, raining, the same
+protocol before and after:
+
+| ms/frame, 24 craters, rain | before | after |
+| --- | ---: | ---: |
+| `terrain_upd` (the rebuild) | 3.18-3.86 | **0.01-0.02** |
+| `bots` (7 skinned models) | 3.74 | 0.55 |
+| `mods_draw3d` | 1.72 | 0.41 |
+| `mods_upd` | 2.00 | 0.97 |
+| `fx` | 1.25 | 1.66 -> **0.16** with `scorch 0` |
+| `boundary` (the swap wait, so the frame's own headroom) | 0.08 | 0.09 |
+| `worst` / `slow` / `slowms` | 178-230 / up to 13 / up to 458 | **23-45 / 0-1 / 0-40** |
+| fps | 38-45 | **54** (57 with `scorch 0`) |
+
+A rain-only run with no craters is 60 fps on the same build, so the craters' *total* is now
+about 3 ms -- of which 1.5 is the 24 scorch quads, the fill-rate item *What the player sees* has
+always named (`tune explosions.crater.scorch 0` is its bisect, and turning it off returns `fx`
+to the crater-free 0.16).
+
+**The readers, before and after.** The other half was `craterDipAt`, which `terrainHeight`
+calls for every goat, every bird, every tuft and every vertex of a rebuild: a linear walk of a
+capped list, ~200-450 us a call at 24, and the frame asks dozens of times. The `bots` row above
+is 3.4 ms of it -- the herd's own draw reads its ground -- with the birds' two hooks and the
+crater decals the rest. It is now a **bucket index** over the ground's own 2 m cells
+(`explosions.js`, `craterBucketAt`): a hash rather than a keyed map, because a query this hot
+may not allocate, each crater registered in every cell its reach box touches so a query reads
+exactly one slot, and the `reach2` test still doing the arithmetic -- which is what makes a
+collision a slower answer rather than a wrong one. The index is *rebuilt* on every change to
+the set (a bang, a retirement, a mirrored radius) rather than patched in place: 24 craters over
+at most nine cells each, on events rather than per frame, and a bucket that is merely rebuilt
+cannot drift out of step with the list it indexes.
+
+**Held by cases.** `a_crater_patches_the_water_and_the_bake_exactly` (`harness/tests/water.rs`)
+is the one that matters: it digs in the field's lowest ground, where a dish *widens* the span
+and the bake has to be whole, and in a middling spot, whose dish bottoms out inside the span
+and whose lip stays under the ceiling -- the path a healing crater takes -- and after each it
+compares a rolled sum of `W_VERTS`, `W_NORM`, `W_COL`, `W_IDX` and the bake's pixels against a
+whole-grid rebuild of the same ground. Equal to the byte in both, and the counters
+(`sceneWater().bakeWhole` / `bakeRect`) are what say the cheap path was the one taken. The
+reports that make the readers honest are already in the scene: every crater case in
+`scene_logic` and the golden-run comparisons read `terrainHeight`, which is the function the
+index changed.
+
+Two things were left deliberately. The index and the rect path are **not** measurements of the
+*GPU* -- `rb_mesh` and `rb_bake` are `perfMark`s and they are CPU -- and the mirror tier's own
+number is still the one above. And the healing steps still rebuild: a crater that heals is a
+real ground change a player can see, and the fix was to make it cost the rectangle it touches
+(~1 ms) rather than to make it invisible.
