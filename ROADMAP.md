@@ -1540,8 +1540,10 @@ engine characteristics rather than harness bugs:
   three `node` steps are out of `.github/workflows/ci.yml`. The `test` job is now
   two Rust steps: `cargo test --workspace --exclude goats` (the client crate
   links raylib, and the build job is the one that installs the toolchain that
-  needs) and `cargo test --release -p harness -- --ignored --nocapture` for the
-  scene suite. The three `tools/*_test.js` files are deleted, and `README.md`,
+  needs) and `cargo test --release -p harness -- --ignored --nocapture` for the scene
+  suite. (The root `Cargo.toml` later grew `dev` and `fast` for local iteration -- `fast`
+  being a long case's runtime without release's link -- but the gate stays on `--release`,
+  which is the build that ships.) The three `tools/*_test.js` files are deleted, and `README.md`,
   `APIv1.md` §10 and the cross-cutting notes here no longer mention them.
 
 The Python tools stay: `tools/inspect_glb.py`, `goat_states.py` and

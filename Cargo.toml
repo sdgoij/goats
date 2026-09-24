@@ -57,3 +57,26 @@ bytes = "1"
 [profile.release]
 codegen-units = 1
 lto = "thin"
+
+# The everyday profile, and the default: `cargo run`, `cargo build`, `cargo test`.
+# `debug = 1` is line tables rather than the default full DWARF -- which is most of what a
+# link spends its time on -- and `opt-level = 1` keeps the native half of a frame quick
+# enough to play. Neither of the release settings above is worth paying for in a loop: the
+# frame's work lives in the JS scene, and what is native here is the bundle, the registry
+# and the engine glue.
+[profile.dev]
+opt-level = 1
+debug = 1
+
+# The profile a *long test* wants, **for local runs only**: release's optimisation without
+# the link it pays for that optimisation -- no LTO, and the default 16 codegen units, which
+# is exactly what the comment above trades away for its 13%. `scene_logic` is the case it
+# exists for (minutes of scene, so the run dwarfs the build either way, and 8x that run at
+# `dev`'s speed is worse than the link). A bench or a frame measurement wants `--release`
+# precisely, which is why the numbers in `PERF.md` are taken there and nowhere else -- and
+# so does CI, which gates on the build that ships rather than on this one.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = false

@@ -649,7 +649,9 @@ table in §3 should be read as "this build is faster than that build", not as
    (§6). Together they recovered the whole build spread and then some: the same
    engine source and the same scene went from 45–49 fps to 55–62, with every phase
    improving except the herd's own work. Cost: ~3 m 27 s per release build.
-   `lto = "fat"` is a tie on frame time and twice the build.
+   `lto = "fat"` is a tie on frame time and twice the build. The iteration profiles
+   added later (`dev` and `fast` in the root `Cargo.toml`) drop both settings on
+   purpose; no number in this document was taken with either.
 1. **Attack the compile gate (§4b) before the crossing.** A body that names a
 true global is not compiled at all, and this scene names globals everywhere, so
 the interpreter’s ~90–200 ns/step is what most of the frame is actually paying.

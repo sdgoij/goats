@@ -263,8 +263,8 @@ which is how those two columns were measured.
 Then:
 
 ```sh
-cargo run --release   # recommended
-cargo run             # debug builds work too; see "Troubleshooting"
+cargo run             # `dev`: seconds to build, quick enough to play -- the loop
+cargo run --release   # the profile the game ships, and the one PERF.md measures
 ```
 
 ## Releases
@@ -591,8 +591,10 @@ small — run from the repository root (as `cargo run` does).
 
 ```sh
 # The whole scene suite on the engine: gaits, stats, death, weather, the bot
-# herd, the menu, the console, the mods and both fixtures (205 cases)
-cargo test --release -p harness -- --ignored --nocapture
+# herd, the menu, the console, the mods and both fixtures (205 cases).
+# `--profile fast` is `release` minus the link it pays for its 13% (see Cargo.toml),
+# for local runs only -- CI gates on `--release`, the same build that ships.
+cargo test --profile fast -p harness -- --ignored --nocapture
 
 # The fast tests: the mod loader, the protocol, the session, and the harness's
 # spike and observation cases
