@@ -145,9 +145,12 @@ fn the_fill_makes_pools() {
     harness.run(FRAMES).expect("run the scene");
 
     let loaded = water(&mut harness);
+    // The band is the world's, but a window can hold water only where its own ground stands
+    // under it -- the same "is there relief to pool in" the measured spills used to answer,
+    // asked of the declared band instead.
     checks.check(
         "the field has relief to pool in",
-        loaded["high"].as_f64().unwrap_or(f64::NAN) > loaded["low"].as_f64().unwrap_or(f64::NAN),
+        loaded["high"].as_f64().unwrap_or(f64::NAN) > loaded["ground"].as_f64().unwrap_or(f64::NAN),
         &loaded,
     );
     checks.check(
@@ -272,10 +275,21 @@ fn a_crater_becomes_a_puddle() {
         after > before + 0.2,
         (before, after),
     );
+    // ...and the report is the water's own depth now, not a wading cap held over it: at the
+    // dish it is exactly the table minus the ground the crater left. The level is the one
+    // `flood` was handed rather than the report's, which rounds to three places. The cap the
+    // old check asserted here is `maxDepth`, and it is the *wading* one -- what the drag
+    // reads, not how deep a pool is allowed to stand.
+    let level = ground + 0.05;
+    let floor = f64_of(
+        harness
+            .eval(&format!("terrainHeight({CRATER_X}, {CRATER_Z})"))
+            .expect("terrainHeight"),
+    );
     checks.check(
-        "the hole is capped at the wading depth",
-        after > 0.0 && after <= 0.6 + 1e-6,
-        after,
+        "the dish holds the table minus the ground it left",
+        (after - (level - floor)).abs() < 1e-6,
+        (after, level, floor),
     );
 
     // `flood off` hands the table back to the weather, and the level stays a real
@@ -339,10 +353,10 @@ fn the_pools_are_drawn() {
     // `seep` or the terrain's relief moves it and nothing else reports it -- and it is
     // the number to read before touching those.
     eprintln!(
-        "water: low {} high {} floor {} quads {} of {}",
-        surface["low"],
-        surface["high"],
+        "water: ground {} floor {} high {} quads {} of {}",
+        surface["ground"],
         surface["floor"],
+        surface["high"],
         surface["quads"],
         48 * 48
     );
@@ -358,13 +372,20 @@ fn the_pools_are_drawn() {
             && flooded["rise"].as_f64().is_some_and(|rise| rise > 0.05),
         &flooded,
     );
-    // The v1 promise: the heaviest rain is still wading depth, wherever the window's
-    // relief happens to sit (`TUNING.water.maxDepth`).
+    // The band is the promise now. A pool may stand deeper than the goat can wade -- the
+    // ceiling that used to hold the *level* down is gone, and `maxDepth` is the wading cap
+    // alone (drag, splash, HUD). What holds instead is that the table never leaves the band
+    // it declared, whatever the rain does and wherever the goat stands.
+    let (floor, high) = (
+        f64_of(flooded["floor"].clone()),
+        f64_of(flooded["high"].clone()),
+    );
     checks.check(
-        "...and it stays a wading depth",
-        flooded["rise"].as_f64().is_some_and(|rise| rise <= 0.6)
-            && flooded["deepest"].as_f64().is_some_and(|deep| deep <= 0.6),
-        (&flooded["rise"], &flooded["deepest"]),
+        "...and the table never leaves the band it declared",
+        flooded["level"]
+            .as_f64()
+            .is_some_and(|level| level <= high + 1e-6 && level >= floor - 1e-6),
+        (&flooded["level"], &floor, &high),
     );
 
     // One frame with the water in, then the same frame without it. Two things have to
@@ -632,20 +653,21 @@ fn the_goat_wades() {
 }
 
 #[test]
-fn the_pools_are_there_wherever_the_goat_stands() {
+fn the_table_is_the_same_in_every_window() {
     let mut checks = Checks::new();
     let mut harness = Harness::start().expect("evaluate the scene");
     harness.run(FRAMES).expect("run the scene");
     rain(&mut harness, 1.0);
 
-    // Walk a line of anchors east with the rain hard on, the way a player wanders. Every
-    // window holds ground and the table is built from that ground's own low end, so every
-    // one of them holds water -- unless the table and the ground have come apart. They do:
-    // the window's lowest ground is very often a gully that drains out of the field's edge,
-    // and a table anchored to *that* sits below every basin in the window. `(0, -96)` and
-    // `(24, -96)` are two windows where a downpour had nothing at all to show for itself.
-    let mut empty: Vec<f64> = Vec::new();
-    let mut deepest_rise = 0.0f64;
+    // Walk a line of anchors east with the rain hard on, the way a player wanders. The table
+    // is the *world's* now -- declared in `TUNING.water` -- so one rain is one level in all
+    // nine windows, and what changes between them is only the ground each one happens to
+    // hold. This case used to ask the opposite question ("does every window hold water?"),
+    // which could only be answered by giving every window its own table, and that is exactly
+    // what made a pool blink out one step away and come back on the step back.
+    let mut levels: Vec<f64> = Vec::new();
+    let mut wrong_on: Vec<f64> = Vec::new();
+    let mut wet_anywhere = 0u64;
     for i in 0..9 {
         let x = -96.0 + 24.0 * i as f64;
         harness.command(&format!("pos {x} -96")).expect("pos");
@@ -653,33 +675,37 @@ fn the_pools_are_there_wherever_the_goat_stands() {
             .call("terrainEnsure", &[json!(x), json!(-96.0)])
             .expect("terrainEnsure");
         let f = water(&mut harness);
-        if f["on"].as_bool() != Some(true) || f["wet"].as_u64() == Some(0) {
-            empty.push(x);
-        }
-        let rise = f["rise"].as_f64().unwrap_or(f64::NAN);
-        if rise > deepest_rise {
-            deepest_rise = rise;
+        let wet = f["wet"].as_u64().unwrap_or(0);
+        wet_anywhere += wet;
+        levels.push(f64_of(f["level"].clone()));
+        if f["on"].as_bool() != Some(wet > 0) {
+            wrong_on.push(x);
         }
     }
+    let first = levels.first().copied().unwrap_or(f64::NAN);
     checks.check(
-        "a downpour puts water in every window the goat stands in",
-        empty.is_empty(),
-        &empty,
+        "one rain is one level, wherever the goat stands",
+        levels.iter().all(|level| (level - first).abs() < 1e-9),
+        &levels,
     );
-    // ...and never deeper than the wading cap the milestone promises: the table's anchor
-    // eases down, so a level that is not clamped to the anchor climbs with the range that
-    // has grown under it (1.13 m, measured along this line before the clamp).
+    // `on` is the "is there anything to draw" bit, and with the table the world's it is
+    // exactly "does this window hold water": something is wet iff the table clears the
+    // window's lowest ground, which is the test `waterUpdate` makes.
     checks.check(
-        "...and it is a wading depth in every one of them",
-        deepest_rise > 0.0 && deepest_rise <= 0.6,
-        deepest_rise,
+        "...and every window's `on` says whether it holds water",
+        wrong_on.is_empty(),
+        &wrong_on,
+    );
+    checks.check(
+        "...with water under the line somewhere to make it real",
+        wet_anywhere > 0,
+        wet_anywhere,
     );
 
     checks.finish();
 }
 
 #[test]
-#[ignore = "known-bad: the level is still a window statistic, and this is the spec for the change that lands next"]
 fn the_water_at_a_fixed_point_is_the_same_from_two_windows() {
     let mut checks = Checks::new();
     let mut harness = Harness::start().expect("evaluate the scene");
@@ -687,15 +713,16 @@ fn the_water_at_a_fixed_point_is_the_same_from_two_windows() {
     rain(&mut harness, 1.0);
 
     // The window follows the goat, so one world point gets read from two of them here: two
-    // anchors one snap step apart, and a lattice of points well inside both. The water is
-    // supposed to be a fact about the *ground* -- the rain fills the hollows that ground has
-    // -- and the ground does not move when the goat does, so two windows have to agree about
-    // every point they share. They do not. The table is derived from the window's own
-    // extremes (`waterRebuild`), so the level walks with the anchor: over this one step the
-    // level moves 0.855 m and the wetted count goes 50 to 30, and a point whose ground and
-    // spill the two windows agree about to the last bit is 0.11 m under water in one and dry
-    // in the other. Reading the ground the same way is the control -- a window that
-    // disagrees about that is failing this case for a reason it is not about.
+    // anchors one snap step apart, and a lattice of points well inside both. The water is a
+    // fact about the *ground* -- the rain fills the hollows that ground has -- and the ground
+    // does not move when the goat does, so two windows have to agree about every point they
+    // share. They did not. The table was taken from the window's own extremes, so over this
+    // one step the level moved 0.855 m, the wetted count went 50 to 30, and a point whose
+    // ground and spill both windows agreed about to the last bit was 0.11 m under water in
+    // one and dry in the other: a pool that vanished as the goat walked and came back on the
+    // step back. The table is the world's now and this holds. Reading the ground the same way
+    // is the control -- a window that disagrees about *that* is failing for a reason this
+    // case is not about.
     let (a_ground, a_depth) = window_at(&mut harness, -24.0, -96.0);
     let (b_ground, b_depth) = window_at(&mut harness, 0.0, -96.0);
 

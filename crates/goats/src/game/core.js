@@ -357,19 +357,28 @@ const TUNING = {
         snap: 24,                  // rebuild when the goat has moved this far
         uv: 0.06,                  // texture tiles per world unit
     },
-    // Water (M20a). `seep` is the rain below which the ground stays dry, `fill` how much
-    // of the basins' spill range the heaviest rain reaches, and `wetDown` the seconds the
-    // table takes to drain once the rain that filled it has gone -- the water *follows*
-    // the weather rather than integrating it (water.js), so those three are the whole of
-    // "how wet does it get, and for how long". The wave, fresnel, absorption, shore and
-    // reflection knobs arrive with the slices that read them (M20c-M20e); `maxDepth` is
-    // the wading cap M20g lifts for swimming.
+    // Water (M20a). `low` and `high` are the table's own ends, in metres: `low` is the
+    // terrain's floor (`-terrain.relief`, so a dry spell is exactly dry at every point of
+    // the field) and `high` its midline, the level a whole band of rain above `fill` would
+    // reach. They are *world* constants rather than read off the loaded grid, and that is a
+    // fix rather than a preference: a level taken from the window the goat is standing in is
+    // a different level in the next window, over ground that has not moved, so a pool 0.11 m
+    // deep one step away was dry at the next (M20d′ reported the blink; this is what closed
+    // it). `fill` is the share of that band the heaviest rain reaches, `seep` the rain below
+    // which the ground stays dry, and `wetDown` the seconds the table takes to drain once the
+    // rain that filled it has gone -- the water *follows* the weather rather than integrating
+    // it (water.js), so those are the whole of "how wet does it get, and for how long". The
+    // wave, fresnel, absorption, shore and reflection knobs arrive with the slices that read
+    // them (M20c-M20e); `maxDepth` is the wading cap M20g lifts for swimming, and it is a
+    // *wading* cap alone -- it no longer doubles as the table's ceiling.
     water: {
         enabled: 1,                // 0 disables the system (the frame-cost bisect)
-        fill: 0.17,                // share of the basins' spill range at rain 1
+        low: -2.1,                 // metres; the table's floor, at `-terrain.relief`
+        high: 0,                   // the table's ceiling: the field's midline
+        fill: 0.75,                // share of the table's own band at rain 1
         seep: 0.05,                // rain below this leaves the ground dry
         wetDown: 600,              // seconds the table takes to drain (water.js)
-        maxDepth: 0.6,             // metres; v1 keeps pools wading depth (M20g lifts it)
+        maxDepth: 0.6,             // metres; the wading cap (M20g lifts it for swimming)
         // The shore is the band at the water's edge, in metres of depth: the surface fades
         // in over it and the chop ramps up across it. It has to stay *small against the
         // pools this model makes*, or the whole pool is the fade and there is nothing left
@@ -523,6 +532,11 @@ const TUNING_CLAMP = {
     // divides by `1 - seep`; `fill` is a share of the range; `maxDepth` is the wading
     // cap (up to a few metres, which M20g's swimming is what would use).
     "water.fill": [0, 1],
+    // The table's ends are heights, and any finite height is legal: a mod can put the
+    // waterline where it likes. `low` has to stay at or under the field's deepest ground or
+    // a dry spell leaves puddles, which is what the dry-spell case holds it to.
+    "water.low": [-8, 8],
+    "water.high": [-8, 8],
     "water.seep": [0, 0.99],
     // The drain: zero is the M20b behaviour exactly -- the water answers the rain with no
     // lag at all, which is what a case pins -- and the ceiling is a quarter of an hour,

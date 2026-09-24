@@ -100,7 +100,7 @@ uses.
 | **M18** | Mod sync: pull a host's mods before joining | M14d, M17 | M–L | ✅ **Done** — the fetch ALPN, the client's fetch/verify/install, the catalogue and the client wiring (consent, `--pull`, the one retry, and loading a mod that arrives after the freeze) |
 | **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
 | **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | ✅ **Done** — M19a (the engine additions), M19b (the devices and the blasts), M19c (the flung goat, the herd that dies to it, and the device that moves house), M19d (the craters), M19e (the wire), M19f (the look: the flipbook atlases, the light flash, the camera knock, the `GoatFlung` clip and the `py` field that finally puts a mirrored leap where it belongs) and M19g (the per-slot pools, the trigger's click, and the `goats.explosions` surface) have landed. The layout is derived from the seed, so nothing new on the handshake |
-| **M20** | Water: pools, waves and a reflected sky | M3 (rain), M4 (the lit program), M8 (the heightfield), M19d (the craters) | M–L | 🚧 **In progress** — M20a (the field and the fill: `water.js`, the priority-flood fill, `sceneWater()`, the two hooks, the console verbs and `water.rs`) has landed with the full 4050-frame suite still green. The rest is M20b–M20f (the surface and the level, the waves, the interactions, the reflections, the wire audit and the guards); **M20g (swimming, buoyancy and drinking) is the next planned step**, not a deferral. **Nothing on the wire**: the fill is a pure function of the ground and the level a stateless function of the seed's own rain |
+| **M20** | Water: pools, waves and a reflected sky | M3 (rain), M4 (the lit program), M8 (the heightfield), M19d (the craters) | M–L | 🚧 **In progress** — M20a (the field: `water.js`, the priority-flood fill, `sceneWater()`, the two hooks and the console verbs), M20b (the surface and the level), M20c (the waves), M20d (the interactions: the wake, the splashes, the drag and the submerged grass), M20d′ (the feel, after the first play-through) and M20d″ (the table is the world's) have landed, with `water.rs` at 47 checks over eight cases and the rest of the suite green. What is left is M20e (the reflections) and M20f (the wire audit, the mod surface and the guards); **M20g (swimming, buoyancy and drinking) is the next planned step**, not a deferral. **Nothing on the wire**: the table's ends are declared, so the level is a stateless function of the seed's own rain, and the ground it pools on is derived |
 
 ---
 
@@ -3518,21 +3518,21 @@ this milestone is a consequence of these, so they come first.
 ## M20 — Water: pools, waves and a reflected sky
 
 **Status:** 🚧 **In progress** -- **M20a** (the field and the fill), **M20b** (the
-surface), **M20c** (the chop and the fresnel) and **M20d** (the interactions) have landed.
+surface), **M20c** (the chop and the fresnel), **M20d** (the interactions) and
+**M20d″** (the table is the world's) have landed.
 M20a: `water.js`, `TUNING.water`, the two hooks (the terrain rebuild and the
 weather-effects step) and the `water`/`flood` console verbs. M20b: the surface mesh, the
 water program (a sibling of `LIT_FS`, in `lighting.js`) and the shore. M20c: the wave field
 as a fragment-side normal, the tight specular lobe and the fresnel. M20d: the wake, the
 splashes, the drag and the submerged grass. **M20d′** (the feel, after the first
-play-through) is the pass that followed the first build anyone *looked* at: the table is
-anchored to the ground that can hold water and clamped to a wading depth, it drains on its
+play-through) is the pass that followed the first build anyone *looked* at: it drains on its
 own clock, the pools fill sooner and deeper, and the shore is a band at the water's edge
-rather than the whole pool (see *The feel, after the first play-through*, below). **One
-report the pass did not close:** the level is still derived from the window the goat is
-standing in, so the same world point can be under water from one window and dry from the
-next. `the_water_at_a_fixed_point_is_the_same_from_two_windows` is the case that holds it,
-and it is `#[ignore]`d until the table stops depending on the window.
-`crates/harness/tests/water.rs` is 42 checks over seven cases, and the rest of the suite is
+rather than the whole pool (see *The feel, after the first play-through*, below). **M20d″**
+closes the report that pass opened and could not: the table is the *world's* now, its two ends
+declared in `TUNING.water` rather than read off the window the goat is standing in, so one
+rain is one level everywhere and the same world point cannot be under water from one window
+and dry from the next (see *The table is the world's*, below).
+`crates/harness/tests/water.rs` is 47 checks over eight cases, and the rest of the suite is
 still green: `scene_logic` 193, `skinning` 22, `celestial` 7, `observations` 3, `spike` 4
 and `birds` 41 in release. This section is
 the whole design, not a summary of one; the rest of the build is M20e (the reflections),
@@ -3548,7 +3548,7 @@ and open question 8. Everything a pool needs already exists, and water is mostly
 | --- | --- |
 | Ground a term can dish after it is derived | `terrainHeight(x, z)` is a pure function and a crater is a term in it (M8, M19d) |
 | Rain that rises and falls, on every peer | `rainAmount`, the eased 0..1 the weather machine produces (M3) |
-| A level every peer agrees on, with nothing sent | The streams are seeded and adopted (`sceneUseSeed`/`sceneUseStreams`), so both ends integrate the same rain (M12b, M14d) |
+| A level every peer agrees on, with nothing sent | The streams are seeded and adopted (`sceneUseSeed`/`sceneUseStreams`), so both ends derive the same rain (M12b, M14d) |
 | A light to reflect and be lit by | The lit program, shared by every drawn thing, plus the blast light as a uniform (M4, M19f) |
 | A second offscreen pass as precedent | The shadow map, rendered into a render texture and sampled back (M4b) |
 | A transparent pass that sorts correctly | The sky's layered, premultiplied blending, and the blend-mode set M19a exposed |
@@ -3556,21 +3556,20 @@ and open question 8. Everything a pool needs already exists, and water is mostly
 | Splash and foam primitives | `drawTriangle3D`, `drawLine3D`, `drawPoint3D` (M0) |
 | A per-frame cost that is not a per-cell scan | The terrain's patch rebuild and per-cell height cache (M8, M19d), and the `PERF.md` §7.2 recipe |
 
-**The one-sentence version.** Rain raises a water table; a priority-flood fill of the
-heightfield turns that table into pools that sit in the low ground and spill over
-saddles; the surface is one transparent mesh whose depth is a per-vertex attribute
-and a per-frame uniform; and waves, fresnel and reflections are a sibling of the lit
-shader.
+**The one-sentence version.** Rain raises a water table whose two ends are declared rather
+than measured; a cell is under water exactly when the ground beneath it is below the table,
+which makes pools merge wherever they meet and a crater just ground that is lower; the
+surface is one transparent mesh whose vertices carry the ground and are lifted to the table
+by their own depth; and waves, fresnel and reflections are a sibling of the lit shader.
 
 ### The mechanics
 
 ```mermaid
 flowchart TD
-    A[weather.js: rainAmount] --> B[The volume accumulator, less a seep loss]
-    B --> C[The storage curve, inverted: a water table W]
-    T[terrainHeight: base noise + crater terms] --> F[Priority-flood fill F, at a terrain rebuild]
-    F --> M[The water mesh: a per-vertex F - terrain, static]
-    C --> S[The water shader: depth = max 0, min W,F - terrain]
+    A[weather.js: rainAmount] --> C[The wetting: one follower scalar, 0..1]
+    C --> W["The table: low + wetness * fill * (high - low), ends declared"]
+    T[terrainHeight: base noise + crater terms] --> M[The water mesh: the ground itself, per vertex]
+    W --> S["The water shader: depth = max(0, W - terrain)"]
     M --> S
     S --> W1[Waves, normals, fresnel]
     S --> R[The reflection tier: none / heightmap / planar]
@@ -3580,44 +3579,42 @@ flowchart TD
     G --> P[The particle pools: splash and foam]
 ```
 
-**The fill, not a flow simulation.** A pool's surface is *level*, so the right model
-is hydrostatic: pour water until the table is at `W`, and it occupies every cell
-below `W` that is connected to it without crossing a saddle above `W`. That is
-exactly a depression fill, and the standard one is **priority-flood** (Barnes et
-al.): seed a queue with the window's boundary cells at their own height, pop the
-lowest, and for each unvisited neighbour set its filled height to
-`max(neighbour, popped)` and push. One pass gives `F(x, z)`, the spill level of every
-cell's basin. Then:
+**A level table, not a flow simulation.** A pool's surface is *level*, so the model is
+hydrostatic and the whole of it is
 
 ```
-depth(x, z)   = max(0, min(W, F(x, z)) - terrainHeight(x, z))
+depth(x, z)   = max(0, W - terrainHeight(x, z))
 surface(x, z) = terrainHeight(x, z) + depth(x, z)
 ```
 
-Three properties fall out for free, which is the whole argument for this model:
+A cell is under water exactly when the table stands over its ground, so pools merge wherever
+they meet, and a crater (M19d) is simply ground that is lower -- a fresh one becomes a puddle
+once it rains, which is an emergent win and worth a harness assertion.
 
-- A cell above the table is dry (`depth = 0`); a basin fills to the table and two
-  basins merge when `W` passes their shared saddle.
-- A basin stops rising at `F` and **spills** instead -- real overflow, no special
-  case, and the reason the window's boundary is seeded at its own height rather than
-  treated as a wall: water leaves the field rather than damming against the edge.
-- **A crater is a basin.** A fresh crater (M19d) becomes a puddle once it rains,
-  which is an emergent win and worth a harness assertion.
+**What the first cut put on top of that, and why it is gone.** The design originally ran a
+**priority-flood fill** (Barnes et al.) over the terrain grid at every rebuild, giving
+`F(x, z)`, the spill level of each cell's basin, and capped the surface at it: `min(W, F)`.
+The argument was that a basin "stops rising at `F` and spills instead". It does not hold, and it
+cost two things. A pool stopped *deepening* at its own rim while the table over it went on
+climbing -- a storm raised the level and the deepest pool in the field sat at 0.443 m and did
+not move. And `F` is computed from the loaded grid, so a cell the flood lets drain out of the
+grid's edge read dry with water standing over it. Both were symptoms of the same mistake,
+which was reading the *window* at all: see *The table is the world's*, below. The fill still
+runs at a rebuild and still writes the mesh's texcoord; **nothing reads it**, and deleting it
+is the next thing to do here.
 
-The consequence that makes it cheap: `F - terrainHeight` is **static between terrain
-rebuilds**, so it rides the water mesh as a **per-vertex attribute**, `W` rides as
-**one uniform**, and the shader does the `min`/`max` per vertex. The fill runs only
-when the ground changes -- an anchor move or a crater -- which is already an
-expensive, amortized event (~72 ms and the frame's high-water mark, `PERF.md`
-appendix B). Per frame, water costs **one scalar** -- the level, read off
-`rainAmount` by the weather step (see *Rain, and the level*).
+The consequence that makes it cheap: the only thing the mesh carries is the **ground**, which
+is static between terrain rebuilds, and the table rides as **one uniform**. Per frame, water
+costs one scalar -- the level, read off `rainAmount` by the weather step (see *Rain, and the
+level*).
 
 **Grid resolution -- the one real call.** The terrain grid is 2 m (`TERRAIN_CELL`).
-A coarser water grid (4 m) makes the fill ~4x cheaper and the surface smoother, but a
+A coarser water grid (4 m) makes the surface smoother and the mesh lighter, but a
 1.6 m-radius crater would be averaged away and the crater-puddle with it. The
-recommendation is to **solve at 2 m** and **render a decimated mesh over only the
-wet-potential cells** (`F > terrain`, which is static and usually a small share of
-the 2401). See the calls to confirm.
+recommendation is to **solve at 2 m** and **render a decimated mesh over only the cells that
+can ever be wet** -- ground standing under the table's ceiling, which is static; at `high` 0
+that is 1078 of the grid's 2304 quads, measured, against 476 when the decimation asked the
+fill instead. See the calls to confirm.
 
 ### Rain, and the level
 
@@ -3640,51 +3637,107 @@ waterWet = waterWet + (wetted - waterWet) * dt / wetDown   // eased, on the way 
 W        = low + sqrt(waterWet) * fill * (high - low)      // and then the table
 ```
 
-where `low` is the **lowest ground in the field that can hold water** (`W_F > ground` -- a
-basin, not the gully the fill lets drain, which is a distinction the first play-through paid
-for: see the feel note) and `high` the **highest spill level**, both read off the fill. The
-level is then clamped to `low + maxDepth`, which is what makes the wading promise a property
-of the model rather than of the arithmetic. The difference from an accumulator is a
-**restoring force**: a follower converges on the rain's own value, so it has no history to
-pull two peers apart with, and they can differ only by where their samples of the same
-shared signal fall. At `wetDown` 600 s and a handful of weather packets a second that is
-millimetres of level, and only while a front is moving -- an estimate rather than a
-measurement, and M20f's audit is where it gets proven, or where the level goes on the wire
-(call 4's fallback).
+where `low` and `high` are the table's own ends, **declared** in `TUNING.water` rather than
+measured: `low` is the field's floor (`-terrain.relief`), so at zero rain the table is under
+every point of the field, and `high` the field's midline, with `fill` the share of that band
+the heaviest rain reaches. Nothing is clamped on top of it -- the band ends where it ends.
+Measured off the window instead is what the first cut did, and it cannot work: see *The table
+is the world's*. The difference from an accumulator is a **restoring force**: a follower
+converges on the rain's own
+value, so it has no history to pull two peers apart with, and they can differ only by where
+their samples of the same shared signal fall. At `wetDown` 600 s and a handful of weather
+packets a second that is millimetres of level, and only while a front is moving -- an estimate
+rather than a measurement, and M20f's audit is where it gets proven, or where the level goes
+on the wire (call 4's fallback).
 
 The properties the two ends of the mapping keep, and the cases hold:
 
 - **A dry spell is *exactly* dry.** `seep` (0.05) is the rain the ground drinks before
-  anything pools, and below it the table sits on the lowest ground: the lowest vertex
-  reads depth 0 and every other cell less. A follower approaches its target and never
-  arrives, so `waterStep` puts the wetting *at* zero -- which is what keeps
+  anything pools, and below it the table sits on the band's floor -- `-terrain.relief`, under
+  every point of the field -- so every cell reads depth 0. A follower approaches its target
+  and never arrives, so `waterStep` puts the wetting *at* zero -- which is what keeps
   `waterSpeedFactor` 1 to the last bit on a clear frame, and M6's gait speeds where they
   were.
 - **A rise has no lag in it.** A shower is standing water before the goat has crossed the
   field, and the rise is also the half of the clock that carries no memory at all, so it is
 derived in `waterUpdate` -- which every caller can be trusted with -- and not in the
   frame's step.
-- **The anchor eases *down* and never lags *up*.** It is a *window* statistic and the window
-  follows the goat, so a floor that stepped with it would take the whole field's water with
-  it -- but a floor that lagged *below* the ground it is on leaves the table under every
-  basin in the window, which is an empty field wearing a live number. So it follows the
-  anchor down at a quarter a rebuild and up at once, and the level's clamp to `low + maxDepth`
-  keeps the rise a wading one while it catches up.
-  `the_pools_are_there_wherever_the_goat_stands` holds both halves.
+- **Nothing about the level comes from the window.** It is the declared band and the rain,
+  and that is the whole of it -- no measured end, no eased floor, no clamp. That is what makes
+  a pool a fact about the *ground*: two windows one snap step apart agree about every point
+  they share, to the last bit, which
+  `the_water_at_a_fixed_point_is_the_same_from_two_windows` holds, and
+  `the_table_is_the_same_in_every_window` holds the other half of it.
 - **The table walks monotonically with the rain**, and a higher table covers strictly more
   ground. The `sqrt` is the *shape* of the growth and the one feel call here: it is
   concave, so the first of a shower does most of the pooling, which is what makes a
-  moderate rain leave a pool rather than a film (the measured table is in the feel note
-  below). Monotone for any exponent above zero; 1.0 is a straight line. The two ends are
+  moderate rain leave a pool rather than a film (the feel note below is where the eye set
+  the shape, and *The table is the world's* is where the band under it moved). Monotone for
+  any exponent above zero; 1.0 is a straight line. The two ends are
   still exact in the sense that matters: at `rainAmount <= seep` the field is exactly dry,
-  and at `rainAmount = 1` the table sits `fill` of the range above the lowest ground,
-  which is the wading cap this milestone promises.
+  and at `rainAmount = 1` the table sits `fill` of the band above its floor -- `fill` 0.75,
+  which as it ships is a level of -0.525. There is no ceiling on top of that any more, so a
+  pool may stand deeper than the goat can wade. Making the *rise climb through a storm* rather
+  than flatten into it is this exponent and nothing else: the `sqrt` is what leaves the last
+  tenth of the rain worth 4 cm.
 
 What a follower costs is that the level is no longer a pure function of the *moment's*
 rain, so a case that drives the rain *down* has to settle the water first (`rain_settled`
 in `water.rs`). A storage curve remains the refinement to make if the *rate* at which a
 pool spreads ever reads wrong, and the cure for that is still a quantized level on the
 wire rather than a reintroduced integral.
+
+### The table is the world's (M20d″)
+
+The feel pass fixed *which* ground the table was anchored to without making the level stop
+depending on the window at all, so the report it opened survived it. What that looked like,
+measured: with the goat at `(-24, -96)` the level sat at `-1.087` and the point `(10, -64)`
+was 0 m under water; one snap step east, at `(0, -96)`, the level was `-0.232` and the same
+point was `0.1056 m` under water -- while the ground (`-0.5973`) and the spill (`-0.4917`)
+that the two windows reported *at that point* were identical to the last bit. The water came
+and went as the goat walked, over ground that had not moved, and stepping back brought it
+back. That is also the shape of the feel note's "walk closer and it disappears": the same
+point read from the next window, not a distance effect.
+
+The fix is to stop reading the window. The table's two ends are **declared**:
+
+```js
+water: { low: -2.1, high: 0, fill: 0.75, ... }   // TUNING.water
+W = low + wetness(rainAmount) * fill * (high - low)
+```
+
+`low` is the field's floor -- `-terrain.relief`, so at zero rain the table stands under every
+point of the field and a dry spell is *exactly* dry -- and `high` is the field's midline, the
+level a whole band of rain above `fill` would reach. `waterRebuild` still measures one thing,
+the window's lowest ground, and uses it for one thing only: `waterOn`, the "is there anything
+to draw" bit, since nothing in the window is lower than that and the table clears it exactly
+when something is wet. A level is never read off the window again.
+
+What went with it: `waterPond`, `waterPonds`, `waterFloor` and its per-rebuild ease; the
+clamp of the level to `low + maxDepth`; the cap of each vertex's depth at its basin's spill,
+in `waterVertexDepth`, in `sceneWater`'s scan and in `WATER_VS`; and the decimation's use of
+the fill. The cap mattered on its own account: it was also why the sheet was *not level*,
+since a vertex is lifted to the surface by its own depth and stopped climbing at a basin's rim
+while the table over it went on rising. `maxDepth` is the **wading cap** alone now -- the drag
+and the splash read it, and it no longer holds the level or a depth down, which is what lets a
+pool stand deeper than the goat can wade. (That is a promise this milestone used to make and
+no longer does; M20g's entry is where it is recorded.)
+
+The cases moved with it:
+
+| Case | Was | Is |
+| --- | --- | --- |
+| `the_water_at_a_fixed_point_is_the_same_from_two_windows` | the open spec, `#[ignore]`d | passes: two anchors one snap step apart agree about a lattice of points well inside both, with the ground read the same way as the control |
+| `the_pools_are_there_wherever_the_goat_stands` | "does every window hold water?" -- a question answerable only by giving every window its own table, which is the bug | `the_table_is_the_same_in_every_window`: one rain is one level in all nine windows, and each window's `on` says exactly whether it holds water |
+| `...and it stays a wading depth` | the level clamped to `low + maxDepth` | "...and the table never leaves the band it declared" |
+| `the hole is capped at the wading depth` | the depth cap on the report | the dish holds the table minus the ground it left, to 1e-6 |
+
+Two measurements to keep in view. **The rise:** with the band -2.1..0 at `fill` 0.75, rain 1
+puts the table at **-0.525**, so the second half of a storm buys **0.49 m** of rise where it
+used to buy 0.15 -- the ceiling is gone and the reach is larger. **The cost:** the decimation
+can no longer ask the fill, so it asks the ground against the ceiling, which at `high` 0 is
+**1078** of the grid's 2304 quads where the fill's answer was 476. `high` is the knob behind
+both numbers.
 
 ### The look
 
@@ -3696,7 +3749,7 @@ a light in the engine. The realism is five terms:
 | Term | What it buys | Where |
 | --- | --- | --- |
 | **Fresnel** | grazing angle is a mirror, steep angle is see-through -- the single biggest "wet vs. glass" cue | fragment |
-| **Waves** | two or three Gerstner/sine terms, amplitude scaled by the wind the grass already sways to and by depth (shallow water chops less), with analytic normals | vertex |
+| **Waves** | two or three Gerstner/sine terms, amplitude scaled by the wind the grass already sways to and by depth (shallow water chops less), with analytic normals -- landed as a *fragment-side normal field*, because the mesh is the terrain's 2 m grid and a wave is a third of a cell (M20c) | vertex / fragment |
 | **Reflection** | a mirror of the sky, the ground and the goat, perturbed by the normal field | the tiers below |
 | **Absorption** | tint and darken the submerged ground by depth (Beer-Lambert), so a puddle reads *thin* and a pool *deep* | fragment |
 | **Glitter and the shore** | a Blinn-Phong specular lobe across the ripple normals; a shore band where depth falls to zero, and a wet-darkening at the terrain's edge | fragment |
@@ -3720,7 +3773,7 @@ Medium / High; shadows map / planar / off):
   frame's budget: it is a **second scene submission**, and the frame is CPU-bound in
   the scene, not GPU-bound (`PERF.md` section 0). Mitigate by drawing a *reduced*
   reflection scene (terrain + goat + herd, no grass, no shadow pass, half-res
-target). It is the first thing to measure under `PERF.md`'s protocol.
+  target). It is the first thing to measure under `PERF.md`'s protocol.
 
 **Two engine-surface risks, both learned the hard way in M5b:**
 
@@ -3739,37 +3792,42 @@ target). It is the first thing to measure under `PERF.md`'s protocol.
 
 ### The surface, as landed (M20b)
 
-The split the design asked for is what shipped, and the numbers are measured rather
-than guessed: on the spawn field (`low -1.452`, `high 1.487`) the surface is **476 of
-the grid's 2304 quads** -- the ones whose ground stands under its own spill level --
-and the heaviest rain raises the table **0.482 m** (0.441 when M20b landed; the feel note
-below is where the anchor and the clamp moved it).
+The split the design asked for is what shipped: the mesh carries the **ground** and the
+level rides as one uniform, so the mesh is rebuilt only when the *ground* changes -- a new
+anchor or a crater -- and never as the rain rises. What the draw costs is the decimation:
+**1078 of the grid's 2304 quads** on the spawn field, the quads whose ground stands under
+the table's declared ceiling (`high`), measured. M20b landed at 476, asking the fill's
+per-vertex spill instead; that question went with the fill's answer (see *The table is the
+world's*), and `high` is the knob behind both numbers.
 
-- **The mesh carries the ground and the potential.** `positions.y` is the ground under
-the vertex and `texcoord.x` is `max(0, W_F - terrain)`, that vertex's basin's own depth.
-The level is one uniform, so `WATER_VS` places the surface and the mesh is rebuilt only
-when the *ground* changes. The index list is trimmed in place, and the arrays are the
-same objects every build, which is what keeps a `makeModel` re-upload at the cheap end
-of the range `world.js` measured.
-- **The surface is lit like the ground, and its body is the water's own depth.** The
-normal comes from the chop (M20c) and the hemisphere term from its tilt; the sun, the
-shadow map and the blast light are the shared uniforms. The tint runs from
-`waterShallow` to `waterDeep` with `fragDepth`, so a puddle reads thin and a pool deep
-(Beer-Lambert, the design's absorption row) -- the *depth*, not how full the basin is,
-which is what a real pool does. The alpha runs with the same share, so a pool fades out
-instead of ending on a drawn line, and a dry cell is not drawn at all. **How wide that
-share is** is `waterShore`, and it was the mistake M20d′ had to fix: at 0.25 m it was
-wider than any pool the model makes, so the whole pool *was* the fade.
+- **The mesh carries the ground.** `positions.y` is the ground under the vertex.
+  `texcoord.x` still holds the fill's per-vertex basin depth (`max(0, W_F - terrain)`) and
+  **nothing reads it any more** -- it is the last thing keeping `waterFill` alive, and
+  deleting the two together is the first thing to do here. The index list is trimmed in
+  place, and the arrays are the same objects every build, which is what keeps a `makeModel`
+  re-upload at the cheap end of the range `world.js` measured.
+- **The surface stands at the table, and its body is the water's own depth.** `WATER_VS`
+  lifts a vertex to `level`, so the fragment's depth is `max(0, level - ground)`. The
+  normal comes from the chop (M20c) and the hemisphere term from its tilt; the sun, the
+  shadow map and the blast light are the shared uniforms. The tint runs from
+  `waterShallow` to `waterDeep` with that depth, so a puddle reads thin and a pool deep
+  (Beer-Lambert, the design's absorption row) -- the *depth*, not how full the basin is,
+  which is what a real pool does. The alpha runs with the same share, so a pool fades out
+  instead of ending on a drawn line, and a dry cell is not drawn at all. **How wide that
+  share is** is `waterShore`, and it was the mistake M20d′ had to fix: at 0.25 m it was
+  wider than any pool the model makes, so the whole pool *was* the fade.
 - **It is the scene's only transparent model**, drawn last in the 3D pass with
-`beginBlendMode(BLEND_ALPHA)` around it, and only in the lit branch: the surface height
-comes from the water program, so a build without it simulates the field and draws no
-water rather than drawing it at the ground's height.
-- **`fill` was retuned twice.** 1.0, the first value, rose the field's whole relief range
-and made the deepest basin a lake metres deep -- which is M20g's problem, not this
-milestone's; 0.15 shipped M20b; and M20d′ moved it to 0.17, which is the wading cap
-(`maxDepth` 0.6) at the spawn field's relief. The case asserts the rise stays inside
-`maxDepth`, so a later change to `fill` or to the terrain's relief cannot quietly
-submerge the goat.
+  `beginBlendMode(BLEND_ALPHA)` around it, and only in the lit branch: the surface height
+  comes from the water program, so a build without it simulates the field and draws no
+  water rather than drawing it at the ground's height.
+- **`fill` was retuned three times, and the last one changed what it means.** 1.0, the
+  first value, rose the field's whole relief range and made the deepest basin a lake metres
+  deep -- which is M20g's problem, not this milestone's; 0.15 shipped M20b; M20d′ moved it
+  to 0.17. All three were shares of a band *measured off the window*; M20d″ declared the
+  band (`low -2.1`, `high 0`) and set `fill` to 0.75, which is a level of -0.525 at rain 1
+  -- so the numbers before and after are not comparable, and nothing caps the rise any
+  more. What holds instead is that the table never leaves the band it declared, so a later
+  change to `fill` or to `terrain.relief` cannot put the level outside its own ends.
 
 Two harness facts this landed with, both worth keeping:
 
@@ -3854,11 +3912,13 @@ cosmetic and local and nothing about it should travel.
   `1 + dragEnergy * depth/maxDepth` are both exactly 1 with no water under the goat, so a
   `clear` frame on dry ground is bit-for-bit the frame it has always been -- M6's own rule,
   and the reason the harness's gait speeds did not move.
-- **A tuft under the water is skipped.** The test is a lookup rather than a comparison with
-  the table alone: `W_TEX` already holds `max(0, W_F - terrain)` per vertex, so a cell that
-  *drains* -- its spill level is its own ground, the gully between two pools -- keeps its
-  grass even where the table is above it. Two array reads in a loop that has no wish to be
-  compiled, and `culled` counts what it skipped so a case can hold it.
+- **A tuft under the water is skipped.** One comparison with the table: a tuft is culled
+  when the grid's ground beneath it stands below the level, which is the same test the
+  surface and the depth read. It was a lookup into `W_TEX` -- the fill's per-vertex basin
+  depth -- for as long as the fill's answer meant something, and M20d″ retired that: a cell
+  the flood lets drain out of the window's edge is under water like any other now, and the
+  fill itself is the next thing to delete (see *The table is the world's*). `culled` counts
+  what it skipped so a case can hold it.
 - **The HUD** gains the water on the weather line it belongs beside ("water 0.31 m slowed
   26%"), and it is empty when dry, so a `clear` line reads exactly as it always has.
 
@@ -3867,19 +3927,24 @@ cosmetic and local and nothing about it should travel.
 Everything above was designed and asserted from a machine with **no GPU in it**, so the
 *look* was the one thing no case could hold -- M20b says so in as many words. The first
 build anyone actually walked around in turned up four reports. One was the model itself, and
-it is the one that explained the others; the rest were scales:
+it is the one that explained the others; the rest were scales. The band those scales were
+set against is the one M20d′ shipped, which M20d″ then replaced (see *The table is the
+world's*), so the `level` and `rise` columns in the tables below are that band's: the shape
+is the point, not the height.
 
 | Report | What it was | What changed |
 | --- | --- | --- |
-| "water is only visible from a long distance away; walk closer and it glitches out of existence" | **The table was anchored to the window's lowest *ground*, and that is very often a gully that drains out of the field's edge.** A table anchored to the gully sits *under* every basin in the window, so every pool in it is above the table and the field holds **no water at all** -- during a downpour, reporting `on` with `wet 0`. Walking is what moves the anchor, so the water blinked out and back as the goat crossed from one window into the next; and no case had ever seen it, because every case lived on the spawn field, whose lowest ground *is* a basin. | The low end of the mapping is now the lowest ground that can **hold** water (`W_F > ground`), the level is clamped to that ground plus `maxDepth` -- so the wading promise holds whatever the window's relief does -- and `waterOn` asks the same question. `the_pools_are_there_wherever_the_goat_stands` walks a line of anchors east: two of its nine windows were empty before this, and none are now. |
+| "water is only visible from a long distance away; walk closer and it glitches out of existence" | **The table was anchored to the window's lowest *ground*, and that is very often a gully that drains out of the field's edge.** A table anchored to the gully sits *under* every basin in the window, so every pool in it is above the table and the field holds **no water at all** -- during a downpour, reporting `on` with `wet 0`. Walking is what moves the anchor, so the water blinked out and back as the goat crossed from one window into the next; and no case had ever seen it, because every case lived on the spawn field, whose lowest ground *is* a basin. | The low end of the mapping is now the lowest ground that can **hold** water (`W_F > ground`), the level is clamped to that ground plus `maxDepth` -- so the wading promise holds whatever the window's relief does -- and `waterOn` asks the same question. `the_pools_are_there_wherever_the_goat_stands` walks a line of anchors east: two of its nine windows were empty before this, and none are now. (M20d″ then retired both halves of that answer -- the low end is the declared `TUNING.water.low` and the clamp is gone, and the case is `the_table_is_the_same_in_every_window`.) |
 | "from a distance I can see water pooling, but when I get closer it disappears" | Read again after the anchor, this was the *look*: `waterShore` was 0.25 m and the alpha *and* the tint both topped out there, and the pools the anchor bug left behind were 8 cm deep at rain 0.5, so the whole pool *was* its fade. The one cue that ignores depth is the fresnel, and that needs a grazing angle -- tens of per cent of the sky at 20 m, single digits at 5 m, 2% directly below the camera -- so a pool was obvious at a distance and invisible up close. | `shore` 0.25 → **0.08**, and the tint moved onto the same depth share: it had been driven by the basin's *fullness* (`depth / potential`), which is not what water does. At rain 0.5 that is now 19 of 31 wet vertices at full opacity, against **0 of 19** at the depths the field had then. |
 | "it should accumulate faster and disappear slower" | The level was in proportion to the rain, so rain 0.5 was a film over a handful of vertices, and a shower took its puddles away with it. | `seep` 0.15 → **0.05** (so light rain wets at all), `fill` 0.15 → **0.17**, the concave wetting above, and **`wetDown` 600 s**: the table drains on its own clock, so a pool is still 0.44 m deep five seconds after the rain stops, 29 cm five minutes in, and under a centimetre only after half an hour. (The number is purely the eye's: 25 s shipped M20d, then 100, then 600.) |
 | "the rippling is a bit too strong, and at a distance the water looks like screen tearing" | The chop's amplitude is a *slope*: 5 cm of crest over a 60 cm crest, in two crossed directions, tilts the normal up to ~46° -- a sea rather than a pool. And the normal field was never filtered against the screen, so at a grazing angle -- which is every pool past a few metres -- a pixel spanned many crests and the field was sampled far below its own frequency, which the eye reads as tearing. | `wave.height` 0.05 → **0.03**, and the gradient is scaled by the phase one pixel covers (`fwidth`), so the chop dies with the distance and the far water goes back to being the smooth mirror it averages to. `the_surface_has_waves` holds the fade in the source, which is as close as a GPU-less harness gets to holding a look. |
 
 The measured shape of the spawn field, at the rain amounts the weather machine walks
-through (2401 vertices; `wet` counts those with water on them, `solid` those at the new
-full-opacity share, `deep` the deepest depth -- which the basin's own spill caps below
-`rise`, as the design says it must):
+through, on M20d′'s band (2401 vertices; `wet` counts those with water on them, `solid`
+those at the full-opacity share, `deep` the deepest depth -- which the basin's own spill
+capped below `rise`, as the design then said it must). The `wetting` column is the
+mapping's own and unchanged, and the level it makes on the declared band is
+`-2.1 + wetting * 0.75 * 2.1` -- **-0.525** at rain 1:
 
 | rain | level | rise | wetting | wet | solid | deepest |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -3893,23 +3958,26 @@ full-opacity share, `deep` the deepest depth -- which the basin's own spill caps
 and the drain, from rain 1.0 to none (`wetDown` 600 s; the table is a first-order follower, so
 the tail is long and thin -- the last millimetre takes as long again as the first 40 cm -- and
 it reaches *exactly* dry at about nine time constants, an hour and a half, which is also how
-long `waterOn` stays true and the drag stays a hair under 1):
+long `waterOn` stays true and the drag stays a hair under 1). The starting depth is that
+band's, not the -0.525 M20d″ ships: what the table is here to show is the clock.
 
 | after the rain stops | 0 s | 1 min | 2 min | 5 min | 10 min | 20 min | 1 h | 1 h 45 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | deepest (m) | 0.443 | 0.436 | 0.393 | 0.290 | 0.174 | 0.063 | 0.001 | 0 |
 | the table | on | on | on | on | on | on | on | **exactly dry** |
 
-The anchor is what makes a pool's *depth* a property of the place rather than of the walk,
-which is the thing the case is really holding. Along its nine anchors, all at rain 1.0: **no
+What the pass really held is the thing M20d″ then finished: a pool's *depth* should be a
+property of the place rather than of the walk. Along its nine anchors, all at rain 1.0, **no
 window was empty** (two were, before), the rise never passed the wading cap (1.13 m, before
 the clamp), and the shallowest deepest pool was 0.106 m -- a shallow window, which is a
-shallow pool, and now a visible one.
+shallow pool, and now a visible one. Anchoring the low end got the depths to agree with the
+ground they sat on; it took the declared band to stop them depending on which ground was in
+the window at all.
 
 **One smaller thing rode along.** `flood` could not express a level this field has: any
-negative number meant "hand it back to the weather", and this field's water lives at -0.9
-to -1.5 m. `waterForce` is `NaN` for "no override" and any finite number is a level, so
-`flood -1.1` now works and `flood off` is the only way back. `a_crater_becomes_a_puddle`
+negative number meant "hand it back to the weather", and the field's water lived at -0.9
+to -1.5 m then. `waterForce` is `NaN` for "no override" and any finite number is a level, so
+`flood -1.1` now works and `flood off` (or `flood rain`) is the way back. `a_crater_becomes_a_puddle`
 happens to cut its hole where the ground is above zero, which is the only reason nobody
 noticed; its helper now asserts `forced`, so a future case cannot be quiet about it either.
 A third: `fragWet`, the varying the tint used to ride, is gone -- the depth drives the tint
@@ -3920,8 +3988,8 @@ itself, so nothing needs to carry the basin's fullness to the fragment.
 - **Ripples and the wake are not a simulation.** A small fixed set of expanding,
   damped ring sources -- the goat, and the nearby bots -- is passed as a few uniforms
   (centre, age, strength) and summed into the normal field by the shader. Deterministic,
-  no extra draws, nothing on the wire. Whether the surface can address a uniform
-  *array* needs a probe; failing it, use a handful of named `vec4`s.
+  no extra draws, nothing on the wire. **Settled in M20d:** no uniform *array* was needed --
+  `getShaderLocation` takes a name, so the ripples are three named `vec4`s.
 - **The splash** fires when the goat's height above the ground (`py`) crosses the
   surface going down, or on a step in the shallows: pooled particles exactly like
   `explosions`' debris and the rain, drawn with the M0 primitives. Cosmetic and local.
@@ -3943,29 +4011,36 @@ buoyancy term (the surface carrying the body), authored in Blender and grounded 
 contract that has served `GoatFlung` -- phase 0 on entering the water, phase 1 on
 leaving, found by name through `findClip`. Drinking at the edge is the same shape as
 `startEat` in `food.js`, and can reuse an idle clip before a `GoatDrink` one exists.
-Until then, **M20a–M20f cap the level so pools are wading depth**, which is a real
-feature and not a placeholder: the water is deep enough to splash through, not to
-swim in.
+Until then, **nothing in M20a--M20f holds a pool to the goat's depth**, and that is a
+change M20d″ made: the level is the declared band walked by the rain, and `maxDepth` is the
+*wading* cap alone. A pool deeper than it costs the goat the full drag and no more -- it
+walks through it, slowly, wading rather than swimming, which is what the drag's own cap
+says. Held down instead, the level would have been a promise about the world made by a
+constant about the goat, and it is the one this milestone used to make and no longer does.
 
 ### The wire
 
 The design goal is **zero new fields**, and it is reachable because water is derived:
 
-- The terrain and the fill are **pure functions**, identical on every peer offline and
-  online.
-- **The craters are already on the wire** (M19e), so the filled surface follows them
-  with nothing added.
-- **The level is the seed's own rain, plus a wetting that follows it.**
-  `rainAmount` is seeded and the host's streams are adopted by the client
-  (`sceneUseStreams`), so every peer derives the same table from the same rain. The rise
-  is *exact*, not merely close -- it is derived, not accumulated. The drain is the one
-  place this design now admits a state that cannot be proven equal from the wire alone: it
-  is a follower, so it converges on the rain rather than integrating it and cannot drift,
-  but two peers sampling the same mirrored rain at different moments can sit a few
-  millimetres of level apart while a front is moving. That is an estimate; M20f's audit is
-  where it gets measured, and call 4's quantized `waterLevel` is the fallback if it turns
-  out to matter. Splashes and ripples are cosmetic and local, like the rain drops and the
-  explosion particles; the goat's own drag is its owner's business, which is M12b's rule.
+- The terrain is a **pure function**, identical on every peer offline and online. (The
+  fill is a pure function too, but it feeds nothing the level reads any more, which is why
+  it is on the way out -- see *The table is the world's*.)
+- **The craters are already on the wire** (M19e), so the ground follows them with nothing
+  added -- and the water follows the ground, since a crater is just land that is lower.
+- **The level is a pure function of the seed's own rain.** `rainAmount` is seeded and the
+  host's streams are adopted by the client (`sceneUseStreams`), and the table is the
+  declared band walked by that rain, so every peer derives the same table from the same rain
+  -- with **no dependence on the loaded window at all**, which is what M20d″ took out (a
+  peer's level used to move with where its goat stood, and the same world point could be wet
+  from one window and dry from the next). The rise is *exact*, not merely close -- it is
+  derived, not accumulated. The drain is the one place this design admits a state that
+  cannot be proven equal from the wire alone: it is a follower, so it converges on the rain
+  rather than integrating it and cannot drift, but two peers sampling the same mirrored rain
+  at different moments can sit a few millimetres of level apart while a front is moving.
+  That is an estimate; M20f's audit is where it gets measured, and call 4's quantized
+  `waterLevel` is the fallback if it turns out to matter. Splashes and ripples are cosmetic
+  and local, like the rain drops and the explosion particles; the goat's own drag is its
+  owner's business, which is M12b's rule.
 
 So the honest claim is "nothing new on the datagram, and the M16 guard proves it" -- if
 float drift across peers ever shows, the fallback is a quantized `waterLevel` in the
@@ -3973,20 +4048,24 @@ world snapshot, but the burden is on the fallback to justify itself rather than 
 derivation to prove itself, exactly as `the_vanilla_world_fits_with_room_to_spare`
 holds the rest of the budget.
 
-**One caveat, stated plainly.** If the fill ever moves into a **wasm world mod**, water
-stops being free on the wire: the module joins the compatibility digest (M17c), so both
-peers must have it. That is an argument for keeping the base game's water in JS or in
-an engine binding (see *Engine work*), and it is why a mod's water is a mod's business.
+**One caveat, stated plainly.** The level is free on the wire only while both peers
+derive it the same way, and what the base game derives is a constant band plus the seed's
+rain. Move any of that into a **wasm world mod** and it stops being free: the module joins
+the compatibility digest (M17c), so both peers must have it. That is an argument for keeping
+the base game's water in JS or in an engine binding (see *Engine work*), and it is why a
+mod's water is a mod's business.
 
 ### Tuning: the proposed tree
 
 ```
 water: {
     enabled: 1,          // 0 disables the whole system (a frame-cost bisect)
-    fill: 0.17,          // share of the basins' spill range at rain 1 (M20d′: was 0.15)
+    low: -2.1,           // metres; the table's floor, at `-terrain.relief` (M20d″: declared)
+    high: 0,             // the table's ceiling: the field's midline (M20d″: declared)
+    fill: 0.75,          // share of that declared band at rain 1 (M20d″: was 0.17 of a measured one)
     seep: 0.05,          // rain below this leaves the ground dry (M20d′: was 0.15)
     wetDown: 600,        // seconds the table takes to drain (M20d′: 25 → 100 → 600, all eye)
-    maxDepth: 0.6,       // metres; v1 keeps pools wading depth (M20g lifts it)
+    maxDepth: 0.6,       // metres; the *wading* cap -- drag, splash, HUD (M20d″: no longer a ceiling)
     shore: 0.08,         // metres of depth the surface fades out over (M20d′: was 0.25)
     wave: {              // the chop's height field (M20c)
         height: 0.03,    // metres, crest to trough (M20d′: was 0.05)
@@ -4000,13 +4079,18 @@ water: {
 }
 ```
 
-**M20a-M20d′ ship the above.** The rest of the designed tree arrives with the slice that
-reads it, so a knob is never one that does nothing: `absorb`/`caustics` with M20d's
-successor work and `reflection` with M20e. The grid step is deliberately **not** a knob --
-it is the terrain's own `TERRAIN_CELL`, structural like `CLOUD_WRAP`, because the arrays are
-sized at load. `wetDown` drags a boundary with it: it is a *duration*, so `0` is legal and
-means "the water answers the rain with no lag at all", which is exactly M20b's behaviour --
-the one-line way back if the drain ever reads wrong.
+**M20a-M20d″ ship the above.** `low` and `high` are the two knobs M20d″ added, and
+they are what a mod moves to put the waterline where it likes -- clamped to ±8 m, and
+`low` has to stay at or under the field's deepest ground or a dry spell leaves puddles,
+which is what the dry-spell case holds it to. The rest of the designed tree arrives with
+the slice that reads it, so a knob is never one that does nothing: `absorb`/`caustics`
+with M20d's successor work and `reflection` with M20e. The grid step is deliberately
+**not** a knob -- it is the terrain's own `TERRAIN_CELL`, structural like `CLOUD_WRAP`,
+because the arrays are sized at load. `wetDown` drags a boundary with it: it is a
+*duration*, so `0` is legal and means "the water answers the rain with no lag at all",
+which is exactly M20b's behaviour -- the one-line way back if the drain ever reads wrong.
+And `maxDepth` no longer holds anything down: it is where the drag, the splash and the HUD
+reach full strength, not a ceiling on the level or on a reported depth.
 
 `reflection` will be the quality knob and the frame-cost lever; `enabled` and `caustics`
 are the bisects, on the pattern `explosions.enabled` and `crater.scorch` already set.
@@ -4020,9 +4104,10 @@ the frame.
   own wake as it wades; and, when it steps in, a splash.
 - **The HUD** gains a water line beside the weather line -- whether the goat is in
   water, how deep, and the speed cost -- matching M6's slowdown readout.
-- **The console** gains `water` (the level, the wetted share and the depth under the
-  goat), `flood <h>` (set the table, for demos and reviews -- a *signed* height, since
-  this field's water lives below zero, with `flood off` the way back), and the pool list,
+- **The console** gains `water` (the level, how much of the field it covers, where the
+  deepest point is and how deep it is under the goat), `flood <h>` (set the table, for
+  demos and reviews -- a *signed* height, since this field's water lives below zero, with
+  `flood off` or `flood rain` the way back), and the pool list,
   the way `craters` works today. A key toggles water off (say `J`), matching `C`, `K`,
   `L` and `B`.
 
@@ -4033,7 +4118,8 @@ the frame.
   the pool list, read-only, for a mod and for the console.
 - Because the level is data and not a device, a mod can **drive it**: a dam, a fountain,
   a bucket, a raft, fish -- through `goats.world.extend` and its own entities. The door
-  is left open deliberately, and it is the reason `W` is exposed rather than hidden.
+  is left open deliberately, and it is the reason `waterLevel` and `waterSetForce` are
+  exposed rather than hidden.
 
 ### Engine work
 
@@ -4045,7 +4131,7 @@ test, and stubs in `null_rl.js`/`harness_rl.js`):
 | --- | --- |
 | ~~Addressing a **uniform array**~~ | **Settled in M20d, and no engine work was needed**: `getShaderLocation` takes a name, so the ripples are three named `vec4`s |
 | **Depth-write control** for a transparent pass | the water surface, unless the shader alone can carry it (still open, and still not biting) |
-| Nothing else, ideally | the fill, the mesh, the uniforms, the shader, the wake and the splashes all run on the surface as it stands today |
+| Nothing else, ideally | the level, the mesh, the uniforms, the shader, the wake and the splashes all run on the surface as it stands today -- and the vestigial fill will run even less once it is deleted |
 
 **On native code and wasm, since it is the question this milestone invites.** The
 repo has already answered the general version, in M17: **wasm is not (yet) a speed
@@ -4057,21 +4143,27 @@ water splits as:
 - **GLSL, because it must be the GPU**: the waves, the normals, fresnel, the
   reflection, the absorption, the caustics, the glitter, the shore and the ripples.
   This is where the look lives, and it is not optional.
-- **The scene (JS), by default**: the data model, the rain-to-table chain, the storage
-  curve, the mesh assembly, the particle pools, the gameplay coupling and the mod
-  surface -- with the fill written in the `PERF.md` section 7.2 shapes (a small,
-  parameter-only body, a hoisted count, no global reads in the loop) and, if it needs
-  it, a bucket queue rather than a heap.
-- **wasm or a binding, only if the fill measures too slow**: a **wasm kernel through
-the existing M17 host** needs no engine change and makes water moddable, at the cost
-  of the digest entry above; an **engine binding** (`rl.waterFill(...)`) is the other
-  home, and only if the base game itself turns out to need it. What water does **not**
-  get is a wholesale port: the interop cost, the second ABI and the loss of "the scene
-  is one source of truth" (which the harness depends on) are not worth it.
+- **The scene (JS), by default**: the data model, the rain-to-table chain, the wetting
+  follower, the mesh assembly, the particle pools, the gameplay coupling and the mod
+  surface. Per frame that is a scalar and a handful of uniforms; per rebuild it is the
+  mesh. Anything heavier water ever grows -- a real fill, if the storage curve *Rain,
+  and the level* leaves on the table comes back -- is written in the `PERF.md` section
+  7.2 shapes (a small, parameter-only body, a hoisted count, no global reads in the
+  loop) and, if it needs it, a bucket queue rather than a heap.
+- **wasm or a binding, only if such a kernel measures too slow**: a **wasm kernel through
+  the existing M17 host** needs no engine change and makes water moddable, at the cost
+  of the digest entry above; an **engine binding** (an `rl.waterFill(...)`-shaped call)
+  is the other home, and only if the base game itself turns out to need it. What water
+  does **not** get is a wholesale port: the interop cost, the second ABI and the loss of
+  "the scene is one source of truth" (which the harness depends on) are not worth it.
 
-**The number to beat:** the fill must earn its place in the rebuild it joins. If it
-cannot be brought under a couple of milliseconds at the chosen resolution by scene-side
-work, it is a wasm candidate -- and a measured decision, not an upfront one.
+**The number to beat.** Water per frame is a scalar and a handful of uniforms, and per
+*rebuild* it is the mesh -- a 2401-vertex pass and a trimmed index list, handed to
+`makeModel` as the same array objects every time -- so it is not a per-cell scan and not a
+kernel. The fill is the only such kernel this milestone ever had, and it is still run today
+with nothing reading it: the measurement it owes is not "how fast is the fill" but "what
+does deleting it save". If a real fill comes back, it earns its place all over again -- a
+couple of milliseconds at the chosen resolution, or off to wasm.
 
 ### Slices
 
@@ -4086,8 +4178,11 @@ work, it is a wasm candidate -- and a measured decision, not an upfront one.
   is where the field drains, so it is not a basin -- a table a quarter of a metre above it
   ponds nothing at all. `flood` wants a level taken from a hollow's own rim, not from
   `low`, and `the_goat_wades` drives its pool from rain for exactly that reason.
+  **And the fill's own answer is no longer read (M20d″):** `W_F` is still computed, heap
+  and all, and still written into the mesh's texcoord, and nothing consumes it -- deleting
+  the flood, the heap and the texcoord is the first cleanup this milestone owes.
 - **M20b -- the surface and the level. ✅ Done.** The decimated mesh, the transparent
-  surface at `surface(x, z)`, the shore fade, and the lit look -- the reflections are
+  surface standing at the table, the shore fade, and the lit look -- the reflections are
   M20e and the chop is M20c. Rain raises the table and `clear` returns it, and a dry
   field draws nothing, so `clear` stays exactly neutral. See *The surface, as landed*.
 - **M20c -- the waves. ✅ Done.** The chop as a fragment-side normal field (the mesh is
@@ -4103,21 +4198,25 @@ work, it is a wasm candidate -- and a measured decision, not an upfront one.
   out as the goat walked; the shore band was wider than the pools themselves (so the whole
   pool was its fade); and the level neither filled fast enough nor lingered. See *The feel,
   after the first play-through* for the measurements, and *Rain, and the level* for what the
-  follower now costs the wire claim. **Not closed:** the anchor fixed *which* ground the
-  table is anchored to, not the fact that it is the *window's* ground. Two anchors a snap
-  step apart still disagree about the same world point -- `(10, -64)` is 0.0000 m under
-  water from one and 0.1056 m from the next, with the ground and the spill there identical
-  to the last bit. That is `the_water_at_a_fixed_point_is_the_same_from_two_windows`
-  (`#[ignore]`d, and the spec for the follow-on): a level that is a pure function of
-  `rainAmount` instead of a statistic of the loaded window, which is a change to M20a's
-  derivation rather than to this pass.
+  follower now costs the wire claim.
+- **M20d″ -- the table is the world's. ✅ Done.** The report M20d′ opened and could not
+  close: the anchor had fixed *which* ground the table was read from, not the fact that it
+  was the *window's* ground, so two anchors a snap step apart still disagreed about the same
+  world point -- `(10, -64)` 0.0000 m under water from one and 0.1056 m from the next, with
+  the ground and the spill there identical to the last bit. `TUNING.water` gained `low` and
+  `high`, declared rather than measured; the level is `low + wetness * fill * (high - low)`
+  and nothing else; and the depth caps and the eased floor went with it, which is why
+  `maxDepth` is the wading cap alone now. The second half of a storm buys 0.49 m where it
+  used to buy 0.15, and the decimation grew from 476 quads to 1078 of 2304. See *The table is
+  the world's*.
 - **M20e -- the reflections.** Tier 1 (the heightmap raymarch), then tier 2 (the planar
   pass) behind the setting, and the A/B in `PERF.md`.
 - **M20f -- the audit and the guards.** The determinism and no-new-field proof (or the
   drift fallback if it fails), `TUNING.water`, the console verbs, the mod seam, and the
   budget guard.
 - **M20g -- swimming, buoyancy and drinking. The next planned step:** the `GoatSwim`
-  clip, the buoyancy term, `maxDepth` lifted, and drinking at the edge.
+  clip, the buoyancy term, the *wading* cap lifted so a deep pool is swum rather than waded,
+  and drinking at the edge.
 
 ### The calls to confirm
 
@@ -4125,35 +4224,35 @@ One line each: the recommendation, and where the reasoning is.
 
 | # | Question | Recommended |
 | --- | --- | --- |
-| 1 | Swimming in v1? | **Not in M20a--M20f**: cap the level so pools are wading depth, then M20g with a `GoatSwim` clip -- and M20g is the next planned step, not a maybe |
+| 1 | Swimming in v1? | **Not in M20a--M20f**: the level is not held down, so a deep pool is waded at the full drag rather than swum; M20g adds the `GoatSwim` clip and lifts the wading cap -- and M20g is the next planned step, not a maybe |
 | 2 | The reflection default | **Tier 1 (the heightmap raymarch)**, with tier 2 opt-in. It is the mirror that is the whole point (tier 2), but only behind a setting, because a second scene pass in a CPU-bound frame is the one item that can move the budget |
-| 3 | The water grid | **2 m, to match the terrain**, so a crater puddles; render a decimated mesh so the fill's resolution does not cost the draw |
-| 4 | The level on the wire | **Not sent.** It is the seed's rain, integrated on both ends; a quantized `waterLevel` is the fallback *if* drift shows, and it has to justify itself (see *The wire*) |
+| 3 | The water grid | **2 m, to match the terrain**, so a crater puddles; render a decimated mesh so the grid's resolution does not cost the draw |
+| 4 | The level on the wire | **Not sent.** It is the seed's rain, derived on both ends from the declared band; a quantized `waterLevel` is the fallback *if* drift shows, and it has to justify itself (see *The wire*) |
 | 5 | Does water wet and drain the goat like rain? | **Yes, as a second gated term** -- and gated so `clear` with no water is exactly neutral, or M6's gait assertions break |
-| 6 | A crater as a puddle | **Yes, and asserted.** It is the same fill doing it, and it is the cheapest demonstration that water and the ground agree |
+| 6 | A crater as a puddle | **Yes, and asserted.** It is the same table doing it -- a crater is land that is lower -- and it is the cheapest demonstration that water and the ground agree |
 | 7 | Does water cast a shadow? | **Not in v1.** It receives the terrain's shadow; a lakebed shadow is subtle and needs the terrain in the depth pass (still deferred from M8) |
 | 8 | Foam, caustics, a wet terrain band | **Foam and caustics yes** (shader-side, cheap); a **wet terrain band no** -- it would dirty the terrain's per-vertex colours on every level change, and the rebuild is the frame's worst event |
-| 9 | Water in a mod | **Allowed to drive the level** and its own water entities, but a *fill* in wasm joins the digest, so a mod's fill is the mod's compatibility burden (see *The wire*) |
+| 9 | Water in a mod | **Allowed to drive the level** (`waterSetForce`) and its own water entities -- but anything of water's derivation a peer must compute identically is a compatibility burden if it lives in wasm, and that is the mod's (see *The wire*) |
 
 **Where it will live.**
 
 | Piece | Path |
 | --- | --- |
-| The field, the fill, the level and the mesh | `crates/goats/src/game/water.js` (the seventeenth scene part, slotted after `world.js`; the docs' part count moved to 17 with it) |
-| `terrainHeight` and the terrain rebuild the fill hooks into | `crates/goats/src/game/world.js` (`terrainHeight`, `terrainBuildRects`, the patch rects) |
-| The rain the level integrates | `crates/goats/src/game/weather.js` (`rainAmount`, and the streams) |
-| The water program, the reflection pass and the shared uniforms | `crates/goats/src/game/lighting.js` (a sibling of `LIT_FS`, sharing `lightDir`/`lightColor`/`ambientColor`/`camPos` and the shadow map) |
-| The ripples, the splash and the wake | `crates/goats/src/game/goat.js` and `crates/goats/src/game/bots.js` (the sources), `crates/goats/src/game/water.js` (the pools) |
-| The tufts under the surface | `crates/goats/src/game/food.js` (the existing cull helpers) |
-| The drag, the depth and the HUD line | `crates/goats/src/game/goat.js`, `crates/goats/src/game/menu.js` |
+| The field, the level and the mesh (and the fill, while it lasts) | `crates/goats/src/game/water.js` (the seventeenth scene part, slotted after `world.js`; the docs' part count moved to 17 with it) |
+| `terrainHeight` and the terrain rebuild `waterRebuild` hooks into | `crates/goats/src/game/world.js` (`terrainHeight`, `terrainBuildRects`, the patch rects) |
+| The rain the level follows | `crates/goats/src/game/weather.js` (`rainAmount`, and the streams) |
+| The water program and the shared uniforms | `crates/goats/src/game/lighting.js` (a sibling of `LIT_FS`, sharing `lightDir`/`lightColor`/`ambientColor`/`camPos` and the shadow map); the tier 2 reflection pass joins it in M20e |
+| The ripples, the splash and the wake | `crates/goats/src/game/water.js` (the ring and splash pools, driven from the goat and the herd's positions) |
+| The tufts under the surface | `crates/goats/src/game/weather.js` (`drawTufts`, which asks `waterSubmergedAt`) |
+| The drag, the depth and the HUD line | `crates/goats/src/game/water.js` (the depth helpers and `waterHudText`), `crates/goats/src/game/goat.js` (`groundSpeed`, `startJump`, `updateStats`, `drawHud`) and `crates/goats/src/game/weather.js` (the line it joins) |
 | Tuning | `crates/goats/src/game/core.js` (`TUNING`, `TUNING_CLAMP`) |
-| The console verbs | `crates/goats/src/game/ctl.js` |
+| The console verbs | `crates/goats/src/game/ctl.js` (`water`, `flood`) |
 | The pool seam a mod reads (`sceneWater()`) | `crates/goats/src/game/water.js` |
 | The scene part list, `PARTS.len()` | `crates/scene/src/lib.rs` |
-| The engine additions | `slag/crates/runtime/src/raylib.rs` (the uniform array and depth-write, if wanted), with the stubs in `crates/scene/src/null_rl.js` and `crates/scene/src/harness_rl.js` |
+| The engine additions | `slag/crates/runtime/src/raylib.rs` (depth-write, if wanted), with the stubs in `crates/scene/src/null_rl.js` and `crates/scene/src/harness_rl.js` |
 | The water clip and the Blender contract (M20g) | `goat.blend`, `goat_animated.glb`, `tools/goat_swim.py` |
-| The tests | `crates/harness/tests/water.rs` (the fill, the level, the crater-puddle); the drag and the neutrality join them when M20d lands |
-| The frame measurements | `PERF.md` (the tier 2 A/B, and the fill's own cost at a rebuild) |
+| The tests | `crates/harness/tests/water.rs` (eight cases, 47 checks: the field, the table, the surface, the chop, the wading, the windows, the drain) |
+| The frame measurements | `PERF.md` (the fill's cost at a rebuild, the M20e tier 2 A/B) |
 | The mod surface's documentation | `APIv1.md` §4 (`goats.water`), if a hook beyond the seam is added |
 
 ---
@@ -4246,7 +4345,7 @@ One line each: the recommendation, and where the reasoning is.
    a larger world would want cascades or a bigger map.
 8. **What does the terrain gain next?** ~~Water is the obvious visual gap (the
    field has hollows but no lakes or streams)~~ **Settled: water, and it is M20** --
-   the hollows become pools and streams by a *fill* of the heightfield rather than a
+   the hollows become pools and streams by a *water table* over the heightfield rather than a
    new terrain system, so the ground itself does not change, and a crater (M19d) is
    just another basin it pools in. The alternatives named here -- a splat-map material
    upgrade and scattered props (rocks, trees) on the same field -- are still cheaper,

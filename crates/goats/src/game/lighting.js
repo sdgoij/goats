@@ -276,16 +276,19 @@ const LIT_FS = [
 const WATER_VS = [
     "#version 330",
     "in vec3 vertexPosition;",     // (x, the ground's height, z)
-    "in vec2 vertexTexCoord;",     // (maxDepth of this vertex's basin, unused)
     "uniform mat4 mvp;",
     "uniform float waterLevel;",
     "out vec3 fragWorldPos;",
     "out float fragDepth;",
     "void main() {",
+    // The surface is the table itself, at every vertex: `depth` is how far the ground lies
+    // under it and the vertex is lifted by exactly that, so the sheet is level over a whole
+    // basin. It used to be capped by the basin's own spill -- which the mesh's texcoord
+    // carried -- and that made the surface *not* level: it stopped climbing at a basin's rim
+    // while the table over it went on rising, and a cell the flood lets drain out of the
+    // grid's edge read dry with water standing over it.
     "    float ground = vertexPosition.y;",
-    "    float maxDepth = vertexTexCoord.x;",
     "    float depth = waterLevel - ground;",
-    "    if (depth > maxDepth) depth = maxDepth;",
     "    if (depth < 0.0) depth = 0.0;",
     "    fragDepth = depth;",
     // The surface is the ground plus the water standing on it: a level pool, because

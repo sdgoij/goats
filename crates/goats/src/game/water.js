@@ -14,6 +14,12 @@
 //
 // The level `W` is a function of the weather's `rainAmount` and of nothing else that would
 // have to be sent: the rain is already seeded, eased and mirrored to clients (weather.js).
+// Its ends are *declared* -- `TUNING.water.low`/`high`, the field's floor and its midline --
+// and not measured off the grid the goat happens to be standing on. Measuring them is what
+// the first cut of this did, and it cannot work: the window follows the goat, so the same
+// world point is read from a table of a different height one step later. A pool 0.11 m deep
+// from one window is dry from the next, over ground that has not moved, and stepping back
+// brings it back -- which is what the play-through reported and what this now cannot do.
 // What the water adds of its own is *wetting* -- one scalar, 0..1 -- and it is a **follower
 // rather than an accumulator**: the table rises the instant the rain does (`waterUpdate`)
 // and falls back slowly (`waterStep`), so a shower leaves standing water behind it instead
@@ -44,12 +50,10 @@ let waterHeapN = 0;
 let waterReady = false;     // the fill has run at least once
 let waterLevel = 0;         // `W`, in metres
 let waterWet = 0;           // the water's own wetting, 0..1 (`waterStep`)
-let waterLevelMin = 0;      // the lowest ground in the field
-let waterLevelMax = 0;      // the highest spill level in the field
-let waterPond = 0;          // the lowest ground in the field that can *hold* water
-let waterPonds = false;     // ...there is any: the window has a basin in it
+let waterGround = 0;        // the window's lowest ground, and only ever a *test*: nothing
+                            // is lower than it, so the table clears it exactly when
+                            // something in the window is wet
 let waterForce = NaN;       // `flood <h>`: a level set by hand; a non-number = from the rain
-let waterFloor = 0;         // the table's low end, smoothed across rebuilds
 let waterOn = false;        // the table stands above the ground: there is water to draw
 let waterClock = 0;         // the waves' own seconds, and deliberately not `worldTime`
 let waterMesh = -1;         // the surface mesh (M20b)
@@ -62,16 +66,11 @@ let waterLogZ = NaN;
 // teal where a basin is full. The alpha is the deep water's.
 const W_SHALLOW = [0.40, 0.58, 0.53, 0.55];
 const W_DEEP = [0.05, 0.15, 0.19, 0.85];
-// How fast the table's floor follows the window's lowest *basin* ground, per rebuild, on
-// the way down. The grid follows the goat, so that ground steps when a hollow enters or
-// leaves the window; at 1.0 the whole field's water would step with it. On the way up the
-// floor does not lag at all -- see `waterRebuild`.
-const WATER_FLOOR_EASE = 0.25;
 // The wetting's shape, and the point where a draining table is called dry. The wetting
 // is *concave* in the rain (`wetnessFor`), which is what makes a moderate shower leave a
-// pool rather than a film. The floor is exact rather than asymptotic because a follower
-// never reaches its own target, and `waterUpdate` needs a real zero to pin the level to
-// the lowest ground -- which is what keeps a dry spell *exactly* dry, M6's own rule.
+// pool rather than a film. Zero is exact rather than asymptotic because a follower never
+// reaches its own target, and `waterUpdate` needs a real zero to pin the table to its own
+// floor -- which is what keeps a dry spell *exactly* dry, M6's own rule.
 const WATER_WET_CURVE = 0.5;
 const WATER_DRY_EPS = 1e-4;
 // The grid's own arrays for the mesh, reused on every build: the engine's `makeModel`
@@ -214,42 +213,21 @@ function waterRebuild() {
         waterReady = false;
         return;
     }
+    // The fill is still run: the surface is decimated by it and `waterSubmergedAt` still asks
+    // it whether a vertex can hold water. Nothing about the *level* is read off it any more.
     waterFill();
     const count = WATER_N * WATER_N;
-    // The two ends the table walks between, and the one that took a walk across the field
-    // to find. The low one is the lowest ground that can **hold** water -- `W_F > ground`,
-    // a basin rather than a cell the fill lets drain -- and not the window's lowest ground,
-    // which is very often a gully running out of the field's edge. A table anchored to the
-    // gully sits *under* every basin in the window, so the window holds no water at all, at
-    // any rain: the surface reports itself on (the table is above the gully's floor) and
-    // every cell in it is dry (`the_pools_are_there_wherever_the_goat_stands`). The high
-    // end is the highest *spill*, so the heaviest rain fills every basin to its rim.
-    let lo = Infinity;
-    let hi = -Infinity;
-    let pond = Infinity;
+    // The window's lowest ground, which is the one thing a rebuild still measures: it is the
+    // "is anything wet" test in `waterUpdate`, and nothing in the window is lower than it. It
+    // is a test and never a level, which is the whole of the difference -- a level taken from
+    // the window is a level that changes when the goat walks, and the next window's lowest
+    // ground is a different number over ground that has not moved.
+    let ground = Infinity;
     for (let k = 0; k < count; k++) {
         const g = T_H[k];
-        if (g < lo) lo = g;
-        const f = W_F[k];
-        if (f > hi) hi = f;
-        if (f > g && g < pond) pond = g;
+        if (g < ground) ground = g;
     }
-    waterLevelMin = lo;
-    waterLevelMax = hi;
-    waterPonds = pond !== Infinity;
-    // With no basin anywhere in the window there is nothing to pool in, and the anchor has
-    // no answer: the lowest ground stands in, which leaves the table (and the report) a real
-    // number. `waterPonds` is what says the field is empty, and nothing draws either way.
-    waterPond = waterPonds ? pond : lo;
-    // The anchor is smoothed across rebuilds when it *falls* (see `WATER_FLOOR_EASE`): the
-    // window follows the goat, so the basins in it change. It never lags *below* the anchor
-    // it is on, though -- a floor under the lowest ground that can hold water is the same
-    // empty field by another route, and the walk that found the first one found this one
-    // too. A dry spell is still *exactly* dry: `waterUpdate` pins the level to the
-    // unsmoothed minimum when there is nothing to pool.
-    waterFloor = waterReady
-        ? Math.max(waterPond, waterFloor + (waterPond - waterFloor) * WATER_FLOOR_EASE)
-        : waterPond;
+    waterGround = ground;
     waterReady = true;
     waterUpdate();
     waterBuild();
@@ -302,29 +280,22 @@ function waterUpdate() {
     if (target > waterWet) waterWet = target;
     const t = TUNING.water;
     if (t.enabled === 0) {
-        waterLevel = waterLevelMin;
+        waterLevel = t.low;
     } else if (isFinite(waterForce)) {
         waterLevel = waterForce;
+    } else if (waterWet <= 0) {
+        waterLevel = t.low;
     } else {
-        if (waterWet <= 0) {
-            waterLevel = waterLevelMin;
-        } else {
-            // The table's own promise, and the second thing the walk case holds: whatever the
-            // window's relief does, the water never stands more than `maxDepth` above the
-            // ground it sits on, so a pool is wading depth. It is the *clamp* that keeps it
-            // rather than the arithmetic -- the floor lags a falling anchor on purpose (see
-            // `waterRebuild`), and an unclamped level then climbs to `fill` of a range that
-            // has grown underneath it: 1.13 m, measured along the walk case's own line.
-            const level = waterFloor + waterWet * t.fill * (waterLevelMax - waterFloor);
-            const cap = waterPond + t.maxDepth;
-            waterLevel = level < cap ? level : cap;
-        }
+        // The table, and the whole of it: the declared band, walked by the wetting. No window
+        // to read, no floor to lag behind and no clamp -- `waterWet` is all the memory there
+        // is, so two peers handed the same rain agree to the last bit, and the ceiling is
+        // `high` because the band ends there rather than because something holds it down.
+        waterLevel = t.low + waterWet * t.fill * (t.high - t.low);
     }
-    // There is water to draw when the window has ground that can *hold* it and the table
-    // stands above the lowest of that ground -- which is the same statement as "the deepest
-    // pool has a depth". Testing the level against the window's lowest *ground* instead was
-    // what let a window of gullies report a live surface with nothing under it.
-    waterOn = waterPonds && waterLevel > waterPond + 1e-6;
+    // There is water to draw when the table clears the window's lowest ground, which is the
+    // same statement as "the deepest pool in the window has a depth": nothing in it is lower
+    // than that, so something is wet exactly when the table is above it.
+    waterOn = waterLevel > waterGround + 1e-6;
     // No water is also no wake: the goat cannot be standing in what is not there, and the
     // step that would notice is only reached when there is a surface to draw (M20d).
     if (!waterOn) goatWet = false;
@@ -347,14 +318,15 @@ function waterForceOff() {
 
 // ---- the surface (M20b) ---------------------------------------------------
 //
-// The mesh carries the *ground* in its positions and, in its texcoord, the deepest
-// water each vertex's basin can hold. That split is the point: the level is a uniform
-// the shader applies (`lighting.js`, `WATER_VS`), so the mesh is rebuilt only when the
-// *ground* changes -- a new anchor or a crater -- and never as the rain rises.
+// The mesh carries the *ground* in its positions, and the level is one uniform the shader
+// applies (`lighting.js`, `WATER_VS`): a vertex is lifted to the table by its own depth, so
+// the mesh is rebuilt only when the *ground* changes -- a new anchor or a crater -- and never
+// as the rain rises. The texcoord still carries the fill's per-vertex basin depth, and
+// nothing reads it any more: it is the last thing keeping `waterFill` alive.
 //
-// The vertices are the whole grid (any of them can be under water); the index list is
-// cut down to the quads a basin's own ground touches, which is what decimates the
-// draw: a dry field costs one empty draw rather than the terrain's again.
+// The vertices are the whole grid (any of them can be under water); the index list is cut
+// down to the quads whose ground stands under the table's ceiling, which is what decimates
+// the draw: a dry field costs one empty draw rather than the terrain's again.
 function waterBuild() {
     const n = WATER_N;
     const x0 = terrainAnchorX - WATER_HALF;
@@ -381,18 +353,23 @@ function waterBuild() {
         }
     }
     // Wound like the terrain's own grid (and raylib's `GenMeshPlane`), so the surface
-    // faces up. A quad is worth drawing if any corner of it is under its own spill
-    // level; `W_IDX` is then trimmed in place, which keeps the array's identity while
-    // shrinking what the engine is asked to upload.
+    // faces up. A quad is worth drawing if any corner of it stands under the highest level
+    // the weather can make -- the table's own ceiling, since nothing above it can ever be
+    // wet. Decimating by the fill's per-vertex basin instead was right while the level was
+    // the window's; with the table the world's it would punch holes, because a cell the
+    // flood lets drain out of the grid's edge can be under water and is no basin at all.
+    // `W_IDX` is trimmed in place, which keeps the array's identity while shrinking what the
+    // engine is asked to upload.
     let t = 0;
+    const top = TUNING.water.high;
     for (let j = 0; j < TERRAIN_QUADS; j++) {
         for (let i = 0; i < TERRAIN_QUADS; i++) {
             const a = j * n + i;
             const b = a + 1;
             const c = a + n;
             const d = c + 1;
-            if (W_TEX[a * 2] <= 0 && W_TEX[b * 2] <= 0 &&
-                W_TEX[c * 2] <= 0 && W_TEX[d * 2] <= 0) continue;
+            if (T_H[a] >= top && T_H[b] >= top &&
+                T_H[c] >= top && T_H[d] >= top) continue;
             W_IDX[t++] = a; W_IDX[t++] = c; W_IDX[t++] = b;
             W_IDX[t++] = b; W_IDX[t++] = c; W_IDX[t++] = d;
         }
@@ -484,7 +461,6 @@ function waterSubmergedAt(x, z) {
     const j = Math.round((z - (terrainAnchorZ - WATER_HALF)) / WATER_CELL);
     if (i < 0 || j < 0 || i >= WATER_N || j >= WATER_N) return false;
     const k = j * WATER_N + i;
-    if (W_TEX[k * 2] <= 0) return false;
     if (T_H[k] >= waterLevel) return false;
     waterCulled += 1;
     return true;
@@ -644,11 +620,16 @@ function waterActorStep(dt) {
 // One vertex's depth, from the table and the spill level. Capped at
 // `TUNING.water.maxDepth`: v1 keeps pools wading depth (M20g lifts it for swimming).
 function waterVertexDepth(k) {
-    const surface = W_F[k] < waterLevel ? W_F[k] : waterLevel;
-    const d = surface - T_H[k];
-    if (d <= 0) return 0;
-    const cap = TUNING.water.maxDepth;
-    return d > cap ? cap : d;
+    // The surface is the *table*, at every vertex: a cell is wet exactly when the table stands
+    // over its ground, and a basin whose rim the table has passed is simply submerged. The
+    // fill's spill used to cap this (`min(W_F, level)`) and that was wrong twice: a pool
+    // stopped deepening at its own rim while the table went on climbing, and a cell the flood
+    // lets drain out of the window's edge -- an artifact of where the grid stops, not a fact
+    // about the ground -- read dry with the water standing over it. So the depth here is the
+    // water's own, as it is in the report and in the shader: `maxDepth` is the *wading* cap
+    // and lives where wading is decided (`waterDragFraction`), not wrapped around a depth.
+    const d = waterLevel - T_H[k];
+    return d > 0 ? d : 0;
 }
 
 // The water depth at a world point, bilinear over the grid so a wading goat reads a
@@ -681,7 +662,6 @@ function waterDepthAt(x, z) {
 function sceneWater() {
     const count = WATER_N * WATER_N;
     const area = WATER_CELL * WATER_CELL;
-    const cap = TUNING.water.maxDepth;
     const level = waterLevel;
     let wet = 0;
     let volume = 0;
@@ -689,10 +669,8 @@ function sceneWater() {
     let di = 0;
     let dj = 0;
     for (let k = 0; k < count; k++) {
-        const surface = W_F[k] < level ? W_F[k] : level;
-        let d = surface - T_H[k];
+        const d = level - T_H[k];
         if (d <= 0) continue;
-        if (d > cap) d = cap;
         wet++;
         volume += d * area;
         if (d > deepest) {
@@ -717,12 +695,10 @@ function sceneWater() {
         deepX: netRound3(x0 + di * WATER_CELL),
         deepZ: netRound3(z0 + dj * WATER_CELL),
         goatDepth: netRound3(waterDepthAt(goat.px, goat.pz)),
-        low: netRound3(waterLevelMin),
-        pond: netRound3(waterPond),
-        ponds: waterPonds,
-        high: netRound3(waterLevelMax),
-        floor: netRound3(waterFloor),
-        rise: netRound3(waterLevel - waterPond),
+        ground: netRound3(waterGround),
+        floor: netRound3(TUNING.water.low),
+        high: netRound3(TUNING.water.high),
+        rise: netRound3(waterLevel - TUNING.water.low),
         mesh: waterMesh,
         quads: waterQuads,
         shader: waterShader,
