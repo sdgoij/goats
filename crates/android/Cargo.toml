@@ -1,0 +1,23 @@
+[package]
+name = "goats-android"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# The Android entry point (P0 in ANDROID.md). It is a crate of its own because
+# its C-ABI `main` must not collide with the Rust runtime's `main` in the
+# client's binary: a `cdylib` has no such shim, a `bin` cannot avoid one.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# `default-features = false` drops the client's `gpu-skinning`, which Android
+# wants off: GLES 2 has eight vertex attribute slots and the skinned programs
+# need nine (D3 in ANDROID.md). This only takes effect because the Android build
+# selects this package alone -- a workspace-wide build unions the features back
+# on.
+goats = { path = "../goats", default-features = false }
+
+# For `pipe`/`dup2`: the stdio redirect in `src/lib.rs`, without which the client
+# has no output at all on Android.
+libc = "0.2"

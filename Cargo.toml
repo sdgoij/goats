@@ -3,7 +3,7 @@
 # the repository root; the client reaches them with a relative `include_bytes!`.
 [workspace]
 resolver = "3"
-members = ["crates/goats", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/server", "crates/session"]
+members = ["crates/goats", "crates/android", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/server", "crates/session"]
 # `cargo run` and a bare `cargo build` mean the client, so the README's
 # `cargo run --release` keeps working. Use `--workspace` to build or test all.
 default-members = ["crates/goats"]
@@ -47,6 +47,18 @@ postcard = { version = "1", default-features = false }
 iroh = "1.2.0"
 iroh-tickets = "1.0"
 bytes = "1"
+
+# A local fork of raylib-sys carrying the Android cross-compilation repairs that
+# `ANDROID.md` D4 lists; each is explained in `android/prepare-raylib-sys.py`,
+# which materialises the patched crate here. `[patch]` is only honoured in the
+# workspace root, which is why it lives here rather than in `crates/android`.
+#
+# The source is inside the project on purpose: nothing outside the repository is
+# needed but the cargo registry every build already uses. `android/build/` is
+# gitignored, so run the script once in a fresh clone -- cargo cannot resolve the
+# workspace until that path exists.
+[patch.crates-io]
+raylib-sys = { path = "android/build/raylib-sys" }
 
 # The release profile the game is measured with. One codegen unit on purpose:
 # with the default 16, the same source lands in different codegen-unit partitions

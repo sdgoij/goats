@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[features]
+# Android wants `gpu-skinning` *off* (see the `slag` line below), and Cargo
+# features cannot vary by target -- so the flag has to be this crate's rather
+# than a word on that dependency: the Android build passes
+# `--no-default-features`. Defaulting it on keeps every current build unchanged.
+# D3 in ANDROID.md.
+default = ["gpu-skinning"]
+gpu-skinning = ["slag/gpu-skinning"]
+
 [dependencies]
 session = { workspace = true }
 # The mod loader (discovery, manifests, asset bytes). Pure Rust, no engine.
@@ -23,9 +32,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macr
 # The engine. `gpu-skinning` changes raylib's own build: a skinned mesh is loaded
 # without its deform buffers and the *shader* skins it, which is what takes
 # `bots`/`goat_pose`/`shadow_bots` out of the frame (PERF.md section 7.1 item 5).
-# The scene branches on `rl.GPU_SKINNING`, so dropping the word below is the whole
-# way back to CPU skinning -- keep the flag in both builds measurable.
-slag = { workspace = true, features = ["jit", "raylib", "raygui", "gpu-skinning"] }
+# The scene branches on `rl.GPU_SKINNING`, and dropping the feature above is the
+# whole way back to CPU skinning -- keep the flag in both builds measurable.
+slag = { workspace = true, features = ["jit", "raylib", "raygui"] }
 
 # Voice chat, client only (M13b). `cpal` opens the microphone, `libopus_sys`
 # with `bundled` compiles libopus from source, so there is no system codec to

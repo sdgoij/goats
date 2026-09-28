@@ -1220,6 +1220,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "goats-android"
+version = "0.1.0"
+dependencies = [
+ "goats",
+ "libc",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3045,8 +3053,6 @@ dependencies = [
 [[package]]
 name = "raylib-sys"
 version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36be0f95d9ea818847eedf4a6a73cbd5331db5a558069747dae827ac3c12fdf8"
 dependencies = [
  "bindgen",
  "cc",

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  P0's manifest: a bare NativeActivity around the client's cdylib.
+
+  `lib_name` is the base name of `libgoats_android.so`, and `hasCode="false"`
+  says there is no dex: the activity is the framework's own NativeActivity,
+  which looks up `ANativeActivity_onCreate` in that library. Java arrives with
+  the keyboard/clipboard Activity in P2, and Gradle with it (ANDROID.md D6).
+
+  minSdkVersion is 26 because that is where `libaaudio.so` starts and `cpal`'s
+  AAudio host links `-laaudio`; see risk 6 in ANDROID.md.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.sdgoij.goats"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+
+    <!-- The scene is GLES 2 for now (P0); the ES3 build moves this to 0x00030000. -->
+    <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:label="goats"
+        android:hasCode="false"
+        android:debuggable="true"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:label="goats"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density">
+            <meta-data android:name="android.app.lib_name" android:value="goats_android" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
