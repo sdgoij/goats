@@ -276,7 +276,27 @@ static TYPED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 ///
 /// Called by the VM with a valid environment and receiver.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_sdgoij_goats_GoatsActivity_nativeInit(env: JNIEnv, this: JObject) {
+pub extern "system" fn Java_dev_sdgoij_goats_GoatsActivity_nativeInit(
+    mut env: JNIEnv,
+    this: JObject,
+) {
+    // The engine materialises file-backed assets (models, sounds, music) into
+    // `std::env::temp_dir()` -- raylib's loaders take a path and pick a decoder
+    // from its extension. On Android that is `TMPDIR` or Rust's own fallback,
+    // `/data/local/tmp`, which is `0771 shell:shell`: unwritable, so the first
+    // model load dies with `EACCES`. The framework *does* set `TMPDIR` to the app's
+    // cache and Java sees it, but the native library's `getenv` does not on the
+    // newer OS this was found on; a *native* `setenv` is what the engine observes.
+    // So take the cache dir from the Activity and point `TMPDIR` at it, here,
+    // before the scene loads. The window is not up until `onCreate` returns, so
+    // the game's thread is still blocked in `InitWindow` and no asset has loaded.
+    if let Some(cache) = cache_dir(&mut env, &this) {
+        // SAFETY: `nativeInit` runs once, during `onCreate`, on the main thread,
+        // and the scene's own threads are not reading the environment yet -- the
+        // game's thread is blocked in `InitWindow` until the window exists.
+        unsafe { std::env::set_var("TMPDIR", cache) };
+    }
+
     let Ok(global) = env.new_global_ref(&this) else {
         return;
     };
@@ -297,6 +317,27 @@ pub extern "system" fn Java_dev_sdgoij_goats_GoatsActivity_nativeInit(env: JNIEn
     let _ = ACTIVITY.set(global);
     let _ = VM.set(vm);
     eprintln!("[android] the activity is attached");
+}
+
+/// The Activity's cache directory, which is what `TMPDIR` should be -- or `None`
+/// if the Activity cannot answer, in which case the caller leaves the
+/// environment alone rather than guessing a path.
+fn cache_dir(env: &mut JNIEnv, activity: &JObject) -> Option<std::ffi::OsString> {
+    let file = env
+        .call_method(activity, "getCacheDir", "()Ljava/io/File;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    let path = env
+        .call_method(&file, "getAbsolutePath", "()Ljava/lang/String;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    let path = JString::from(path);
+    let path = env.get_string(&path).ok()?;
+    Some(std::ffi::OsString::from(
+        path.to_string_lossy().into_owned(),
+    ))
 }
 
 /// `GoatsActivity.nativeText(String)`: one committed string, pushed.

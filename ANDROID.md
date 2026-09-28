@@ -166,11 +166,17 @@ and what P1 is built on. What the gap meant, and where each item now stands:
   keyboard-only, though the menu's own buttons are tappable because raygui reads
   the mouse that `touch[0]` feeds.
 - The console (`console.js`): *done, on the device.* The soft keyboard arrives as
-  `commitText` **strings** rather than key events — `getCharPressed` never sees it —
-  so `GoatsActivity` forwards each commit into a queue the console drains
-  (`android.takeTyped()`), carrying `\n` for enter, `\b` for backspace and
-  `\u001b` for the back button: the edits a text-only channel still has to carry.
-  The keyboard is shown only while the console is open (D7).
+  `commitText` **strings** rather than key events, so `GoatsActivity` forwards each
+  commit into a queue the console drains (`android.takeTyped()`), carrying `\n` for
+  enter, `\b` for backspace and `\u001b` for the back button: the edits a text-only
+  channel still has to carry. The keyboard is shown only while the console is open
+  (D7). **Printable keypresses never reach it on Android at all** -- raylib's
+  Android backend only ever *clears* `charPressedQueue` (`rcore_android.c:754`;
+  every desktop backend fills it, and `GetCharPressed` reads nothing else), and the
+  NDK exports no way to recover a key event's character (`AKeyEvent_getUnicodeChar`
+  is absent from `android/input.h` and from `libandroid.so`). So a physical
+  keyboard -- a Bluetooth one, or the emulator's host keyboard -- can drive every
+  `KEY_*` binding but cannot type a line. The IME is the only text path.
 - Clipboard: *done, on the device.* `SetClipboardText`/`GetClipboardText` are
   **stubs on Android** ("not implemented on target platform"), so the console's
   paste and `copy` (the ticket flow) go through the Activity's `ClipboardManager`
@@ -557,10 +563,28 @@ P0's surprises, none of them in a manifest:
   back as `KEY_ESCAPE` instead, which is what lets the console be closed. The IME
   still consumes the first back (to hide itself), so it takes two presses to close
   the console from a fresh keyboard.
-- **The emulator needs 12 GB free**, and the one here is x86_64 (with a 16 KB
-  page-size image) while the build is arm64-v8a -- so it could not have run this
-  `.so` even after freeing space. The phone is the easier target; an emulator
-  leg means adding x86_64 to the build.
+- **The emulator runs the arm64 build -- but a hardware keyboard leaves the console
+  untypable.** The AVD here is `Medium_Phone`, Android 17 (API 37), whose `abilist`
+  is `x86_64,arm64-v8a`: the image translates arm64, so the arm64-v8a `.so` runs
+  with no x86_64 leg. Two catches. Its `uwb` HAL aborts every few seconds
+  (`Fatal signal 6` in `android.hardware.uwb-service`), which is the emulator's,
+  not ours. And an AVD with a hardware keyboard suppresses the soft keyboard, which
+  -- see §3: printable keypresses never arrive on Android -- leaves the console
+  untypable: `adb shell settings put secure show_ime_with_hard_keyboard 1`, or
+  `hw.keyboard=no` in the AVD, brings it back.
+- **`TMPDIR` has to be set from the *native* side.** The engine materialises
+  file-backed assets (models, sounds) into `std::env::temp_dir()` -- raylib's
+  loaders take a path, and pick a decoder from its extension. On Android that is
+  `TMPDIR`, or Rust's own fallback of `/data/local/tmp`
+  (`std/src/sys/paths/unix.rs`), which is `0771 shell:shell`: unwritable, so the
+  first `loadModel` aborted with `EACCES` and took the app with it. The framework
+  *does* point `TMPDIR` at the app's cache -- `ActivityThread` logs it, and Java's
+  `Os.getenv("TMPDIR")` reads it back -- but the native library's `getenv` did *not*
+  see it on Android 17, and `Os.setenv` from Java did not change that either. A
+  native `setenv` is what the engine observes, so `nativeInit`
+  (`crates/goats/src/android.rs`) takes `getCacheDir()` from the Activity and sets
+  it before the scene loads. Android 13 (the phone) set `TMPDIR` in a way the
+  native side *did* see, which is why this only surfaced on the emulator.
 
 ## Risks and the calls to confirm
 
