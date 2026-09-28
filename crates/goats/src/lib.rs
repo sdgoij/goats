@@ -28,6 +28,12 @@
 mod audio;
 mod net;
 
+// The phone's touch surface, installed as the `android` global. Android only: the
+// desktop client, the server and the harness get no such global, and the scene's
+// guard is written on its absence (ANDROID.md D1).
+#[cfg(target_os = "android")]
+mod android;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -650,6 +656,11 @@ pub fn run() {
     context.set_host_callbacks(callbacks);
     slag::install_jit(&mut context).unwrap();
     context.install_raylib().unwrap();
+    // The touch surface, before the scene is evaluated and before the first frame:
+    // the scene's controls are inert without it (`touch.js` asks `typeof android`
+    // every frame rather than at load, so the harness can install one later).
+    #[cfg(target_os = "android")]
+    android::install(&mut context);
     // Register every embedded asset before the scene runs; the loaders resolve
     // these names to the bytes above rather than reading from disk.
     for &(name, data) in ASSETS {

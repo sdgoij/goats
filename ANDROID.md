@@ -40,7 +40,7 @@ Verified against the local `slag/` checkout and the vendored `raylib-sys 6.0.0`.
 | An Android build path for raylib | `raylib-sys/build.rs`: `platform_from_target` selects `Platform::Android` when the triple contains `android` | NDK toolchain file, `ANDROID_ABI`, `-DPLATFORM_ANDROID`, links `log android EGL GLESv2 OpenSLES c m` and the cmake-built `libraylib.a` |
 | `android_native_app_glue` | `raylib/cmake/LibraryConfigurations.cmake`, Android branch | the glue is compiled *into* `libraylib.a`; `-Wl,--no-undefined` is stripped for us |
 | An entry point that is already ours | `rcore_android.c:322` — raylib defines `android_main` and calls `extern int main(int, char**)` | the client's `while !windowShouldClose()` loop (`crates/goats/src/main.rs:556`) is already the right shape |
-| Touch as mouse | `rcore_android.c:1455-1470` | `touch[0]` drives `MOUSE_BUTTON_LEFT`, `Mouse.currentPosition` and `previousPosition` |
+| Touch as mouse | `rcore_android.c:1507-1516` | `touch[0]` drives `MOUSE_BUTTON_LEFT`, `Mouse.currentPosition` and `previousPosition` -- and `CORE.Input.Touch` itself (`:1483-1505`) is filled whether or not the gestures system is built, which is what makes multi-touch reachable at all |
 | A JIT for arm64 | `slag/crates/jit/src/compiler.rs:82`, `cranelift_native::builder()` | the host ISA, not a hardcoded x86-64; `runtime/src/stack.rs` already has a `target_os = "android"` arm |
 | Assets | `ASSETS` in `main.rs` | nothing to ship beside the APK |
 | Playback audio | raylib vendors miniaudio → AAudio/OpenSL ES | music, ambience and the voice stream |
@@ -146,20 +146,31 @@ D2 needs, too: the driver takes **GLSL ES 3.20**, so a `300 es` source has margi
 
 The `rl` surface exposes keys, mouse and clipboard, and **no touch or gesture
 bindings at all** — no `GetTouchPointCount`, no `GetTouchPosition`, no
-`GetGesturePinchDelta`. What that means today:
+`GetGesturePinchDelta`. The backend underneath is a different story: it collects up
+to ten touch points and the C side of raylib exposes them, so the client reaches
+them through `raylib-sys` directly (`crates/goats/src/android.rs`) — D1's answer,
+and what P1 is built on. What the gap meant, and where each item now stands:
 
-- Orbit camera: probably works. `goat.js:594` drags with `MOUSE_BUTTON_LEFT` and
-  `getMouseDeltaX/Y`, and raylib feeds both from `touch[0]`.
-- Zoom: dead. `camDist -= getMouseWheelMove() * 0.4`, and the Android backend
-  zeroes `currentWheelMove` every frame.
-- Movement, gait and jump: dead. ~30 `KEY_*` bindings — `W`/`S`, both shifts,
-  both controls, `SPACE`, and 13 `isKeyPressed` toggles (`L`, `K`, `B`, `T`,
-  `M`, `C`, `V`, `F11`, `ESCAPE`, …).
-- The console (`console.js`): dead, and needs a soft keyboard, which arrives as
-  `commitText` text rather than key events — `getCharPressed` will not see it.
-- Clipboard: `SetClipboardText`/`GetClipboardText` are **stubs on Android**
-  ("not implemented on target platform"), so the console's paste and `copy`
-  (the ticket flow) are dead too.
+- Orbit camera: worked already, by accident. `goat.js` drags with
+  `MOUSE_BUTTON_LEFT` and `getMouseDeltaX/Y`, and raylib feeds both from
+  `touch[0]` — which is also why `touch.js` has to *take the pointer away* from the
+  mouse path on a phone rather than add to it, or a thumb on the stick would orbit
+  the camera with it.
+- Zoom: was dead — `camDist -= getMouseWheelMove() * 0.4`, and the Android backend
+  zeroes `currentWheelMove` every frame. Now it is `touchPointer.zoom`, fed by the
+  two-finger pinch; the wheel path is unchanged on the desktop, where the pinch is
+  simply zero.
+- Movement, gait and jump: were dead — ~30 `KEY_*` bindings, `W`/`S`, both shifts,
+  both controls, `SPACE`, and 13 `isKeyPressed` toggles. P1's stick and two buttons
+  cover the movement half; the toggles themselves (`L`, `K`, `B`, `C`, …) are still
+  keyboard-only, though the menu's own buttons are tappable because raygui reads
+  the mouse that `touch[0]` feeds.
+- The console (`console.js`): still dead, and it needs the soft keyboard, which
+  arrives as `commitText` text rather than key events — `getCharPressed` will not
+  see it. P2.
+- Clipboard: still dead. `SetClipboardText`/`GetClipboardText` are **stubs on
+  Android** ("not implemented on target platform"), so the console's paste and
+  `copy` (the ticket flow) need the Java side as well. P2.
 
 ### 4. The rest, briefly
 
@@ -180,7 +191,7 @@ bindings at all** — no `GetTouchPointCount`, no `GetTouchPosition`, no
 
 **D1 — The Android surface lives in the client, not in Slag.** Touch, the soft
 keyboard, clipboard and insets become client-registered globals
-(`android.touchCount()`, `android.touchAt(i, out)`, `android.pinch()`,
+(`android.touchCount()`, `android.touchAt(i, out)`, `android.pinch(i, j)`,
 `android.keyboard(show)`, `android.takeTyped()`, `android.clipboardGet/Set()`,
 `android.insets()`) installed with `Context::register_fn` only when
 `cfg(target_os = "android")`. The client already links `raylib-sys` directly for
@@ -192,6 +203,16 @@ and for `loadShaderFromMemory`:
 ```js
 const hasTouch = typeof android === "object" && android !== null;
 ```
+
+Three of those globals are P1's, and two of them came out slightly different from
+the sketch above. `touchAt(i, out)` fills `out.x`/`out.y` *and* `out.id`: the
+identity is what lets the scene follow one finger across frames, because raylib's
+indices compact when a finger in the middle of them lifts. `pinch(i, j)` takes the
+two pointers to measure rather than assuming the first two, which on a phone are
+often a thumb on the stick and a finger in the air. And `insets()` is not here at
+all: asking for the real ones needs the Java `Activity` that arrives with P2, so
+P1's controls sit inside a fixed share of the short side instead (see the note in
+`touch.js`).
 
 **D2 — The GLSL dialect is a pure JS translation.** One function in the scene,
 `glsl(source)`, and one seam that uses it, `loadGlsl(vertex, fragment)`: every
@@ -333,12 +354,24 @@ softly, which is D2's work and therefore P3's. The manifest now matches the buil
 — `aapt2 dump badging` reports `uses-gl-es: '0x30000'` — so the APK no longer
 advertises an ES 2.0 floor it does not have.
 
-**P1 — Touch.** The `android.*` touch surface, plus a new scene part
-(`crates/goats/src/game/touch.js`, the 18th) drawing a stick, a jump button and
-a menu button, and driving the *existing* seams: movement writes `ctlHeld`
-(`ctl.js:19`, already "the keys a script holds down"), toggles go through
-`sceneCommand("lighting")` and friends. Camera keeps the free drag; zoom becomes
-`android.pinch()`.
+**P1 — Touch.** *Done, on the device.* The `android.*` touch
+surface (`crates/goats/src/android.rs`), and a new scene part
+(`crates/goats/src/game/touch.js`, the 18th) drawing a stick, a jump button and a
+menu button -- bottom-left, bottom-right and top-left, since the HUD already uses
+the other corners. It drives the seams that existed rather than a second input
+path: the stick writes `ctlHeld` (`ctl.js`, the table a script's `walk` fills, and
+it gives back what it found on release), the buttons go through `sceneCommand`
+(`jump`, `ui main`), and the camera reads `touchPointer` -- the deltas a mouse drag
+would have produced -- instead of reaching into `goat.js`. The free drag stays the
+camera's; zoom is the pinch. The guard around all of it is
+`typeof android === "object"`, asked per frame, so the desktop, the server and the
+harness (until a case installs a surface) are untouched.
+
+The device pass read the controls back off a screencap rather than trusting the
+plot: the drawn ring is the layout to the pixel (window `238,842 r=140`, measured
+`237.5,841 r=139.5`), a finger on the stick walks/trots/runs by how far it is
+pushed, and a press at the menu button's centre opens the menu. What the pass had
+to learn about driving it from adb is in "On the device" below.
 
 **P2 — The keyboard and the clip.** The Java `Activity`, `android.keyboard`,
 `android.takeTyped`, `android.clipboardGet/Set`, console integration, and the
@@ -388,9 +421,14 @@ otherwise rot:
   ES3 pass runs with `rl.GPU_SKINNING` forced on, so the four skinned vertex
   sources — compiled by no other run, and the ones carrying a `boneMatrices[32]`
   array — are in the set too.
-- **The touch overlay (P1)** can be driven through the recording `rl` stub in
-  `crates/scene`: script a touch sequence, assert the goat's gait, the camera's
-  yaw and the console's state, exactly as the existing scripted timeline does.
+- **The touch overlay (P1)** is driven through the recording `rl` stub in
+  `crates/scene`: `Harness::touch` installs the scene's `android` surface and
+  scripts the pointers on it (`[[frame, [[id, x, y], ...]], ...]`), and a case that
+  scripts touches turns the scripted *keyboard* off for that run -- otherwise two
+  input paths would be moving the same goat. `touch.rs` asserts a stick push walks
+  and a fuller one runs, a sideways push turns, a thumb on the stick does *not*
+  move the camera while a free finger does, a pinch zooms, the buttons jump and
+  open the menu, and a run with no surface draws nothing at all.
 - **The capability guards**: that a scene booted without `android` (server,
   harness, desktop) touches nothing Android-shaped — the same shape as the
   existing `typeof rl.loadShaderFromMemory !== "function"` cases.
@@ -476,8 +514,16 @@ P0's surprises, none of them in a manifest:
   raylib stops after `PLATFORM: ANDROID: Initialized successfully`, and nothing
   looks wrong. `adb shell input keyevent KEYCODE_WAKEUP` and
   `wm dismiss-keyguard` before launching.
+- **A scripted touch is not a finger.** `adb shell input tap` is over in a few
+  milliseconds -- faster than a frame, so the overlay never sees it; a short hold
+  (`input swipe x y x y 400`) is the shape that lands. Its coordinates are the
+  *display's* (0..2400 here), while the app's own are relative to its window, and
+  the window starts after the camera's cut-out strip: a point the app reports as
+  `156,156` is display `234,156`. Both were read off the device -- a twelve-second
+  hold injected at display `1200,900` arrives as `1122.0,900.0` -- and they are how
+  a missed button was told from somebody else's thumb on the screen.
 - **The emulator needs 12 GB free**, and the one here is x86_64 (with a 16 KB
-  page-size image) while the build is arm64-v8a — so it could not have run this
+  page-size image) while the build is arm64-v8a -- so it could not have run this
   `.so` even after freeing space. The phone is the easier target; an emulator
   leg means adding x86_64 to the build.
 

@@ -528,6 +528,10 @@ function sceneFrame() {
     if (rl.isKeyPressed(rl.KEY_ESCAPE) && !consoleAteEsc) {
         uiScreen = uiScreen === "hud" ? "main" : uiScreen === "main" ? "hud" : "main";
     }
+    // The touch controls, before anything reads input: the stick writes the same
+    // `ctlHeld` the keyboard path reads, and the camera block below takes its
+    // pointer from `touchPointer` (`touch.js`). Inert without a touch surface.
+    touchUpdate();
     // A menu freezes time: every world update is dt-driven, so a zero dt is the
     // whole pause (input is gated separately).
     const dt = uiIsOpen() ? 0 : Math.min(rl.getFrameTime(), 0.05);
@@ -590,8 +594,17 @@ function sceneFrame() {
     const mm = Math.floor((worldTime - hh) * 60);
     clockText = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
 
-    // camera: drag to orbit, arrows as a fallback, wheel to zoom
-    if (uiScreen === "hud" && !consoleOpen && rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+    // camera: drag to orbit, arrows as a fallback, wheel to zoom. On a phone the
+    // pointer is the touch surface instead (`touch.js`) -- raylib feeds the mouse
+    // from `touch[0]` there, so the two must not both apply, or a thumb on the
+    // stick would orbit the camera with it.
+    const camFree = uiScreen === "hud" && !consoleOpen;
+    if (touchPointer.present) {
+        if (camFree && touchPointer.dragging) {
+            camYaw -= touchPointer.dx * 0.004;
+            camPitch -= touchPointer.dy * 0.004;
+        }
+    } else if (camFree && rl.isMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
         camYaw -= rl.getMouseDeltaX() * 0.004;
         camPitch -= rl.getMouseDeltaY() * 0.004;
     }
@@ -599,7 +612,9 @@ function sceneFrame() {
     if (ctlKeyDown(rl.KEY_RIGHT)) camYaw -= 1.6 * dt;
     if (ctlKeyDown(rl.KEY_UP)) camPitch += 1.0 * dt;
     if (ctlKeyDown(rl.KEY_DOWN)) camPitch -= 1.0 * dt;
-    if (uiScreen === "hud" && !consoleOpen) camDist -= rl.getMouseWheelMove() * 0.4;
+    // The wheel is zero on Android and the pinch is zero everywhere else, so one
+    // expression covers both and neither is a special case.
+    if (camFree) camDist -= (rl.getMouseWheelMove() + touchPointer.zoom) * 0.4;
     camPitch = clamp(camPitch, 0.08, 1.35);
     camDist = clamp(camDist, TUNING.camera.minDist, TUNING.camera.maxDist);
 
@@ -949,6 +964,9 @@ drawRain(screenW, screenH);
 perfMark("rain2d");
 if (uiScreen === "hud") {
     drawHud(move);
+    // The touch controls, over the HUD they belong to. Nothing at all without a
+    // touch surface, which is why the server's null `rl` needs no circle bindings.
+    touchDraw();
     // The blast's own HUD reaction (M19f), over the HUD it belongs to.
     drawDamagePulse();
     perfMark("hud");

@@ -119,6 +119,10 @@
         drawCube: noop, drawLine: noop, drawPoint3D: noop, drawBillboard: noop,
         drawBillboardRec: noop, drawSphereEx: noop, drawQuad3D: noop,
         beginBlendMode: noop, endBlendMode: noop,
+        // The touch overlay's circles (`touch.js`). Unreachable here -- the overlay
+        // returns early without an `android` surface, and a headless host never
+        // installs one -- but this list is what the scene touches, and it does.
+        drawCircle: noop, drawCircleLines: noop,
         // The one blend mode the scene reads a name for on this path (the water
         // surface, M20b); the calls themselves are no-ops headlessly.
         BLEND_ALPHA: 0,

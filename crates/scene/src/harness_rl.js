@@ -39,6 +39,12 @@
     const chars = [];
     let clipboard = '';
     const clipboardWrites = [];
+    // Circles drawn by the touch overlay (P1).
+    let touchCircles = 0;
+    // The touch script a case installed, or null: see `harnessTouch`. While one is
+    // set, the scripted keyboard below is skipped -- the case is driving the phone's
+    // input, and two input paths at once measure neither.
+    let touchScript = null;
 
     // ---- the recorded run ---------------------------------------------------
     const timeline = [];
@@ -147,6 +153,17 @@
     // lighting and the death/restart; 4010+ drive the console and the clipboard,
     // after the restart, so no earlier assertion can be disturbed.
     function applyInput(i) {
+        // A case that scripted touches is driving the phone's input, so the keys
+        // below stand down: the overlay needs the goat to itself to be measured.
+        if (touchScript !== null) {
+            let active = null;
+            for (let k = 0; k < touchScript.length; k++) {
+                if (touchScript[k][0] > i) break;
+                active = touchScript[k][1];
+            }
+            if (active !== null) applyTouchPoints(active);
+            return;
+        }
         for (const k of Object.keys(keys)) delete keys[k];
         for (const k of Object.keys(pressed)) delete pressed[k];
         let w = false;
@@ -469,6 +486,20 @@
         beginBlendMode: (mode) => { blendMode = mode; }, endBlendMode: () => { blendMode = 0; },
         drawQuad3D: () => { counters.quadDraws += 1; }, drawPoint3D: () => {},
         drawRectangleLines: () => { counters.menuDraws += 1; },
+        // The touch overlay's circles (`touch.js`). Nothing is counted per phase --
+        // this is not a frame phase, it is proof the overlay drew at all, which is
+        // what tells a run with a touch surface from one without. The arguments are
+        // checked because they are *not* hot, and a stub that swallowed a missing
+        // radius would pass a case the engine throws a `TypeError` on -- which is
+        // exactly how one got as far as a phone.
+        drawCircle: (x, y, radius) => {
+            circleArgs(x, y, radius, "drawCircle");
+            touchCircles += 1;
+        },
+        drawCircleLines: (x, y, radius) => {
+            circleArgs(x, y, radius, "drawCircleLines");
+            touchCircles += 1;
+        },
         // A sky layer is the one *shader-bound* rectangle the scene draws, and the
         // only way "the bodies are under the clouds" can be read back.
         beginDrawing: () => { layers.length = 0; },
@@ -590,6 +621,62 @@
         return 0;
     }
 
+    // ---- the touch surface (P1) ---------------------------------------------
+    //
+    // `touch.js` looks for an `android` global, which the Android client installs
+    // and the server never has. Nothing installs one here either until a case asks:
+    // `harnessTouch` installs the surface *and* scripts it, so every run that never
+    // asks is a run with no touch surface at all -- which is exactly the guard (a
+    // scene that must not touch `android`) under test.
+    const touchPoints = [];
+
+    // The circle arguments, checked the way the engine checks them: `rl`'s draw
+    // calls take numbers, and a stub that took anything would let a case through
+    // that throws a `TypeError` on the device.
+    function circleArgs(x, y, radius, name) {
+        if (typeof x !== "number" || typeof y !== "number" || typeof radius !== "number") {
+            throw new TypeError(name + ": x, y and radius must be numbers");
+        }
+    }
+
+    function applyTouchPoints(points) {
+        touchPoints.length = 0;
+        for (let i = 0; i < points.length; i++) {
+            touchPoints.push({ id: points[i][0], x: points[i][1], y: points[i][2] });
+        }
+    }
+
+    function touchSurface() {
+        return {
+            touchCount: () => touchPoints.length,
+            touchAt: (index, out) => {
+                if (index < 0 || index >= touchPoints.length) return false;
+                const point = touchPoints[index];
+                out.x = point.x;
+                out.y = point.y;
+                out.id = point.id;
+                return true;
+            },
+            pinch: (a, b) => {
+                if (a < 0 || b < 0 || a >= touchPoints.length || b >= touchPoints.length) return 0;
+                const dx = touchPoints[a].x - touchPoints[b].x;
+                const dy = touchPoints[a].y - touchPoints[b].y;
+                return Math.sqrt(dx * dx + dy * dy);
+            },
+        };
+    }
+
+    // `[[frame, [[id, x, y], ...]], ...]`: the pointers down from each frame until
+    // the next entry (or forever, for the last). Installing it turns off the
+    // scripted keyboard in `applyInput`, so a touch case measures one input path.
+    globalThis.harnessTouch = function (json) {
+        touchScript = JSON.parse(json);
+        if (typeof globalThis.android !== "object" || globalThis.android === null) {
+            globalThis.android = touchSurface();
+        }
+        return touchScript.length;
+    };
+
     globalThis.harnessObserve = function () {
         const drawn = [];
         for (const handle in drawnRows) drawn.push(drawnRows[handle]);
@@ -665,6 +752,7 @@
             blastEnergy: blastEnergy,
             blastEnergyPeak: blastEnergyPeak,
             clipboardWrites: clipboardWrites,
+            touchCircles: touchCircles,
             logs: logs,
         });
     };

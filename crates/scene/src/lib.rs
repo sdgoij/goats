@@ -39,6 +39,7 @@ scene_bundle!(
     "../../goats/src/game/net.js",
     "../../goats/src/game/mods.js",
     "../../goats/src/game/explosions.js",
+    "../../goats/src/game/touch.js",
 );
 
 /// The null `rl`: every member the scene touches, with the drawing and input
@@ -65,6 +66,6 @@ mod tests {
         // *line* dropped from the list too; the banners have since been removed, so
         // that half is now caught only by the scene failing to run (the harness),
         // not here.
-        assert_eq!(PARTS.len(), 17);
+        assert_eq!(PARTS.len(), 18);
     }
 }

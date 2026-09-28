@@ -241,6 +241,10 @@ pub struct Observations {
     /// The brightest that uniform ever got over the run.
     pub blast_energy_peak: f64,
     pub clipboard_writes: Vec<String>,
+    /// Circles the touch overlay drew (P1): proof the controls were on screen, and
+    /// zero for every run without a touch surface.
+    #[serde(default)]
+    pub touch_circles: u32,
     /// The scene's own `console.log` lines.
     pub logs: Vec<String>,
 }
@@ -471,6 +475,17 @@ impl Harness {
             .as_string()
             .ok_or_else(|| "harnessObserve did not return a string".to_string())?;
         serde_json::from_str(&json).map_err(|error| error.to_string())
+    }
+
+    /// Installs the scene's touch surface and scripts the pointers on it:
+    /// `[[frame, [[id, x, y], ...]], ...]`, each entry in force from its frame until
+    /// the next. A case that calls this drives the phone's input instead of the
+    /// scripted keyboard, which is how the overlay is reached without a device
+    /// (`crates/harness/tests/touch.rs`).
+    pub fn touch(&mut self, script: &serde_json::Value) -> Result<(), String> {
+        let json = script.to_string();
+        self.call("harnessTouch", &[serde_json::json!(json)])
+            .map(|_| ())
     }
 
     /// Runs one line through the same dispatcher the console and stdin use.

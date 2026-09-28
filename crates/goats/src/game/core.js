@@ -23,6 +23,7 @@
 //   net.js       the network bridge to the Rust host (M10)
 //   mods.js      the mod table and the `goats` API (M14b)
 //   explosions.js landmines, boobytraps, craters and a flung goat (M19)
+//   touch.js     the on-screen stick, jump and menu, where there is a touch surface
 //
 // The goat is `goat_animated.glb`, baked from the Blender rig and loaded through
 // the `rl` model surface. Every clip bakes its forward travel as *in-place*
