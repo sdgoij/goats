@@ -4628,7 +4628,8 @@ The slices, in order, each one seen on a device before the next began:
 - **P5 — ship.** The `android` job in `.github/workflows/ci.yml`: Rust with the
   `aarch64-linux-android` target, JDK 17, the SDK and the NDK, then `build-apk.sh`
   — `javac` + `d8` + `aapt2` + `zipalign` + `apksigner`, no Gradle, and the same
-  script on Linux and on Windows — with the APK as a workflow artifact.
+  script on Linux and on Windows — with the APK uploaded, and published with the
+  desktop archives on a `v*` tag.
 
 Two things the work turned up that are worth knowing outside it:
 

@@ -439,9 +439,9 @@ phone joining a desktop host over iroh: the real test of `netwatch`,
 `portmapper` and DNS discovery on Android.
 
 **P5 — Ship.** *Done.* The `android` job in `.github/workflows/ci.yml` builds the
-`.so` and the APK on `ubuntu-latest` and uploads the APK as a workflow artifact
-(`android-arm64-v8a`); README's Android section and the `ROADMAP.md` milestone
-(M21) point back here. It cost more than the plan expected, and not on the job:
+`.so` and the APK on `ubuntu-latest` and uploads the APK (`android-arm64-v8a`),
+which a `v*` tag publishes beside the desktop archives; README's Android section and
+the `ROADMAP.md` milestone (M21) point back here. It cost more than the plan expected, and not on the job:
 because the workspace `[patch]`es `raylib-sys` into the gitignored `android/build/`,
 *no* cargo command resolves until `android/prepare-raylib-sys.py` has run — so the
 existing `test` and `build` jobs need it too, and the script's own first-run fetch

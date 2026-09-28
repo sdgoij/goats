@@ -285,20 +285,21 @@ cargo run --release   # the profile the game ships, and the one PERF.md measures
 | Linux x86-64 | `ubuntu-latest` | `goats-linux-x86_64.tar.gz` |
 | Linux AArch64 | `ubuntu-24.04-arm` | `goats-linux-aarch64.tar.gz` |
 
-Pushing a `v*` tag publishes all three archives as a GitHub Release; an ordinary
-push only builds and keeps the artifacts. Because the model and every sound are
-embedded, an archive is the two executables (the game and `goatsd`), this
-readme, the licence, the mod API reference (`APIv1.md`) and two example mods in
-`mods/`: `birds.zip` (a world mod) and `fatguy.zip` (a client mod, with a model
-and sounds of its own). Both ship zipped, so the released game loads them on the
-first run -- a self-test of `.zip` mod loading. Delete either, or run with
-`--no-mods`, for an unmodded game.
+Pushing a `v*` tag publishes the three archives and the phone APK as a GitHub
+Release; an ordinary push only builds and keeps the artifacts. Because the model
+and every sound are embedded, an archive is the two executables (the game and
+`goatsd`), this readme, the licence, the mod API reference (`APIv1.md`) and two
+example mods in `mods/`: `birds.zip` (a world mod) and `fatguy.zip` (a client mod,
+with a model and sounds of its own). Both ship zipped, so the released game loads
+them on the first run -- a self-test of `.zip` mod loading. Delete either, or run
+with `--no-mods`, for an unmodded game.
 The AArch64 job uses GitHub's hosted arm64 runners, which a public repository
 gets on the free plan.
 
-An `android` job builds the phone client on the same runner and uploads
-`android-arm64-v8a` as a workflow artifact — see [Android](#android). It is
-deliberately not a release asset: the APK is debug-signed and debug-built.
+An `android` job builds the phone client on another `ubuntu-latest` runner and
+uploads `android-arm64-v8a` — see [Android](#android). A `v*` tag publishes it
+beside the three archives. It is debug-signed and debug-built: an APK to sideload
+and try, not one a store would take.
 
 ## Android
 
@@ -309,7 +310,8 @@ jump and a menu button, with the camera on a drag and the zoom on a pinch. The
 console opens from the menu and uses the phone's own keyboard, so its clipboard
 works too; back is `Esc`, and a tap on the game closes the console.
 
-Take it from CI — the `android` job uploads `android-arm64-v8a` — or build it:
+Take it from a release (`goats-android-arm64-v8a.apk`), from the `android` job's
+artifacts, or build it:
 
 ```sh
 python android/prepare-raylib-sys.py                              # first, once

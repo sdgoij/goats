@@ -46,6 +46,9 @@ jobs:
       # D4. It fetches the crate into the registry itself, so it works on a fresh
       # checkout, and it is a no-op from the second run on.
       - name: Materialise the patched raylib-sys
+        # `bash` explicitly: a Windows runner's default shell is PowerShell, and
+        # this little snippet is a shell snippet.
+        shell: bash
         run: |
           PY="$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)"
           "$PY" android/prepare-raylib-sys.py
@@ -116,6 +119,7 @@ jobs:
       # Same reason as the `test` job: nothing resolves until the patched
       # raylib-sys exists, and the build script's cmake run is what consumes it.
       - name: Materialise the patched raylib-sys
+        shell: bash
         run: |
           PY="$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)"
           "$PY" android/prepare-raylib-sys.py
@@ -247,9 +251,9 @@ jobs:
       - name: Package the APK
         run: bash android/build-apk.sh
 
-      # Named like the desktop archives. Debug-signed and debug-built: this is an
-      # APK to sideload and try, not something a store would take, so it is a
-      # workflow artifact rather than a release asset.
+      # Named like the desktop archives, and published with them on a `v*` tag.
+      # Debug-signed and debug-built: this is an APK to sideload and try, not one a
+      # store would take.
       - name: Name the APK
         run: cp android/build/goats.apk goats-android-arm64-v8a.apk
 
@@ -268,9 +272,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      # The three desktop archives by name rather than every artifact: the Android
-      # APK is a debug-signed sideload build, so it stays on the run rather than in
-      # a release (see the `android` job).
+      # By name rather than every artifact: the three desktop archives and the phone
+      # APK (debug-signed -- see the `android` job), so an artifact a future job adds
+      # for its own reasons does not quietly become a release asset.
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -279,6 +283,7 @@ jobs:
             windows-x86_64
             linux-x86_64
             linux-aarch64
+            android-arm64-v8a
       - name: List the assets
         run: ls -la dist
       - uses: softprops/action-gh-release@v3
