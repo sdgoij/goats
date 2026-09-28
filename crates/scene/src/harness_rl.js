@@ -123,6 +123,10 @@
     // A shader is only really tested by what it contains, and these are the ones
     // whose contents decide whether a model draws or collapses.
     const shaderVertices = {};
+    // Every source pair the scene handed the engine, in order. The dialect cases
+    // (`es3.rs`) need the whole set, not the skinned few: what has to hold is that
+    // *no* source slipped past the translation, whatever program it was for.
+    const shaderPrograms = [];
     const musicLoads = [];
     const musicPlayed = [];
     const soundLoads = [];
@@ -357,6 +361,7 @@
         // can tell the lit pass from the depth pass. The sky's fragment source is
         // kept, because a shader is only really tested by what it contains.
         loadShaderFromMemory: (vertex, fragment) => {
+            shaderPrograms.push({ vertex: vertex, fragment: fragment });
             // The sky is the only program drawn as a full-screen rectangle, so its
             // handle is remembered: that is what tells a sky layer apart from every
             // other rectangle the scene draws.
@@ -637,6 +642,7 @@
             modelShaderCalls: modelShaderCalls,
             modelShaderRoutes: modelShaderRoutes,
             skinnedShaders: shaderVertices,
+            shaderPrograms: shaderPrograms,
             cpuSkinCalls: cpuSkinCalls,
             modelTextureCalls: modelTextureCalls,
             musicPlayed: musicPlayed,

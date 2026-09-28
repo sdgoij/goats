@@ -17,8 +17,12 @@
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
 
-    <!-- The scene is GLES 2 for now (P0); the ES3 build moves this to 0x00030000. -->
-    <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+    <!-- The build is an ES3 build (ANDROID.md D4 and risk 2): raylib is compiled
+         with GRAPHICS_API_OPENGL_ES3 and the EGL context is requested as 3, so
+         the app needs an ES 3.0 driver. Declaring it keeps the APK off ES
+         2.0-only devices rather than letting it install and fail at the first
+         `#version 300 es` compile. -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <uses-permission android:name="android.permission.INTERNET" />

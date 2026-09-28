@@ -779,6 +779,24 @@ pub fn run() {
         })
         .unwrap();
 
+    // Which GLSL dialect the scene's shaders have to be in. The engine's raylib
+    // build is what decides -- GL 3.3 on the desktop, GLSL ES 3.00 on Android,
+    // where `crates/goats/Cargo.toml` turns on the `opengl_es_30` feature -- and
+    // the scene cannot read that from JS, so the client tells it before the first
+    // frame (ANDROID.md D2). The desktop dialect is the scene's own default, so
+    // only Android has anything to say.
+    #[cfg(target_os = "android")]
+    {
+        let set_glsl_dialect = scene_function(&context, "setGlslDialect");
+        context
+            .call(
+                &set_glsl_dialect,
+                &JsValue::undefined(),
+                &[JsValue::boolean(true)],
+            )
+            .unwrap();
+    }
+
     context.call(&init, &JsValue::undefined(), &[]).unwrap();
 
     // The network bridge. Both entry points live in the scene (`net.js`); the

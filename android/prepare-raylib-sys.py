@@ -162,8 +162,50 @@ GLFW_GUARD_NEW = """    //
     );
 """
 
+GLDISPATCH_OLD = """        #[cfg(feature = "opengl_es_30")]
+        {
+            builder.define("OPENGL_VERSION", "ES 3.0");
+            println!("cargo:rustc-link-lib=GLESv2");
+            println!("cargo:rustc-link-lib=GLdispatch");
+        }
+"""
+
+GLDISPATCH_NEW = """        #[cfg(feature = "opengl_es_30")]
+        {
+            builder.define("OPENGL_VERSION", "ES 3.0");
+            println!("cargo:rustc-link-lib=GLESv2");
+
+            // GLdispatch is a GLVND library, which is desktop Linux only.
+            // Android has no such thing: its ES 2.0 *and* ES 3.x entry points
+            // live in libGLESv2.so, which the Android arm of `link()` asks for
+            // by itself. Emitting this unconditionally made the feature unusable
+            // for the one platform it was wanted on.
+            if env::var("CARGO_CFG_TARGET_OS").map(|os| os != "android").unwrap_or(true) {
+                println!("cargo:rustc-link-lib=GLdispatch");
+            }
+        }
+"""
+
 # ---------------------------------------------------------------------------
 # platforms/rcore_android.c
+
+CONTEXT_OLD = """    const EGLint contextAttribs[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+"""
+
+CONTEXT_NEW = """    const EGLint contextAttribs[] = {
+        // Match the config chosen just above. On an ES3 build that asks for
+        // EGL_OPENGL_ES3_BIT, and a client version of 2 alongside it yields an
+        // ES 2.0 context: raylib's own #version 300 es shaders happen to be
+        // accepted anyway (this driver is lenient about that), but ES3-only
+        // entry points are not guaranteed -- core VAOs, glVertexAttribDivisor,
+        // glDrawArraysInstanced -- and rlgl's ES3 path calls them.
+        EGL_CONTEXT_CLIENT_VERSION, (rlGetVersion() == RL_OPENGL_ES_30) ? 3 : 2,
+        EGL_NONE
+    };
+"""
 
 PANEL_OLD = """        if ((CORE.Window.screen.width == 0) || (CORE.Window.screen.height == 0))
         {
@@ -251,7 +293,9 @@ PATCHES = [
     ("keep X11 out of an Android link", "build.rs", X11_OLD, X11_NEW, "if platform != Platform::Android {"),
     ("take the target OS from cargo, not the host", "build.rs", IS_ANDROID_OLD, IS_ANDROID_NEW, "env::var(\"CARGO_CFG_TARGET_OS\")"),
     ("satisfy raylib's Wayland/X11 guard on Android", "build.rs", GLFW_GUARD_OLD, GLFW_GUARD_NEW, "cfg!(feature = \"software_renderer\") || is_android"),
+    ("keep the desktop GLVND library off an Android link", "build.rs", GLDISPATCH_OLD, GLDISPATCH_NEW, "GLdispatch is a GLVND library"),
     ("fill the panel instead of letterboxing", "raylib/src/platforms/rcore_android.c", PANEL_OLD, PANEL_NEW, "The window *is* the panel, so a request smaller than the display"),
+    ("ask for an ES3 context when the build is ES3", "raylib/src/platforms/rcore_android.c", CONTEXT_OLD, CONTEXT_NEW, "(rlGetVersion() == RL_OPENGL_ES_30) ? 3 : 2"),
     ("notice the rotation in APP_CMD_CONFIG_CHANGED", "raylib/src/platforms/rcore_android.c", CONFIG_OLD, CONFIG_NEW, "Panel resized to %ix%i"),
 ]
 

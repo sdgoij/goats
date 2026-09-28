@@ -10,7 +10,7 @@
 //   model.js     the animated goat model and the cube-skeleton fallback
 //   world.js     grass, the day/night curve, sky colours, sun/moon/stars
 //   water.js     the water table, the fill and the pools it makes (M20a)
-//   lighting.js  lit shader, directional light, planar + shadow-map shadows
+//   lighting.js  lit shader, the GLSL dialect, directional light, shadows
 //   sky.js       2.5D procedural cloud shader
 //   audio.js     music streams, weather beds, goat bleats
 //   weather.js   the weather state machine and wind

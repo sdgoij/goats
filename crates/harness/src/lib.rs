@@ -142,6 +142,14 @@ pub struct Counters {
     pub quad_draws: u32,
 }
 
+/// One `loadShaderFromMemory` call: the vertex and fragment sources the scene
+/// handed the engine, already translated into the build's GLSL dialect.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct ShaderProgram {
+    pub vertex: String,
+    pub fragment: String,
+}
+
 /// Everything the stub recorded, read back as one JSON object.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -175,6 +183,12 @@ pub struct Observations {
     /// The vertex source of every skinned program the scene compiled, by handle.
     #[serde(default)]
     pub skinned_shaders: BTreeMap<String, String>,
+    /// Every source pair the scene handed `loadShaderFromMemory`, in order. The
+    /// dialect cases (`es3.rs`) read the whole set here: the invariant is that no
+    /// source reached the engine without going through the translation, whichever
+    /// program it was for.
+    #[serde(default)]
+    pub shader_programs: Vec<ShaderProgram>,
     /// Every `setModelCpuSkinning` the scene asked for, `[model, enabled]` -- the
     /// per-model fallback to raylib's CPU deform pass.
     #[serde(default)]

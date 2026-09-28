@@ -12,7 +12,7 @@ work is in three places, and only one of them is graphics:
 | Layer | State | Cost |
 | --- | --- | --- |
 | Host: entry point, packaging, the frame loop | raylib does most of it | days |
-| Raster: an ES2 floor, then GLES 3.0 | scene's GLSL is `#version 330` throughout, but the port is a JS dialect layer | a small raylib fork, not new shaders |
+| Raster: an ES3 build, and a JS dialect layer for the GLSL | raylib takes `opengl_es_30` with D4's fork; the scene's 14 sources are translated by D2 | a function, not new shaders |
 | Input and UI: touch, soft keyboard, on-screen controls | `rl` has no touch surface at all | the real work |
 
 This document says what exists, what the gaps are, the calls to make before
@@ -81,19 +81,22 @@ raylib's Android branch hardcodes `GRAPHICS_API_OPENGL_ES2`
 graphics API itself with an `OPENGL_VERSION` define (`build.rs:157-184`) — and
 that define is applied *before* the platform match, so it reaches Android. The
 ES3 choice is therefore a feature rather than a fork: `opengl_es_30` sets
-`OPENGL_VERSION="ES 3.0"`. It is not usable as it stands (it also emits
-`-lGLdispatch`, a GLVND library Android does not have), but that is one line in
-D4's fork. raylib 6.0 has the rest: `GRAPHICS_API_OPENGL_ES3` includes
+`OPENGL_VERSION="ES 3.0"`. It needs two repairs to be usable, both of them D4's:
+the arm also emits `-lGLdispatch`, a GLVND library Android does not have, and the
+Android backend asks for its context before it reads `rlGetVersion()`, so it would
+hand an ES3 build an ES 2.0 context. Both are answered — see risk 2. raylib 6.0 has
+the rest: `GRAPHICS_API_OPENGL_ES3` includes
 `<GLES3/gl3.h>` and swaps in a GLSL ES 3.00 default shader (`rlgl.h:191-192`,
 `876`, `5021`), and cmake maps `-DOPENGL_VERSION="ES 3.0"` to it
 (`LibraryConfigurations.cmake:194-212`). The link line is a red herring either
 way, since `libGLESv2.so` *is* the ES 3.x library on Android: there is no
 `libGLESv3.so`.
 
-GLES 2 is still the floor P0 lands on, and it is not a target this scene can
-look like itself on: the whole lighting model, the volumetric sky, the water
-surface, the shadow map and the skinned model are custom programs, and every one
-of them is `#version 330` — 14 sources across 7 programs:
+GLES 2 was the floor P0 first landed on, and P0.5 has left it behind. It was never
+a target this scene could look like itself on: the whole lighting model, the
+volumetric sky, the water surface, the shadow map and the skinned model are
+custom programs, and every one of them is `#version 330` — 14 sources across 7
+programs:
 
 | Program | Sources | Ships as |
 | --- | --- | --- |
@@ -125,13 +128,19 @@ sources are already close: every fragment program writes `out vec4 finalColor`
 and calls `texture()` rather than `gl_FragColor`/`texture2D`, so D2's layer is
 the `#version` line, a precision qualifier and little else.
 
-ES3, which is where P3 goes, has an unknown of its own, and it is the first
-thing to test on hardware. `rlGetVersion()` is compile-time (`rlgl.h:2707-2728`),
-so an ES3 build makes the Android backend ask for an `EGL_OPENGL_ES3_BIT` config
-(`rcore_android.c:936`) — and then request `EGL_CONTEXT_CLIENT_VERSION, 2`
-regardless (`rcore_android.c:949`). An ES 2.0 context against raylib's own
-`#version 300 es` shaders is that branch contradicting itself; if the driver does
-not simply tolerate it, D4's fork grows a second line. See risk 2.
+ES3, which is where P3 goes, was the open question of this section, and it is now
+the build. The contradiction above is real, and this driver is exactly the lenient
+case that masks it: `rlGetVersion()` is compile-time (`rlgl.h:2707-2728`), so an
+ES3 build asks for an `EGL_OPENGL_ES3_BIT` config (`rcore_android.c:936`) and then
+requested `EGL_CONTEXT_CLIENT_VERSION, 2` regardless (`rcore_android.c:949`) — and
+the Mali driver accepted raylib's own `#version 300 es` shaders on that ES 2.0
+context anyway. Which is the trap: `rlGetVersion()` says ES3, so rlgl's ES3 path
+reaches for core VAOs, `glVertexAttribDivisor` and `glDrawArraysInstanced`, none
+of which an ES 2.0 context promises. D4's context patch closes it — the context
+version now follows `rlGetVersion()` and the build asks for 3. With it, the ES3
+build reports `OPENGL_VERSION:STRING=ES 3.0` and `GRAPHICS_API_OPENGL_ES3`, and
+raylib's default shaders (IDs 1–6) compile (risk 2). The ceiling is higher than
+D2 needs, too: the driver takes **GLSL ES 3.20**, so a `300 es` source has margin.
 
 ### 3. Input and UI
 
@@ -185,12 +194,26 @@ const hasTouch = typeof android === "object" && android !== null;
 ```
 
 **D2 — The GLSL dialect is a pure JS translation.** One function in the scene,
-`glsl(source)`, called at boot: it replaces the `#version 330` line, injects
-`precision highp float;` and the `out vec4` the fragment sources need, and maps
-`texture2D`→`texture`, `varying`→`in`/`out`, `attribute`→`in`. Desktop keeps
-`330`; Android gets `300 es`; one source, two dialects, no doubled shader files.
-Because it is pure JS and the shader sources are already assembled from arrays,
-**the translation is testable in the existing harness** — no GPU, no device.
+`glsl(source)`, and one seam that uses it, `loadGlsl(vertex, fragment)`: every
+program the scene compiles goes through that call, so no source can miss the
+translation. What it does is smaller than this decision first assumed. The
+`#version 330` line becomes `#version 300 es`, with `precision highp float;` and
+`precision highp int;` directly under it — ES 3.00 has no default `float` precision
+in a fragment shader and defaults `int` to `mediump`, and both have to precede
+every declaration, which is why they ride on the version line. The renames listed
+here originally — `texture2D`, `varying`, `attribute`, `gl_FragColor` — turned out
+to be work the sources had already done: every one of the 14 is written in the
+spellings ES 3.00 and desktop 3.30 share, so there is nothing to rewrite and
+`es3.rs` pins that rather than carrying a rename no source would exercise.
+
+The dialect is a property of the *engine's raylib build*, not of the scene, and
+the scene cannot read it from JS — so the client says which one before the first
+frame: `setGlslDialect(true)` from `crates/goats/src/lib.rs`, under
+`cfg(target_os = "android")`. Desktop is the scene's own default, which is what
+the headless server and the harness get. Desktop keeps `330`; Android gets
+`300 es`; one source, two dialects, no doubled shader files. And because it is
+pure JS, **the translation is testable in the existing harness** — no GPU, no
+device.
 
 **D3 — `gpu-skinning` becomes a `goats` feature.** `default = ["gpu-skinning"]`
 so every current build is unchanged, and the Android build passes
@@ -205,7 +228,7 @@ with the repairs the P0 probe proved necessary applied to it. Nothing outside th
 repository is read but the dependency cache every Rust build already uses, and
 the copy is gitignored, so it is a build product rather than something to review.
 Run the script once in a fresh clone — cargo cannot resolve the workspace until
-that path exists. Seven patches: five on the crate's build path and two in
+that path exists. Nine patches: six on the crate's build path and three in
 raylib's Android platform layer.
 
 1. **The platform parse** (`build.rs:206`). The API level is taken from the last
@@ -229,21 +252,33 @@ with `default-features = false` cannot configure at all.
 every Android-specific decision in it is dead when cross-compiling.
 5. **And so is the X11 link** (`build.rs:485`), gated on that same cfg: on a
 Linux host — i.e. the CI runner — it would link `-lX11` into the Android `.so`.
-6. **The framebuffer is the panel.** `SetupFramebuffer` letterboxes a request
+6. **The link line the ES3 feature carries** (`build.rs:157-184`). `opengl_es_30`
+   also emits `-lGLdispatch`, which is a GLVND name: it exists on desktop Linux
+   and nowhere on Android, where the ES 2.0 *and* the ES 3.x entry points are all
+   in `libGLESv2.so` — a library the Android arm of `link()` asks for by itself.
+   So the emission is now gated on the target not being Android. Without this the
+   feature cannot link for the one platform it was wanted on.
+7. **The framebuffer is the panel.** `SetupFramebuffer` letterboxes a request
 smaller than the display, which is a desktop idea: the client's 1000×640 window
 became a 640px strip of the panel (`renderOffset` 376,0) and, against the
 portrait size read at init, a strip in the bottom third (0,1510). The branch now
 takes the display as the screen, which is what its own `== 0` case was for.
-7. **A rotation after `InitPlatform` is noticed.** `APP_CMD_CONFIG_CHANGED` was
+8. **A rotation after `InitPlatform` is noticed.** `APP_CMD_CONFIG_CHANGED` was
 an empty stub whose comment said "Check screen orientation here!", and Android
 only rotates an activity once its native window exists — so the change was
 dropped. It now re-reads the window and re-runs the setup, touching size state
 only: re-running `InitGraphicsDevice` would recreate the EGL surface and
 invalidate every shader and texture the scene has loaded.
+9. **The context version follows the graphics API** (`rcore_android.c:949`). The
+   backend requests an `EGL_OPENGL_ES3_BIT` renderable for an ES3 build and then
+   asked for `EGL_CONTEXT_CLIENT_VERSION, 2` unconditionally, so the ES3 build got
+   an ES 2.0 context — which this driver tolerates, compiling raylib's own
+   `#version 300 es` shaders anyway, but which does not promise the ES3-only entry
+   points rlgl's ES3 path calls. The attribute is now
+   `(rlGetVersion() == RL_OPENGL_ES_30) ? 3 : 2`.
 
-And the ES3 link line: `opengl_es_30` must stop emitting `-lGLdispatch` on
-Android. All of this belongs upstream; the script is only how it gets applied
-until then, and the sibling fork it was developed in stays as the PR candidate.
+All of this belongs upstream; the script is only how it gets applied until then,
+and the sibling fork it was developed in stays as the PR candidate.
 
 **D5 — The client owns its directory.** On Android, `--mods` is not available, so
 the mods directory is the app's files dir (`/data/data/<pkg>/files/mods`) and the
@@ -256,7 +291,8 @@ permission request are reached, and how the `Activity`/JVM handshake that
 `ndk-context` wants is made. That rules out a generated manifest. `cargo ndk`
 builds the `.so` into `jniLibs`; Gradle assembles the APK. `AndroidManifest`
 declares a `NativeActivity` with `configChanges` for orientation, the
-`glEsVersion="0x00030000"` feature once D4 lands, and `INTERNET` + `RECORD_AUDIO`.
+`glEsVersion="0x00030000"` feature (D4 has landed, so the manifest declares it),
+and `INTERNET` + `RECORD_AUDIO`.
 
 **D7 — Landscape, and no keyboard until asked for.** The scene's window is
 1000×640. The soft keyboard is shown only when the console opens, through
@@ -286,6 +322,17 @@ Gradle project waits for the Java Activity in P2/D6. Two things P0 taught the
 plan: the device's driver accepts **GLSL ES 3.20**, a higher floor than D2
 assumed, and the activity only keeps running while the screen is awake.
 
+**P0.5 — The ES3 canary.** *Done, on the same device.* The question risk 2 left
+open was whether an ES3 context is reachable at all, and the answer is the build
+the port will ship: D4's ES3 link repair plus the context-version repair, and
+`raylib-sys`'s `opengl_es_30` enabled for Android alone
+(`crates/goats/Cargo.toml`), gives `OPENGL_VERSION:STRING=ES 3.0`, a context the
+driver grants as 3, and raylib's own `#version 300 es` shaders (IDs 1–6) compiling
+on the Mali-G77. The scene's `#version 330` sources still fail, by name and
+softly, which is D2's work and therefore P3's. The manifest now matches the build
+— `aapt2 dump badging` reports `uses-gl-es: '0x30000'` — so the APK no longer
+advertises an ES 2.0 floor it does not have.
+
 **P1 — Touch.** The `android.*` touch surface, plus a new scene part
 (`crates/goats/src/game/touch.js`, the 18th) drawing a stick, a jump button and
 a menu button, and driving the *existing* seams: movement writes `ctlHeld`
@@ -297,10 +344,19 @@ a menu button, and driving the *existing* seams: movement writes `ctlHeld`
 `android.takeTyped`, `android.clipboardGet/Set`, console integration, and the
 ticket flow (`copy`/paste) working through them.
 
-**P3 — Look right.** D4's `raylib-sys` patch, the ES3 graphics API, D2's
-`glsl()` layer, and the skinned programs reconciled with a GPU-skinning-free
-build. The volumetric sky, water and shadow map come back; the Android defaults
-for the cloud preset and shadows are chosen from what the device holds.
+**P3 — Look right.** *The dialect and the look are done, on the same device; the
+Android defaults are what is left.* D2's `glsl()`/`loadGlsl` translation is in,
+wired to the client's `setGlslDialect` on Android, and the device run is the proof
+the soft failures were only ever dialect-deep — `lighting: lit shader 0, shadow
+shader 1`, `water: surface shader 3`, `sky: shader 5, clouds medium (12 steps)`,
+no `Failed to compile`, no `cube shader` fallback, and on screen the lit terrain,
+the shadow map and the volumetric cloud band where the flat gradient and the
+planar blob used to be. The frame is in the twenties at the panel's 2322×1080 (26
+fps against the fallback look's 29 — the real programs are not free, which is what
+risk 8's target is for). The skinned programs are not part of it: Android builds
+`--no-default-features` (D3), so `rl.GPU_SKINNING` is false and the plain programs
+carry the scene. What is left is the Android-side *defaults* — cloud preset,
+shadow cadence, a frame target — which now come from a device rather than a guess.
 
 **P4 — Voice and session.** `ndk-context`, the `RECORD_AUDIO` request, then a
 phone joining a desktop host over iroh: the real test of `netwatch`,
@@ -313,21 +369,25 @@ and a `ROADMAP.md` milestone for whatever this becomes.
 Rough sizing, one developer with a device in hand: P0 is a couple of days now
 that risk 1 is answered — what is left there is the client's `cdylib`, the Gradle
 project and the first APK on a device — P1 is a few, P2 is a few, P4 and P5
-shorter unless iroh misbehaves. P3 is still the long pole, but it is a week of *fork and device*,
-not of shaders: D2's dialect layer is a pure function the harness can check
-(below), so what stands is the ES3 context (risk 2), the skinned programs
-reconciled against a GPU-skinning-free build, and defaults a mid-range phone
-holds.
+shorter unless iroh misbehaves. P3 landed shorter than that: the dialect is a
+function and the ES3 build was already in, so what it cost was the device pass,
+not the shaders. What is left there is the skinned programs reconciled against a
+GPU-skinning-free build (which is what Android ships) and defaults a mid-range
+phone holds.
 
 ## What can be tested without a phone
 
 The port's testable half is larger than it looks, and it is the half that would
 otherwise rot:
 
-- **The dialect layer (D2)** is a pure function of the shader source. The harness
-  can assert that the ES3 output contains no `texture2D`, no `varying`, no
-  bare `gl_FragColor`, and that the `#version` line is first — for all 14
-  sources, on every run.
+- **The dialect layer (D2)** is a pure function of the shader source, and
+  `crates/harness/tests/es3.rs` is it: 13 checks over every source a run compiled —
+  that each ES3 source's first line is `#version 300 es`, that the two precision
+  declarations follow it before any declaration, that none still says
+  `#version 330`, and that no source uses a spelling only desktop GLSL 2.x has. The
+  ES3 pass runs with `rl.GPU_SKINNING` forced on, so the four skinned vertex
+  sources — compiled by no other run, and the ones carrying a `boneMatrices[32]`
+  array — are in the set too.
 - **The touch overlay (P1)** can be driven through the recording `rl` stub in
   `crates/scene`: script a touch sequence, assert the goat's gait, the camera's
   yaw and the console's state, exactly as the existing scripted timeline does.
@@ -335,7 +395,10 @@ otherwise rot:
   harness, desktop) touches nothing Android-shaped — the same shape as the
   existing `typeof rl.loadShaderFromMemory !== "function"` cases.
 - **The build itself** is the CI job, which is a real gate: an Android build that
-  does not link is caught on every push, on a runner with no phone attached.
+  does not link is caught on every push, on a runner with no phone attached. The
+  ES3 leg is checkable there too, without a device: the prepared crate's CMake
+  cache reads `OPENGL_VERSION:STRING=ES 3.0` and the compile line carries
+  `-DGRAPHICS=GRAPHICS_API_OPENGL_ES3`.
 
 ## The build, concretely
 
@@ -432,15 +495,21 @@ P0's surprises, none of them in a manifest:
    `ANativeActivity_onCreate` where `dlsym` can find it. Without that last step
    the `.so` links happily and exposes three dynamic symbols, and the app would
    fail to start with nothing on stderr.
-2. **ES2 as a floor, and whether an ES3 context is reachable at all.** Is P0's
-   fallback look acceptable as an intermediate, or does the port go straight to
-   ES3? Going straight means shaders are the first problem you debug, on a
-   device, with no fallback picture to compare against. Before choosing ES3,
-   settle the contradiction in `rcore_android.c`: the backend asks for an ES3
-   renderable (`:936`) but requests `EGL_CONTEXT_CLIENT_VERSION, 2` (`:949`), so
-   an ES3 build may get an ES 2.0 context that cannot compile raylib's own
-   `#version 300 es` shaders. That single line decides whether D4's fork is two
-   changes or three.
+2. **ES2 as a floor, and whether an ES3 context is reachable at all.**
+   *Answered on 2026-09-28: yes, and it is now the build, so P3 is the port's route
+   rather than its risk.* The contradiction was real — the backend asks for an ES3
+   renderable (`rcore_android.c:936`) but requested `EGL_CONTEXT_CLIENT_VERSION,
+   2` (`:949`) — and the driver absorbed it: raylib's `#version 300 es` default
+   shaders (IDs 1–6) compiled even on the ES 2.0 context, so an ES3 build could
+   look healthy while `rlGetVersion()` and the context disagreed, and rlgl's ES3
+   path called core VAOs and instancing entry points an ES 2.0 context does not
+   promise. D4's context patch makes that version follow `rlGetVersion()`. The
+   build now reports `OPENGL_VERSION:STRING=ES 3.0`, `GRAPHICS_API_OPENGL_ES3`, and
+   `Viewport offsets: 0, 0` at the panel's 2322×1080 with the frame loop steady, so
+   the ES2 floor is not needed as a stepping stone and P0's fallback look stays a
+   fallback. The device's ceiling is **GLSL ES 3.20**, so D2's `300 es` output has
+   margin. Desktop is untouched: `cargo tree --target x86_64-pc-windows-msvc` shows
+   `raylib-sys` without `opengl_es_30`.
 3. **Where the clipboard lives.** Client-side `android.clipboard*`, or an engine
    change that makes `rl.setClipboardText` work on Android? The former is free,
    the latter is correct — and it is a Slag PR either way.
@@ -461,6 +530,12 @@ P0's surprises, none of them in a manifest:
    device.
 7. **Mods on a phone.** Bundled example mods only, or a file-picker import and a
    place to put a fetched world mod? This is the difference between a demo and a
-   client.
+   client. One part of it is already answerable: a mod that ships *shaders* is on
+   its own for the dialect. `glsl()` sits in the scene, not on
+   `rl.loadShaderFromMemory`, so the engine hands a mod's source straight to the
+   driver — a `#version 330` program compiled on the phone fails exactly as the
+   scene's did. No bundled mod ships one today, but the clean fix is a dialect on
+   the engine's side (a Slag PR), which is where the client's `setGlslDialect`
+   belongs eventually anyway.
 8. **What "playable" means.** A frame target and a device class, so P3's graphics
    defaults are a decision rather than a guess.

@@ -19,6 +19,59 @@
 // bias/acne tuning a depth map needs. A depth-map pass (soft edges, self-shadowing)
 // can replace it once the render-texture bindings are wired up.
 
+// ---- the GLSL dialect (D2) ------------------------------------------------
+//
+// One source, two dialects. Every shader below is written for desktop GLSL 3.30
+// -- `#version 330`, `in`/`out`, `texture()`, an `out vec4` fragment colour --
+// which is what the desktop build compiles. GLSL ES 3.00, the phone's dialect
+// (ANDROID.md D2 and P0.5), is the same language with a different `#version` line
+// and a mandatory float precision in the fragment stage, so the port is a string
+// translation rather than a second set of shaders.
+//
+// The dialect is a property of the *engine's raylib build*, not of the scene: GL
+// 3.3 on the desktop, ES 3.0 where the Android fork asks for it -- and the scene
+// cannot read that from JS, so the client says which one before the first frame
+// (`setGlslDialect`, from `crates/goats/src/lib.rs`). The default is desktop,
+// which is what the headless server and the harness get.
+//
+// The spellings the two dialects *do* differ on -- `texture2D`, `varying`,
+// `attribute`, `gl_FragColor` -- appear in none of these sources: ES 3.00's
+// spelling is the one desktop 3.30 already used, so everything here is written in
+// the common subset, and the version line and the precision are all that is left
+// to translate. `es3.rs` pins that, rather than `glsl` rewriting spellings no
+// source has.
+let glslEs = false;
+function setGlslDialect(es) {
+    glslEs = es === true;
+}
+
+// The desktop version line, alone on its line. `#version` has to be the first
+// thing in a shader, so the ES3 head replaces this line instead of being appended.
+const GLSL_VERSION_330 = /^#version\s+330\s*$/m;
+// ES 3.00 has no default `float` precision in a fragment shader and defaults
+// `int` to `mediump` there; both are declared, and both have to precede every
+// declaration -- which is why they ride on the version line.
+const GLSL_ES_HEAD = "#version 300 es\nprecision highp float;\nprecision highp int;";
+
+function glsl(source) {
+    if (!glslEs) return source;
+    if (!GLSL_VERSION_330.test(source)) {
+        // A source with no desktop version line is a bug rather than a dialect to
+        // guess at -- it would compile as neither -- so name it and pass it on.
+        console.log("glsl: a shader source has no '#version 330' line - left as-is");
+        return source;
+    }
+    return source.replace(GLSL_VERSION_330, GLSL_ES_HEAD);
+}
+
+// The one seam between the scene's GLSL and the engine. Every program is compiled
+// through here, which is what makes "every source went through the dialect" a
+// structural fact rather than a rule to remember. `sky.js` compiles through it
+// too: the parts share one scope.
+function loadGlsl(vertex, fragment) {
+    return rl.loadShaderFromMemory(glsl(vertex), glsl(fragment));
+}
+
 const GROUND_Y = 0.02;          // plane the planar shadow projects onto, plus
                                 // the terrain height under the goat
 const SHADOW_ALPHA = 0.34;      // base opacity of the cast shadow
@@ -652,20 +705,20 @@ function makeLighting() {
         lightingText = "cube shader";
         return;
     }
-    litShader = rl.loadShaderFromMemory(LIT_VS, LIT_FS);
+    litShader = loadGlsl(LIT_VS, LIT_FS);
     if (litShader < 0 || !rl.isShaderValid(litShader)) {
         console.log("lighting: lit shader failed to compile - falling back to the cube shader");
         litShader = -1;
         lightingText = "cube shader";
         return;
     }
-    shadowShader = rl.loadShaderFromMemory(SHADOW_VS, SHADOW_FS);
+    shadowShader = loadGlsl(SHADOW_VS, SHADOW_FS);
     if (shadowShader < 0 || !rl.isShaderValid(shadowShader)) shadowShader = -1;
     // The celestial bodies' own program (M2). It needs nothing from the rest of the
     // scene but the sun's direction, and if it does not compile the bodies stay on
     // the shader they were built with -- raylib's default, which draws them as flat
     // discs, and no terminator on the moon.
-    celestialShader = rl.loadShaderFromMemory(CELESTIAL_VS, CELESTIAL_FS);
+    celestialShader = loadGlsl(CELESTIAL_VS, CELESTIAL_FS);
     if (celestialShader < 0 || !rl.isShaderValid(celestialShader)) {
         console.log("lighting: celestial shader failed to compile - the bodies draw unshaded");
         celestialShader = -1;
@@ -681,7 +734,7 @@ function makeLighting() {
     // The water surface's program (M20b), compiled before `makeShadowMap` so the map
     // can be attached to it below. It is a `makeModel` mesh with no bone data, like
     // the terrain, so it is never routed through `modelShaderFor`.
-    waterShader = rl.loadShaderFromMemory(WATER_VS, WATER_FS);
+    waterShader = loadGlsl(WATER_VS, WATER_FS);
     if (waterShader < 0 || !rl.isShaderValid(waterShader)) {
         console.log("water: the surface shader did not compile - the pools stay undrawn");
         waterShader = -1;
@@ -794,7 +847,7 @@ function litProgramInfo(shader) {
 // whose *link* fails comes back as raylib's default program rather than as 0, so
 // the `boneMatrices` location is the real proof that this program skins.
 function loadSkinnedProgram(vertex, fragment) {
-    const shader = rl.loadShaderFromMemory(vertex, fragment);
+    const shader = loadGlsl(vertex, fragment);
     if (shader < 0 || !rl.isShaderValid(shader)) return -1;
     if (rl.getShaderLocation(shader, "boneMatrices") < 0) {
         console.log("lighting: a skinned shader has no boneMatrices uniform - not using it");
@@ -1114,7 +1167,7 @@ function makeShadowMap() {
         return;
     }
     shadowColor = rl.renderTextureColor(shadowRT);
-    depthShader = rl.loadShaderFromMemory(DEPTH_VS, DEPTH_FS);
+    depthShader = loadGlsl(DEPTH_VS, DEPTH_FS);
     if (depthShader < 0 || !rl.isShaderValid(depthShader)) {
         depthShader = -1;
         console.log("shadow map: depth shader failed to compile - keeping the planar shadow");

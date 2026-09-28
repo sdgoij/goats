@@ -243,7 +243,7 @@ const SKY_FS = [
 
 function makeSkyShader() {
     if (typeof rl.loadShaderFromMemory !== "function") return;
-    skyShader = rl.loadShaderFromMemory(SKY_VS, SKY_FS);
+    skyShader = loadGlsl(SKY_VS, SKY_FS);
     if (skyShader < 0 || !rl.isShaderValid(skyShader)) {
         console.log("sky: shader failed to compile - keeping the gradient and billboards");
         skyShader = -1;

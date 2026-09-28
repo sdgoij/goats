@@ -48,3 +48,12 @@ libopus_sys = { workspace = true, features = ["bundled"] }
 # false` matches what Slag's runtime asks for, so the two declarations merge
 # into the one raylib build rather than a second, differently configured copy.
 raylib-sys = { workspace = true }
+
+# ES3 for the phone, GL 3.3 for the desk. `opengl_es_30` sets raylib's
+# `OPENGL_VERSION` to "ES 3.0", which the Android backend turns into its ES3 mode
+# (`rlgl.h:191`) -- and this phone's driver is the reason to want it: it reports
+# GLSL ES 3.20 and rejects the scene's `#version 330` as desktop GLSL. Desktop
+# must stay GL 3.3, and cargo features cannot vary by target, so this is a
+# target-specific declaration rather than another word on the line above.
+[target.'cfg(target_os = "android")'.dependencies]
+raylib-sys = { workspace = true, features = ["opengl_es_30"] }
