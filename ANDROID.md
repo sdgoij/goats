@@ -176,7 +176,10 @@ and what P1 is built on. What the gap meant, and where each item now stands:
   NDK exports no way to recover a key event's character (`AKeyEvent_getUnicodeChar`
   is absent from `android/input.h` and from `libandroid.so`). So a physical
   keyboard -- a Bluetooth one, or the emulator's host keyboard -- can drive every
-  `KEY_*` binding but cannot type a line. The IME is the only text path.
+  `KEY_*` binding but cannot type a line. The IME is the only text path. The
+  console closes when that keyboard goes away -- the Activity watches the IME
+  inset (`watchIme`) -- and a tap on the game closes it too, because back is not
+  always delivered while the keyboard is up (see "On the device").
 - Clipboard: *done, on the device.* `SetClipboardText`/`GetClipboardText` are
   **stubs on Android** ("not implemented on target platform"), so the console's
   paste and `copy` (the ticket flow) go through the Activity's `ClipboardManager`
@@ -342,7 +345,10 @@ and `INTERNET` + `RECORD_AUDIO`.
 **D7 — Landscape, and no keyboard until asked for.** The scene's window is
 1000×640. The soft keyboard is shown only when the console opens, through
 `android.keyboard(true)`, and its text is drained by the console through
-`android.takeTyped()` rather than by `getCharPressed`.
+`android.takeTyped()` rather than by `getCharPressed`. That coupling runs both
+ways: `watchIme` in `GoatsActivity` treats the keyboard going away as the console
+closing, so the two are never out of step -- and a tap on the game closes the
+console directly, since back is not a reliable way out while the IME is up.
 
 ## Slices
 
@@ -560,9 +566,26 @@ P0's surprises, none of them in a manifest:
   `GoatsActivity.onCreate` sets `setFocusable`/`setFocusableInTouchMode` for
   exactly that. And raylib *eats* `AKEYCODE_BACK` at the native layer, so an
   `Activity.onBackPressed` override never runs at all; D4's tenth patch reports
-  back as `KEY_ESCAPE` instead, which is what lets the console be closed. The IME
-  still consumes the first back (to hide itself), so it takes two presses to close
-  the console from a fresh keyboard.
+  back as `KEY_ESCAPE` instead, which is what lets the console be closed. When
+  the IME swallows a back press to hide itself, `watchIme` turns that hide into
+  the console closing, so one press is enough wherever back is delivered.
+- **A NativeActivity is created more than once.** `ANativeActivity_onCreate` runs
+  per Activity, so a recreation -- a configuration change the manifest does not
+  claim, "don't keep activities", a second launch -- calls `nativeInit` again,
+  and `ndk_context::initialize_android_context` *panics* on its second call
+  (`assertion failed: previous.is_none()`), which aborts the whole process. Found
+  on the emulator: the console, its keyboard and a back press together produced a
+  second Activity, and the abort took the app down. `nativeInit` is now
+  idempotent for `ndk-context` and re-points the stored Activity at the new one.
+  That makes the app survive a recreation; it does not make a recreation cheap --
+  the glue still starts a second `android_main`.
+- **Android 17 finishes the activity on back while the keyboard is up.** With the
+  soft keyboard shown, the emulator's back went straight to `finish()`: the IME
+  did not consume it and neither the raylib mapping nor `onBackPressed` ran, so
+  the app closed rather than the console. That is why the way out of the console
+  does not depend on back -- the keyboard going away closes it (`watchIme`), and
+  a tap on the game closes it (`touch.js`). On the phone (Android 13) back behaved:
+  the IME ate the first press, the second closed the console.
 - **The emulator runs the arm64 build -- but a hardware keyboard leaves the console
   untypable.** The AVD here is `Medium_Phone`, Android 17 (API 37), whose `abilist`
   is `x86_64,arm64-v8a`: the image translates arm64, so the arm64-v8a `.so` runs

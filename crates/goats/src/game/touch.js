@@ -142,8 +142,18 @@ function touchUpdate() {
 
     // A menu or the console has the screen. Let go of everything rather than leave
     // the stick held behind it -- coming back from the menu to a goat already
-    // walking is the kind of bug nobody reports.
+    // walking is the kind of bug nobody reports. The console also takes a *new*
+    // touch as "close": with the soft keyboard up, the back button dismisses the
+    // keyboard first and is not always delivered afterwards (ANDROID.md's device
+    // notes), so the overlay needs a way out of its own.
     if (!touchPointer.present || uiScreen !== "hud" || consoleOpen) {
+        if (consoleOpen && uiScreen === "hud") {
+            for (let i = 0; i < touchDown; i++) {
+                if (touchWasDown(TOUCH_POINTS[i].id)) continue;
+                consoleClose();
+                break;
+            }
+        }
         touchRelease();
     } else {
         touchStick(layout);

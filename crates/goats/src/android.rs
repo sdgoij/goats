@@ -21,7 +21,7 @@
 //! the stick is a pointer too).
 
 use core::ffi::c_void;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::{JNIEnv, JavaVM};
@@ -263,7 +263,12 @@ fn spread(first: i32, second: i32) -> f64 {
 // crash.
 
 static VM: OnceLock<JavaVM> = OnceLock::new();
-static ACTIVITY: OnceLock<GlobalRef> = OnceLock::new();
+/// The Activity every call is made through. Replaceable, not a `OnceLock`: an
+/// Activity can be created more than once in one process, and each is the one to
+/// ask.
+static ACTIVITY: Mutex<Option<GlobalRef>> = Mutex::new(None);
+/// `ndk_context::initialize_android_context` panics if it is called twice.
+static NDK_CONTEXT: Once = Once::new();
 /// What the IME has committed and the scene has not read: `\n` to submit, `\b` to
 /// rub out, everything else as itself.
 static TYPED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -306,15 +311,26 @@ pub extern "system" fn Java_dev_sdgoij_goats_GoatsActivity_nativeInit(
     // `ndk-context` is where cpal's AAudio host looks its `JavaVM` and `Context`
     // up, and the Activity is exactly what it wants. Harmless before P4: nothing
     // reads it until a stream is opened.
+    //
+    // It *panics* if it is initialised twice, and an Activity can be created more
+    // than once in one process -- a configuration change the manifest does not
+    // claim, "don't keep activities", a second launch -- so this is the
+    // process-wide one-shot, and the first Activity is the right one to keep.
     let context = global.as_raw() as *mut c_void;
     if !context.is_null() {
-        // SAFETY: the VM outlives the process and the reference is kept in
-        // `ACTIVITY` below, so both pointers stay valid.
-        unsafe {
-            ndk_context::initialize_android_context(vm.get_java_vm_pointer().cast(), context)
-        };
+        NDK_CONTEXT.call_once(|| {
+            // SAFETY: the VM outlives the process and the reference is kept in
+            // `ACTIVITY` below, so both pointers stay valid.
+            unsafe {
+                ndk_context::initialize_android_context(vm.get_java_vm_pointer().cast(), context)
+            }
+        });
     }
-    let _ = ACTIVITY.set(global);
+    // A recreated Activity replaces the one every call goes through, or the
+    // keyboard and the clipboard would be asked of a window that is gone.
+    if let Ok(mut slot) = ACTIVITY.lock() {
+        *slot = Some(global);
+    }
     let _ = VM.set(vm);
     eprintln!("[android] the activity is attached");
 }
@@ -376,7 +392,8 @@ fn take_typed() -> String {
 /// on a thread the VM has never seen.
 fn with_activity<T>(call: impl FnOnce(&mut JNIEnv, &JObject) -> Option<T>) -> Option<T> {
     let vm = VM.get()?;
-    let activity = ACTIVITY.get()?;
+    let activity = ACTIVITY.lock().ok()?;
+    let activity = activity.as_ref()?;
     let mut env = vm.attach_current_thread().ok()?;
     call(&mut env, activity.as_obj())
 }

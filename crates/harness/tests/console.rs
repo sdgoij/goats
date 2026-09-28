@@ -151,6 +151,27 @@ fn the_console_speaks_java() {
         );
     }
 
+    {
+        let mut harness = phone(&mut checks);
+        harness.eval("consoleToggle()").expect("open the console");
+        // A new touch on the game closes it: with the keyboard up that is the way
+        // out that does not depend on the back button being delivered.
+        harness
+            .touch(&json!([[20, [[1, 500.0, 300.0]]]]))
+            .expect("the tap");
+        let obs = harness.run(40).expect("run the scene");
+        let open = harness
+            .eval("consoleOpen")
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true);
+        checks.check(
+            "a tap on the game closes the console",
+            !open && !obs.keyboard_shown,
+            (open, obs.keyboard_shown),
+        );
+    }
+
     // ---- the Activity's clipboard -------------------------------------------
     {
         let mut harness = phone(&mut checks);

@@ -69,6 +69,8 @@ public class GoatsActivity extends NativeActivity {
     }
 
     private InputView inputView;
+    /** Whether the soft keyboard was visible at the last layout pass. */
+    private boolean imeVisible;
 
     // ---- the native side ----------------------------------------------------
 
@@ -164,8 +166,9 @@ public class GoatsActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // The framework loads `libgoats_android.so` in here, from the manifest's
-        // `lib_name`, so `JNI_OnLoad` has run and the natives are registered by the
-        // time this returns.
+        // `lib_name`, so `ANativeActivity_onCreate` has run and the game's thread
+        // is up. The two `native*` methods are found by name on first call; there
+        // is no `JNI_OnLoad` (see the class comment).
         super.onCreate(savedInstanceState);
         inputView = new InputView(this);
         // Invisible, one pixel, in the corner: the IME needs a *focused* view to
@@ -181,8 +184,36 @@ public class GoatsActivity extends NativeActivity {
         inputView.setFocusableInTouchMode(true);
         ((ViewGroup) getWindow().getDecorView())
                 .addView(inputView, new ViewGroup.LayoutParams(1, 1));
+        watchIme();
         nativeInit();
         Log.i(TAG, "activity ready");
+    }
+
+    /**
+     * Close the console when the keyboard goes away.
+     *
+     * The console and the soft keyboard are one thing (D7): the scene shows the
+     * keyboard when it opens the console, so if the keyboard is dismissed the
+     * console has to go with it -- otherwise it sits open with nothing to type
+     * into and no way out but the back button. It is also what makes the back
+     * button a *single* press: Android's own back handler hides the keyboard
+     * first, and this is what turns that into a closed console.
+     *
+     * Nothing reports the keyboard's visibility directly, so the insets are the
+     * signal -- and only a visible -> hidden *transition* counts. The keyboard is
+     * hidden whenever the console is closed, so acting on "hidden" alone would
+     * close a console the instant it opened.
+     */
+    private void watchIme() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return;
+        final View decor = getWindow().getDecorView();
+        decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            WindowInsets insets = decor.getRootWindowInsets();
+            if (insets == null) return;
+            boolean visible = insets.isVisible(WindowInsets.Type.ime());
+            if (imeVisible && !visible) nativeText(ESCAPE);
+            imeVisible = visible;
+        });
     }
 
     @Override
