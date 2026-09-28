@@ -296,6 +296,42 @@ first run -- a self-test of `.zip` mod loading. Delete either, or run with
 The AArch64 job uses GitHub's hosted arm64 runners, which a public repository
 gets on the free plan.
 
+An `android` job builds the phone client on the same runner and uploads
+`android-arm64-v8a` as a workflow artifact — see [Android](#android). It is
+deliberately not a release asset: the APK is debug-signed and debug-built.
+
+## Android
+
+The client runs on a phone. It is arm64-v8a, landscape, and wants an OpenGL ES 3.0
+driver; `ANDROID.md` is the whole account of the port, the nine patches to
+`raylib-sys` it needs and the device notes. Touch replaces the keyboard: a stick, a
+jump and a menu button, with the camera on a drag and the zoom on a pinch. The
+console opens from the menu and uses the phone's own keyboard, so its clipboard
+works too; back is `Esc`, and a tap on the game closes the console.
+
+Take it from CI — the `android` job uploads `android-arm64-v8a` — or build it:
+
+```sh
+python android/prepare-raylib-sys.py                              # first, once
+rustup target add aarch64-linux-android
+cargo build -p goats-android --target aarch64-linux-android
+android/build-apk.sh
+```
+
+`build-apk.sh` packages the APK by hand — `javac` + `d8` + `aapt2` + `zipalign` +
+`apksigner`, no Gradle — and finds the SDK, its build-tools and the NDK through the
+environment, so it is the same script on Linux and on Windows. Set
+`ANDROID_NDK_HOME` and the cross-compilation environment `ANDROID.md`'s "The build,
+concretely" lists first. The APK it makes is debug-signed:
+
+```sh
+adb install -r android/build/goats.apk
+```
+
+Not there yet: voice, and joining a session over the network (`ANDROID.md` P4). And
+a physical keyboard cannot type into the console — Android's NDK cannot turn a key
+event into a character — so only the on-screen keyboard reaches it.
+
 ## Layout
 
 | Path | What it is |

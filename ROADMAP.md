@@ -101,6 +101,7 @@ uses.
 | **M18e** | Mod sync polish: remembered consent, signed `ModRef`s, size caps | M18 | S–M | Not started — open questions 3, 5 and 6 of M18 |
 | **M19** | Landmines and boobytraps: a blast, a crater, a flung goat | M12b, M14 | M–L | ✅ **Done** — M19a (the engine additions), M19b (the devices and the blasts), M19c (the flung goat, the herd that dies to it, and the device that moves house), M19d (the craters), M19e (the wire), M19f (the look: the flipbook atlases, the light flash, the camera knock, the `GoatFlung` clip and the `py` field that finally puts a mirrored leap where it belongs) and M19g (the per-slot pools, the trigger's click, and the `goats.explosions` surface) have landed. The layout is derived from the seed, so nothing new on the handshake |
 | **M20** | Water: pools, waves and a reflected sky | M3 (rain), M4 (the lit program), M8 (the heightfield), M19d (the craters) | M–L | 🚧 **In progress** — M20a (the field: `water.js`, the priority-flood fill, `sceneWater()`, the two hooks and the console verbs), M20b (the surface and the level), M20c (the waves), M20d (the interactions: the wake, the splashes, the drag and the submerged grass), M20d′ (the feel, after the first play-through), M20d″ (the table is the world's), M20e (the reflection, in three tiers) and M20f (the audit and the guards; the fill deleted) have landed, with `water.rs` at 85 checks over sixteen cases and the rest of the suite green. What is left is **M20g (swimming, buoyancy and drinking), the next planned step** rather than a deferral. **Nothing on the wire**: the table's ends are declared, so the level is a stateless function of the seed's own rain, the ground it pools on is derived, and the audit pins the snapshot's own keys to say so |
+| **M21** | Android: the game on a phone | M9 (the console), M15 (the harness) | L | ✅ **Done** — P0–P5 of `ANDROID.md`: the ES3 build and the patched `raylib-sys`, the touch overlay, the soft keyboard and the clipboard through a Java `Activity`, the GLSL dialect layer, and a CI job that builds the APK. Voice and a real session (P4) are what is left |
 
 ---
 
@@ -4586,6 +4587,69 @@ One line each: the recommendation, and where the reasoning is.
 | The tests | `crates/harness/tests/water.rs` (twenty-one cases, 108 checks: the field, the table, the surface, the chop, the reflection, the wading, the windows, the drain, the pools, the audit, the snapshot, the seam, the sleep gate, the herd's, the goat's walk in the water and a bot's, and the crater patch that has to equal a whole rebuild), `crates/harness/tests/mods.rs` (the surface from inside a wrapper, and the fatguy's water clock), `crates/harness/tests/birds.rs` (release-only: the flock staying dry) and `crates/proto/src/lib.rs` (the budget guard's note) |
 | The frame measurements | `PERF.md` appendix B (the M20e tier 1-vs-2 A/B, not yet run; the `perf` phase `mirror`) |
 | The mod surface's documentation | `APIv1.md` §4.17 (`goats.water`, landed in M20f), §4.5 (the mode write that can be refused, M20f′) and §4's notes |
+
+---
+
+## M21 — Android: the game on a phone ✅ Done
+
+`ANDROID.md` is the plan and the record; this is the milestone it became. The
+client runs on an arm64-v8a phone in landscape against an OpenGL ES 3.0 driver,
+with the same JS scene the desktop and the server run.
+
+The slices, in order, each one seen on a device before the next began:
+
+- **P0 — pixels.** `crates/android` is the entry point: the C-ABI `main` raylib's
+  Android backend calls, the `-u` and version-script link arguments that keep
+  `ANativeActivity_onCreate` and the two JNI entry points in the dynamic table, and
+  a stdio redirect — an app's fds 1 and 2 are `/dev/null`, so without it the scene's
+  own output is discarded. `raylib-sys` is patched in-tree
+  (`android/build/raylib-sys`, materialised by `android/prepare-raylib-sys.py`),
+  because the published crate cannot cross-compile to Android at all: nine repairs,
+  from the API level read out of the target triple to the framebuffer that has to be
+  the panel.
+- **P0.5 — the ES3 canary.** `opengl_es_30` for Android alone, and the EGL context
+  version that follows it, so the phone gets a real ES 3.0 context rather than an
+  ES 2.0 one that happens to compile the shaders.
+- **P1 — touch.** The `android` global the client installs
+  (`crates/goats/src/android.rs`) and `crates/goats/src/game/touch.js`: a stick, a
+  jump button and a menu button, driving the seams that already existed (`ctlHeld`,
+  `sceneCommand`, `touchPointer`) instead of a second input path.
+- **P2 — the soft keyboard and the clipboard.** A `NativeActivity` subclass
+  (`android/java/dev/sdgoij/goats/GoatsActivity.java`) owns the Java that the NDK
+  cannot reach: `InputMethodManager`, `ClipboardManager` and `WindowInsets`. Typed
+  text is *pushed* — `InputConnection.commitText` forwards each committed string
+  into a queue the console drains — because an IME never becomes key events; and the
+  field has to ask for raw characters, or the IME composes an autocorrected word and
+  commits only at a word boundary, which is what "the keys never arrive" was.
+- **P3 — look right.** `glsl()`/`loadGlsl` translate the scene's fourteen
+  `#version 330` sources to `300 es` under `precision highp float`, chosen by the
+  client with `setGlslDialect(true)`. The soft failures were only ever
+  dialect-deep.
+- **P5 — ship.** The `android` job in `.github/workflows/ci.yml`: Rust with the
+  `aarch64-linux-android` target, JDK 17, the SDK and the NDK, then `build-apk.sh`
+  — `javac` + `d8` + `aapt2` + `zipalign` + `apksigner`, no Gradle, and the same
+  script on Linux and on Windows — with the APK as a workflow artifact.
+
+Two things the work turned up that are worth knowing outside it:
+
+- **The phone's back button, and the keyboard that is not a keyboard.** raylib eats
+  `AKEYCODE_BACK` at the native layer, so an `Activity.onBackPressed` never runs;
+  the port reports it as `KEY_ESCAPE` instead, which is what closes the console and
+  toggles the menu. And a physical keyboard cannot type into the console at all —
+  raylib's Android backend only ever *clears* its character queue, and the NDK
+  exposes no key-to-character function. The on-screen keyboard is the only text
+  path, which is why P2 exists.
+- **The emulator is not the phone.** The AVD's `abilist` runs the arm64 build, and
+  its `uwb` HAL aborts on a timer; but its Android 17 finished the activity on back
+  with the keyboard up, where Android 13 behaved. Both were worth a device.
+
+The proof is the suite: `crates/harness/tests/touch.rs` for the overlay and
+`crates/harness/tests/console.rs` for the keyboard, the clipboard and the insets,
+on the same scene the phone runs. What is left is **P4 — voice and session**:
+`ndk-context` (already initialised, for the `RECORD_AUDIO` request to come), cpal's
+AAudio host, and a phone joining a desktop host over iroh — the real test of
+`netwatch`, `portmapper` and DNS discovery on Android. The Android-side render
+defaults (cloud preset, shadow cadence, a frame target) are the other loose end.
 
 ---
 

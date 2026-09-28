@@ -41,13 +41,23 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The workspace `[patch]`es `raylib-sys` into `android/build/`, which is
+      # gitignored, so no cargo command resolves until this has run -- see ANDROID.md
+      # D4. It fetches the crate into the registry itself, so it works on a fresh
+      # checkout, and it is a no-op from the second run on.
+      - name: Materialise the patched raylib-sys
+        run: |
+          PY="$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)"
+          "$PY" android/prepare-raylib-sys.py
       # The client crate is left out: it links raylib, and the build job below is
-      # the one that installs the build dependencies for it. The harness is left
-      # out too -- it is the release step below -- so the debug pass is the crates
-      # that are fast unoptimized, where debug's overflow and `debug_assert`
-      # checks are worth having and cost nothing.
+      # the one that installs the build dependencies for it. `crates/android` is
+      # left out for the same reason -- it is the client's cdylib, so building it
+      # builds the client. The harness is left out too -- it is the release step
+      # below -- so the debug pass is the crates that are fast unoptimized, where
+      # debug's overflow and `debug_assert` checks are worth having and cost
+      # nothing.
       - name: Test the crates that need no engine
-        run: cargo test --workspace --exclude goats --exclude harness
+        run: cargo test --workspace --exclude goats --exclude goats-android --exclude harness
       # The scene's own suite: the 4050-frame scripted timeline, the mod cases (the
       # synthetic tables, the checked-in example fixtures and the mod added after
       # the freeze), the birds flock, the sky and the skinning. `--include-ignored`
@@ -103,6 +113,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # Same reason as the `test` job: nothing resolves until the patched
+      # raylib-sys exists, and the build script's cmake run is what consumes it.
+      - name: Materialise the patched raylib-sys
+        run: |
+          PY="$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)"
+          "$PY" android/prepare-raylib-sys.py
+
       - name: Build
         run: cargo build --release --workspace
 
@@ -153,6 +170,95 @@ jobs:
           path: ${{ matrix.package }}
           if-no-files-found: error
 
+  # P5 in ANDROID.md: the phone build. It is the one job that needs a Java
+  # toolchain, the Android SDK and the NDK on top of Rust, and the one whose
+  # product is not a desktop archive, so it is a job of its own -- and Linux only,
+  # because that is where the SDK and the NDK are cheapest to get.
+  android:
+    name: Android (arm64-v8a)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+
+      # `javac` for the Activity, and the keytool that makes the throwaway debug
+      # keystore. The recipe is tested against 17 (ANDROID.md, "The build,
+      # concretely").
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # The generator the NDK recipe asks for; without it CMake picks its own and
+      # the cross build goes sideways.
+      - name: Install ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build
+
+      # The SDK, its cmdline-tools and its build-tools, licensed non-interactively.
+      # The NDK is a separate package: take the runner's if it has one, and install
+      # the pinned version if it does not. That pin is the one version this workflow
+      # names -- `build-apk.sh` itself takes whatever it finds.
+      - uses: android-actions/setup-android@v3
+      - name: Make the NDK available
+        run: |
+          if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "${ANDROID_NDK_HOME:-}" ]; then
+            sdkmanager --install "ndk;27.2.12479018"
+            echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          fi
+          echo "NDK: $ANDROID_NDK_HOME"
+
+      # The environment "The build, concretely" lists, written once and inherited by
+      # every step after it -- the versioned `CC_`/`CXX_`/`AR_`/`RANLIB_` names in
+      # particular, which `cc` cannot guess for an android triple.
+      - name: Set up the cross-compilation environment
+        run: |
+          BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          {
+            echo "ANDROID_PLATFORM=26"
+            echo "LIBOPUS_ANDROID_PLATFORM=26"
+            echo "CMAKE_GENERATOR=Ninja"
+            echo "CC_aarch64-linux-android=$BIN/aarch64-linux-android26-clang"
+            echo "CXX_aarch64-linux-android=$BIN/aarch64-linux-android26-clang++"
+            echo "AR_aarch64-linux-android=$BIN/llvm-ar"
+            echo "RANLIB_aarch64-linux-android=$BIN/llvm-ranlib"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android26-clang"
+            echo "BINDGEN_EXTRA_CLANG_ARGS=--target=aarch64-linux-android26 --sysroot=$SYSROOT"
+          } >> "$GITHUB_ENV"
+
+      # The workspace patches `raylib-sys` to `android/build/raylib-sys`, so the
+      # script that materialises it has to run before any cargo command resolves the
+      # workspace -- `build-apk.sh` runs it again, which is idempotent, but that is
+      # too late for the build below.
+      - name: Materialise the patched raylib-sys
+        run: python3 android/prepare-raylib-sys.py
+
+      - name: Build the cdylib
+        run: cargo build -p goats-android --target aarch64-linux-android
+
+      - name: Package the APK
+        run: bash android/build-apk.sh
+
+      # Named like the desktop archives. Debug-signed and debug-built: this is an
+      # APK to sideload and try, not something a store would take, so it is a
+      # workflow artifact rather than a release asset.
+      - name: Name the APK
+        run: cp android/build/goats.apk goats-android-arm64-v8a.apk
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-arm64-v8a
+          path: goats-android-arm64-v8a.apk
+          if-no-files-found: error
+
   # Only a tag publishes; ordinary pushes just build and keep the artifacts.
   release:
     name: Publish release
@@ -162,10 +268,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The three desktop archives by name rather than every artifact: the Android
+      # APK is a debug-signed sideload build, so it stays on the run rather than in
+      # a release (see the `android` job).
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+          pattern: |
+            windows-x86_64
+            linux-x86_64
+            linux-aarch64
       - name: List the assets
         run: ls -la dist
       - uses: softprops/action-gh-release@v3

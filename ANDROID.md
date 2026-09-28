@@ -438,13 +438,21 @@ shadow cadence, a frame target — which now come from a device rather than a gu
 phone joining a desktop host over iroh: the real test of `netwatch`,
 `portmapper` and DNS discovery on Android.
 
-**P5 — Ship.** A CI job extending `.github/workflows/ci.yml` that builds the
-`.so` and the APK and uploads it as an artifact, the README's Android section,
-and a `ROADMAP.md` milestone for whatever this becomes.
+**P5 — Ship.** *Done.* The `android` job in `.github/workflows/ci.yml` builds the
+`.so` and the APK on `ubuntu-latest` and uploads the APK as a workflow artifact
+(`android-arm64-v8a`); README's Android section and the `ROADMAP.md` milestone
+(M21) point back here. It cost more than the plan expected, and not on the job:
+because the workspace `[patch]`es `raylib-sys` into the gitignored `android/build/`,
+*no* cargo command resolves until `android/prepare-raylib-sys.py` has run — so the
+existing `test` and `build` jobs need it too, and the script's own first-run fetch
+could not lean on `cargo fetch` in a workspace it cannot yet resolve (it now
+fetches the crate from a scratch manifest of its own). `build-apk.sh` had to stop
+being a Windows script as well: one host case, the newest installed build-tools and
+platform rather than pinned ones, and a debug keystore made on the spot.
 
 Rough sizing, one developer with a device in hand: P0 is a couple of days now
-that risk 1 is answered — what is left there is the client's `cdylib`, the Gradle
-project and the first APK on a device — P1 is a few, P2 is a few, P4 and P5
+that risk 1 is answered — what is left there is the client's `cdylib`, the
+packaging script and the first APK on a device — P1 is a few, P2 is a few, P4 and P5
 shorter unless iroh misbehaves. P3 landed shorter than that: the dialect is a
 function and the ES3 build was already in, so what it cost was the device pass,
 not the shaders. What is left there is the skinned programs reconciled against a
@@ -488,7 +496,10 @@ None of this is discoverable from the failure messages alone:
 - **`python android/prepare-raylib-sys.py` first.** The workspace patches
   raylib-sys to a path in `android/build/` that this creates, so no cargo command
   in the workspace resolves until it has run — desktop included.
-  `android/build-apk.sh` runs it for you.
+  `android/build-apk.sh` runs it for you, and so does every job in `ci.yml` that
+  runs cargo at all; on a fresh machine it fetches the crate into the registry on
+  its own, from a scratch manifest, because `cargo fetch` in the workspace is the
+  very command the missing patch path breaks.
 - **`rustup target add aarch64-linux-android`**, once per machine.
 - **`ANDROID_NDK_HOME`** must point at the real NDK, which here is
   `%LOCALAPPDATA%\Android\android-ndk-r30`.

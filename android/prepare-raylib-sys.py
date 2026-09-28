@@ -53,6 +53,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -322,6 +323,38 @@ def registry_source() -> str | None:
     return found[-1] if found else None
 
 
+# A scratch manifest for the one crate that has to come out of the registry. It
+# cannot be `cargo fetch` in the workspace: the workspace `[patch]` points at the
+# very path this script creates, and cargo refuses to resolve a patch path that is
+# not there -- which is exactly the state a fresh clone is in, and the reason this
+# script exists at all. A manifest of its own sidesteps the patch.
+FETCH_MANIFEST = """\
+[workspace]
+
+[package]
+name = "raylib-sys-fetch"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+raylib-sys = { version = "6.0.0", default-features = false }
+"""
+
+
+def fetch_registry_crate() -> None:
+    """Download raylib-sys into the cargo registry, without resolving the workspace."""
+    with tempfile.TemporaryDirectory(prefix="goats-raylib-sys-") as scratch:
+        manifest = os.path.join(scratch, "Cargo.toml")
+        with open(manifest, "w", encoding="utf-8") as handle:
+            handle.write(FETCH_MANIFEST)
+        # A manifest needs a target even to fetch, and a crate with nothing in it is
+        # enough: `cargo fetch` downloads the dependencies and builds nothing.
+        os.makedirs(os.path.join(scratch, "src"), exist_ok=True)
+        with open(os.path.join(scratch, "src", "lib.rs"), "w", encoding="utf-8") as handle:
+            handle.write("")
+        subprocess.run(["cargo", "fetch", "--manifest-path", manifest], check=True)
+
+
 def apply_patches(root: str) -> None:
     for name, relative, old_text, new_text, marker in PATCHES:
         path = os.path.join(root, relative)
@@ -351,11 +384,11 @@ def main() -> int:
     else:
         source = registry_source()
         if source is None:
-            print("no raylib-sys in the cargo registry; fetching it")
-            subprocess.run(["cargo", "fetch"], cwd=ROOT, check=True)
+            print("no raylib-sys in the cargo registry; fetching it on its own")
+            fetch_registry_crate()
             source = registry_source()
         if source is None:
-            raise SystemExit("still no raylib-sys source. Run `cargo fetch` in the workspace first.")
+            raise SystemExit("still no raylib-sys source to copy.")
 
         print(f"copying {source}\n     to {DEST}")
         shutil.copytree(
