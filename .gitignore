@@ -1,3 +1,5 @@
+android/.idea
+android/android.iml
 slag/
 target/
 *.png

@@ -176,10 +176,16 @@ and what P1 is built on. What the gap meant, and where each item now stands:
   NDK exports no way to recover a key event's character (`AKeyEvent_getUnicodeChar`
   is absent from `android/input.h` and from `libandroid.so`). So a physical
   keyboard -- a Bluetooth one, or the emulator's host keyboard -- can drive every
-  `KEY_*` binding but cannot type a line. The IME is the only text path. The
-  console closes when that keyboard goes away -- the Activity watches the IME
-  inset (`watchIme`) -- and a tap on the game closes it too, because back is not
-  always delivered while the keyboard is up (see "On the device").
+  `KEY_*` binding but cannot type a line. The IME is the only text path. The field
+  asks for `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD`, which is what makes the IME
+  commit **one character per keystroke**: without it the IME composes a word --
+  autocorrecting, in whatever language the phone is set to -- and commits only on a
+  word boundary, so the console sat empty while the player typed and then received
+  something they had not written. Composing is emulated against the console's own
+  line, since the field holds no text. The console closes when that keyboard goes
+  away -- the Activity watches the IME inset (`watchIme`) -- and a tap on the game
+  closes it too, because back is not always delivered while the keyboard is up (see
+  "On the device").
 - Clipboard: *done, on the device.* `SetClipboardText`/`GetClipboardText` are
   **stubs on Android** ("not implemented on target platform"), so the console's
   paste and `copy` (the ticket flow) go through the Activity's `ClipboardManager`
@@ -569,6 +575,15 @@ P0's surprises, none of them in a manifest:
   back as `KEY_ESCAPE` instead, which is what lets the console be closed. When
   the IME swallows a back press to hide itself, `watchIme` turns that hide into
   the console closing, so one press is enough wherever back is delivered.
+- **A keyboard that composes types nothing.** The console's field began as plain
+  `TYPE_CLASS_TEXT`, and the IME then composed each word -- autocorrecting, in the
+  phone's own language -- and committed only at a word boundary. Typing produced
+  either nothing at all (the letters still composing) or the wrong word (`copy`
+  came out `ja dat ?`), and it was reported as "keys never arrive".
+  `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD` is the standard way to ask an IME for raw
+  characters: no suggestions, no autocorrect, one commit per key. `setComposingText`
+  is still handled -- a field with no text of its own has to emulate composing
+  against the console's line -- for the IMEs that compose regardless.
 - **A NativeActivity is created more than once.** `ANativeActivity_onCreate` runs
   per Activity, so a recreation -- a configuration change the manifest does not
   claim, "don't keep activities", a second launch -- calls `nativeInit` again,

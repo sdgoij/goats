@@ -99,6 +99,8 @@ public class GoatsActivity extends NativeActivity {
             } else {
                 imm.hideSoftInputFromWindow(inputView.getWindowToken(), 0);
                 inputView.clearFocus();
+                // The IME's composing state belongs to a console line that is gone.
+                inputView.clearComposing();
                 // The window still needs a focused view, or the game stops hearing
                 // its own input; the decor takes it back rather than the IME's view
                 // keeping it while hidden.
@@ -235,8 +237,19 @@ public class GoatsActivity extends NativeActivity {
      * console's own.
      */
     private static final class InputView extends View {
+        /**
+         * What the IME has composed and we have already put in the console line.
+         * Kept here so it can be dropped when the keyboard goes away.
+         */
+        private String composing = "";
+
         InputView(Context context) {
             super(context);
+        }
+
+        /** Forget the IME's composing state, which the console has moved past. */
+        void clearComposing() {
+            composing = "";
         }
 
         @Override
@@ -246,22 +259,58 @@ public class GoatsActivity extends NativeActivity {
 
         @Override
         public InputConnection onCreateInputConnection(EditorInfo out) {
+            // `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD` is what makes the keyboard send
+            // *characters*. Without it the IME composes a word -- autocorrect, in
+            // whatever language the phone is set to -- and commits it only on a word
+            // boundary, so the console sits empty while the player types and then
+            // receives something autocorrected. A password field is the standard way
+            // to ask for one character per keystroke, no suggestions, no autocorrect.
             out.inputType = EditorInfo.TYPE_CLASS_TEXT
+                    | EditorInfo.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
                     | EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS
                     | EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE;
             // No fullscreen editor: it would cover the console the text is going
             // into. `IME_ACTION_NONE` keeps the enter key an enter key.
             out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_ACTION_NONE;
+            final InputView view = this;
             return new BaseInputConnection(this, false) {
                 @Override
+                public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                    // Composing is emulated against the console's line: what the IME
+                    // showed last is rubbed out and this put in its place, so the
+                    // player sees the typing as it happens.
+                    for (int i = 0; i < view.composing.length(); i++) nativeText(BACKSPACE);
+                    view.composing = text.toString();
+                    if (!view.composing.isEmpty()) nativeText(view.composing);
+                    return true;
+                }
+
+                @Override
+                public boolean finishComposingText() {
+                    view.composing = "";
+                    return true;
+                }
+
+                @Override
                 public boolean commitText(CharSequence text, int newCursorPosition) {
+                    // The commit replaces the composing text, if there was any.
+                    for (int i = 0; i < view.composing.length(); i++) nativeText(BACKSPACE);
+                    view.composing = "";
                     nativeText(text.toString());
                     return true;
                 }
 
                 @Override
                 public boolean deleteSurroundingText(int before, int after) {
-                    for (int i = 0; i < before; i++) nativeText(BACKSPACE);
+                    // Backspace: the composing text goes first, or the console's
+                    // line and the IME's idea of it drift apart.
+                    for (int i = 0; i < before; i++) {
+                        if (!view.composing.isEmpty()) {
+                            view.composing =
+                                    view.composing.substring(0, view.composing.length() - 1);
+                        }
+                        nativeText(BACKSPACE);
+                    }
                     return true;
                 }
 
