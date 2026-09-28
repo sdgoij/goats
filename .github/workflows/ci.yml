@@ -124,8 +124,11 @@ jobs:
           PY="$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)"
           "$PY" android/prepare-raylib-sys.py
 
+      # `goats-android` is left out: its only product is the phone's `.so`, and the
+      # `android` job builds it for the target that matters. Built here it would be a
+      # host `cdylib` nobody packages (and a leftover MSVC linker warning).
       - name: Build
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --exclude goats-android
 
       # The client's own unit tests -- the one thing the `test` job cannot reach,
       # because it leaves out the crate that links raylib (whose build dependencies
