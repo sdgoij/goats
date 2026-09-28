@@ -1326,9 +1326,6 @@ struct Eat {
     regrew: bool,
 }
 
-/// The client's embedded-asset table: every `"name",` line whose next line is
-/// the `include_bytes!` that loads it. `crates/goats/src/main.rs` is the only
-/// place the binary's assets are listed.
 /// Whether the spawn's safe radius is clear: no mine in any cell whose centre is
 /// inside it. A mine there would end a run at the spawn, which is the one place a
 /// restart has to be survivable.
@@ -2791,19 +2788,28 @@ fn art_block(harness: &mut Harness) -> Result<Art, String> {
     Ok(out)
 }
 
+/// The client's embedded-asset table: every `"name",` line whose next line is the
+/// `include_bytes!` that loads it. The table lives in the client's *library* --
+/// `crates/goats/src/lib.rs`, because the Android `cdylib` has to link it, and
+/// `main.rs` is the binary's three-line shim over it -- and both files are read so
+/// the check does not depend on which side of that split the table is on.
 fn embedded_names() -> Vec<String> {
-    const MAIN: &str = include_str!("../../goats/src/main.rs");
     let mut names = Vec::new();
-    let mut pending: Option<String> = None;
-    for line in MAIN.lines() {
-        let trimmed = line.trim();
-        if trimmed.contains("include_bytes!") {
-            if let Some(name) = pending.take() {
-                names.push(name);
+    for source in [
+        include_str!("../../goats/src/lib.rs"),
+        include_str!("../../goats/src/main.rs"),
+    ] {
+        let mut pending: Option<String> = None;
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if trimmed.contains("include_bytes!") {
+                if let Some(name) = pending.take() {
+                    names.push(name);
+                }
+                continue;
             }
-            continue;
+            pending = quoted(trimmed);
         }
-        pending = quoted(trimmed);
     }
     names
 }
