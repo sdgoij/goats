@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  P0's manifest: a bare NativeActivity around the client's cdylib.
+  The manifest: a NativeActivity subclass around the client's cdylib.
 
-  `lib_name` is the base name of `libgoats_android.so`, and `hasCode="false"`
-  says there is no dex: the activity is the framework's own NativeActivity,
-  which looks up `ANativeActivity_onCreate` in that library. Java arrives with
-  the keyboard/clipboard Activity in P2, and Gradle with it (ANDROID.md D6).
+  `lib_name` is the base name of `libgoats_android.so`, and the framework's
+  NativeActivity looks up `ANativeActivity_onCreate` in it. The class the launcher
+  names is `GoatsActivity` rather than the framework's own, because P2 needs Java
+  for the soft keyboard, the clipboard and the insets (ANDROID.md D6); that is also
+  why `hasCode` is true and the APK carries a `classes.dex`.
 
   minSdkVersion is 26 because that is where `libaaudio.so` starts and `cpal`'s
-  AAudio host links `-laaudio`; see risk 6 in ANDROID.md.
+  AAudio host links `-laudio`; see risk 6 in ANDROID.md.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.sdgoij.goats"
@@ -30,17 +31,21 @@
 
     <application
         android:label="goats"
-        android:hasCode="false"
+        android:hasCode="true"
         android:debuggable="true"
         android:allowBackup="false"
         android:extractNativeLibs="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
+        <!-- `adjustResize` rather than the default: the console draws into the
+             panel the app owns, so the panel has to *shrink* above the keyboard
+             instead of the keyboard covering what is being typed into. -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="dev.sdgoij.goats.GoatsActivity"
             android:label="goats"
             android:exported="true"
             android:screenOrientation="landscape"
+            android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="goats_android" />
             <intent-filter>

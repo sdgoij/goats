@@ -11,7 +11,7 @@ read from outside the project except the dependency cache every Rust build
 already uses, and `android/build/` is gitignored, so the copy is a build product
 rather than something to review.
 
-Android-only, all seven of them. Four are on the crate's build path:
+Android-only. Four are on the crate's build path:
 
 1. The API level is read from the last dash-component of the target triple, which
    a modern `aarch64-linux-android` does not have, so `ANDROID_PLATFORM` became
@@ -29,8 +29,7 @@ Android-only, all seven of them. Four are on the crate's build path:
    cross-compiling, including an X11 link that fired on a Linux host and would
    have put `-lX11` into the `.so` on CI.
 
-Three more are in raylib's Android platform layer:
-
+More are in raylib's Android platform layer:
 5. `SetupFramebuffer` letterboxes a request smaller than the display. That is a
    desktop idea: on Android the window *is* the panel, so the client's 1000x640
    desktop window became a 640px strip of a 1080px-tall screen (`renderOffset`
@@ -39,9 +38,13 @@ Three more are in raylib's Android platform layer:
 6. `APP_CMD_CONFIG_CHANGED` was an empty stub whose comment said "Check screen
    orientation here!". Android rotates an activity only after its native window
    exists, so the rotation that follows `InitPlatform` was never noticed.
-7. The GLFW-symbol note lives in the client (`crates/android`), not here.
+7. The phone's back button is reported as `KEY_ESCAPE` rather than raylib's own
+   `KEY_BACK`, which the engine does not export and the scene therefore cannot
+   read -- and with no escape key on a phone, the console, once open, had no way
+   out. The event is still eaten, so the OS never finishes the activity.
 
-Both raylib fixes are in that platform file only, so the desktop build is
+The GLFW-symbol note lives in the client (`crates/android`), not here, and all of
+this is in that platform file or the crate's build path, so the desktop build is
 untouched.
 """
 
@@ -286,6 +289,18 @@ CONFIG_NEW = """        case APP_CMD_CONFIG_CHANGED:
         } break;
 """
 
+BACKKEY_OLD = """    KEY_BACK,           // AKEYCODE_BACK
+"""
+
+BACKKEY_NEW = """    // (Android) The phone's back button *is* the desk's escape. raylib maps it to
+    // its own KEY_BACK and eats the event so the OS never finishes the activity --
+    // but KEY_BACK is not one of the key names the engine exports to the scene, so
+    // the scene cannot read it, and a phone has no escape key. The console, once
+    // open, had no way to close. Reporting back as KEY_ESCAPE reaches the escape
+    // handling the scene already has (`console.js`, `goat.js`).
+    KEY_ESCAPE,         // AKEYCODE_BACK
+"""
+
 # (name, file, old, new, marker that proves it is already applied)
 PATCHES = [
     ("read the API level from the environment or the triple", "build.rs", PARSE_OLD, PARSE_NEW, "let api_level = env::var(\"ANDROID_PLATFORM\")"),
@@ -297,6 +312,7 @@ PATCHES = [
     ("fill the panel instead of letterboxing", "raylib/src/platforms/rcore_android.c", PANEL_OLD, PANEL_NEW, "The window *is* the panel, so a request smaller than the display"),
     ("ask for an ES3 context when the build is ES3", "raylib/src/platforms/rcore_android.c", CONTEXT_OLD, CONTEXT_NEW, "(rlGetVersion() == RL_OPENGL_ES_30) ? 3 : 2"),
     ("notice the rotation in APP_CMD_CONFIG_CHANGED", "raylib/src/platforms/rcore_android.c", CONFIG_OLD, CONFIG_NEW, "Panel resized to %ix%i"),
+    ("report the phone's back button as escape", "raylib/src/platforms/rcore_android.c", BACKKEY_OLD, BACKKEY_NEW, "The phone's back button *is* the desk's escape"),
 ]
 
 

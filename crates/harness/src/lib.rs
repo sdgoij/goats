@@ -245,6 +245,12 @@ pub struct Observations {
     /// zero for every run without a touch surface.
     #[serde(default)]
     pub touch_circles: u32,
+    /// How many times the scene asked for the soft keyboard, and whether the last
+    /// ask wanted it shown (P2).
+    #[serde(default)]
+    pub keyboard_calls: u32,
+    #[serde(default)]
+    pub keyboard_shown: bool,
     /// The scene's own `console.log` lines.
     pub logs: Vec<String>,
 }
@@ -485,6 +491,20 @@ impl Harness {
     pub fn touch(&mut self, script: &serde_json::Value) -> Result<(), String> {
         let json = script.to_string();
         self.call("harnessTouch", &[serde_json::json!(json)])
+            .map(|_| ())
+    }
+
+    /// Hands the scene a string the soft keyboard committed -- the same push
+    /// `GoatsActivity` makes from its `InputConnection`, `\n` and `\b` included.
+    pub fn type_text(&mut self, text: &str) -> Result<(), String> {
+        self.call("harnessType", &[serde_json::json!(text)])
+            .map(|_| ())
+    }
+
+    /// The system's insets, `[left, top, right, bottom]`, for the touch layout.
+    pub fn set_insets(&mut self, edges: [i32; 4]) -> Result<(), String> {
+        let json = serde_json::to_string(&edges).map_err(|error| error.to_string())?;
+        self.call("harnessInsets", &[serde_json::json!(json)])
             .map(|_| ())
     }
 

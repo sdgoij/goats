@@ -55,5 +55,12 @@ raylib-sys = { workspace = true }
 # GLSL ES 3.20 and rejects the scene's `#version 330` as desktop GLSL. Desktop
 # must stay GL 3.3, and cargo features cannot vary by target, so this is a
 # target-specific declaration rather than another word on the line above.
+#
+# The other two are P2's: `jni` for the Java half of the client (the soft
+# keyboard, the clipboard, the insets -- `src/android.rs`), and `ndk-context`
+# because an `Activity` is what it wants before cpal's AAudio host will open (P4).
+# Both are already in the graph, through cpal, so naming them adds no build.
 [target.'cfg(target_os = "android")'.dependencies]
 raylib-sys = { workspace = true, features = ["opengl_es_30"] }
+jni = { version = "0.21", features = ["invocation"] }
+ndk-context = "0.1"

@@ -66,27 +66,75 @@ function consoleSystem(text) {
 
 function consoleClose() {
     consoleOpen = false;
+    // The soft keyboard is shown only while the console is open (D7), so it goes
+    // away with it.
+    if (consoleTouchText()) android.keyboard(false);
     // A pending question is abandoned with the console; the player runs the
     // command again if they still want it.
     consolePrompt = null;
 }
 
+// Whether the phone's own text entry is there: the client's `android` global,
+// which only an Android build installs (`crates/goats/src/android.rs`).
+function consoleTouchText() {
+    return typeof android === "object" && android !== null &&
+        typeof android.takeTyped === "function" && typeof android.keyboard === "function";
+}
+
+// Whether the *Activity's* clipboard is there. raylib's own is a stub on Android
+// that answers "not implemented on target platform", so this has to be asked
+// first rather than falling through to a binding that silently does nothing.
+function consoleTouchClipboard() {
+    return typeof android === "object" && android !== null &&
+        typeof android.clipboardGet === "function" && typeof android.clipboardSet === "function";
+}
+
+// Put `text` at the caret, as far as the line's limit. One place, because the
+// keyboard's characters, the phone's committed strings and a paste all land here.
+function consoleInsert(text) {
+    const room = CONSOLE_MAX_INPUT - consoleInput.length;
+    if (room <= 0) return;
+    const insert = String(text).slice(0, room);
+    consoleInput = consoleInput.slice(0, consoleCaret) + insert + consoleInput.slice(consoleCaret);
+    consoleCaret += insert.length;
+}
+
+// Rub out the character behind the caret.
+function consoleBackspace() {
+    if (consoleCaret <= 0) return;
+    consoleInput = consoleInput.slice(0, consoleCaret - 1) + consoleInput.slice(consoleCaret);
+    consoleCaret -= 1;
+}
+
 function consoleToggle() {
     consoleOpen = !consoleOpen;
-    if (!consoleOpen) return;
+    if (!consoleOpen) {
+        if (consoleTouchText()) android.keyboard(false);
+        return;
+    }
     // raylib queues a character for every printable key, whether or not anyone
     // reads it, so the backlog holds the `wasd` typed while playing. Drop it
-    // before the console starts accepting input.
+    // before the console starts accepting input, and the phone's committed text
+    // with it: anything the IME sent while the console was closed is not this
+    // line's.
     if (typeof rl.getCharPressed === "function") {
         let stale = rl.getCharPressed();
         while (stale !== 0) stale = rl.getCharPressed();
+    }
+    if (consoleTouchText()) {
+        android.takeTyped();
+        // The soft keyboard covers the bottom half of the panel, which is why the
+        // activity asks for `adjustResize`: the console is drawn into the panel the
+        // app owns, so the panel has to shrink above the keyboard rather than the
+        // keyboard sitting over what is being typed into.
+        android.keyboard(true);
     }
     consoleHistoryAt = consoleHistory.length;
     consoleCaret = consoleInput.length;
     if (!consoleSeen) {
         consoleSeen = true;
         consoleSystem("console ready - backquote or ESC closes, enter runs a command");
-        if (typeof rl.getCharPressed !== "function") {
+        if (typeof rl.getCharPressed !== "function" && !consoleTouchText()) {
             consoleSystem("text entry needs the engine's getCharPressed binding");
         }
     }
@@ -131,10 +179,27 @@ function consoleSubmit(line) {
     consoleCaret = 0;
 }
 
-// Reads the engine's clipboard. Without the binding, paste and copy say so
-// rather than silently doing nothing.
+// Reads the clipboard. Without either source, paste and copy say so rather than
+// silently doing nothing.
 function consoleClipboardAvailable() {
+    if (consoleTouchClipboard()) return true;
     return typeof rl.getClipboardText === "function" && typeof rl.setClipboardText === "function";
+}
+
+// The clipboard's text, from whichever side has one.
+function consoleClipboardRead() {
+    if (consoleTouchClipboard()) return android.clipboardGet();
+    return typeof rl.getClipboardText === "function" ? rl.getClipboardText() : "";
+}
+
+// Put `text` on the clipboard, and say whether it got there.
+function consoleClipboardWrite(text) {
+    if (consoleTouchClipboard()) return android.clipboardSet(String(text)) === true;
+    if (typeof rl.setClipboardText === "function") {
+        rl.setClipboardText(String(text));
+        return true;
+    }
+    return false;
 }
 
 // Pasted text arrives as one line of printable characters: a ticket copied from
@@ -151,44 +216,62 @@ function consoleSanitizePaste(text) {
 
 // Ctrl+V: insert the clipboard at the caret.
 function consolePaste() {
-    if (typeof rl.getClipboardText !== "function") {
+    if (!consoleClipboardAvailable()) {
         consoleSystem("paste needs the engine's getClipboardText binding");
         return;
     }
-    const text = consoleSanitizePaste(rl.getClipboardText());
-    const room = CONSOLE_MAX_INPUT - consoleInput.length;
-    if (text === "" || room <= 0) return;
-    const insert = text.slice(0, room);
-    consoleInput = consoleInput.slice(0, consoleCaret) + insert + consoleInput.slice(consoleCaret);
-    consoleCaret += insert.length;
+    consoleInsert(consoleSanitizePaste(consoleClipboardRead()));
 }
 
-// Ctrl+C, or the `copy` verb: put text on the clipboard. Returns false when the
-// engine has no clipboard, so a command can report it.
+// Ctrl+C, or the `copy` verb: put text on the clipboard. Returns false when there
+// is no clipboard to put it on, so a command can report it.
 function consoleCopy(text) {
-    if (typeof rl.setClipboardText !== "function") {
+    if (!consoleClipboardAvailable()) {
         consoleSystem("copy needs the engine's setClipboardText binding");
         return false;
     }
     const value = String(text);
-    rl.setClipboardText(value);
+    if (!consoleClipboardWrite(value)) {
+        consoleSystem("copy did not reach the clipboard");
+        return false;
+    }
     consoleSystem("copied " + value.length + " characters");
     return true;
 }
 
-// Read the character queue and the editing keys, once a frame while open.
+// Read the character queue, the phone's committed text, and the editing keys,
+// once a frame while open.
 function consoleHandleInput() {
     // Text: raylib queues one codepoint per key press, 0 once drained, so read
     // until empty. Only printable ASCII is accepted for now.
     if (typeof rl.getCharPressed === "function") {
         let code = rl.getCharPressed();
         while (code !== 0) {
-            if (code >= 32 && code < 127 && consoleInput.length < CONSOLE_MAX_INPUT) {
-                consoleInput = consoleInput.slice(0, consoleCaret) + String.fromCharCode(code) +
-                    consoleInput.slice(consoleCaret);
-                consoleCaret += 1;
-            }
+            if (code >= 32 && code < 127) consoleInsert(String.fromCharCode(code));
             code = rl.getCharPressed();
+        }
+    }
+    // ...and the soft keyboard's, which arrives as whole strings rather than key
+    // presses (`ANDROID.md` section 3). Three characters in that stream are not
+    // text: `\n` is the keyboard's enter, `\b` its backspace, and `\u001b` the
+    // phone's back button -- a text-only channel still has to carry the edits that
+    // do something, and a phone has no escape key to close the console with.
+    if (consoleTouchText()) {
+        const typed = android.takeTyped();
+        for (let i = 0; i < typed.length; i++) {
+            const character = typed.charAt(i);
+            if (character === "\n") {
+                consoleSubmit(consoleInput);
+                break;
+            }
+            if (character === "\b") {
+                consoleBackspace();
+            } else if (character === "\u001b") {
+                consoleClose();
+                break;
+            } else {
+                consoleInsert(character);
+            }
         }
     }
     // Clipboard. Ctrl+V is how a ticket gets in -- they are long, and typing one
@@ -196,10 +279,7 @@ function consoleHandleInput() {
     const control = rl.isKeyDown(rl.KEY_LEFT_CONTROL) || rl.isKeyDown(rl.KEY_RIGHT_CONTROL);
     if (control && rl.isKeyPressed(rl.KEY_V)) consolePaste();
     if (control && rl.isKeyPressed(rl.KEY_C) && consoleInput.length > 0) consoleCopy(consoleInput);
-    if (consoleCaret > 0 && rl.isKeyPressed(rl.KEY_BACKSPACE)) {
-        consoleInput = consoleInput.slice(0, consoleCaret - 1) + consoleInput.slice(consoleCaret);
-        consoleCaret -= 1;
-    }
+    if (rl.isKeyPressed(rl.KEY_BACKSPACE)) consoleBackspace();
     if (consoleCaret < consoleInput.length && typeof rl.KEY_DELETE === "number" &&
         rl.isKeyPressed(rl.KEY_DELETE)) {
         consoleInput = consoleInput.slice(0, consoleCaret) + consoleInput.slice(consoleCaret + 1);

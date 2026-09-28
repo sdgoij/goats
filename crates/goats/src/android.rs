@@ -20,6 +20,11 @@
 //! first two", because the fingers free to pinch are not always those (a thumb on
 //! the stick is a pointer too).
 
+use core::ffi::c_void;
+use std::sync::{Mutex, OnceLock};
+
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
+use jni::{JNIEnv, JavaVM};
 use slag::{Context, JsValue};
 
 /// Install the `android` global.
@@ -108,6 +113,97 @@ pub fn install(context: &mut Context) {
         )
         .expect("pinch on the android object");
 
+    // P2's five: the soft keyboard, the clipboard, the insets, and the text the IME
+    // has committed. They are the Activity's (`GoatsActivity.java`) and the JNI
+    // calls below are the only way to them; the scene's guards stay on the global,
+    // because the global is always there and the Activity arrives a moment later.
+    surface
+        .set(
+            "keyboard",
+            context
+                .create_function(
+                    "keyboard",
+                    1,
+                    Box::new(|call| {
+                        let show = call
+                            .arg(0)
+                            .and_then(|value| value.as_boolean())
+                            .unwrap_or(false);
+                        Ok(JsValue::boolean(set_keyboard(show)))
+                    }),
+                )
+                .expect("a host function"),
+        )
+        .expect("keyboard on the android object");
+
+    surface
+        .set(
+            "takeTyped",
+            context
+                .create_function(
+                    "takeTyped",
+                    0,
+                    Box::new(|_call| Ok(JsValue::string(take_typed()))),
+                )
+                .expect("a host function"),
+        )
+        .expect("takeTyped on the android object");
+
+    surface
+        .set(
+            "clipboardGet",
+            context
+                .create_function(
+                    "clipboardGet",
+                    0,
+                    Box::new(|_call| Ok(JsValue::string(clipboard_get()))),
+                )
+                .expect("a host function"),
+        )
+        .expect("clipboardGet on the android object");
+
+    surface
+        .set(
+            "clipboardSet",
+            context
+                .create_function(
+                    "clipboardSet",
+                    1,
+                    Box::new(|call| {
+                        let text = call
+                            .arg(0)
+                            .and_then(|value| value.as_string())
+                            .unwrap_or_default();
+                        Ok(JsValue::boolean(clipboard_set(&text)))
+                    }),
+                )
+                .expect("a host function"),
+        )
+        .expect("clipboardSet on the android object");
+
+    // `inset(edge)`: one of the system's four edges, in screen pixels -- 0 left,
+    // 1 top, 2 right, 3 bottom. Four calls rather than one object because a host
+    // function can read its arguments but cannot build a JS object; the scene asks
+    // for all four when the panel changes size, which is not a hot path.
+    surface
+        .set(
+            "inset",
+            context
+                .create_function(
+                    "inset",
+                    1,
+                    Box::new(|call| {
+                        let edge = call
+                            .arg(0)
+                            .and_then(|value| value.as_number())
+                            .unwrap_or(0.0);
+                        Ok(JsValue::number(inset(edge as i32) as f64))
+                    }),
+                )
+                .expect("a host function"),
+        )
+        .expect("inset on the android object");
+
     context
         .set_global("android", surface.as_value())
         .expect("the android global");
@@ -138,4 +234,161 @@ fn spread(first: i32, second: i32) -> f64 {
         (Some(a), Some(b)) => ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt(),
         _ => 0.0,
     }
+}
+
+// ---------------------------------------------------------------------------
+// The Java handshake (P2).
+//
+// The soft keyboard, the clipboard and the window insets are all Java objects, so
+// P2 grows an `Activity` of its own -- `android/java/dev/sdgoij/goats/
+// GoatsActivity.java` -- and this is the native half of it. The Activity announces
+// itself through `nativeInit` and is kept as a global reference, which is what
+// every question below is asked through, and what `ndk-context` wants before
+// cpal's AAudio host will open a stream (P4).
+//
+// The two entry points are found by *name* (`Java_dev_sdgoij_goats_
+// GoatsActivity_nativeInit`), which is JNI's own convention and the reason there
+// is no `JNI_OnLoad`: registering a table from there needs `FindClass`, and
+// `NativeActivity` loads the library with `System.load` -- so the calling class is
+// the framework's, its loader is the *boot* one, and the app's own class cannot be
+// found from it. The by-name path is resolved through the activity's class later,
+// where the loader is never in question. Both names are exported by `build.rs`.
+//
+// The direction matters. Typed text is *pushed*: an IME commits whole strings, so
+// there is nothing in raylib's queue to read and the Activity forwards them into
+// `TYPED` for the scene to drain. The keyboard, the clipboard and the insets are
+// *pulled*, one JNI call each, only when the scene asks. Everything tolerates the
+// Activity not existing yet -- the game's loop runs on the glue's own thread and
+// can ask before `onCreate` returns -- and "nothing yet" is a better answer than a
+// crash.
+
+static VM: OnceLock<JavaVM> = OnceLock::new();
+static ACTIVITY: OnceLock<GlobalRef> = OnceLock::new();
+/// What the IME has committed and the scene has not read: `\n` to submit, `\b` to
+/// rub out, everything else as itself.
+static TYPED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// `GoatsActivity.nativeInit()`: the one thing Java hands over, the Activity
+/// itself. The `JavaVM` comes with it -- no `JNI_OnLoad` needed, and the pointer
+/// is the one `ndk-context` wants.
+///
+/// # Safety
+///
+/// Called by the VM with a valid environment and receiver.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sdgoij_goats_GoatsActivity_nativeInit(env: JNIEnv, this: JObject) {
+    let Ok(global) = env.new_global_ref(&this) else {
+        return;
+    };
+    let Ok(vm) = env.get_java_vm() else {
+        return;
+    };
+    // `ndk-context` is where cpal's AAudio host looks its `JavaVM` and `Context`
+    // up, and the Activity is exactly what it wants. Harmless before P4: nothing
+    // reads it until a stream is opened.
+    let context = global.as_raw() as *mut c_void;
+    if !context.is_null() {
+        // SAFETY: the VM outlives the process and the reference is kept in
+        // `ACTIVITY` below, so both pointers stay valid.
+        unsafe {
+            ndk_context::initialize_android_context(vm.get_java_vm_pointer().cast(), context)
+        };
+    }
+    let _ = ACTIVITY.set(global);
+    let _ = VM.set(vm);
+    eprintln!("[android] the activity is attached");
+}
+
+/// `GoatsActivity.nativeText(String)`: one committed string, pushed.
+///
+/// # Safety
+///
+/// Called by the VM with a valid environment, class and string.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_sdgoij_goats_GoatsActivity_nativeText(
+    mut env: JNIEnv,
+    _class: JClass,
+    text: JString,
+) {
+    let Ok(text) = env.get_string(&text) else {
+        return;
+    };
+    let Ok(mut queue) = TYPED.lock() else {
+        return;
+    };
+    queue.extend_from_slice(text.to_string_lossy().as_bytes());
+}
+
+/// `android.takeTyped()`: everything the IME has committed since the last call.
+fn take_typed() -> String {
+    let Ok(mut queue) = TYPED.lock() else {
+        return String::new();
+    };
+    if queue.is_empty() {
+        return String::new();
+    }
+    String::from_utf8(std::mem::take(&mut queue)).unwrap_or_default()
+}
+
+/// Run `call` against the Activity, or `None` before Java has handed it over.
+/// The thread is attached for the length of the call: the game's frame loop runs
+/// on a thread the VM has never seen.
+fn with_activity<T>(call: impl FnOnce(&mut JNIEnv, &JObject) -> Option<T>) -> Option<T> {
+    let vm = VM.get()?;
+    let activity = ACTIVITY.get()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    call(&mut env, activity.as_obj())
+}
+
+/// `android.keyboard(show)`: whether the request reached the Activity.
+fn set_keyboard(show: bool) -> bool {
+    with_activity(|env, activity| {
+        Some(
+            env.call_method(activity, "setKeyboard", "(Z)V", &[JValue::Bool(show as u8)])
+                .is_ok(),
+        )
+    })
+    .unwrap_or(false)
+}
+
+/// `android.clipboardGet()`: the clipboard's text, or an empty string -- which is
+/// also what an empty clipboard is.
+fn clipboard_get() -> String {
+    with_activity(|env, activity| {
+        let value = env
+            .call_method(activity, "clipboardGet", "()Ljava/lang/String;", &[])
+            .ok()?;
+        let text = JString::from(value.l().ok()?);
+        env.get_string(&text)
+            .ok()
+            .map(|text| text.to_string_lossy().into_owned())
+    })
+    .unwrap_or_default()
+}
+
+/// `android.clipboardSet(text)`: whether it was put there.
+fn clipboard_set(text: &str) -> bool {
+    with_activity(|env, activity| {
+        let value = env.new_string(text).ok()?;
+        env.call_method(
+            activity,
+            "clipboardSet",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&value)],
+        )
+        .ok()
+        .map(|_| true)
+    })
+    .unwrap_or(false)
+}
+
+/// `android.inset(edge)`: one of the system's edges in screen pixels, or 0 before
+/// the Activity can say. The edges are 0 left, 1 top, 2 right, 3 bottom.
+fn inset(edge: i32) -> i32 {
+    with_activity(|env, activity| {
+        env.call_method(activity, "inset", "(I)I", &[JValue::Int(edge)])
+            .ok()
+            .and_then(|value| value.i().ok())
+    })
+    .unwrap_or(0)
 }

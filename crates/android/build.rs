@@ -20,6 +20,15 @@
 //!    undoes that: a version script's `local:` pattern is not overridden by
 //!    them. A version script of our own, passed last so it is the one that
 //!    applies, is what promotes the name.
+//!
+//! `JNI_OnLoad` is deliberately not one of ours. Two JNI entry points are found by
+//! *name* instead (`Java_dev_sdgoij_goats_GoatsActivity_nativeInit` and
+//! `..._nativeText`), because registering them from `JNI_OnLoad` needs
+//! `FindClass`, and `NativeActivity` loads this library with `System.load` -- the
+//! calling class is the framework's, so its loader is the boot one and the app's
+//! own class cannot be found through it. The by-name path resolves through the
+//! activity's class later, where the loader is never in question, and it is still a
+//! *name* the version script has to promote.
 
 fn main() {
     let is_android = std::env::var("CARGO_CFG_TARGET_OS")
@@ -32,13 +41,23 @@ fn main() {
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is set for a build script");
     let script = std::path::Path::new(&out_dir).join("android-entry.ver");
-    std::fs::write(
-        &script,
-        "{\n  global:\n    ANativeActivity_onCreate;\n    main;\n};\n",
-    )
-    .expect("write the version script");
+    // `-u` for each, besides the script: nothing in Rust references a symbol only
+    // the Java VM looks up, so `--gc-sections` would discard it before the script
+    // could promote it.
+    let entries = [
+        "ANativeActivity_onCreate",
+        "Java_dev_sdgoij_goats_GoatsActivity_nativeInit",
+        "Java_dev_sdgoij_goats_GoatsActivity_nativeText",
+        "main",
+    ];
+    let mut contents = String::from("{\n  global:\n");
+    for entry in entries {
+        contents.push_str(&format!("    {entry};\n"));
+        println!("cargo:rustc-link-arg=-u{entry}");
+    }
+    contents.push_str("};\n");
+    std::fs::write(&script, contents).expect("write the version script");
 
-    println!("cargo:rustc-link-arg=-uANativeActivity_onCreate");
     println!(
         "cargo:rustc-link-arg=-Wl,--version-script={}",
         script.display().to_string().replace('\\', "/")

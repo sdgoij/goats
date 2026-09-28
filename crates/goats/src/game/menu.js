@@ -83,7 +83,7 @@ function applyStartupSettings() {
 
 function drawMainMenu(sw, sh) {
     const w = 300;
-    const h = 306;
+    const h = 350;
     const x = Math.round((sw - w) / 2);
     const y = Math.round((sh - h) / 2);
     rl.guiPanel(x, y, w, h, "Slag goat");
@@ -98,6 +98,15 @@ function drawMainMenu(sw, sh) {
     if (rl.guiButton(bx, by, bw, bh, "Mods")) uiScreen = "mods";
     by += bh + 10;
     if (rl.guiButton(bx, by, bw, bh, "Keymap")) uiScreen = "keymap";
+    by += bh + 10;
+    // The console opens with a backquote on a keyboard, and the soft keyboard
+    // arrives *with* it (D7) -- so on a phone there has to be a way in that is not
+    // a key. The menu's own buttons are tappable, because raygui reads the mouse
+    // that `touch[0]` feeds (P1).
+    if (rl.guiButton(bx, by, bw, bh, "Console")) {
+        uiScreen = "hud";
+        if (!consoleOpen) consoleToggle();
+    }
     by += bh + 10;
     if (rl.guiButton(bx, by, bw, bh, "Quit")) ctlQuit = true;
 }

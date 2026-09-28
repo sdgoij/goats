@@ -28,11 +28,14 @@
 mod audio;
 mod net;
 
-// The phone's touch surface, installed as the `android` global. Android only: the
-// desktop client, the server and the harness get no such global, and the scene's
-// guard is written on its absence (ANDROID.md D1).
+// The phone's touch surface, installed as the `android` global, and the JNI half
+// of the Java `Activity` behind P2's keyboard, clipboard and insets. Android only:
+// the desktop client, the server and the harness get no such global, and the
+// scene's guard is written on its absence (ANDROID.md D1). Public because
+// `crates/android` -- the cdylib the framework loads -- has to keep the two
+// by-name JNI entry points reachable, and they are defined here.
 #[cfg(target_os = "android")]
-mod android;
+pub mod android;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

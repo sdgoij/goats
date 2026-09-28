@@ -165,12 +165,17 @@ and what P1 is built on. What the gap meant, and where each item now stands:
   cover the movement half; the toggles themselves (`L`, `K`, `B`, `C`, …) are still
   keyboard-only, though the menu's own buttons are tappable because raygui reads
   the mouse that `touch[0]` feeds.
-- The console (`console.js`): still dead, and it needs the soft keyboard, which
-  arrives as `commitText` text rather than key events — `getCharPressed` will not
-  see it. P2.
-- Clipboard: still dead. `SetClipboardText`/`GetClipboardText` are **stubs on
-  Android** ("not implemented on target platform"), so the console's paste and
-  `copy` (the ticket flow) need the Java side as well. P2.
+- The console (`console.js`): *done, on the device.* The soft keyboard arrives as
+  `commitText` **strings** rather than key events — `getCharPressed` never sees it —
+  so `GoatsActivity` forwards each commit into a queue the console drains
+  (`android.takeTyped()`), carrying `\n` for enter, `\b` for backspace and
+  `\u001b` for the back button: the edits a text-only channel still has to carry.
+  The keyboard is shown only while the console is open (D7).
+- Clipboard: *done, on the device.* `SetClipboardText`/`GetClipboardText` are
+  **stubs on Android** ("not implemented on target platform"), so the console's
+  paste and `copy` (the ticket flow) go through the Activity's `ClipboardManager`
+  instead — `android.clipboardGet/clipboardSet()`, installed beside the touch
+  surface in `crates/goats/src/android.rs`.
 
 ### 4. The rest, briefly
 
@@ -249,7 +254,7 @@ with the repairs the P0 probe proved necessary applied to it. Nothing outside th
 repository is read but the dependency cache every Rust build already uses, and
 the copy is gitignored, so it is a build product rather than something to review.
 Run the script once in a fresh clone — cargo cannot resolve the workspace until
-that path exists. Nine patches: six on the crate's build path and three in
+that path exists. Ten patches: six on the crate's build path and four in
 raylib's Android platform layer.
 
 1. **The platform parse** (`build.rs:206`). The API level is taken from the last
@@ -295,8 +300,16 @@ invalidate every shader and texture the scene has loaded.
    asked for `EGL_CONTEXT_CLIENT_VERSION, 2` unconditionally, so the ES3 build got
    an ES 2.0 context — which this driver tolerates, compiling raylib's own
    `#version 300 es` shaders anyway, but which does not promise the ES3-only entry
-   points rlgl's ES3 path calls. The attribute is now
+   entry points rlgl's ES3 path calls. The attribute is now
    `(rlGetVersion() == RL_OPENGL_ES_30) ? 3 : 2`.
+10. **The phone's back button** (`rcore_android.c:99`). raylib maps
+    `AKEYCODE_BACK` to its own `KEY_BACK` and *eats* the event, rightly, so the OS
+    never finishes the activity — except that `KEY_BACK` is not one of the key
+    names the engine exports to the scene (Slag's `KEY_CODES` has no entry for it),
+    so the scene could not read it, and a phone has no escape key. The console,
+    once open, had no way to close. The mapping now reports back as `KEY_ESCAPE`,
+    which reaches the escape handling the scene already had — it closes the console
+    and toggles the menu — and the event is still eaten, so nothing exits.
 
 All of this belongs upstream; the script is only how it gets applied until then,
 and the sibling fork it was developed in stays as the PR candidate.
@@ -306,12 +319,17 @@ the mods directory is the app's files dir (`/data/data/<pkg>/files/mods`) and th
 default is resolved from the JNI `Context`, not from `current_exe`. Mod watching
 (`notify`/inotify) keeps working there; `--watch` stays a desktop flag.
 
-**D6 — A hand-rolled Gradle project, not `cargo-apk`.** We need Java anyway: an
+**D6 — Java, and a hand-rolled APK — no Gradle.** We need Java anyway: an
 `Activity` subclass is how the soft keyboard, the clipboard and the runtime
 permission request are reached, and how the `Activity`/JVM handshake that
-`ndk-context` wants is made. That rules out a generated manifest. `cargo ndk`
-builds the `.so` into `jniLibs`; Gradle assembles the APK. `AndroidManifest`
-declares a `NativeActivity` with `configChanges` for orientation, the
+`ndk-context` wants is made. That rules out a generated manifest, but it does not
+need a build system: the artifact is one `.so`, one `classes.dex`, a manifest and
+no resources, so `android/build-apk.sh` does the whole thing with `javac` + `d8`,
+then `aapt2` + `zipalign` + `apksigner` — all in the SDK and JDK already
+installed. A Gradle project would add a tool to download and a plugin to match it,
+for nothing this build does. `AndroidManifest` declares a `NativeActivity`
+subclass (`GoatsActivity`, `hasCode="true"`) with `configChanges` for orientation,
+`adjustResize` so the console is not covered by the keyboard, the
 `glEsVersion="0x00030000"` feature (D4 has landed, so the manifest declares it),
 and `INTERNET` + `RECORD_AUDIO`.
 
@@ -373,9 +391,16 @@ plot: the drawn ring is the layout to the pixel (window `238,842 r=140`, measure
 pushed, and a press at the menu button's centre opens the menu. What the pass had
 to learn about driving it from adb is in "On the device" below.
 
-**P2 — The keyboard and the clip.** The Java `Activity`, `android.keyboard`,
-`android.takeTyped`, `android.clipboardGet/Set`, console integration, and the
-ticket flow (`copy`/paste) working through them.
+**P2 — The keyboard and the clip.** *Done, on the device.* The Java
+`GoatsActivity` (`android/java/dev/sdgoij/goats/GoatsActivity.java`), its
+`android.keyboard`, `android.takeTyped`, `android.clipboardGet/Set` and
+`android.inset` natives (`crates/goats/src/android.rs`), the console integration
+in `console.js`, and the ticket flow (`copy`/paste) through the Activity's
+`ClipboardManager`. The device pass: opening the console raises the soft keyboard
+(`adjustResize` shrinks the panel above it), a tapped key's committed string lands
+in the console line, enter submits it and the back button closes the console. Two
+things it cost are in "On the device": the input view has to be focusable, and the
+phone's back has to be told to the engine.
 
 **P3 — Look right.** *The dialect and the look are done, on the same device; the
 Android defaults are what is left.* D2's `glsl()`/`loadGlsl` translation is in,
@@ -522,6 +547,16 @@ P0's surprises, none of them in a manifest:
   `156,156` is display `234,156`. Both were read off the device -- a twelve-second
   hold injected at display `1200,900` arrives as `1122.0,900.0` -- and they are how
   a missed button was told from somebody else's thumb on the screen.
+- **The soft keyboard needs a *focusable* view, and the phone's back needs a
+  mapping.** A plain `View` is not focusable, so `requestFocus()` returns `false`
+  without a word and `showSoftInput` has nothing to serve -- the keyboard silently
+  never appeared, which is the failure P2's first device run hit.
+  `GoatsActivity.onCreate` sets `setFocusable`/`setFocusableInTouchMode` for
+  exactly that. And raylib *eats* `AKEYCODE_BACK` at the native layer, so an
+  `Activity.onBackPressed` override never runs at all; D4's tenth patch reports
+  back as `KEY_ESCAPE` instead, which is what lets the console be closed. The IME
+  still consumes the first back (to hide itself), so it takes two presses to close
+  the console from a fresh keyboard.
 - **The emulator needs 12 GB free**, and the one here is x86_64 (with a 16 KB
   page-size image) while the build is arm64-v8a -- so it could not have run this
   `.so` even after freeing space. The phone is the easier target; an emulator

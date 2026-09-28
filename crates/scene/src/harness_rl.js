@@ -629,6 +629,14 @@
     // asks is a run with no touch surface at all -- which is exactly the guard (a
     // scene that must not touch `android`) under test.
     const touchPoints = [];
+    // The rest of the surface P2 added: what the IME has committed, whether the
+    // keyboard was asked for, the Activity's clipboard and its insets. A case
+    // drives them through `harnessType` and `harnessInsets`.
+    let typedQueue = '';
+    let keyboardShown = false;
+    let keyboardCalls = 0;
+    let touchInsets = [0, 0, 0, 0];
+    let touchClipboard = '';
 
     // The circle arguments, checked the way the engine checks them: `rl`'s draw
     // calls take numbers, and a stub that took anything would let a case through
@@ -663,8 +671,47 @@
                 const dy = touchPoints[a].y - touchPoints[b].y;
                 return Math.sqrt(dx * dx + dy * dy);
             },
+            // The Java half (`GoatsActivity`): the keyboard is asked for, the typed
+            // queue is drained, and the clipboard is the Activity's own -- which is
+            // how a case can tell a write that went through `android` from one that
+            // went through raylib's stub, which on Android does nothing.
+            keyboard: (show) => {
+                keyboardCalls += 1;
+                keyboardShown = show === true;
+                return true;
+            },
+            takeTyped: () => {
+                const text = typedQueue;
+                typedQueue = '';
+                return text;
+            },
+            clipboardGet: () => touchClipboard,
+            // Deliberately *not* recorded in `clipboardWrites`, which is raylib's
+            // list: a case can then tell a write that went through the Activity
+            // from one that went through the engine's stub -- and on Android that
+            // stub does nothing at all.
+            clipboardSet: (text) => {
+                touchClipboard = String(text);
+                return true;
+            },
+            inset: (edge) => touchInsets[edge | 0] | 0,
         };
     }
+
+    // What the soft keyboard committed: `\n` submits and `\b` rubs out, the two
+    // edits `GoatsActivity` forwards as characters.
+    globalThis.harnessType = function (text) {
+        typedQueue += String(text);
+        return typedQueue.length;
+    };
+
+    // The system's insets, left/top/right/bottom, so a case can say where the
+    // controls land when the device has a cut-out or a gesture bar.
+    globalThis.harnessInsets = function (json) {
+        const edges = JSON.parse(json);
+        touchInsets = [edges[0] | 0, edges[1] | 0, edges[2] | 0, edges[3] | 0];
+        return touchInsets.length;
+    };
 
     // `[[frame, [[id, x, y], ...]], ...]`: the pointers down from each frame until
     // the next entry (or forever, for the last). Installing it turns off the
@@ -753,6 +800,8 @@
             blastEnergyPeak: blastEnergyPeak,
             clipboardWrites: clipboardWrites,
             touchCircles: touchCircles,
+            keyboardCalls: keyboardCalls,
+            keyboardShown: keyboardShown,
             logs: logs,
         });
     };

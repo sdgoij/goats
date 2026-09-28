@@ -49,10 +49,12 @@ const TOUCH_RUN = 0.82;
 // are tuned; the whole thing is rebuilt when the panel changes size, so a rotation
 // or another device moves the controls rather than breaking them.
 //
-// The margin stands in for the phone's own edges -- the gesture bar and the
-// camera's punch-hole are outside the app's control, and asking for their real
-// insets needs the Java `Activity` that arrives with P2 (`android.insets()`, D1),
-// so a fixed share of the short side will do until then.
+// Each side gets the system's own inset where the client can report one -- the
+// camera's cut-out and the gesture bars, from the Activity's `WindowInsets` (P2)
+// -- and a fixed share of the short side as the floor, so a host that answers
+// nothing still gets its controls away from the corners. The screen size is the
+// whole cache key: the insets move only with the panel, and the keyboard changes
+// the panel.
 let touchGeometry = null;
 
 function touchLayout() {
@@ -61,7 +63,11 @@ function touchLayout() {
     const key = w + "x" + h;
     if (touchGeometry !== null && touchGeometry.key === key) return touchGeometry;
     const k = Math.min(w, h);
-    const margin = k * 0.09;
+    const floor = k * 0.09;
+    const left = Math.max(floor, touchInset(0) + k * 0.02);
+    const top = Math.max(floor, touchInset(1) + k * 0.02);
+    const right = Math.max(floor, touchInset(2) + k * 0.02);
+    const bottom = Math.max(floor, touchInset(3) + k * 0.02);
     const stickR = k * 0.13;
     const buttonR = k * 0.085;
     const menuR = k * 0.055;
@@ -72,9 +78,9 @@ function touchLayout() {
         // Bottom-left, bottom-right and top-left: the HUD already uses the
         // bottom-centre for its text, the bottom-right corner for the Eat prompt
         // and the top-right for the health bars.
-        stick: { x: Math.round(margin + stickR), y: Math.round(h - margin - stickR), r: Math.round(stickR) },
-        jump: { x: Math.round(w - margin - buttonR), y: Math.round(h - margin - buttonR), r: Math.round(buttonR) },
-        menu: { x: Math.round(margin + menuR), y: Math.round(margin + menuR), r: Math.round(menuR) },
+        stick: { x: Math.round(left + stickR), y: Math.round(h - bottom - stickR), r: Math.round(stickR) },
+        jump: { x: Math.round(w - right - buttonR), y: Math.round(h - bottom - buttonR), r: Math.round(buttonR) },
+        menu: { x: Math.round(left + menuR), y: Math.round(top + menuR), r: Math.round(menuR) },
         // A thumb lands *near* a control rather than on it, so the zone that claims
         // a touch is wider than what is drawn -- but only as wide as it can be
         // without reaching its neighbour: the drawing is the small circle.
@@ -82,6 +88,16 @@ function touchLayout() {
         buttonGrab: Math.round(buttonR * 1.2),
     };
     return touchGeometry;
+}
+
+// One edge of the system's insets -- 0 left, 1 top, 2 right, 3 bottom -- or 0 where
+// there is no touch surface to ask. Only read when the layout is rebuilt.
+function touchInset(edge) {
+    if (typeof android !== "object" || android === null ||
+        typeof android.inset !== "function") {
+        return 0;
+    }
+    return Number(android.inset(edge)) || 0;
 }
 
 // The frame's pointers, in a fixed pool: this runs every frame and a hand holds a

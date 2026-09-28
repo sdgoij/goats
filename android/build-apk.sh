@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
-# P0 packaging: a NativeActivity APK around the client's cdylib, by hand.
+# P0 packaging: a NativeActivity APK around the client's cdylib, by hand -- now
+# with the Java that P2 needs for the keyboard, the clipboard and the insets.
 #
-# Gradle lands with the Java Activity in P2 (ANDROID.md D6); P0 only needs a
-# picture on a screen, and aapt2 + a zip + zipalign + apksigner is that with
-# nothing to install. All of this is one-off scaffolding.
+# Gradle is not used on purpose: the artifact is one `.so`, one `classes.dex`, a
+# manifest and no resources, and `javac` + `d8` + `aapt2` + `zipalign` + `apksigner`
+# are all in the SDK and the JDK that are already installed. A Gradle project would
+# add a build tool that has to be downloaded and a plugin that has to match it, for
+# nothing this build does (ANDROID.md D6).
 #
 # Run it after `cargo build -p goats-android --target aarch64-linux-android`
 # (see ANDROID.md's "The build, concretely" for the environment that needs).
@@ -15,6 +18,7 @@ BT="$SDK/build-tools/36.0.0"
 JAR="$SDK/platforms/android-36.1/android.jar"
 NDK="${ANDROID_NDK_HOME:-C:/Users/T/AppData/Local/Android/android-ndk-r30}"
 STRIP="$NDK/toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-strip.exe"
+JAVAC="${JAVAC:-javac}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -33,6 +37,11 @@ python "$HERE/prepare-raylib-sys.py"
     exit 1
 }
 
+command -v "$JAVAC" >/dev/null || {
+    echo "goats-android: no javac on PATH -- a JDK is needed for the Activity" >&2
+    exit 1
+}
+
 # Only this script's own products: `build/` also holds the prepared raylib-sys
 # that the workspace patch points at, and that has to survive.
 rm -rf "$OUT/stage" "$OUT/unaligned.apk" "$OUT/goats.apk"
@@ -42,7 +51,24 @@ mkdir -p "$OUT/stage/lib/arm64-v8a"
 # link on every install, so the APK gets a stripped copy.
 "$STRIP" --strip-debug -o "$OUT/stage/$LIB" "$SO"
 
-# The APK, from the manifest alone: no resources, no dex (`hasCode="false"`).
+# `GoatsActivity` and its input view. `-classpath` rather than `-bootclasspath`:
+# the JDK's own `java.lang` is the same API as the platform's for what this file
+# uses, and overriding the boot class path on a JDK 17 `javac` is the fragile half
+# of the old recipe. `$JAR` is what supplies `android.app.NativeActivity` and the
+# rest.
+rm -rf "$OUT/stage/classes"
+mkdir -p "$OUT/stage/classes"
+"$JAVAC" -source 8 -target 8 -Xlint:-options \
+    -classpath "$JAR" \
+    -d "$OUT/stage/classes" \
+    "$HERE"/java/dev/sdgoij/goats/*.java
+
+# ...and the dex the framework actually loads, next to `lib/` in the archive.
+"$BT/d8.bat" --lib "$JAR" --min-api 26 --output "$OUT/stage" \
+    "$OUT/stage/classes/dev/sdgoij/goats/"*.class
+
+# The APK, from the manifest alone: no resources. The manifest sets
+# `hasCode="true"`, and the dex is added below beside the library.
 "$BT/aapt2.exe" link \
     -o "$OUT/unaligned.apk" \
     -I "$JAR" \
@@ -50,13 +76,15 @@ mkdir -p "$OUT/stage/lib/arm64-v8a"
     --min-sdk-version 26 \
     --target-sdk-version 36
 
-# The library has to be inside the archive before it is aligned and signed.
+# The library and the dex have to be inside the archive before it is aligned and
+# signed.
 if command -v zip >/dev/null 2>&1; then
-    (cd "$OUT/stage" && zip -q -r "$OUT/unaligned.apk" lib)
+    (cd "$OUT/stage" && zip -q -r "$OUT/unaligned.apk" lib classes.dex)
 elif [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/jar" ]; then
-    "$JAVA_HOME/bin/jar" uf "$OUT/unaligned.apk" -C "$OUT/stage" lib
+    (cd "$OUT/stage" && "$JAVA_HOME/bin/jar" uf "$OUT/unaligned.apk" lib classes.dex)
 else
     python "$HERE/add_lib.py" "$OUT/unaligned.apk" "$OUT/stage/$LIB" "$LIB"
+    python "$HERE/add_lib.py" "$OUT/unaligned.apk" "$OUT/stage/classes.dex" "classes.dex"
 fi
 
 "$BT/zipalign.exe" -p -f 4 "$OUT/unaligned.apk" "$APK"

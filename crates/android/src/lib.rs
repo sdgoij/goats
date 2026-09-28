@@ -12,9 +12,9 @@
 //! the JNI `Context` that names the mods directory, keyboard, insets -- its
 //! globals is the rest of P0/P1 in `ANDROID.md`.
 
-use core::ffi::{c_char, c_int};
 #[cfg(target_os = "android")]
 use core::ffi::c_void;
+use core::ffi::{c_char, c_int};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
@@ -81,7 +81,9 @@ mod stdio_to_logcat {
                 let file = unsafe { std::fs::File::from_raw_fd(read) };
                 for line in BufReader::new(file).lines() {
                     let Ok(line) = line else { break };
-                    let Ok(text) = CString::new(line) else { continue };
+                    let Ok(text) = CString::new(line) else {
+                        continue;
+                    };
                     // SAFETY: both are NUL-terminated and outlive the call.
                     unsafe { __android_log_write(INFO, TAG.as_ptr(), text.as_ptr()) };
                 }
@@ -93,6 +95,18 @@ mod stdio_to_logcat {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// A shim for two GLFW symbols the *engine* reaches for.
+/// Never called: no `JNI_OnUnload` is registered, and the VM only calls this one
+/// if it exists, so it exists to say so.
+///
+/// # Safety
+///
+/// As above.
+#[unsafe(no_mangle)]
+#[cfg(target_os = "android")]
+pub unsafe extern "C" fn JNI_OnUnload(_vm: *mut c_void, _reserved: *mut c_void) {}
 
 // ---------------------------------------------------------------------------
 // A shim for two GLFW symbols the *engine* reaches for.
