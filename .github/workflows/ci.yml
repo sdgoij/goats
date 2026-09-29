@@ -6,7 +6,7 @@ name: CI
 # The action majors below are the first of each action that run on Node 24: Node
 # 20 is removed from the runners on 2026-09-23. See github.blog/changelog,
 # "Deprecation of Node 20 on GitHub Actions runners". (checkout v5,
-# upload-artifact v7, download-artifact v8, action-gh-release v3.)
+# upload-artifact v7, download-artifact v8, action-gh-release v3, setup-android v4.)
 on:
   push:
     branches: [main]
@@ -202,23 +202,30 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # The generator the NDK recipe asks for; without it CMake picks its own and
-      # the cross build goes sideways.
-      - name: Install ninja
+      # What the cross build reaches for beyond Rust: ninja is the generator the NDK
+      # recipe asks for, cmake drives raylib, bindgen needs libclang (the `build` job
+      # installs the same three for the desktop), and `cc` wants a host compiler even
+      # when the target is Android.
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config clang libclang-dev
 
       # The SDK, its cmdline-tools and its build-tools, licensed non-interactively.
-      # The NDK is a separate package: take the runner's if it has one, and install
-      # the pinned version if it does not. That pin is the one version this workflow
-      # names -- `build-apk.sh` itself takes whatever it finds.
-      - uses: android-actions/setup-android@v3
+      # v4, not v3: v3 has sdkmanager install the `tools` package, which Google has
+      # removed from the repository, so it fails before a step of ours has run -- and
+      # v4 is the major that runs on Node 24, like the actions above.
+      - uses: android-actions/setup-android@v4
+      # The NDK is a package of its own, and a runner image may or may not carry one:
+      # take the runner's, and install r30 -- the release the port is developed
+      # against, and the one version this workflow names -- if it has none.
       - name: Make the NDK available
         run: |
           if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "${ANDROID_NDK_HOME:-}" ]; then
-            sdkmanager --install "ndk;27.2.12479018"
-            echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+            SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+            sdkmanager --install "ndk;30.0.16248370"
+            echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/30.0.16248370" >> "$GITHUB_ENV"
           fi
           echo "NDK: $ANDROID_NDK_HOME"
 
