@@ -6,7 +6,8 @@ name: CI
 # The action majors below are the first of each action that run on Node 24: Node
 # 20 is removed from the runners on 2026-09-23. See github.blog/changelog,
 # "Deprecation of Node 20 on GitHub Actions runners". (checkout v5,
-# upload-artifact v7, download-artifact v8, action-gh-release v3, setup-android v4.)
+# setup-java v5, upload-artifact v7, download-artifact v8, action-gh-release v3,
+# setup-android v4.)
 on:
   push:
     branches: [main]
@@ -196,8 +197,8 @@ jobs:
 
       # `javac` for the Activity, and the keytool that makes the throwaway debug
       # keystore. The recipe is tested against 17 (ANDROID.md, "The build,
-      # concretely").
-      - uses: actions/setup-java@v4
+      # concretely"). v5, not v4: v4 is deprecated and runs on Node 20.
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -276,24 +277,40 @@ jobs:
   # Only a tag publishes; ordinary pushes just build and keep the artifacts.
   release:
     name: Publish release
-    needs: build
+    # `android` as well: the APK is one of the four assets, and the desktop build
+    # finishing says nothing about the phone one -- without this edge the release
+    # could publish before `android` had even started, or after it had failed.
+    needs: [build, android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # By name rather than every artifact: the three desktop archives and the phone
-      # APK (debug-signed -- see the `android` job), so an artifact a future job adds
-      # for its own reasons does not quietly become a release asset.
+      # By `name` rather than by `pattern` or by taking every artifact: one step per
+      # asset, which is also the input that fails when an artifact is missing. A
+      # `pattern` is a single glob handed to minimatch, so a newline-separated list
+      # of these four names is one pattern that matches nothing -- download-artifact
+      # then reports success having downloaded zero artifacts and never creates
+      # `path` at all, which is how `dist` came to not exist. `name` also keeps a
+      # future job's artifacts out of the release, which is the point of listing
+      # them: the three desktop archives and the phone APK (debug-signed -- see the
+      # `android` job).
       - uses: actions/download-artifact@v8
         with:
+          name: windows-x86_64
           path: dist
-          merge-multiple: true
-          pattern: |
-            windows-x86_64
-            linux-x86_64
-            linux-aarch64
-            android-arm64-v8a
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-x86_64
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-aarch64
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-arm64-v8a
+          path: dist
       - name: List the assets
         run: ls -la dist
       - uses: softprops/action-gh-release@v3
