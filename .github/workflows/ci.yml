@@ -256,15 +256,22 @@ jobs:
       - name: Materialise the patched raylib-sys
         run: python3 android/prepare-raylib-sys.py
 
+      # `--release`, or the phone gets the loop rather than the game. A bare
+      # `cargo build` is the `dev` profile: opt-level 1 with overflow checks and
+      # `debug_assert` on, none of the release profile's `codegen-units = 1` or
+      # `lto = "thin"` -- the settings `PERF.md` §6/§7.1 says are worth 45-49 to
+      # 55-62 fps of the same source. The `opt-level` is also what `cmake-rs` reads
+      # to pick raylib's `CMAKE_BUILD_TYPE`, so at `dev` the engine beside it is
+      # `RelWithDebInfo` (-O2) where release gives it `Release` (-O3).
       - name: Build the cdylib
-        run: cargo build -p goats-android --target aarch64-linux-android
+        run: cargo build --release -p goats-android --target aarch64-linux-android
 
       - name: Package the APK
-        run: bash android/build-apk.sh
+        run: bash android/build-apk.sh release
 
       # Named like the desktop archives, and published with them on a `v*` tag.
-      # Debug-signed and debug-built: this is an APK to sideload and try, not one a
-      # store would take.
+      # Release-built but debug-signed: an APK to sideload and try, not one a store
+      # would take.
       - name: Name the APK
         run: cp android/build/goats.apk goats-android-arm64-v8a.apk
 

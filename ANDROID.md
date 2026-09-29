@@ -448,7 +448,10 @@ existing `test` and `build` jobs need it too, and the script's own first-run fet
 could not lean on `cargo fetch` in a workspace it cannot yet resolve (it now
 fetches the crate from a scratch manifest of its own). `build-apk.sh` had to stop
 being a Windows script as well: one host case, the newest installed build-tools and
-platform rather than pinned ones, and a debug keystore made on the spot.
+platform rather than pinned ones, and a debug keystore made on the spot. It also
+shipped the wrong profile at first -- a bare `cargo build`, so the APK carried the
+`dev` loop rather than the game -- and is `--release` now, the profile README's
+"Building" and `PERF.md` §7.1 name.
 
 Rough sizing, one developer with a device in hand: P0 is a couple of days now
 that risk 1 is answered — what is left there is the client's `cdylib`, the
@@ -518,13 +521,24 @@ None of this is discoverable from the failure messages alone:
   found.
 - **`CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`** pointing at the same
   versioned wrapper.
+- **`--release` for anything that ships.** A bare `cargo build -p goats-android
+  --target aarch64-linux-android` is the `dev` profile, and `dev` here is opt-level
+  1 with overflow checks on, and neither of release's `codegen-units = 1` or
+  `lto = "thin"` -- the settings `PERF.md` §6 measures at 45-49 -> 55-62 fps of the
+  same source. The `opt-level` is also what `cmake-rs` reads to pick raylib's
+  `CMAKE_BUILD_TYPE`, so at `dev` the engine *beside* the crate is
+  `RelWithDebInfo` (-O2, and `-g`) where `--release` gives it `Release` (-O3).
+  `build-apk.sh` takes the profile as its one argument and defaults to `release`,
+  so the library it packages and the command that built it have to agree.
 
 `cargo ndk` would supply much of that, but on Windows 4.1.2 sets `CLANG_PATH` to
 an extension-less `clang` (so bindgen ignores it) *and* exports its own
 `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`, which is more specific than
 `BINDGEN_EXTRA_CLANG_ARGS` and carries an unversioned `--target`. Its API-level
 flag is also `-P` now, not `-p`. Hand-rolled, the whole client builds and links
-in about a minute once the graph is warm.
+in about a minute once the graph is warm -- at `dev`, which is the profile that
+minute is about; `--release` pays the single-codegen-unit plus thin-LTO link on top
+of it (`Cargo.toml`'s ~30 s -> ~2 m 35 s for the client).
 
 ### On the device
 

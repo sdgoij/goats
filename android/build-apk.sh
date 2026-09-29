@@ -8,11 +8,12 @@
 # tool that has to be downloaded and a plugin that has to match it, for nothing
 # this build does (ANDROID.md D6).
 #
-# Run it after `cargo build -p goats-android --target aarch64-linux-android` (see
-# ANDROID.md's "The build, concretely" for the environment that needs). It is the
-# same script on Linux -- which is where CI runs it -- and on Windows, where it was
-# written: the host decides the tool names, and the SDK and the NDK come from the
-# environment the way a developer and a runner both set it.
+# Run it after `cargo build --release -p goats-android --target aarch64-linux-android`
+# -- or after a bare `cargo build` for the `debug` profile, which is the loop rather
+# than the game (see ANDROID.md's "The build, concretely" for the environment that
+# needs). It is the same script on Linux -- which is where CI runs it -- and on
+# Windows, where it was written: the host decides the tool names, and the SDK and the
+# NDK come from the environment the way a developer and a runner both set it.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,7 +21,23 @@ ROOT="$(cd "$HERE/.." && pwd)"
 OUT="$HERE/build"
 APK="$OUT/goats.apk"
 LIB="lib/arm64-v8a/libgoats_android.so"
-SO="$ROOT/target/aarch64-linux-android/debug/libgoats_android.so"
+
+# ---- the profile ----------------------------------------------------------
+# The one argument names the cargo profile to package, which is also the directory
+# cargo put the library in. `release` by default, because this script's product is
+# the APK you install: it is the profile the game ships and the one `PERF.md`
+# measures (README, "Building"), where `dev` is opt-level 1 with overflow checks on
+# -- the loop, not the game. `debug` is for iterating on the phone, and wants a
+# `cargo build` without `--release`.
+PROFILE="${1:-release}"
+case "$PROFILE" in
+    debug | release) ;;
+    *)
+        echo "goats-android: usage: $(basename "$0") [debug|release]" >&2
+        exit 2
+        ;;
+esac
+SO="$ROOT/target/aarch64-linux-android/$PROFILE/libgoats_android.so"
 
 # ---- the host -------------------------------------------------------------
 # The SDK's build-tools are per-host: Windows has `d8.bat` and `.exe` binaries,
@@ -104,7 +121,11 @@ done
 
 [ -f "$SO" ] || {
     echo "goats-android: no $SO -- build the cdylib first:" >&2
-    echo "  cargo build -p goats-android --target aarch64-linux-android" >&2
+    if [ "$PROFILE" = release ]; then
+        echo "  cargo build --release -p goats-android --target aarch64-linux-android" >&2
+    else
+        echo "  cargo build -p goats-android --target aarch64-linux-android" >&2
+    fi
     exit 1
 }
 
@@ -116,14 +137,16 @@ command -v "$JAVAC" >/dev/null 2>&1 || {
 echo "goats-android: SDK=$SDK"
 echo "goats-android: build-tools=${BT%/}  platform=${PLATFORM%/}"
 echo "goats-android: NDK=$NDK  javac=$JAVAC"
+echo "goats-android: profile=$PROFILE  so=$SO"
 
 # Only this script's own products: `build/` also holds the prepared raylib-sys that
 # the workspace patch points at, and that has to survive.
 rm -rf "$OUT/stage" "$OUT/unaligned.apk" "$OUT/goats.apk"
 mkdir -p "$OUT/stage/lib/arm64-v8a"
 
-# Debug info is most of the library and all of it would have to cross the adb link
-# on every install, so the APK gets a stripped copy.
+# A stripped copy: a `debug` build's `.so` carries line tables -- most of the library
+# by size -- and all of them would cross the adb link on every install. A `release`
+# build has none to lose, so this is a copy that strips nothing.
 "$STRIP" --strip-debug -o "$OUT/stage/$LIB" "$SO"
 
 # `GoatsActivity` and its input view. `-classpath` rather than `-bootclasspath`: the

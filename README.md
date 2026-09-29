@@ -298,8 +298,8 @@ gets on the free plan.
 
 An `android` job builds the phone client on another `ubuntu-latest` runner and
 uploads `android-arm64-v8a` — see [Android](#android). A `v*` tag publishes it
-beside the three archives. It is debug-signed and debug-built: an APK to sideload
-and try, not one a store would take.
+beside the three archives. It is `--release`, like the three desktop ones, but
+debug-signed: an APK to sideload and try, not one a store would take.
 
 ## Android
 
@@ -316,13 +316,15 @@ artifacts, or build it:
 ```sh
 python android/prepare-raylib-sys.py                              # first, once
 rustup target add aarch64-linux-android
-cargo build -p goats-android --target aarch64-linux-android
+cargo build --release -p goats-android --target aarch64-linux-android
 android/build-apk.sh
 ```
 
 `build-apk.sh` packages the APK by hand — `javac` + `d8` + `aapt2` + `zipalign` +
 `apksigner`, no Gradle — and finds the SDK, its build-tools and the NDK through the
-environment, so it is the same script on Linux and on Windows. Set
+environment, so it is the same script on Linux and on Windows. Its one argument is
+the profile to package, `release` by default -- the profile the desktop ships -- and
+`debug` for the loop on the phone, after a `cargo build` without `--release`. Set
 `ANDROID_NDK_HOME` and the cross-compilation environment `ANDROID.md`'s "The build,
 concretely" lists first. The APK it makes is debug-signed:
 
