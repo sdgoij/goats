@@ -42,17 +42,6 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # The workspace `[patch]`es `raylib-sys` into `android/build/`, which is
-      # gitignored, so no cargo command resolves until this has run -- see ANDROID.md
-      # D4. It fetches the crate into the registry itself, so it works on a fresh
-      # checkout, and it is a no-op from the second run on.
-      - name: Materialise the patched raylib-sys
-        # `bash` explicitly: a Windows runner's default shell is PowerShell, and
-        # this little snippet is a shell snippet.
-        shell: bash
-        run: |
-          PY="$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)"
-          "$PY" android/prepare-raylib-sys.py
       # The client crate is left out: it links raylib, and the build job below is
       # the one that installs the build dependencies for it. `crates/android` is
       # left out for the same reason -- it is the client's cdylib, so building it
@@ -116,14 +105,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      # Same reason as the `test` job: nothing resolves until the patched
-      # raylib-sys exists, and the build script's cmake run is what consumes it.
-      - name: Materialise the patched raylib-sys
-        shell: bash
-        run: |
-          PY="$(command -v python3 >/dev/null 2>&1 && echo python3 || echo python)"
-          "$PY" android/prepare-raylib-sys.py
 
       # `goats-android` is left out: its only product is the phone's `.so`, and the
       # `android` job builds it for the target that matters. Built here it would be a
@@ -248,13 +229,6 @@ jobs:
             echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android26-clang"
             echo "BINDGEN_EXTRA_CLANG_ARGS=--target=aarch64-linux-android26 --sysroot=$SYSROOT"
           } >> "$GITHUB_ENV"
-
-      # The workspace patches `raylib-sys` to `android/build/raylib-sys`, so the
-      # script that materialises it has to run before any cargo command resolves the
-      # workspace -- `build-apk.sh` runs it again, which is idempotent, but that is
-      # too late for the build below.
-      - name: Materialise the patched raylib-sys
-        run: python3 android/prepare-raylib-sys.py
 
       # `--release`, or the phone gets the loop rather than the game. A bare
       # `cargo build` is the `dev` profile: opt-level 1 with overflow checks and

@@ -262,15 +262,14 @@ so every current build is unchanged, and the Android build passes
 path is the one the harness covers, and this keeps the flag "in both builds
 measurable" the way `crates/goats/Cargo.toml` already argues for.
 
-**D4 — A patched `raylib-sys`, kept in the project.** `Cargo.toml` patches
-`raylib-sys` to `android/build/raylib-sys`, which `android/prepare-raylib-sys.py`
-materialises: a pristine copy of the published crate from the cargo registry,
-with the repairs the P0 probe proved necessary applied to it. Nothing outside the
-repository is read but the dependency cache every Rust build already uses, and
-the copy is gitignored, so it is a build product rather than something to review.
-Run the script once in a fresh clone — cargo cannot resolve the workspace until
-that path exists. Ten patches: six on the crate's build path and four in
-raylib's Android platform layer.
+**D4 — A forked `raylib-sys`, patched in by `[patch]`.** `Cargo.toml` patches
+`raylib-sys` to `https://github.com/sdgoij/raylib-rs` (branch `feature/slag`), a
+fork of the published crate carrying the repairs the P0 probe proved necessary.
+The four Android platform repairs live in a second fork, `sdgoij/raylib`, which
+the raylib-rs tree takes as its `raylib-sys/raylib` submodule: cargo initialises
+submodules for a git dependency, so one `[patch]` pulls in both and a fresh clone
+resolves with a plain `cargo` command. `Cargo.lock` is the pin. Ten patches: six
+on the crate's build path and four in raylib's Android platform layer.
 
 1. **The platform parse** (`build.rs:206`). The API level is taken from the last
 dash-component of the triple, which `aarch64-linux-android` does not have, so
@@ -441,12 +440,12 @@ phone joining a desktop host over iroh: the real test of `netwatch`,
 **P5 — Ship.** *Done.* The `android` job in `.github/workflows/ci.yml` builds the
 `.so` and the APK on `ubuntu-latest` and uploads the APK (`android-arm64-v8a`),
 which a `v*` tag publishes beside the desktop archives; README's Android section and
-the `ROADMAP.md` milestone (M21) point back here. It cost more than the plan expected, and not on the job:
-because the workspace `[patch]`es `raylib-sys` into the gitignored `android/build/`,
-*no* cargo command resolves until `android/prepare-raylib-sys.py` has run — so the
-existing `test` and `build` jobs need it too, and the script's own first-run fetch
-could not lean on `cargo fetch` in a workspace it cannot yet resolve (it now
-fetches the crate from a scratch manifest of its own). `build-apk.sh` had to stop
+the `ROADMAP.md` milestone (M21) point back here. It cost more than the plan expected, and not all of it on the
+job: the workspace originally `[patch]`ed `raylib-sys` into a gitignored directory
+that had to be materialised before *any* cargo command resolved, desktop included,
+so the existing `test` and `build` jobs had to carry the same prep step. That
+mechanism is gone — D4's forks are fetched by cargo itself, and the prep step has
+left `ci.yml` and `build-apk.sh`. `build-apk.sh` had to stop
 being a Windows script as well: one host case, the newest installed build-tools and
 platform rather than pinned ones, and a debug keystore made on the spot. It also
 shipped the wrong profile at first -- a bare `cargo build`, so the APK carried the
@@ -496,13 +495,9 @@ otherwise rot:
 
 None of this is discoverable from the failure messages alone:
 
-- **`python android/prepare-raylib-sys.py` first.** The workspace patches
-  raylib-sys to a path in `android/build/` that this creates, so no cargo command
-  in the workspace resolves until it has run — desktop included.
-  `android/build-apk.sh` runs it for you, and so does every job in `ci.yml` that
-  runs cargo at all; on a fresh machine it fetches the crate into the registry on
-  its own, from a scratch manifest, because `cargo fetch` in the workspace is the
-  very command the missing patch path breaks.
+- **Nothing to materialise.** The workspace `[patch]`es `raylib-sys` to a fork
+  that cargo fetches, submodule and all (D4), so a fresh clone resolves with a
+  plain `cargo` command.
 - **`rustup target add aarch64-linux-android`**, once per machine.
 - **`ANDROID_NDK_HOME`** must point at the real NDK, which here is
   `%LOCALAPPDATA%\Android\android-ndk-r30`.
@@ -549,9 +544,9 @@ P0's surprises, none of them in a manifest:
   idea. The client's 1000×640 window became a 640px strip of the 1080px-tall
   panel (`Viewport offsets: 376, 0`), and against the portrait size read at init
   it was `0, 1510`: the bottom third of the screen that P0 first shipped with.
-  Two Android-only repairs, applied by `android/prepare-raylib-sys.py` and
-  listed in D4: that branch takes the display as
-  the screen, and `APP_CMD_CONFIG_CHANGED` — an empty stub whose comment said
+  Two Android-only repairs, applied in the `sdgoij/raylib` fork (D4): that branch
+  takes the display as the screen, and `APP_CMD_CONFIG_CHANGED` — an empty stub
+  whose comment said
   "Check screen orientation here!" — now re-reads the window and re-runs the
   setup, because Android only rotates an activity *after* its native window
   exists. Screen and render are now 2322×1080 with offsets 0,0.

@@ -223,8 +223,8 @@ public class GoatsActivity extends NativeActivity {
         // Back belongs to the game (the menu, the console), and quits nothing: the
         // framework's default would finish the activity out from under it. It is
         // the escape key -- ESC closes the console and toggles the menu (`goat.js`,
-        // `console.js`) -- which is also where the patched raylib already reports
-        // the back button (`prepare-raylib-sys.py`), so the engine normally eats
+        // `console.js`) -- which is also where the fork's raylib reports the back
+        // button (ANDROID.md D4), so the engine normally eats
         // the event before it reaches here. This is the fallback for the delivery
         // where it does not.
         nativeText(ESCAPE);

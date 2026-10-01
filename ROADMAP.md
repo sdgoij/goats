@@ -4602,11 +4602,11 @@ The slices, in order, each one seen on a device before the next began:
   Android backend calls, the `-u` and version-script link arguments that keep
   `ANativeActivity_onCreate` and the two JNI entry points in the dynamic table, and
   a stdio redirect — an app's fds 1 and 2 are `/dev/null`, so without it the scene's
-  own output is discarded. `raylib-sys` is patched in-tree
-  (`android/build/raylib-sys`, materialised by `android/prepare-raylib-sys.py`),
-  because the published crate cannot cross-compile to Android at all: nine repairs,
-  from the API level read out of the target triple to the framebuffer that has to be
-  the panel.
+  own output is discarded. `raylib-sys` comes from a fork
+  (`[patch.crates-io]` to `github.com/sdgoij/raylib-rs`, whose `raylib-sys/raylib`
+  submodule is `github.com/sdgoij/raylib`), because the published crate cannot
+  cross-compile to Android at all: from the API level read out of the target triple
+  to the framebuffer that has to be the panel.
 - **P0.5 — the ES3 canary.** `opengl_es_30` for Android alone, and the EGL context
   version that follows it, so the phone gets a real ES 3.0 context rather than an
   ES 2.0 one that happens to compile the shaders.

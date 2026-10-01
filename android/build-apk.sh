@@ -114,11 +114,6 @@ for tool in "$SDK" "$BT" "$PLATFORM" "$NDK" "$STRIP" "$JAR"; do
     }
 done
 
-# The workspace patches raylib-sys to a path in this same build directory (see
-# prepare-raylib-sys.py), so it has to exist before *any* cargo command -- which
-# includes the one that produced the library checked just below.
-"$PYTHON" "$HERE/prepare-raylib-sys.py"
-
 [ -f "$SO" ] || {
     echo "goats-android: no $SO -- build the cdylib first:" >&2
     if [ "$PROFILE" = release ]; then

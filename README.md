@@ -314,7 +314,6 @@ Take it from a release (`goats-android-arm64-v8a.apk`), from the `android` job's
 artifacts, or build it:
 
 ```sh
-python android/prepare-raylib-sys.py                              # first, once
 rustup target add aarch64-linux-android
 cargo build --release -p goats-android --target aarch64-linux-android
 android/build-apk.sh

@@ -1,10 +1,12 @@
 android/.idea
 android/android.iml
+raylib-rs/
 slag/
 target/
 *.png
 *.mp4
 *.blend1
+#*.pyc
 
 # A world mod a host fetched at join time (M18). Local to this checkout, and the
 # game writes it wherever `mods/` is.
