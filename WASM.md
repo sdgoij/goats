@@ -428,7 +428,12 @@ As on the phone, the testable half is the half that would otherwise rot:
    independent variable is the browser engine: the same wasm runs ~3x slower
    under Chromium/V8 than SpiderMonkey (~20 fps), so Firefox is the reference
    target for now. The GC trace is off by default and toggled per load with
-   `?gctrace=1`.
+   `?gctrace=1`. The collector's cadence is also a client lever: the engine's
+   `Context::set_nursery_threshold` (the young cohort that paces a minor,
+   `agent.rs:2108`; default 8192) is exposed here as `--nursery-threshold N`
+   and `?nursery=N`. A larger value collects less often -- fewer of the ~350 ms
+   pauses, at the cost of more live memory -- and the right value is the next
+   thing to measure.
 2. **The ES3 link line, and raylib itself on wasm.** *Answered and closed.*
    `-lGLESv2` and `-lglfw` resolve under Emscripten; `-lGLdispatch` does not, and
    the fix is the gate Android already had (`raylib-sys/build.rs:188-190`)

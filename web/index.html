@@ -77,6 +77,10 @@
       var queryArgs = [];
       var params = new URLSearchParams(window.location.search);
       if (params.get("gctrace") === "1") queryArgs.push("--gc-trace");
+      // `?nursery=N` is `--nursery-threshold N`: the young-box count that paces a
+      // minor collection (the engine's default is 8192).
+      var nursery = params.get("nursery");
+      if (nursery !== null) queryArgs.push("--nursery-threshold", nursery);
 
       // Set before the module script runs: Emscripten's glue looks the element up
       // through `Module.canvas`, and raylib then asks for its `id`.

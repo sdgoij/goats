@@ -235,6 +235,7 @@ fn scene_function_if_present(context: &Context, name: &str) -> Option<JsValue> {
 
 const USAGE: &str = "\
 goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull] [--gc-trace]
+      [--nursery-threshold N]
 
   --mods DIRECTORY   load mods from DIRECTORY instead of the default search
                      ($GOATS_MODS, then mods/ next to the executable, then
@@ -247,6 +248,9 @@ goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull] [--gc-trace]
   --gc-trace         print one line per collection to stderr, from the engine's
                      own telemetry (level, pause_us, live, swept, young): the
                      pause structure, which a frame average cannot see
+  --nursery-threshold N
+                     young boxes that pace a minor collection; raising it makes
+                     minors run less often (the engine's default is 8192)
   -h, --help         this text";
 
 /// How long to wait for an editor's burst of writes to settle before reloading.
@@ -261,6 +265,7 @@ struct Options {
     watch: bool,
     pull: bool,
     gc_trace: bool,
+    nursery_threshold: Option<usize>,
     help: bool,
 }
 
@@ -271,6 +276,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
         watch: false,
         pull: false,
         gc_trace: false,
+        nursery_threshold: None,
         help: false,
     };
     let mut args = args;
@@ -281,6 +287,14 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--watch" => options.watch = true,
             "--pull" => options.pull = true,
             "--gc-trace" => options.gc_trace = true,
+            "--nursery-threshold" => {
+                let value = args.next().ok_or("--nursery-threshold needs a count")?;
+                options.nursery_threshold = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("--nursery-threshold: {value} is not a count"))?,
+                );
+            }
             "--mods" => {
                 options.mods_dir = Some(PathBuf::from(
                     args.next().ok_or("--mods needs a directory")?,
@@ -720,6 +734,16 @@ pub fn run() {
     }
 
     let mut context = Context::new().unwrap();
+    // The nursery's pacing, through the same embedding context: the young-box
+    // count at which a minor collection runs (the engine's own
+    // `Context::set_nursery_threshold`; its default is 8192). A minor is paced
+    // by `young >= N`, so a larger N collects less often -- the knob the
+    // collector's pauses respond to, and a browser reaches it the same way as
+    // `--gc-trace` (WASM.md, risk 1).
+    if let Some(threshold) = options.nursery_threshold {
+        context.set_nursery_threshold(threshold);
+        println!("[gc] nursery threshold {threshold}");
+    }
     // The engine's per-collection telemetry, through the embedding context -- the
     // engine's own `Context::set_gc_trace`, so no crate of its internals is named
     // here. One line per collection on stderr (`gc-trace minor pause_us=...
