@@ -25,7 +25,12 @@
 //!
 //! Run: `cargo run --release`
 
+// WASM.md D4: a browser has no UDP socket for `iroh` and no host for `cpal`'s
+// capture stream, so both modules -- and the services they wrap -- are compiled
+// out of a wasm build rather than stubbed.
+#[cfg(not(target_arch = "wasm32"))]
 mod audio;
+#[cfg(not(target_arch = "wasm32"))]
 mod net;
 
 // The phone's touch surface, installed as the `android` global, and the JNI half
@@ -37,17 +42,60 @@ mod net;
 #[cfg(target_os = "android")]
 pub mod android;
 
+// The browser's surface, minimal for now (WASM.md D1): installed only on a wasm
+// target, so the scene can branch on `typeof web` and size its window for a tab.
+#[cfg(target_arch = "wasm32")]
+pub mod web;
+
 use std::cell::RefCell;
+// `HashMap` and `BufRead` are the watcher's settle map and the stdin reader's
+// line loop; both are desktop-only (WASM.md D4/D6).
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::BufRead;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_arch = "wasm32"))]
 use mods::watch::ModWatcher;
 use mods::{AssetMode, Loader};
+#[cfg(not(target_arch = "wasm32"))]
 use plugin::{PluginSet, Side as PluginSide};
 use slag::{Context, HostCallbacks, JsValue};
+
+// The compiled-mod host (M17b) is a `wasmtime`-shaped host, and `wasmtime` has no
+// wasm32 build. A wasm build keeps the same call shape with a type that carries
+// no state, and the few sites that would drive a module are `cfg`-gated where
+// they stand (WASM.md D4).
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+struct PluginSet;
+
+#[cfg(target_arch = "wasm32")]
+impl PluginSet {
+    fn new() -> PluginSet {
+        PluginSet
+    }
+
+    // The frame body calls these every frame and the seam that mirrors their
+    // output into the scene reads them back, so a wasm build answers with the
+    // empty set rather than forking the loop (WASM.md D4).
+    fn set_belly(&mut self, _fullness: f32) {}
+
+    fn tick_all(&mut self, _dt: f32, _world_local: bool) {}
+
+    fn published_json(&self) -> String {
+        "{}".to_string()
+    }
+
+    fn hud_json(&mut self) -> String {
+        "{}".to_string()
+    }
+}
 
 /// Every asset the scene loads, embedded so the binary is self-contained. The
 /// name is exactly the path the scene hands to `rl.loadModel`/`rl.loadSound`/
@@ -202,6 +250,8 @@ goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull] [--gc-trace]
   -h, --help         this text";
 
 /// How long to wait for an editor's burst of writes to settle before reloading.
+/// The watcher is desktop-only (WASM.md D6).
+#[cfg(not(target_arch = "wasm32"))]
 const WATCH_SETTLE: Duration = Duration::from_millis(250);
 
 /// What the command line asked for.
@@ -310,6 +360,10 @@ fn call_scene(context: &mut Context, name: &str, args: &[JsValue]) {
 /// The world-mod set this client presents: every `side: "world"` mod, by
 /// identity and content hash, in id order. Client-side mods are local and never
 /// travel; a host compares this set with every joiner's and refuses a mismatch.
+///
+/// There is no joiner to compare with in a browser, and `session` is not in a
+/// wasm build's dependency set (WASM.md D4).
+#[cfg(not(target_arch = "wasm32"))]
 fn world_mod_refs(loader: &Loader) -> Vec<session::ModRef> {
     let mut mods: Vec<session::ModRef> = loader
         .mods()
@@ -341,6 +395,7 @@ fn report_mod(context: &mut Context, id: &str, ok: bool, error: &str) {
 /// owns the module's `Store` and memory, so the bytes never cross into JavaScript
 /// as a path or an ArrayBuffer. An existing instance is dropped first: a mod's
 /// module goes with its mod, and that is what a reload does too.
+#[cfg(not(target_arch = "wasm32"))]
 fn add_plugin(
     context: &mut Context,
     plugins: &Rc<RefCell<PluginSet>>,
@@ -362,7 +417,9 @@ fn add_plugin(
 /// The archives this client can serve a fetching joiner (M18d): every world mod in
 /// its distributable form, which is the shape the loader reads back. `goatsd` has
 /// the same walk over its own loader; a session hosted from this client is the same
-/// host to a joiner either way, so it serves the same thing.
+/// host to a joiner either way, so it serves the same thing. A wasm build has no
+/// session to serve (WASM.md D4).
+#[cfg(not(target_arch = "wasm32"))]
 fn mod_archives(loader: &Loader) -> Vec<(session::ModRef, Vec<u8>)> {
     loader
         .mods()
@@ -438,11 +495,16 @@ fn handle_mod_intent(
     match kind {
         "disable" => {
             call_scene(context, "sceneModEnd", &[JsValue::string(id)]);
+            // A compiled mod's instance goes with its mod, where there is a
+            // compiled-mod host to hold one (WASM.md D4).
+            #[cfg(not(target_arch = "wasm32"))]
             plugins.borrow_mut().remove(id);
         }
         "enable" | "reload" => reload_and_eval(context, loader, plugins, id),
         other => eprintln!("[mods] unknown intent '{other}'"),
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = plugins;
 }
 
 /// Re-read a mod from its source (a directory or a zip) and evaluate it, so an
@@ -472,22 +534,30 @@ fn reload_and_eval(
     }
     eval_entry(context, loader, id);
     // A compiled mod re-instantiates from the re-read bytes; its old instance is
-    // dropped first. It has no entry, so this is the whole of the reload.
-    let compiled = loader.get(id).and_then(|manifest| {
-        manifest
-            .wasm
-            .as_ref()
-            .map(|wasm| (manifest.side, wasm.bytes.clone()))
-    });
-    if let Some((side, bytes)) = compiled {
-        add_plugin(context, plugins, id, side, &bytes);
+    // dropped first. It has no entry, so this is the whole of the reload. A wasm
+    // build has no compiled-mod host to re-instantiate anything in (WASM.md D4).
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let compiled = loader.get(id).and_then(|manifest| {
+            manifest
+                .wasm
+                .as_ref()
+                .map(|wasm| (manifest.side, wasm.bytes.clone()))
+        });
+        if let Some((side, bytes)) = compiled {
+            add_plugin(context, plugins, id, side, &bytes);
+        }
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = plugins;
 }
 
 /// Is this changed path a mod archive that arrived from a host (M18d)? The
 /// watcher's business is a mod the player is editing, and a pulled archive is
 /// neither editable in place nor theirs: without this, installing one under
-/// `--watch` would reload the mod a moment after it was loaded.
+/// `--watch` would reload the mod a moment after it was loaded. Neither the
+/// watcher nor a pull exists in a browser (WASM.md D4/D6).
+#[cfg(not(target_arch = "wasm32"))]
 fn pulled_archive(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -504,7 +574,9 @@ fn pulled_archive(path: &Path) -> bool {
 /// the entry itself, then a compiled mod's module.
 ///
 /// The host's `loader` is replaced by a fresh walk, because a pulled mod is a file
-/// discovery has never seen: `Loader` has no way to add one.
+/// discovery has never seen: `Loader` has no way to add one. A pull is a
+/// networking feature and a wasm build has none (WASM.md D4).
+#[cfg(not(target_arch = "wasm32"))]
 fn load_pulled(
     context: &mut Context,
     loader: &mut Loader,
@@ -526,6 +598,7 @@ fn load_pulled(
 }
 
 /// Add one mod the scene has not seen before, exactly as `ids` names it.
+#[cfg(not(target_arch = "wasm32"))]
 fn add_pulled_mod(
     context: &mut Context,
     loader: &mut Loader,
@@ -612,7 +685,9 @@ pub fn run() {
 
     // `--watch` reloads a mod when its files change on disk. It is a development
     // aid for the local client: a world mod is part of the compatibility set
-    // fixed at join, so a server should not watch.
+    // fixed at join, so a server should not watch. A tab has no notification API
+    // and no filesystem to watch (WASM.md D6).
+    #[cfg(not(target_arch = "wasm32"))]
     let watcher = if options.watch {
         match &mods_dir {
             Some(dir) => match ModWatcher::new(dir) {
@@ -634,6 +709,9 @@ pub fn run() {
         None
     };
 
+    // The join-time world set exists to be compared with a joiner's; a browser has
+    // nobody to compare with (WASM.md D4).
+    #[cfg(not(target_arch = "wasm32"))]
     let world_mods = world_mod_refs(&loader);
     if options.pull && options.no_mods {
         // Not a contradiction worth refusing to start over: `--no-mods` is the
@@ -648,6 +726,10 @@ pub fn run() {
     // live=...->... swept=... young=...`), which is the pause structure a frame
     // average cannot show; turned on before the scene loads so that is traced too
     // (PERF.md, appendix B).
+    // A browser has no argv of its own, but `web/index.html` builds
+    // `Module.arguments` from the URL query string (`?gctrace=1`), so the same
+    // `--gc-trace` flag reaches `parse_args` here as on the desktop (WASM.md,
+    // risk 1).
     if options.gc_trace {
         context.set_gc_trace(true);
         println!("[gc] tracing every collection to stderr");
@@ -657,6 +739,10 @@ pub fn run() {
         ..HostCallbacks::default()
     };
     context.set_host_callbacks(callbacks);
+    // The JIT is the desktop's and the phone's: a wasm sandbox grants no RWX
+    // memory, and the engine compiles `install_jit` out without that feature
+    // (WASM.md D2).
+    #[cfg(not(target_arch = "wasm32"))]
     slag::install_jit(&mut context).unwrap();
     context.install_raylib().unwrap();
     // The touch surface, before the scene is evaluated and before the first frame:
@@ -664,6 +750,10 @@ pub fn run() {
     // every frame rather than at load, so the harness can install one later).
     #[cfg(target_os = "android")]
     android::install(&mut context);
+    // The browser surface, before the scene is evaluated and before the first frame,
+    // exactly as `android` is (WASM.md D1).
+    #[cfg(target_arch = "wasm32")]
+    web::install(&mut context);
     // Register every embedded asset before the scene runs; the loaders resolve
     // these names to the bytes above rather than reading from disk.
     for &(name, data) in ASSETS {
@@ -693,6 +783,7 @@ pub fn run() {
     // instantiates and drives it, so the bytes never cross into JavaScript as a
     // path or an ArrayBuffer: the host owns the module's `Store` and memory.
     let plugins = Rc::new(RefCell::new(PluginSet::new()));
+    #[cfg(not(target_arch = "wasm32"))]
     for manifest in loader.mods() {
         if let Some(wasm) = manifest.wasm.as_ref() {
             add_plugin(
@@ -709,7 +800,9 @@ pub fn run() {
         eprintln!("[mods] {} discovered", loader.mods().len());
     }
     // The set a joiner has to match, hashes included: a refusal names both ends,
-    // and this is the line it is read against.
+    // and this is the line it is read against. There is no joiner in a browser
+    // (WASM.md D4).
+    #[cfg(not(target_arch = "wasm32"))]
     eprintln!("[mods] world set: {}", session::describe_mods(&world_mods));
 
     let init = scene_function(&context, "sceneInit");
@@ -724,7 +817,9 @@ pub fn run() {
     let set_wasm_hud = scene_function(&context, "sceneSetWasmHud");
 
     // The apply seam: a mirroring client's JS scene hands a peer's published
-    // state back to the Rust host through this native function.
+    // state back to the Rust host through this native function. Only a compiled
+    // mod has state to apply, so a wasm build registers no seam (WASM.md D4).
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let plugins_for_apply = Rc::clone(&plugins);
         context
@@ -752,6 +847,7 @@ pub fn run() {
 
     // The describe seam: `mod info` asks the Rust host for a plugin's ABI,
     // imports, frame count and log through this native function.
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let plugins_for_describe = Rc::clone(&plugins);
         context
@@ -775,8 +871,16 @@ pub fn run() {
     }
 
     // Draining stdin on a reader thread keeps both sides non-blocking: the loop
-    // never stalls on input, and a command never waits for a frame.
+    // never stalls on input, and a command never waits for a frame. A tab has no
+    // stdin -- a command comes from the DOM or the in-game console -- and no
+    // threads to spawn one on, so the wasm build keeps the channel and never puts
+    // anything in it: the receive side below is then inert without the loop
+    // forking (WASM.md D4).
+    #[cfg(not(target_arch = "wasm32"))]
     let (lines, pending) = std::sync::mpsc::channel::<String>();
+    #[cfg(target_arch = "wasm32")]
+    let (_no_stdin, pending) = std::sync::mpsc::channel::<String>();
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::Builder::new()
         .name("stdin".into())
         .spawn(move || {
@@ -794,12 +898,12 @@ pub fn run() {
         .unwrap();
 
     // Which GLSL dialect the scene's shaders have to be in. The engine's raylib
-    // build is what decides -- GL 3.3 on the desktop, GLSL ES 3.00 on Android,
-    // where `crates/goats/Cargo.toml` turns on the `opengl_es_30` feature -- and
-    // the scene cannot read that from JS, so the client tells it before the first
-    // frame (ANDROID.md D2). The desktop dialect is the scene's own default, so
-    // only Android has anything to say.
-    #[cfg(target_os = "android")]
+    // build is what decides -- GL 3.3 on the desktop, GLSL ES 3.00 on Android and
+    // in the browser, where `crates/goats/Cargo.toml` turns on the `opengl_es_30`
+    // feature -- and the scene cannot read that from JS, so the client tells it
+    // before the first frame (ANDROID.md D2, WASM.md D5). The desktop dialect is
+    // the scene's own default, so only the ES3 targets have anything to say.
+    #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     {
         let set_glsl_dialect = scene_function(&context, "setGlslDialect");
         context
@@ -814,12 +918,18 @@ pub fn run() {
     context.call(&init, &JsValue::undefined(), &[]).unwrap();
 
     // The network bridge. Both entry points live in the scene (`net.js`); the
-    // host only moves lines between the frame loop and the runtime thread.
-    let net_event = scene_function_if_present(&context, "sceneNetEvent");
-    let net_drain = scene_function_if_present(&context, "sceneNetDrain");
+    // host only moves lines between the frame loop and the runtime thread. A
+    // browser has no transport to bridge to, so the wasm build takes neither the
+    // bridge nor the voice service that rides on it (WASM.md D4); `mod_drain` is
+    // the scene's own queue and stays.
     let mod_drain = scene_function_if_present(&context, "sceneModDrain");
+    #[cfg(not(target_arch = "wasm32"))]
+    let net_event = scene_function_if_present(&context, "sceneNetEvent");
+    #[cfg(not(target_arch = "wasm32"))]
+    let net_drain = scene_function_if_present(&context, "sceneNetDrain");
     // The mods directory travels with the bridge: a refused join may fetch into
     // it and retry, and a join we host may serve it (M18d).
+    #[cfg(not(target_arch = "wasm32"))]
     let mut net = net::Net::start(
         world_mods,
         net::Pull {
@@ -827,12 +937,22 @@ pub fn run() {
             always: options.pull,
         },
     );
+    #[cfg(not(target_arch = "wasm32"))]
     let mut voice = audio::Voice::start(&mut net);
 
     // Watched mods whose files changed recently, waiting for the writes to stop.
+    #[cfg(not(target_arch = "wasm32"))]
     let mut settling: HashMap<String, Instant> = HashMap::new();
 
-    loop {
+    // One frame, as a closure over everything above. Both targets drive this same
+    // body: the desktop from the `while` below, whose blocking wait its stdin
+    // reader thread makes meaningful, and the browser from
+    // `emscripten_set_main_loop_arg`, where returning is what lets the browser
+    // composite and `requestAnimationFrame` becomes the cadence (WASM.md D3).
+    // `mut` is the desktop's: it calls the closure in place from the `while`
+    // below, where the wasm path moves it into a `Box` instead.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut step = move || -> bool {
         while let Ok(line) = pending.try_recv() {
             if line.trim().is_empty() {
                 continue;
@@ -854,6 +974,7 @@ pub fn run() {
         }
 
         // Networking events land on the frame boundary, like commands do.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(handler) = &net_event {
             while let Some(line) = net.next_event() {
                 // A pull's mods are the one event with host work behind it: they
@@ -882,7 +1003,14 @@ pub fn run() {
             .as_boolean()
             .unwrap_or(false);
         if !running {
-            break;
+            // The scene asked to stop. The shutdown runs here rather than after
+            // the call, so the desktop's `while` and the browser's callback cannot
+            // diverge on the way out -- and nothing is moved out of the closure,
+            // which is what keeps it callable in a loop (the voice and the net
+            // stop when it drops, with `run`).
+            context.call(&shutdown, &JsValue::undefined(), &[]).unwrap();
+            eprintln!("done");
+            return false;
         }
 
         // The Rust host drives its compiled mods after the world has moved, at
@@ -942,6 +1070,7 @@ pub fn run() {
         // A watched mod file changed. Coalesce the burst an editor produces and
         // reload once the writes have settled, so a half-written file is never
         // evaluated.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(watcher) = &watcher {
             let now = Instant::now();
             for path in watcher.take_changed() {
@@ -968,6 +1097,7 @@ pub fn run() {
         // The scene's queued intents leave on the same boundary. The voice gain
         // is the audio module's rather than the runtime thread's, so it is
         // intercepted here and never reaches `net`.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(drain) = &net_drain {
             match context.call(drain, &JsValue::undefined(), &[]) {
                 Ok(value) => {
@@ -990,9 +1120,53 @@ pub fn run() {
         }
 
         // Decoded voice reaches raylib here, on the frame thread.
+        #[cfg(not(target_arch = "wasm32"))]
         voice.pump();
-    }
-    drop(voice);
-    context.call(&shutdown, &JsValue::undefined(), &[]).unwrap();
-    eprintln!("done");
+        true
+    };
+
+    // Hand the frame cadence to whoever owns it (WASM.md D3). The desktop keeps
+    // the blocking loop, whose stdin reader thread makes the wait meaningful. The
+    // browser owns its own cadence, so the wasm build stores the step and returns
+    // -- `web/index.html` calls `goats_frame` back once per `requestAnimationFrame`.
+    #[cfg(target_arch = "wasm32")]
+    install_step(Box::new(step));
+
+    #[cfg(not(target_arch = "wasm32"))]
+    while step() {}
+}
+
+/// The browser's frame entry, exported for `web/index.html` to call once per
+/// `requestAnimationFrame` (WASM.md D3).
+///
+/// The state is the step `run()` installed. A wasm build is single-threaded, so a
+/// thread-local is the only place it has to live between `run()` returning and
+/// this being called. Returns 1 while the scene asks for another frame, 0 once it
+/// is done -- `shutdown` has already run inside the step by then.
+///
+/// The export exists rather than an `emscripten_set_main_loop_arg` callback on
+/// purpose: a Rust function pointer handed to Emscripten's main-loop JS came back
+/// as a null function in the glue. Driving the loop from the page keeps the whole
+/// thing on names, not pointers.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn goats_frame() -> i32 {
+    FRAME.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match slot.as_mut() {
+            Some(step) => i32::from(step()),
+            None => 0,
+        }
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn install_step(step: Box<dyn FnMut() -> bool>) {
+    FRAME.with(|slot| *slot.borrow_mut() = Some(step));
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static FRAME: std::cell::RefCell<Option<Box<dyn FnMut() -> bool>>> =
+        std::cell::RefCell::new(None);
 }

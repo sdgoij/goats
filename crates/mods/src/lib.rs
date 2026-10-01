@@ -16,6 +16,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
+// The optional file watcher. A wasm module has no notification API to wrap, so
+// the browser build leaves the module -- and its `notify` dependency -- out
+// (WASM.md section 5); `--watch` is a desktop development aid anyway (D6).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod watch;
 
 /// The `goats` API major this build understands. A manifest targeting a
@@ -2022,6 +2026,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_watcher_reports_a_changed_file() {
         let root = workspace("watch");
@@ -2046,6 +2051,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_watched_change_reloads_the_mod_it_belongs_to() {
         let root = workspace("watchreload");

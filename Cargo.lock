@@ -3076,7 +3076,7 @@ dependencies = [
 [[package]]
 name = "raylib-sys"
 version = "6.0.0"
-source = "git+https://github.com/sdgoij/raylib-rs?branch=feature%2Fslag#de3bddfa870ac94d4f2a060bd6d239c02d619993"
+source = "git+https://github.com/sdgoij/raylib-rs?branch=feature%2Fslag#7a6b9cc857d762c588aaa7eeeae8b224ab02459e"
 dependencies = [
  "bindgen",
  "cc",

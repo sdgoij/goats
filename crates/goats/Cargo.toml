@@ -14,40 +14,61 @@ default = ["gpu-skinning"]
 gpu-skinning = ["slag/gpu-skinning"]
 
 [dependencies]
-session = { workspace = true }
 # The mod loader (discovery, manifests, asset bytes). Pure Rust, no engine.
 mods = { workspace = true }
 # The scene bundle: the ordered parts, the joined script and the `rl` stubs. One
 # source, shared with the headless server and the test harness, so they cannot
 # disagree about the running order.
 scene = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# The `rl` surface has no audio streams, but raylib itself does, and this crate
+# already links raylib through the `raylib` feature of `slag` below. Naming
+# `raylib-sys` directly lets the audio module feed a per-peer stream.
+# `default-features = false` matches what Slag's runtime asks for, so the two
+# declarations merge into the one raylib build rather than a second, differently
+# configured copy.
+raylib-sys = { workspace = true }
+
+# Everything below needs a thread, a socket or a microphone, so the browser
+# build leaves it out (WASM.md D4 and section 5): a tab is single-threaded, has
+# no UDP socket for `iroh`, no RWX memory for `wasmtime`'s JIT and no host for
+# `cpal`'s capture stream. Gated by target rather than by a feature, because the
+# desktop, the phone and the harness must keep all of it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The wire protocol's transport and session state machine (iroh over UDP).
+session = { workspace = true }
 # The compiled-mod host (M17b): the client drives compiled mods from Rust.
 plugin = { workspace = true }
 # Fetching a host's world mods (M18d): the client's half of mod sync, which the
 # networking thread runs on a refused join.
 pull = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 # The engine. `gpu-skinning` changes raylib's own build: a skinned mesh is loaded
 # without its deform buffers and the *shader* skins it, which is what takes
 # `bots`/`goat_pose`/`shadow_bots` out of the frame (PERF.md section 7.1 item 5).
 # The scene branches on `rl.GPU_SKINNING`, and dropping the feature above is the
 # whole way back to CPU skinning -- keep the flag in both builds measurable.
+#
+# `jit` is the desktop's and the phone's; a wasm sandbox grants no RWX memory, so
+# the wasm block below names the same crate without it (WASM.md D2).
 slag = { workspace = true, features = ["jit", "raylib", "raygui"] }
-
 # Voice chat, client only (M13b). `cpal` opens the microphone, `libopus_sys`
 # with `bundled` compiles libopus from source, so there is no system codec to
 # install. Neither belongs on the headless server.
 cpal = { workspace = true }
 libopus_sys = { workspace = true, features = ["bundled"] }
 
-# The `rl` surface has no audio streams, but raylib itself does, and this crate
-# already links raylib through the `raylib` feature above. Naming `raylib-sys`
-# directly lets the audio module feed a per-peer stream. `default-features =
-# false` matches what Slag's runtime asks for, so the two declarations merge
-# into the one raylib build rather than a second, differently configured copy.
-raylib-sys = { workspace = true }
+# The browser's two target-specific words. `opengl_es_30` is the same feature the
+# phone names, for the same reason -- WebGL 2 is the context (WASM.md section 3)
+# -- and it is also what carries the gate that keeps the desktop-only
+# `-lGLdispatch` off the link, which a wasm link has no library for.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+raylib-sys = { workspace = true, features = ["opengl_es_30"] }
+# No `jit`: the engine's wasm-body path refuses it (`wasm/src/lib.rs:13-16`), and
+# `install_jit` is compiled in only with that feature (`slag/src/lib.rs:31-32`).
+slag = { workspace = true, features = ["raylib", "raygui"] }
 
 # ES3 for the phone, GL 3.3 for the desk. `opengl_es_30` sets raylib's
 # `OPENGL_VERSION` to "ES 3.0", which the Android backend turns into its ES3 mode

@@ -475,7 +475,14 @@ function drawLoading() {
 }
 
 function sceneInit() {
-    rl.initWindow(1000, 640, "Slag goat - walk / run / jump / sleep");
+    // A tab sizes the window like an embedded video; everywhere else it is the
+    // desktop's window. The browser surface is installed before the scene runs,
+    // so `typeof web` is a reliable way to tell (WASM.md W0).
+    rl.initWindow(
+        (typeof web !== "undefined") ? 854 : 1000,
+        (typeof web !== "undefined") ? 480 : 640,
+        "Slag goat - walk / run / jump / sleep"
+    );
     rl.setTargetFPS(60);
     // ESC is ours now: it opens the menu instead of closing the window.
     if (typeof rl.setExitKey === "function") rl.setExitKey(0);

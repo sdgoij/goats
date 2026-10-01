@@ -1,0 +1,99 @@
+<!doctype html>
+<!--
+  The browser client's shell (WASM.md W0/D7). The canvas sits in a page, not
+  fullscreen: it is sized like an embedded video and the console -- and later the
+  chat -- mount around it. The artifact is this file, the generated `goats.js`
+  and `goats.wasm`, and -- later -- a preloaded `mods/`.
+
+  The canvas has to be called `canvas`: raylib's web backend reads
+  `Module.canvas.id` and then reaches for `#canvas` by name
+  (`rcore_web_emscripten.c:115`, `:229`). `tabindex` makes it focusable, which is
+  what the keyboard will need; the context menu is suppressed so a right-click
+  does not interrupt a camera drag.
+
+  The frame loop is driven from here, once per `requestAnimationFrame`, calling
+  the exported `goats_frame` (WASM.md D3) -- no Emscripten main loop, no function
+  pointer crossing the JS boundary.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>goats</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #17181c;
+        color: #d6d7db;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: system-ui, sans-serif;
+      }
+      /* The page is a single centred column: the game above, the console below. */
+      #stage {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        width: min(92vw, 854px);
+      }
+      /* The game. `height: auto` keeps the client's own aspect ratio -- the
+         framebuffer is 1000x640, so a 854px-wide box is ~547px tall. */
+      #canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+        background: #000;
+        border-radius: 4px;
+        outline: none;
+      }
+      /* The console mounts here (W2); the chat will join it later. */
+      #console {
+        min-height: 1.5em;
+        padding: 10px 12px;
+        border-radius: 4px;
+        background: #101114;
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.4;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+      <div id="console"></div>
+    </div>
+    <script>
+      // The wasm build has no command line; it reads its argv from
+      // `Module.arguments`, which Emscripten's glue turns into `env::args()`.
+      // Build it from the URL query string so diagnostics can be toggled per
+      // load -- `?gctrace=1` turns on the collector's trace (WASM.md, risk 1).
+      var queryArgs = [];
+      var params = new URLSearchParams(window.location.search);
+      if (params.get("gctrace") === "1") queryArgs.push("--gc-trace");
+
+      // Set before the module script runs: Emscripten's glue looks the element up
+      // through `Module.canvas`, and raylib then asks for its `id`.
+      var Module = {
+        arguments: queryArgs,
+        canvas: document.getElementById("canvas"),
+        onRuntimeInitialized: function () {
+          // The exported frame entry. Emscripten may or may not prefix it with an
+          // underscore depending on the build, so accept either spelling.
+          var frame = Module._goats_frame || Module.goats_frame;
+          if (!frame) throw new Error("goats_frame was not exported");
+          requestAnimationFrame(function tick() {
+            if (frame()) requestAnimationFrame(tick);
+          });
+        },
+      };
+    </script>
+    <script async src="goats.js"></script>
+  </body>
+</html>
