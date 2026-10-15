@@ -2,32 +2,26 @@
 #
 #   Godot --headless --path godot --script res://tools/verify_water_reflect.gd
 #
-# M20e is the one part of the water that is *mostly* a look, and the port answers it with
-# Godot's environment rather than with the scene's bake and mirrored pass (`PORT.md` section
-# 3). So what a headless run can hold is the part that is a *rule*:
+# M20e is the one part of the water that is mostly a *look*, and the port answers it with its
+# own screen-space march in `water.gdshader` rather than with Godot's `ssr_enabled` -- because
+# Godot's is computed from the opaque pass and does not reach an alpha-blended surface (a
+# measurement: toggling it moves a frame by 0.000064 with this water transparent and by
+# 0.003081 with it temporarily opaque). So what a headless run can hold is the part that is a
+# *rule*, plus the plumbing that carries it:
 #
 #   * the leaf and its clamp, which `tuningCoerce` does and not `waterReflectTier`;
 #   * the promise `waterReflectTier` makes -- the wish rounded, and a tier the build cannot
 #     keep falling to the one below it rather than to nothing;
 #   * the three words `setting reflect` and the menu's combo box spell (`ctl.js` `CTL_REFLECT`);
-#   * and the port's own mapping of a tier onto Godot's probe: what it *sees* (`cull_mask`,
-#     which is where "the ground, and not the goat" and "everything but what must not be in a
-#     reflection" live) and how often it *costs* (`update_mode`, the ladder the setting is a
-#     lever over).
+#   * the *budget* each tier buys, which is the port's own invention and is checked against the
+#     shader's own ceiling and against the order the tiers are meant to have;
+#   * and that the tier and its budget reach the surface's material, under names the shader
+#     actually declares -- a misspelling is silent on both sides, which is the one thing a
+#     name can be checked for at all here.
 #
-# What no case can hold is how any of it *looks* -- the same gap M20b and M20c shipped with,
-# and the reason `GOATS_FLOOD`/`GOATS_REFLECT` pictures exist. The oracle is `water.js` and
-# its neighbours transcribed from source; the port is asked the same questions.
-#
-# It runs its checks on the first `_process` frame rather than in `_initialize`, and that is
-# not a style choice: `SceneTree.root` is **not inside the tree yet** while `_initialize`
-# runs -- `root.is_inside_tree()` is false there and true a frame later -- and the whole of
-# the port's half of the promise is a probe that knows *where it is*.
+# What no case can hold is whether the march *looks* right -- the same gap M20b and M20c
+# shipped with, and the reason `GOATS_FLOOD`/`GOATS_REFLECT` pictures exist.
 extends SceneTree
-
-## `_process` runs once: `_run` quits the loop, and this keeps a mis-return from running it
-## twice and reporting everything a second time.
-var _done := false
 
 ## `water.js`'s reflection section, and the bits of `core.js` and `ctl.js` it leans on,
 ## transcribed *from their sources*: the clamp the tuning system stores a leaf with (no
@@ -74,18 +68,11 @@ const WORDS := ["sky", "ground", "mirror", "nope", "Sky"]
 ## two agree to the last bit; the tiers are integers and have no tolerance at all.
 const TOLERANCE := 1e-12
 
+## A leaf that is level ground, so every quad of the surface survives its cut and the material
+## exists to be read back from.
+const FLAT := -1.0
+
 func _initialize() -> void:
-	# Nothing here: see the note above about the tree.
-	pass
-
-func _process(_delta: float) -> bool:
-	if _done:
-		return true
-	_done = true
-	_run()
-	return true
-
-func _run() -> void:
 	var failures: Array[String] = []
 
 	if not ClassDB.class_exists("ModHost"):
@@ -167,135 +154,117 @@ func _run() -> void:
 	if first_word != "":
 		print("  first: ", first_word)
 
-	# 3. The port's own mapping: what a tier *sees* and what it *costs*. These are pins
-	#    rather than transcriptions -- the two engines answer the tier differently -- so they
-	#    are asserted as the properties the mapping exists for, not as restated constants.
-	var mapping: Array[String] = []
-	var sky_mask: int = WaterReflect.mask_of(WaterReflect.SKY)
-	var ground_mask: int = WaterReflect.mask_of(WaterReflect.GROUND)
-	var world_mask: int = WaterReflect.mask_of(WaterReflect.MIRROR)
-	if sky_mask != 0:
-		mapping.append("the sky tier sees something (%d); a probe's sky is its background" % sky_mask)
-	if (ground_mask & 1) != 0:
-		mapping.append("the ground tier still sees layer 1, so it reflects the goat")
-	if (ground_mask & WaterReflect.LAYER_GROUND) == 0:
-		mapping.append("the ground tier does not see the ground")
-	if (world_mask & 1) == 0:
-		mapping.append("the mirror tier cannot see the goat it exists to reflect")
-	if (world_mask & WaterReflect.LAYER_NOREFLECT) != 0:
-		mapping.append("the mirror tier sees what must not be in a reflection")
-	if (world_mask & WaterReflect.LAYER_WATER) != 0:
-		mapping.append("the mirror tier sees the surface that is doing the reflecting")
-	if sky_mask == ground_mask or ground_mask == world_mask or sky_mask == world_mask:
-		mapping.append("two tiers read the world through the same mask")
-	if WaterReflect.mode_of(WaterReflect.SKY) != ReflectionProbe.UPDATE_ONCE \
-			or WaterReflect.mode_of(WaterReflect.GROUND) != ReflectionProbe.UPDATE_ONCE \
-			or WaterReflect.mode_of(WaterReflect.MIRROR) != ReflectionProbe.UPDATE_ALWAYS:
-		mapping.append("the bake ladder is not once/once/always")
-	# ...and the other half of a probe: who *receives* the reflection. Only the surface may,
-	# because a probe reflects onto every instance in its box and the ground is one 96 m mesh.
-	if WaterReflect.REFLECT_TO != WaterReflect.LAYER_WATER:
-		mapping.append("something other than the surface receives the reflection")
-	if (WaterReflect.REFLECT_TO & (WaterReflect.LAYER_GROUND | 1)) != 0:
-		mapping.append("the reflection reaches the ground, which goes pale when it does")
-	print("mapping: sky %d, ground %d, mirror %d, reflects onto %d, %d problem(s)"
-		% [sky_mask, ground_mask, world_mask, WaterReflect.REFLECT_TO, mapping.size()])
-	for problem in mapping:
+	# 3. The budget each tier buys, and the shader's own ceiling. The ceiling is a `const`, so
+	#    no engine call reaches it -- it is read out of the source, and a budget the shader
+	#    would clip has to be caught here or nowhere.
+	var shader: Shader = load("res://src/water.gdshader")
+	var ceiling: int = _max_steps(shader.code)
+	var budget: Array[String] = []
+	if ceiling <= 0:
+		budget.append("the shader's MAX_STEPS could not be read (%d)" % ceiling)
+	for which in WaterReflect.NAMES.size():
+		if WaterReflect.steps_of(which) > ceiling:
+			budget.append("tier %s marches %d step(s), more than the shader's %d"
+				% [WaterReflect.tier_word(which), WaterReflect.steps_of(which), ceiling])
+	if WaterReflect.steps_of(WaterReflect.SKY) != 0 \
+			or WaterReflect.reach_of(WaterReflect.SKY) != 0.0:
+		budget.append("the sky tier marches something; it is meant to sample nothing at all")
+	if WaterReflect.steps_of(WaterReflect.MIRROR) <= WaterReflect.steps_of(WaterReflect.GROUND):
+		budget.append("the mirror does not march further than the ground")
+	if WaterReflect.reach_of(WaterReflect.MIRROR) <= WaterReflect.reach_of(WaterReflect.GROUND):
+		budget.append("the mirror does not reach further than the ground")
+	if WaterReflect.reach_of(WaterReflect.GROUND) <= 0.0:
+		budget.append("the ground tier reaches nowhere")
+	print("budget: ceiling %d, sky %d/%.1f, ground %d/%.1f, mirror %d/%.1f, %d problem(s)"
+		% [ceiling, WaterReflect.steps_of(0), WaterReflect.reach_of(0),
+			WaterReflect.steps_of(1), WaterReflect.reach_of(1),
+			WaterReflect.steps_of(2), WaterReflect.reach_of(2), budget.size()])
+	for problem in budget:
 		print("  ", problem)
 
-	# 4. The wiring: a probe in a tree takes the tier the promise makes, with the mask and the
-	#    cadence that tier is. The mirror is only reachable by claiming the window, because a
-	#    headless build has none -- which is the degrade the gate asserts first.
-	var probe := WaterReflect.new()
-	root.add_child(probe)
-	var wiring_mismatches := 0
-	var first_wiring := ""
-	# The two capabilities, taken from the *build* rather than from the probe's own accessors:
-	# a promise checked against the predicate it was built from cannot fail.
+	# 4. The plumbing: the surface's shader must *declare* the names the tier is pushed under
+	#    (a misspelling is silent on both sides), and `apply` must land the tier and its budget
+	#    on the material.
+	var declared: PackedStringArray = []
+	for uniform: Dictionary in shader.get_shader_uniform_list():
+		declared.append(String(uniform["name"]))
+	var missing: Array[String] = []
+	for needed in ["water_reflect", "water_steps", "water_reach"]:
+		if not declared.has(needed):
+			missing.append(needed)
+	print("declared: ", ", ".join(declared))
+	if not missing.is_empty():
+		print("  missing: ", ", ".join(missing))
+
+	var surface := WaterMesh.new()
+	surface.build(_flat_heights(), Vector2(0.0, 0.0))
+	var reflect := WaterReflect.new()
 	var headless: bool = DisplayServer.get_name() == "headless"
-	print("display server: ", DisplayServer.get_name(), ", can ground: ",
-		probe.can_ground(), ", can mirror: ", probe.can_mirror())
-	if not probe.can_ground():
-		wiring_mismatches += 1
-		first_wiring = "a probe in a live tree says it has nowhere to bake"
-	if probe.can_mirror() == headless:
-		wiring_mismatches += 1
-		first_wiring = "the mirror's own capability does not follow the renderer"
+	var landing := 0
+	var first_landing := ""
 	for wish in [0.0, 1.0, 2.0]:
-		probe.set_wish(wish)
-		var wanted: int = WaterReflect.promise(wish, true, not headless)
-		if probe.tier() != wanted:
-			wiring_mismatches += 1
-			if first_wiring == "":
-				first_wiring = "wish %.1f: tier %d, want %d" % [wish, probe.tier(), wanted]
-		if probe.cull_mask != WaterReflect.mask_of(wanted):
-			wiring_mismatches += 1
-			if first_wiring == "":
-				first_wiring = "wish %.1f: mask %d, want %d" % [
-					wish, probe.cull_mask, WaterReflect.mask_of(wanted)]
-		if probe.update_mode != WaterReflect.mode_of(wanted):
-			wiring_mismatches += 1
-			if first_wiring == "":
-				first_wiring = "wish %.1f: mode %d, want %d" % [
-					wish, probe.update_mode, WaterReflect.mode_of(wanted)]
-		if probe.reflection_mask != WaterReflect.REFLECT_TO:
-			wiring_mismatches += 1
-			if first_wiring == "":
-				first_wiring = "wish %.1f: reflects onto %d, want %d" % [
-					wish, probe.reflection_mask, WaterReflect.REFLECT_TO]
-		if int(probe.report()["reflect"]) != roundi(wish):
-			wiring_mismatches += 1
-			if first_wiring == "":
-				first_wiring = "wish %.1f: the report says %d" % [
-					wish, int(probe.report()["reflect"])]
-	print("wiring: %d wish(es), %d mismatch(es)" % [3, wiring_mismatches])
-	if first_wiring != "":
-		print("  first: ", first_wiring)
+		reflect.set_wish(wish)
+		reflect.apply(surface)
+		var want: int = WaterReflect.promise(wish, not headless, not headless)
+		var material: ShaderMaterial = surface.material_override
+		if material == null:
+			landing += 1
+			first_landing = "the surface has no material to land on"
+			continue
+		if int(material.get_shader_parameter("water_reflect")) != want:
+			landing += 1
+			if first_landing == "":
+				first_landing = "wish %.1f: the material says tier %d, want %d" % [
+					wish, int(material.get_shader_parameter("water_reflect")), want]
+		if int(material.get_shader_parameter("water_steps")) != WaterReflect.steps_of(want):
+			landing += 1
+			if first_landing == "":
+				first_landing = "wish %.1f: the material marches %d step(s), want %d" % [
+					wish, int(material.get_shader_parameter("water_steps")),
+					WaterReflect.steps_of(want)]
+		if float(material.get_shader_parameter("water_reach")) != WaterReflect.reach_of(want):
+			landing += 1
+			if first_landing == "":
+				first_landing = "wish %.1f: the material reaches %.1f m, want %.1f" % [
+					wish, float(material.get_shader_parameter("water_reach")),
+					WaterReflect.reach_of(want)]
+	print("landing: 3 wish(es), %d mismatch(es)" % landing)
+	if first_landing != "":
+		print("  first: ", first_landing)
 
-	# 5. The mirror, claimed. `--headless` cannot have it, so the gate says it does -- the
-	#    only way to exercise the one tier whose wiring a headless run would never reach.
-	probe.mirror_capable = true
-	probe.set_wish(2.0)
-	var mirror_ok := probe.tier() == WaterReflect.MIRROR \
-		and probe.cull_mask == WaterReflect.MASK_WORLD \
-		and probe.update_mode == ReflectionProbe.UPDATE_ALWAYS
-	print("mirror claimed: tier %d, mask %d, mode %d (want %d, %d, %d)"
-		% [probe.tier(), probe.cull_mask, probe.update_mode,
-			WaterReflect.MIRROR, WaterReflect.MASK_WORLD, ReflectionProbe.UPDATE_ALWAYS])
-
-	# 6. The bake counters: the promise is a *bake*, and a probe that never re-baked would
-	#    look identical from the outside. `set_wish` bakes; a frame short of `REFRESH` does
-	#    not; `REFRESH` does; a moved ground does at once; and the mirror never does -- it is
-	#    a submission a frame already.
-	probe.set_wish(1.0)
-	var base: int = probe.bakes
-	probe.refresh(WaterReflect.REFRESH * 0.4, false)
-	var quiet: int = probe.bakes
-	probe.refresh(WaterReflect.REFRESH, false)
-	var cadence: int = probe.bakes
-	probe.refresh(0.0, true)
-	var ground: int = probe.bakes
-	# ...and the mirror never bakes on a cadence: it is a submission a frame already.
-	probe.mirror_capable = true
-	probe.set_wish(2.0)
-	var before: int = probe.bakes
-	probe.refresh(WaterReflect.REFRESH * 4.0, false)
-	probe.refresh(0.0, true)
-	var after: int = probe.bakes
-	print("bakes: set %d, quiet %d, cadence %d, ground %d; mirror %d -> %d"
-		% [base, quiet, cadence, ground, before, after])
-
-	# 7. Edges: a probe with no tree to be in is the scene's build-without-the-bindings, and
-	#    it degrades to the sky rather than drawing nothing.
-	var loose := WaterReflect.new()
-	var loose_ok := not loose.can_ground() and not loose.can_mirror()
+	# 5. The degrade: the promise falls a tier rather than drawing nothing, and the port's half
+	#    of it is a *frame* -- a screen-space march needs one, so `--headless` answers sky
+	#    however the leaf is set.
+	var degrade_mismatches := 0
+	var first_degrade := ""
+	print("display server: ", DisplayServer.get_name(), ", can march: ", reflect.can_ground())
+	if reflect.can_ground() != (not headless):
+		degrade_mismatches += 1
+		first_degrade = "the ability to march does not follow the renderer"
 	for wish in [0.0, 1.0, 2.0]:
-		loose.set_wish(wish)
-		if loose.tier() != WaterReflect.SKY:
-			loose_ok = false
-	print("no tree: quiet %s" % ["ok" if loose_ok else "WRONG"])
-	loose.free()
-	probe.free()
+		reflect.set_wish(wish)
+		var want: int = WaterReflect.promise(wish, not headless, not headless)
+		if reflect.tier() != want:
+			degrade_mismatches += 1
+			if first_degrade == "":
+				first_degrade = "wish %.1f: tier %d, want %d" % [wish, reflect.tier(), want]
+	var report: Dictionary = reflect.report()
+	if int(report["reflect"]) != roundi(reflect.wish) or int(report["tier"]) != reflect.tier() \
+			or int(report["steps"]) != WaterReflect.steps_of(reflect.tier()) \
+			or float(report["reach"]) != WaterReflect.reach_of(reflect.tier()):
+		degrade_mismatches += 1
+		if first_degrade == "":
+			first_degrade = "the report does not agree with the tier it reports"
+	print("degrade: 3 wish(es), %d mismatch(es)" % degrade_mismatches)
+	if first_degrade != "":
+		print("  first: ", first_degrade)
+
+	# 6. Edges: a word the scene does not know is not a tier, and a leaf past the clamp is
+	#    stored clamped rather than rounded.
+	var edge_ok := WaterReflect.word_tier("") == -1 and WaterReflect.word_tier("nope") == -1 \
+		and WaterReflect.tier_word(-1) == "" and WaterReflect.tier_word(3) == "" \
+		and WaterReflect.clamp_wish(-5.0) == 0.0 and WaterReflect.clamp_wish(9.0) == 2.0
+	print("edges: ", "ok" if edge_ok else "WRONG")
 
 	host.free()
 
@@ -309,29 +278,41 @@ func _run() -> void:
 			% [rule_mismatches, compared])
 	if word_mismatches != 0:
 		failures.append("the setting's words are not the scene's: %d place(s)" % word_mismatches)
-	if not mapping.is_empty():
-		failures.append("the tiers do not map onto the probe the way they are meant to")
-	if wiring_mismatches != 0:
-		failures.append("a probe in a tree does not take the tier it promises: %d place(s)"
-			% wiring_mismatches)
-	if not mirror_ok:
-		failures.append("the claimed mirror tier does not wire the probe the mirror way")
-	if quiet != base:
-		failures.append("a frame short of `REFRESH` baked")
-	if cadence != quiet + 1:
-		failures.append("`REFRESH` seconds did not bake")
-	if ground != cadence + 1:
-		failures.append("a moved ground did not bake")
-	if after != before:
-		failures.append("the mirror tier baked on a cadence it does not have")
-	if not loose_ok:
-		failures.append("a probe with no tree answered as if it had one")
+	if not budget.is_empty():
+		failures.append("the tiers' own budget is not the one they are meant to have")
+	if not missing.is_empty():
+		failures.append("the shader does not declare: %s" % ", ".join(missing))
+	if landing != 0:
+		failures.append("the tier does not reach the surface's material: %d place(s)" % landing)
+	if degrade_mismatches != 0:
+		failures.append("the promise is not the one the build can keep: %d place(s)"
+			% degrade_mismatches)
+	if not edge_ok:
+		failures.append("a word or a leaf outside the setting's range did not answer quietly")
 
 	if failures.is_empty():
-		print("OK: the port's reflection tiers are the scene's, on the engine's own probe")
+		print("OK: the port's reflection tiers are the scene's, on the port's own march")
 		quit(0)
 	else:
 		# `print`, not `printerr`: a non-zero `quit()` truncates stderr before it flushes.
 		for f in failures:
 			print("FAIL: ", f)
 		quit(1)
+
+## The march's ceiling, out of the shader's own source: it is a `const`, so no engine call can
+## reach it, and a budget the shader would silently clip has to be caught here or nowhere.
+func _max_steps(code: String) -> int:
+	var pattern := RegEx.new()
+	if pattern.compile("const\\s+int\\s+MAX_STEPS\\s*=\\s*(\\d+)") != OK:
+		return -1
+	var found: RegExMatch = pattern.search(code)
+	if found == null:
+		return -1
+	return int(found.get_string(1))
+
+## Level ground, so every quad of the surface survives `build`'s cut and the material is made.
+func _flat_heights() -> PackedFloat64Array:
+	var heights := PackedFloat64Array()
+	heights.resize(Water.N * Water.N)
+	heights.fill(FLAT)
+	return heights

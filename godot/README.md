@@ -35,7 +35,7 @@ plan.
 | `src/water_mesh.gd` | The water's surface as an `ArrayMesh`: the grid's ground, cut to the quads that can ever be wet |
 | `src/water.gdshader` | The surface, drawn: `WATER_VS`'s vertex lift, `WATER_FS`'s absorption, `WATER_FS`'s chop and `WATER_FS`'s wake, under Godot's own light and reflection |
 | `src/water_splash.gd` | The splashes, drawn: `water.js`'s pooled drops off a fixed `SPLASH_MAX` slot table, as one `MultiMeshInstance3D` |
-| `src/water_reflect.gd` | The reflection, aimed: `water.js`'s three tiers as a `ReflectionProbe` — what a tier *sees* (`cull_mask`) and what it *costs* (`update_mode`) |
+| `src/water_reflect.gd` | The reflection: `water.js`'s three tiers, and the step budget each one buys the screen-space march in `water.gdshader` |
 | `tools/` | Headless verification scripts, and `interop.sh` |
 
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
@@ -152,7 +152,7 @@ Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
     --script res://tools/verify_water_wake.gd
 
 # The reflection: the leaf and its clamp, the wish/promise a build keeps, the setting's own
-# words, and the mask and bake-ladder each tier wires into Godot's probe.
+# words, the step budget each tier buys, and that the tier reaches the surface's material.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_water_reflect.gd
 ```
@@ -208,8 +208,8 @@ scene's celestial shader, the rain is a `Control` drawing the scene's own streak
 the water is a `spatial` shader carrying the scene's vertex lift, its absorption, its
 chop and its wake under Godot's own light and reflection — the rings are three `vec4`
 uniforms and the splashes are a `MultiMeshInstance3D` (`water_splash.gd`), a deep pool
-thins the meadow where it hides it (`grass.gd`), and the reflection itself is a
-`ReflectionProbe` whose three tiers `water_reflect.gd` aims (M20e).
+thins the meadow where it hides it (`grass.gd`), and the reflection is the port's **own
+screen-space march**, because Godot's does not reach a transparent surface (M20e).
 And the HUD is one `Label` rather than the scene's bars, action menu and console: the
 words are the scene's, the layout is stage 6.
 
@@ -218,9 +218,10 @@ clock, `GOATS_CLOUD` the cloudiness and `GOATS_FLOOD` the water's level — the 
 those is `water.js`'s own `flood <h>` console verb, and it is the only way to *see* a
 pool, because a downpour floods the hollows and nothing else, and with `GOATS_CAM` aimed
 the same flood is the only way to *see* a wake follow the goat. `GOATS_REFLECT=sky|ground|mirror`
-is the water's reflection (`setting reflect`'s own words, M20e): the default `ground`
-reads the terrain into the surface, `sky` is what shipped before and `mirror` adds the
-goats. `GOATS_WEATHER` pins the
+is the water's reflection (`setting reflect`'s own words, M20e): the default `ground` marches
+the frame a short way, so the near shore lands in the surface; `sky` marches nothing and
+stands on the sky alone, which is what shipped before M20e; and `mirror` marches three times
+as far. `GOATS_WEATHER` pins the
 state machine's *state*, which is what a downpour needs — the rain is drawn and not
 measured, so only a picture can judge it; `GOATS_CAM=yaw,pitch[,dist]` aims the camera,
 which is the only way to photograph the two bodies, because they sit on the light's line

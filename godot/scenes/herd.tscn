@@ -1,4 +1,4 @@
-[gd_scene load_steps=16 format=3]
+[gd_scene load_steps=15 format=3]
 
 [ext_resource type="Script" path="res://src/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/herd.gd" id="2_herd"]
@@ -12,7 +12,6 @@
 [ext_resource type="Script" path="res://src/water_mesh.gd" id="10_water"]
 [ext_resource type="Script" path="res://src/bots.gd" id="11_bots"]
 [ext_resource type="Script" path="res://src/water_splash.gd" id="12_splash"]
-[ext_resource type="Script" path="res://src/water_reflect.gd" id="13_reflect"]
 
 [sub_resource type="Sky" id="Sky_1"]
 
@@ -42,10 +41,6 @@ script = ExtResource("3_terrain")
 
 [node name="Water" type="MeshInstance3D" parent="."]
 script = ExtResource("10_water")
-
-[node name="Reflect" type="ReflectionProbe" parent="."]
-size = Vector3(40, 16, 40)
-script = ExtResource("13_reflect")
 
 [node name="Splash" type="MultiMeshInstance3D" parent="."]
 script = ExtResource("12_splash")

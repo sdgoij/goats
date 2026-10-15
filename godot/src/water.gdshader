@@ -25,14 +25,25 @@
 //
 // Everything `WATER_FS` spent its last third on is Godot's, exactly as the ground's
 // lighting is: the sun, the ambient and the shadow map are the engine's, and the
-// reflection is the *environment's* -- a `ReflectionProbe` whose three tiers are
-// `water_reflect.gd` (M20e), so what this surface samples is chosen by the setting and
-// culled by a layer mask rather than by a branch here. This is a dielectric with
-// `SPECULAR` set so that F0 is the scene's own `waterFresnel` -- Godot's 0.5 is F0 0.04,
-// so 0.02 is a quarter of it -- which means the engine's Schlick term does the fresnel
-// the scene mixed by hand. The colours are *not* `source_color`, for the reason section 9
-// gives about the ground: the scene authored them in display space and the port hands
-// them over as they are.
+// reflection is the *environment's* -- the engine's specular reflection of the sky, whose
+// fresnel is the scene's own `waterFresnel` (Godot's 0.5 is F0 0.04, so 0.02 is a quarter
+// of it). The colours are *not* `source_color`, for the reason section 9 gives about the
+// ground: the scene authored them in display space and the port hands them over as they
+// are.
+//
+// The reflection itself (M20e) is the port's own *screen-space* one, and it is here rather
+// than in the engine for a measured reason: Godot's `ssr_enabled` is computed from the
+// **opaque** pass and does not reach an alpha-blended surface -- toggling it moves a frame by
+// 0.000064 with this water transparent and by 0.003081 with it temporarily opaque, a 48x
+// difference, so the pass has nothing to apply its result to. The port therefore marches the
+// reflected ray itself against Godot's own frame (`hint_screen_texture`, `hint_depth_texture`),
+// which is also the scene's tier-2 mechanism -- a read-back at the fragment's own screen
+// position -- and which works on a transparent surface because it is only shader arithmetic.
+// `WATER_FS` is transcribed where it can be: the fresnel, the reflected direction, and
+// `color = mix(color, sky, fres)`. What the scene seeds `sky` with is the engine's specular
+// reflection of the sky, and the march **replaces** it wherever it finds the ground, exactly
+// as the scene's tier 1 replaced its sky with a `groundReflect` hit. Tier 0 never marches, so
+// the surface is what M20b-M20d shipped.
 //
 // Not here, and its own slice in the ROADMAP: swimming (M20g). The *drops* a splash throws
 // are not here either, and for a different reason: `water_splash.gd` draws them, because a
@@ -61,6 +72,32 @@ uniform vec3 water_wind = vec3(1.0, 0.0, 0.2);
 uniform vec4 water_ripple0 = vec4(0.0);
 uniform vec4 water_ripple1 = vec4(0.0);
 uniform vec4 water_ripple2 = vec4(0.0);
+
+// The reflection (M20e): the tier (`water.js`'s `waterReflect`), the march's own budget -- its
+// step count and its reach in metres -- and the frame it reads. `water_reflect` is 0 for the
+// sky alone (no march at all), 1 for the ground and 2 for the mirror, and the two are the same
+// march with different budgets: the scene's tier 1 and tier 2 differ in *what* they read
+// rather than in how far, but a screen-space reflection can only read further, so the port's
+// ladder is the cost one the setting exists to be a lever over.
+uniform int water_reflect = 1;
+uniform int water_steps = 12;
+uniform float water_reach = 24.0;
+// The frame as the engine has already drawn it: the opaque pass's colour, and its depth. A
+// transparent surface is not in either, which is the point -- the reflection is of what is
+// *behind* the water, not of the water.
+uniform sampler2D frame_color : hint_screen_texture, repeat_disable, filter_linear;
+uniform sampler2D frame_depth : hint_depth_texture, repeat_disable, filter_nearest;
+
+// The camera's own projection, pushed once a frame and needed because a **spatial fragment
+// shader cannot see `PROJECTION_MATRIX`** -- it is a vertex-stage built-in, and the march's
+// whole job is to project a ray point from the fragment stage. `INV_PROJECTION_MATRIX`,
+// `VIEW_MATRIX` and `CAMERA_POSITION_WORLD` are all fragment-visible; the forward half is not,
+// so Godot's `Camera3D.get_camera_projection()` is handed over rather than reconstructed.
+uniform mat4 water_projection = mat4(1.0);
+
+// The march's own ceiling, as a compile-time constant because a loop's bound has to be one.
+// `water_steps` chooses how many of these a frame actually takes.
+const int MAX_STEPS = 24;
 
 // `WATER_VS`'s `fragDepth`: the water standing on this vertex, which the tint and the
 // alpha are both read from.
@@ -118,6 +155,12 @@ vec3 water_normal(vec2 p, float depth) {
 	return normalize(vec3(-grad.x * amp, 1.0, -grad.y * amp));
 }
 
+// The reflection's march lives *inside* `fragment` rather than in a helper here, and that is a
+// rule of the shader language rather than a style choice: **a stage's built-ins are scoped to
+// its own stage function**, so a file-scope helper cannot see `VIEW_MATRIX` or
+// `INV_PROJECTION_MATRIX` -- it compiles to "unknown identifier". `water_normal` above is free
+// to be a function because it reads only uniforms.
+
 void fragment() {
 	// `WATER_FS`'s `shore`: the share of the shore band the water's own depth fills.
 	float shore = clamp(water_depth / max(water_shore, 1e-4), 0.0, 1.0);
@@ -129,10 +172,47 @@ void fragment() {
 	// the view, the light and the reflection against it, and a Godot fragment's `NORMAL`
 	// is that same normal in *view* space -- which is the only difference between the two
 	// lines.
-	NORMAL = normalize((VIEW_MATRIX * vec4(water_normal(water_world.xz, water_depth),
-		0.0)).xyz);
+	vec3 n_world = water_normal(water_world.xz, water_depth);
+	NORMAL = normalize((VIEW_MATRIX * vec4(n_world, 0.0)).xyz);
 	// A sheet of water is a mirror at grazing angles and nearly clear from above, which
 	// Godot says with F0 and a sharp lobe.
 	SPECULAR = 0.5 * (water_fresnel / 0.04);
 	ROUGHNESS = 0.08;
+	// The reflection (M20e), and `WATER_FS`'s own three lines: the fresnel, the reflected
+	// direction, and the mix. The engine's specular is what the scene seeded `sky` with -- the
+	// sky at the hour -- and the march *replaces* it wherever it finds the ground, so a ray
+	// that meets nothing leaves the sky exactly as the scene's own did.
+	//
+	// The march is `WATER_FS`'s `groundReflect` with the frame in place of the bake: a step is a
+	// fixed slice of the ray's reach, the ray is projected to its own screen position, the
+	// frame's depth there is turned back into a view-space point, and the ray has met the ground
+	// when it has gone *behind* that point -- view space looks down `-Z`, so "behind" is the
+	// more negative `z`. A ray that leaves the screen, or that points at sky the pass never
+	// drew, meets nothing and the sky stands, which is the scene's own rule for a ray that
+	// leaves the field.
+	vec3 view_dir = normalize(CAMERA_POSITION_WORLD - water_world);
+	float ndv = max(dot(n_world, view_dir), 0.0);
+	float fres = water_fresnel + (1.0 - water_fresnel) * pow(1.0 - ndv, 5.0);
+	vec3 refl = reflect(-view_dir, n_world);
+	if (water_reflect >= 1 && refl.y > 0.01) {
+		float slice = water_reach / float(MAX_STEPS);
+		vec3 p = water_world;
+		for (int i = 0; i < MAX_STEPS; i++) {
+			if (i >= water_steps) break;
+			p += refl * slice;
+			vec4 clip = water_projection * (VIEW_MATRIX * vec4(p, 1.0));
+			if (clip.w <= 0.0) break;
+			vec2 uv = (clip.xy / clip.w) * 0.5 + 0.5;
+			if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+			vec4 into = INV_PROJECTION_MATRIX
+				* vec4(uv * 2.0 - 1.0, texture(frame_depth, uv).r, 1.0);
+			into.xyz /= into.w;
+			// A hair of slack, so the ray is not caught by the very surface it left: at a
+			// grazing angle one pixel of the depth buffer is metres of ground.
+			if ((VIEW_MATRIX * vec4(p, 1.0)).z < into.z - 0.05) {
+				ALBEDO = mix(ALBEDO, texture(frame_color, uv).rgb, fres);
+				break;
+			}
+		}
+	}
 }

@@ -66,7 +66,6 @@ const PROBE_RELIEF := 0.05
 @onready var water_surface: WaterMesh = $Water
 ## The splashes the water throws, drawn as their own node (`water_splash.gd`, M20d).
 @onready var water_splash: WaterSplash = $Splash
-@onready var water_reflect: WaterReflect = $Reflect
 @onready var grass: Grass = $Grass
 @onready var explosions: Explosions = $Explosions
 @onready var celestial: Celestial = $Celestial
@@ -117,6 +116,11 @@ var water := Water.new()
 ## The grid's build count the water was last rebuilt at, which is how a rebuild is told
 ## from a no-op without the water reaching into the mesh.
 var _terrain_builds := -1
+
+## The water's reflection (M20e): the setting's leaf and the promise, and the march the surface
+## runs for it (`water_reflect.gd`). It is a plain object rather than a node -- what it drives
+## is the surface's material, and what decides the tier is a leaf, not a place in the world.
+var water_reflect := WaterReflect.new()
 
 ## A bite's device test, built once and handed to the goat every frame: `food.js`
 ## `startEat` asks whether the tuft it just ate was trapped, and `explosions.gd` is what
@@ -219,23 +223,15 @@ func _ready() -> void:
 	# told once; neither follows the grid.
 	grass.water = water
 	water_splash.water = water
-	# The reflection (M20e) is a probe, and its tier is a *mask*: the ground is on a layer of
-	# its own so `cull_mask` can say "the ground, and not the goat" (tier 1), and the meadow
-	# and the drops are on another so it can say "everything but those" (tier 2). The surface
-	# is on a third, because it is the one node that *receives* the reflection and because a
-	# reflection must not contain the thing that reflects. The two outer masks are built
-	# against layer 1, which everything else keeps.
-	terrain.layers = WaterReflect.LAYER_GROUND
-	water_surface.layers = WaterReflect.LAYER_WATER
-	grass.layers = WaterReflect.LAYER_NOREFLECT
-	water_splash.layers = WaterReflect.LAYER_NOREFLECT
-	# The tier is the console's (`setting reflect`) once there is one; until then it is the
-	# staging knob, and a word the scene does not know leaves the leaf where it is.
+	# The reflection (M20e): the tier is the console's (`setting reflect`) once there is one;
+	# until then it is the staging knob, and a word the scene does not know leaves the leaf
+	# where it is. The surface is told which march to run, and that is the whole of it -- there
+	# is no node to keep in step and no bake to re-arm.
 	var reflect_word: String = OS.get_environment("GOATS_REFLECT")
 	var reflect_tier: int = WaterReflect.word_tier(reflect_word)
 	if reflect_tier >= 0:
-		water_reflect.wish = float(reflect_tier)
-	water_reflect.apply()
+		water_reflect.set_wish(float(reflect_tier))
+	water_reflect.apply(water_surface)
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
@@ -362,19 +358,18 @@ func _process(delta: float) -> void:
 	# The water is the table over the grid, so it follows the grid: the scene rebuilds it
 	# wherever the terrain mesh is rebuilt (`waterRebuild`), and `rebuilds` is what says
 	# one happened. The grid is *read*, never written, so it must be taken again after a
-	# rebuild rather than held.
-	var ground_changed := false
+	# rebuild rather than held. The reflection needs nothing here: it marches what the frame
+	# has already drawn, so a rebuilt ground is simply the next frame's ground.
 	if terrain.rebuilds != _terrain_builds:
 		_terrain_builds = terrain.rebuilds
 		water.rebuild(terrain.heights(), terrain.anchor())
 		water_surface.build(terrain.heights(), terrain.anchor())
-		ground_changed = true
-	# The reflection's own bake (M20e): a probe frozen in `UPDATE_ONCE` is re-armed with the
-	# ground it is a function of, and on a slow cadence besides, because the same cubemap
-	# carries the sky and a sky an hour old is a visible thing.
-	water_reflect.refresh(delta, ground_changed)
 	var camera := $Camera3D as Camera3D
 	_place_camera(camera)
+	# The reflection's march projects its own ray points, and a spatial *fragment* shader cannot
+	# see `PROJECTION_MATRIX` -- so the camera's own is handed over, once a frame (it changes
+	# only when the field of view or the window does, and it is four rows either way).
+	water_surface.set_projection(camera.get_camera_projection())
 	_advance(delta, camera.global_position)
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
 	water_splash.update()
@@ -583,9 +578,6 @@ func _advance(delta: float, camera: Vector3) -> void:
 	_sky_light = float(SkyDome.sample(_hours)["light"])
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,
 		_sky_light, _cloudiness, _wind_x, _wind_z, _sky_time)
-	# ...and the reflection's ambient, which is the same grade: a probe overrides the
-	# environment's ambient inside its own box (M20e).
-	water_reflect.set_ambient(world_environment.environment.ambient_light_color)
 
 ## This frame's weather, in the shape the goat and the HUD read it: the session's own
 ## snapshot in a session, and the local machine's values offline. It is the same

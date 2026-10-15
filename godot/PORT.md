@@ -608,27 +608,38 @@ OK: the GDScript wake is the scene's wake, and it throws what the scene throws
 
 The tape walks out of the bowl, stands, hops, then spends **eighteen dry frames** with the pool gone and re-enters -- so the no-water branch is exercised rather than assumed. The 5.86e-7 is the `value_hash`'s own floor seen through an angle (a drop's direction is a second `sin` of the hash, `sin` at arguments in the thousands), which is why the drops carry a tolerance four orders looser than the life's: the drop's *life* is pure arithmetic and is checked at 1e-9 with the counts. And `entry 1, re-entry 2` is the one claim in the gate that is the *port's* rather than a transcription: a pool that drains and comes back must lay a **second** entering ring, because `update()` clears the mark while the water is gone, so a goat standing exactly where it stood has, in effect, arrived again.
 
-**The reflection** (`verify_water_reflect.gd`): M20e, and the one part of the water that is mostly a *look*. The scene answers "what does the surface reflect" three ways -- the sky alone, the ground baked into a texture the fragment shader marches, and the world rendered mirrored about the table -- behind one clamped leaf, `TUNING.water.reflection`, with the **wish** the leaf holds and the **promise** the frame can keep told apart (`waterReflectTier`): no texture, no bake; no render texture, no mirror; else the sky. The port answers the same question with **Godot's own environment** rather than with the scene's bake and mirrored pass, and the mapping is exact where it can be. A `ReflectionProbe`'s background is the sky, so what a tier *sees* is `cull_mask` -- nothing, the ground, or the world -- and what it *costs* is `update_mode`: `UPDATE_ONCE` for the two static tiers and `UPDATE_ALWAYS` for the mirror, which is the scene's own ladder (one bake, no pass at all, and a pass a frame).
+**The reflection** (`verify_water_reflect.gd`): M20e, and the one part of the water that is mostly a *look*. The scene answers "what does the surface reflect" three ways -- the sky alone, the ground baked into a texture the fragment shader marches, and the world rendered mirrored about the table -- behind one clamped leaf, `TUNING.water.reflection`, with the **wish** the leaf holds and the **promise** the frame can keep told apart (`waterReflectTier`): no texture, no bake; no render texture, no mirror; else the sky.
 
-The design's two exclusions *are* the two masks, and they are only expressible because the ground and the things that must not be in a reflection sit on layers of their own: **tier 1 is the ground and not the goat** (the scene's bake has no goat in it) and **tier 2 is everything but the meadow** (a tuft is two cubes of noise in a reflection, and the grass is the frame's largest phase) -- and, for a reason the scene never had to state, not the surface either, since a reflection that contained the reflector would reflect itself. `reflection_mask` is the probe's other half: it reflects onto the surface's layer alone, because a probe reflects onto every instance in its box and the ground is a single 96 m mesh.
+The port answers it with **its own screen-space march**, written into `water.gdshader`, and that is a measurement rather than a preference: **Godot's `ssr_enabled` is computed from the opaque pass and does not reach an alpha-blended surface at all.** Toggling it moves a frame by 0.000064 with this water transparent and by 0.003081 with it temporarily opaque, a 48x difference -- the pass has nothing to apply its result to -- and the water has to be transparent, because the shore fade and the submerged ground are M20b's. The march is also the scene's own tier-2 mechanism turned around: `WATER_FS` read the *mirrored* pass back at the fragment's own screen position, and this reads the *frame* back along the reflected ray.
+
+`WATER_FS` is transcribed where it can be -- the fresnel, the reflected direction, and `color = mix(color, sky, fres)`. What the scene seeded `sky` with is the engine's specular reflection of the sky, and the march **replaces** it wherever it finds the ground, exactly as the scene's tier 1 replaced its sky with a `groundReflect` hit. What a tier buys is the **march's budget**, because a screen-space march can only differ in how far it goes, and the setting is a cost lever:
+
+```
+tier     steps  reach
+sky          0     0 m  (no march: the engine's own sky, which is what shipped)
+ground      12    12 m  (the near shore, which is what a grazing view sees)
+mirror      24    48 m  (the same march, three times as far)
+```
+
+Three things in the gate are worth the space. The **rule is transcribed exactly**: the leaf's clamp over twelve leaves (a number in 0..2 and *not* rounded -- `tuningCoerce` clamps and `waterReflectTier` rounds), the promise over all 48 combinations of leaf x ground x mirror, and the three words `setting reflect` spells. The **budget is the port's own invention**, so it is asserted as the properties it is meant to have (the sky marches nothing at all; the mirror is deeper than the ground on both counts) *and* against the shader's own ceiling, which is a `const` no engine call can reach and is therefore read out of the source. And the **plumbing** is checked the only way a name can be: the shader must *declare* `water_reflect`, `water_steps` and `water_reach`, because a misspelling is silent on both sides.
 
 ```
 oracle answered 12 leaf/leaves, 48 tier(s), 5 word(s)
 clamp: 12 leaf/leaves, 0 mismatch(es)
 promise: 48 value(s) over 12 leaf/leaves x ground x mirror, 0 mismatch(es)
 words: 5, 0 mismatch(es)
-mapping: sky 0, ground 16, mirror 1048479, reflects onto 32, 0 problem(s)
-display server: headless, can ground: true, can mirror: false
-wiring: 3 wish(es), 0 mismatch(es)
-mirror claimed: tier 2, mask 1048479, mode 1 (want 2, 1048479, 1)
-bakes: set 6, quiet 6, cadence 7, ground 8; mirror 9 -> 9
-no tree: quiet ok
-OK: the port's reflection tiers are the scene's, on the engine's own probe
+budget: ceiling 24, sky 0/0.0, ground 12/12.0, mirror 24/48.0, 0 problem(s)
+declared: water_level, ..., water_reflect, water_steps, water_reach, water_projection
+landing: 3 wish(es), 0 mismatch(es)
+display server: headless, can march: false
+degrade: 3 wish(es), 0 mismatch(es)
+edges: ok
+OK: the port's reflection tiers are the scene's, on the port's own march
 ```
 
-Three things in it are worth the space. The **promise degrades a tier rather than drawing nothing**, and the port's half of it is the engine's: a probe needs a tree to be in (no probe at all is the scene's build-without-the-bindings, and it answers `sky`), and the mirror needs a *renderer* to bake from a frame, which is the port's `waterMirrorOK` -- Godot has the bindings the scene had to check for, so what is left is the window, and `--headless` has none. That is why the gate runs its checks on the first `_process` frame rather than in `_initialize`: `SceneTree.root` is **not inside the tree yet** while `_initialize` runs, and the whole of the port's half of the promise is a probe that knows where it is. The **bake cadence** is a port number with a reason: a `ReflectionProbe` in `UPDATE_ONCE` re-bakes when its *transform* moves and not when the ground under it changes (Godot says so, and it is why a probe carries moving geometry by being *moved*), so the port's re-bake is a tenth-millimetre nudge and this node owns when it happens -- with the ground, and on `REFRESH` seconds, because the same cubemap carries the *sky* and the scene's tier 1 has a live sky over a frozen ground only because its bake holds nothing but the ground. And the **mirror never bakes on that cadence at all**: `UPDATE_ALWAYS` is already a submission a frame.
+The **promise degrades a tier rather than drawing nothing**, and the port's half of it is the engine's: a screen-space march needs a *frame*, so `--headless` has none and answers `sky` however the leaf is set. That is the port's `waterMirrorOK` -- "the bindings and a window to size its target to", with Godot's bindings always present and only the window left to ask about.
 
-What a picture adds is the only thing a gate cannot: that the three tiers are three *different* looks, in the right order. Measured as the mean absolute pixel difference from the same frame with no probe at all, `sky` is 0.000245, `ground` 0.000794 and `mirror` 0.002060 -- small, ordered, and with `sky` within a fifth of a thousandth of the look that shipped before M20e, which is exactly what tier 0 is *for*. What is left for the eye is the same gap M20b shipped with, and one finding the pictures produced is section 9's.
+What a picture adds is the only thing a case cannot, and its magnitude is worth stating honestly: measured as the mean absolute pixel difference from the same frame, `ground` differs from `sky` by **0.004800** and `mirror` from `ground` by **0.001407**. The reflection is *subtle*, and that is physics rather than a bug -- a pool seen from above reflects the *sky*, and only a grazing view reflects the shore, which is where the ground shows as a dark band at the far waterline. The scene's tier 1 reflects the ground over the *whole* pool because its baked heightfield answers for rays pointing well above the horizon; the port's march does not, and the port is the one that is right about it.
 
 **The herd** (`verify_bots.gd`): `bots.gd` is the scene hosting itself. Seven goats with
 a temperament each -- `TUNING.herd.spec`'s coat colour, body scale, `bold` and `lazy` --
@@ -758,7 +769,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
 | Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` + `sky.gdshader`, and the two discs in `celestial.gd` |
 | Lighting + shadows | `game/lighting.js` | `DirectionalLight3D` + Godot's shadow atlas |
-| Water pools (level, chop, fresnel, wake, splashes, reflection) | `game/water.js` | **Done**: `water.gd` (the table, the wading and the wake) + `water_mesh.gd` + `water.gdshader` (the surface, the chop and the rings) + `water_splash.gd` (the drops) + `water_reflect.gd` (the three tiers on a `ReflectionProbe`) |
+| Water pools (level, chop, fresnel, wake, splashes, reflection) | `game/water.js` | **Done**: `water.gd` (the table, the wading and the wake) + `water_mesh.gd` + `water.gdshader` (the surface, the chop, the rings and the march) + `water_splash.gd` (the drops) + `water_reflect.gd` (the three tiers) |
 | Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
 | Bots (collision, temperaments, fleece) | `game/bots.js` | **Done**: `bots.gd`, the herd's own state machine, collision and coats -- real rigs, not the `MultiMesh` sketched here |
 | Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
@@ -897,7 +908,7 @@ Sizes are judgement, not measurement.
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree remains | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
-| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is Godot's own probe (M20e)** | 3–5 |
+| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own screen-space march (M20e)** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
@@ -1087,26 +1098,37 @@ above `HUD_MIN`, the rule that decides when a sleeper wakes -- and `submerged_at
 with the scene at 0 mismatch and part from each other in 7 of 520 probes; collapsing them
 into one would pass while checking neither, which is why the gate counts the
 disagreements and fails if there are none.
-- **A layer is a global number and nothing checks it is free.** The reflection's three tiers
-  are three `cull_mask`s, and the masks need the ground, the surface and the meadow on layers
-  of their own -- so the port picked three. The ground went to layer 2, which is *already the
-  moon's*:
-  `celestial.gd`'s `MOON_LAYER`, the layer the moon's own light is masked to. The collision
-  was silent and it was not subtle -- the terrain was suddenly lit by the moon's light as
-  well as the sun's, and the whole meadow went pale -- and it took four photographs to find,
-  because the first two things blamed (the probe's ambient, and the probe's reflection
-  reaching the ground) were each *disabled in turn* without changing the picture, and each
-  disabling was measured through the same broken layer. A throwaway that sets a node's layer
-  is not a valid test of the *other* change while the first is in place. All three layers now
-  start at 5 (5, 6 and 7), above anything the scene uses, and the reason is written down where
-  the numbers are.
-
-  The probe needed a second decision, and it is worth stating as a decision rather than as a
-  finding, because the photographs did not measure it: a `ReflectionProbe` reflects onto
-  *every* instance inside its box, and only the surface should receive -- so `reflection_mask`
-  names the surface's layer alone, and the probe's ambient is pinned in the frame loop to the
-  same flat grade the environment carries (`sky.gd`'s own), so the ground inside the box keeps
-  the lighting the scene gave it rather than the sky's captured ambient.
+- **A look can still be *measured* when it cannot be judged, and the measurement is what chose
+  the design.** Godot's `ssr_enabled` is the obvious answer to "a reflection of the scene", and
+  it is wrong here for a reason no amount of reading finds: it is computed from the **opaque**
+  pass, so a transparent material never sees it. Toggling it and photographing the same frame
+  twice is what says so -- a mean absolute difference of 0.000064 with this water transparent
+  against 0.003081 with it temporarily opaque, a 48x gap -- and the water *has* to be
+  transparent, because the shore fade and the submerged ground are M20b's. The port's own march
+  in the shader is the consequence, and it is checkable the same way: `ground` differs from
+  `sky` by 0.004800 and `mirror` from `ground` by 0.001407. Neither number says the reflection
+  *looks* good; they say the tiers are three different, ordered things, which is all a picture
+  can be asked once the rule itself is gated.
+- **A shader stage's built-ins are scoped to its stage function, and the fragment stage has no
+  `PROJECTION_MATRIX` at all.** The march has to project a ray point from a fragment, and the
+  first version put it in a file-scope helper -- where `VIEW_MATRIX`, `INV_PROJECTION_MATRIX`
+  and `PROJECTION_MATRIX` all came back *unknown identifier*, while the very same `VIEW_MATRIX`
+  compiled three lines below inside `fragment()`. Godot injects a stage's built-ins into the
+  stage *function*, not into the file, so `water_normal` above is free to be a function only
+  because it reads uniforms. Fixing the scope then exposed the second half: the fragment stage
+  genuinely has no `PROJECTION_MATRIX` (it is a vertex built-in), so the camera's own is pushed
+  as a uniform from `Camera3D.get_camera_projection()`. Both failures have the shape the
+  name-misspelling note below describes -- the shader language's silences are quiet -- and both
+  were found by the compiler rather than by reading, which the docs could not settle.
+- **A scaffolding mistake can look exactly like a rendering bug.** The change that put the
+  march in also dropped the `ReflectionProbe` this slice had before it, and one edit in that
+  batch stopped on a failed match: `main.gd` went on calling `water_reflect.refresh`, a method
+  the new object does not have. The frame that produced had a **black sky, no HUD and a camera
+  in the wrong place** -- every symptom of a broken renderer -- because `_process` aborts at
+  the error and the camera, the sky and the HUD are all set *after* it. The tell was that the
+  *same* frame came back with the previous shader restored: a bisect that moves the shader and
+  changes nothing has not found the shader. `interop.sh offline` greps for `SCRIPT ERROR` for
+  precisely this, and the run that confirmed it named the line.
 - **An oracle written from the port proves nothing, and it is the easiest mistake
   here to make.** Every gate in this project checks a transcription against the
   JavaScript the scene runs, and every one of them had to be *written from
