@@ -60,6 +60,7 @@ const PROBE_RELIEF := 0.05
 @onready var herd: Herd = $Herd
 @onready var goat: PlayerGoat = $Goat
 @onready var terrain: TerrainMesh = $Terrain
+@onready var water_surface: WaterMesh = $Water
 @onready var grass: Grass = $Grass
 @onready var explosions: Explosions = $Explosions
 @onready var celestial: Celestial = $Celestial
@@ -161,6 +162,10 @@ var _weather := {}
 ##                            bang and the hole it leaves can be *looked at* rather than
 ##                            measured. The one that changes the world rather than the
 ##                            view.
+##   `GOATS_FLOOD=<level>`    pin the water's level by hand, which is `water.js`'s own
+##                            `flood <h>` console verb. A downpour only floods the
+##                            hollows, so this is what makes a pool *visible* to a camera
+##                            and to a picture.
 var _forced_hour := -1.0
 var _forced_cloud := -1.0
 var _boom := false
@@ -195,6 +200,7 @@ func _ready() -> void:
 	# and again whenever the grid is rebuilt (below).
 	water.rebuild(terrain.heights(), terrain.anchor())
 	_terrain_builds = terrain.rebuilds
+	water_surface.build(terrain.heights(), terrain.anchor())
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
@@ -208,6 +214,9 @@ func _ready() -> void:
 	var forced_weather := OS.get_environment("GOATS_WEATHER")
 	if not forced_weather.is_empty():
 		weather.hold(forced_weather)
+	# An unset or unreadable `GOATS_FLOOD` is `NAN`, which `set_force` reads as "from the
+	# rain" -- so the knob costs nothing when it is not there.
+	water.set_force(_environment_float("GOATS_FLOOD", NAN))
 	var forced_cam := OS.get_environment("GOATS_CAM")
 	if not forced_cam.is_empty():
 		var parts: PackedStringArray = forced_cam.split(",")
@@ -301,6 +310,7 @@ func _process(delta: float) -> void:
 	if terrain.rebuilds != _terrain_builds:
 		_terrain_builds = terrain.rebuilds
 		water.rebuild(terrain.heights(), terrain.anchor())
+		water_surface.build(terrain.heights(), terrain.anchor())
 	var camera := $Camera3D as Camera3D
 	_place_camera(camera)
 	_advance(delta, camera.global_position)
@@ -491,6 +501,10 @@ func _advance(delta: float, camera: Vector3) -> void:
 	# table rises to the rain the instant it moves and drains over `TUNING.water.wetDown`,
 	# so a shower leaves standing water behind it.
 	water.step(delta, float(_weather_now().get("rain_amount", 0.0)))
+	# ...and the surface is told where the table ended up. It is one uniform, which is the
+	# whole reason the mesh carries the ground rather than the water: a rising pool costs
+	# this line and not a rebuild.
+	water_surface.set_level(water.level())
 
 	_sky_light = float(SkyDome.sample(_hours)["light"])
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,

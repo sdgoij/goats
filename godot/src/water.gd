@@ -222,6 +222,11 @@ func hud_text(x: float, z: float) -> String:
 	var slowed: int = int(round(DRAG * drag_fraction(x, z) * 100.0))
 	return "water %.2f m   slowed %d%%" % [depth, slowed]
 
+## The table's level this frame, which is what the surface is lifted to (`water.gdshader`)
+## and what `state` reports rounded.
+func level() -> float:
+	return _level
+
 ## The seam a console and a mod read, and the gate's own view of the field: the level,
 ## how much of it the table covers, where the deepest point is and how deep it is under
 ## the goat. It reports the numbers the frame uses rather than a second derivation of
