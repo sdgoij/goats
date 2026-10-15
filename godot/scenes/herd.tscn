@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=12 format=3]
 
 [ext_resource type="Script" path="res://src/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/herd.gd" id="2_herd"]
@@ -7,6 +7,8 @@
 [ext_resource type="Script" path="res://src/player_goat.gd" id="5_goat"]
 [ext_resource type="Script" path="res://src/hud.gd" id="6_hud"]
 [ext_resource type="Script" path="res://src/explosions.gd" id="7_explosions"]
+[ext_resource type="Script" path="res://src/celestial.gd" id="8_celestial"]
+[ext_resource type="Script" path="res://src/rain.gd" id="9_rain"]
 
 [sub_resource type="Sky" id="Sky_1"]
 
@@ -37,6 +39,9 @@ script = ExtResource("4_grass")
 [node name="Explosions" type="Node3D" parent="."]
 script = ExtResource("7_explosions")
 
+[node name="Celestial" type="Node3D" parent="."]
+script = ExtResource("8_celestial")
+
 [node name="Sun" type="DirectionalLight3D" parent="."]
 shadow_enabled = true
 
@@ -44,6 +49,9 @@ shadow_enabled = true
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 5)
 
 [node name="Ui" type="CanvasLayer" parent="."]
+
+[node name="Rain" type="Control" parent="Ui"]
+script = ExtResource("9_rain")
 
 [node name="Hud" type="Label" parent="Ui"]
 script = ExtResource("6_hud")

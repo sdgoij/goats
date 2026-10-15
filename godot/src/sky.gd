@@ -59,9 +59,10 @@ const CLOUD_SPEED := 0.55
 const CLOUD_STEPS := [6, 12, 22]
 const CLOUD_LEVEL := 1
 
-## `weather.js`'s `WEATHER_STATES`, the cloudiness a state eases toward. The state
-## machine itself is not ported yet (see `PORT.md`), so offline the scene stays in
-## the state it boots in: `clear`.
+## `weather.js`'s `WEATHER_STATES.clear.cloud`, the cloudiness the scene *boots* with.
+## The machine that moves it lives in `weather.gd`; this is only where it starts, and
+## the two are the same number on purpose -- a scene that boots into a state should boot
+## into that state's value.
 const CLOUDINESS_CLEAR := 0.05
 ## `TUNING.weather.windBase` and `windNorm`, which `updateWind` reads.
 const WIND_BASE := 1.6
@@ -220,8 +221,9 @@ static func make_material() -> ShaderMaterial:
 ## `weather.js` `updateWind`, for a scene with no session: the local gust model the
 ## client runs when it is not a client. Returns `{ x, z, sway }`.
 ##
-## `sway_time` is the wind's own clock, and `cloudiness` is the state the weather
-## machine would be in -- `clear` today, because the machine is not ported yet.
+## `sway_time` is the wind's own clock, and `cloudiness` is the state the machine
+## (`weather.gd`) is in -- `updateWind` reads it back, so the wind and the sky are one
+## step and not two.
 static func wind(sway_time: float, cloudiness: float) -> Dictionary:
 	var gust: float = 0.55 + 0.35 * sin(sway_time * 0.7) + 0.2 * sin(sway_time * 1.9 + 1.3)
 	var direction: float = 0.5 * sin(sway_time * 0.23)

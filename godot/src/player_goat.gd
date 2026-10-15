@@ -160,9 +160,10 @@ func ready_up() -> void:
 ##   `move` (int, -1..1), `turn` (int, -1..1), `gait` (String), and the four
 ##   *presses* this frame: `jump`, `eat`, `sleep`, `restart`.
 ##
-## `weather` is the session's own `{ rain, wind_sway }` (or empty offline, where the
-## scene is its own host and the sky is clear): the rain slows the goat and drains
-## it faster, and a full belly takes the edge off both.
+## `weather` is the session's own snapshot, or the local machine's values offline
+## (`main.gd` `_weather_now`); both carry `rain_amount` and `wind_sway`, which are what
+## the rain uses to slow the goat and drain it faster, and a full belly takes the edge
+## off both.
 ##
 ## `meadow` is what a bite reads and writes. It may be null -- the goat still walks.
 func step(delta: float, controls: Dictionary, sky_light: float, weather: Dictionary,

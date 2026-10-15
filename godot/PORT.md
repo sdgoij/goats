@@ -367,13 +367,13 @@ slab, and from higher up the same deck is a band across the horizon instead of a
 canopy overhead. `GOATS_CLOUD` (section 6's staging knobs) is what makes the
 cumulus visible at all, because the scene boots `clear`.
 
-Two things the picture is honest about, and neither is a gate. The sun and moon
-*discs* are not drawn: `skyBackground` deliberately does not draw one (the note in
-`SKY_FS`), and `drawCelestial` -- the spheres and the glare, `world.js` section M2
--- is not ported. And the port's colours run through Godot's linear pipeline: the
-sky's are converted to it, so the sky is the scene's sky, while the ground's and
-the grass's per-vertex albedos are handed over as the scene authored them, so the
-meadow is a shade paler than the client's. Section 9.
+One thing the picture is honest about, and it is not a gate: the port's colours run
+through Godot's linear pipeline. The sky's are converted to it, so the sky is the
+scene's sky, while the ground's and the grass's per-vertex albedos are handed over as
+the scene authored them, so the meadow is a shade paler than the client's. Section 9.
+(The sun and moon *discs* are not in *this* frame for a different reason: they sit on
+the light's line *behind* the scene's own boot camera (`TUNING.camera.yaw` 0.7), so a
+player orbits to see one. The weather section below has the pictures.)
 
 **The local goat** (`verify_goat.gd`): `player_goat.gd` is `goat.js`'s gait state
 machine, movement and stats — the first thing in the port that is a *game* rather
@@ -479,19 +479,78 @@ And this gate earned its keep twice over, in opposite directions. **The port was
 
 The *look* is the port's, and the rules are the scene's: the fireball and the smoke column are Godot sprites driven by the tuning's times and scales, not `fxAtlasPixels`'s generated flipbook, and the scorch tint on the ground is not drawn. The debris ballistics, the light and the camera knock are the scene's numbers. `GOATS_BOOM` sets off a bang beside the goat so a bang and its hole can be looked at.
 
-What is *not* yet proven: the water; the weather state machine (so the scene stays
-`clear` without a session, and `GOATS_CLOUD` is a staging knob); the sun and moon
-discs; the *devices* — mines, craters and the blast that flings a goat
-(`explosions.js`), so a bite cannot yet be a bang and the goat cannot be thrown;
-the HUD as a `Control` tree, the menu and the console (stage 6 — there is a
-one-`Label` read-out and no way to paste a ticket *in game*); the bots' own AI in
-GDScript (the herd is still a mirror); audio; the mods state, bites, bangs and voice
-reaching GDScript (they are carried on the wire but the core does not consume them
+**The weather and the two bodies** (`verify_weather.gd`): `weather.gd` is
+`weather.js`'s state machine plus `rainFall`, `celestial.gd` draws the sun and the moon
+on the light's own line (`world.js` section M2) and `rain.gd` draws the streaks. The
+machine is a **seeded stochastic process**, which is the sharpest kind of thing to port
+after the device field — one draw of the xorshift taken in the wrong order, or the hold
+read before the state changes, and two peers disagree about when it starts to rain — so
+it is stepped frame for frame against `weather.js`'s own `updateWeather`, with
+`forceWeather` (the `C` key) spliced in at four points:
+
+```
+oracle answered 5400 weather frame(s), 120 celestial line(s), 200 rain frame(s)
+weather machine: 5400 frame(s), 0 kind mismatch(es)
+  worst at frame 1367 field 0 (rain): scene 37.39747303587696300, port 37.39747303587695600
+bodies: compared 960 field(s), 0 alpha mismatch(es)
+  worst at h=21.000 cloud=0.00 side=1 field 0: scene -405.05362138751019000, port -405.05360364913940000
+rain: 200 frame(s), 0 active mismatch(es)
+  worst at frame 40 drop 37 x: scene 0.79745979658696342, port 0.79745979947233536
+api: mirror and pin ok
+largest weather disagreement: 0.000000000000007 (tolerance 0.000000000001000)
+largest body disagreement:    0.000000029563951 (tolerance 0.000001000000000, relative to scale)
+largest rain disagreement:    0.000000002885372 (tolerance 0.000100000000000)
+OK: the GDScript weather is the scene's weather, and so are the two bodies
+```
+
+Ninety seconds of weather with four `C` presses, **zero disagreements about which state
+the world is in**, and the hold and the two eased amounts agreeing to seven parts in a
+thousand million. Three floors, and each is a different lesson. The machine's 7e-15 is
+double rounding alone. The bodies' 3e-8 *relative* is **float32**: `sun_dir` returns a
+`Vector3` and a node position *is* one, so a direction narrowed to float32 and then
+multiplied by `CELESTIAL_R` 600 lands 1.8e-5 m out however right the rule is — 3e-8 of a
+radian, and the same order as the position's own storage, which is why the gate compares
+the coordinates relative to that scale. And the rain's 2.9e-6 is the `value_hash` floor
+again, four orders worse than the heightfield's: a wrapped column is
+`hash(i * 13.1 + rainSeed * 0.0001)`, so `sin` is taken near 5.5e7 rather than in the
+millions. Section 9.
+
+The *looks* are the port's, and they are the one part a gate cannot carry, so both are
+pictures:
+
+```
+GOATS_WEATHER=rain GOATS_HOUR=10        ascreen full of slanted streaks; the HUD reads
+                                        "10:00   rain   wind 1.3 m/s   rain 100%"
+GOATS_HOUR=6.4 GOATS_WEATHER=clear \
+    GOATS_CAM=-1.75,0.08,5.2            the sun: a warm disc with its tight glare and
+                                        wide halo, every shadow reaching the camera
+GOATS_HOUR=19 GOATS_CAM=-1.39,0.08,5.2  the moon: a cratered grey disc lit by a light
+                                        only it sees (its own `MOON_LAYER`)
+```
+
+The rain is the one thing here that only a picture can judge, because it is drawn and
+not measured; `GOATS_WEATHER` is the knob that pins a steady downpour without waiting
+out the machine's 20-45 s holds, and `GOATS_CAM` is what lets a script aim at a body at
+all — the boot camera looks away from the light's line, the way the scene's own does.
+
+**What the two bodies are not**: they are drawn in **one** sky pass, so a body is dimmed
+by the weather's cover (`celestialCover`) but not *per-pixel occluded* by a cloud
+crossing it — the scene draws them between its two sky layers to get that, and the port's
+sky is one pass. The cloud *billboards* (`drawClouds`) are skipped outright: they are
+`goat.js`'s `if (!skyShaderOn)` fallback, and the port always has a sky shader, so its
+clouds are the raymarched ones and `GOATS_CLOUD`/cloudiness is what moves them.
+
+What is *not* yet proven: the water; the cloud *billboards* (`drawClouds` — the fallback
+for a build with no sky shader, which the port never is, so this is a deliberate skip
+rather than a gap); the HUD as a `Control` tree, the menu and the console (stage 6 —
+there is a one-`Label` read-out and no way to paste a ticket *in game*); the bots' own
+AI in GDScript (the herd is still a mirror); audio; the mods state, bites, bangs and
+voice reaching GDScript (they are carried on the wire but the core does not consume them
 yet, and the Godot client publishes its own goat but does not yet report a bite —
-`NetBridge` has no `consume`); the asset bytes reaching an engine shim
-(`rl.loadSound` and friends) rather than a map; the tuning merge, reload and the
-file watcher; the wasm path through `crates/plugin`; and the other 16 `goats` member
-groups. Those are sections 6 and 7.
+`NetBridge` has no `consume`); the asset bytes reaching an engine shim (`rl.loadSound`
+and friends) rather than a map; the tuning merge, reload and the file watcher; the wasm
+path through `crates/plugin`; and the other 16 `goats` member groups. Those are sections
+6 and 7.
 
 ## 4. Why this shape, and what it costs
 
@@ -532,10 +591,10 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Terrain heightfield (3-octave noise, materials, drifting) | `game/world.js` | **Done**: `terrain.gd` (the field) + `terrain_mesh.gd` (the grid) |
 | Grass field (per-cell hash, follows the goat, sways) | `game/weather.js` | **Done**: `grass.gd`, a `MultiMesh` |
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
-| Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done** apart from the sun and moon discs: `sky.gd` + `sky.gdshader` |
+| Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` + `sky.gdshader`, and the two discs in `celestial.gd` |
 | Lighting + shadows | `game/lighting.js` | `DirectionalLight3D` + Godot's shadow atlas |
 | Water pools (level, chop, fresnel) | `game/water.js` | mesh + `ShaderMaterial` |
-| Weather state machine, wind | `game/weather.js` | GDScript; must stay deterministic |
+| Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
 | Bots (collision, temperaments, fleece) | `game/bots.js` | GDScript + `MultiMesh` |
 | Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
 | Menu, HUD, console | `game/menu.js`, `console.js` | `Control` trees |
@@ -672,8 +731,8 @@ Sizes are judgement, not measurement.
 | 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **discovery, manifests, ordering, assets and one entry done**; the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree and the bots' own AI remain | 2–3 |
-| 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **the mines, the trapped tufts, the bangs and the craters are in and gated, and the meadow is live; the weather machine and the bots' own AI remain** | 3–5 |
-| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`) and the lit and shadow work is Godot's own materials and lights; water and the celestial discs remain** | 3–5 |
+| 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, and the weather machine runs offline and mirrors a host, all gated; the bots' own AI remains** | 3–5 |
+| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights; water remains** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
@@ -708,6 +767,16 @@ Stage 2 is independent of everything else and can start immediately.
   the mines were fine, because `mineAt` passes small cells. `trap_noise` now does
   that first sum in double precision on purpose, and the comment says why. A port of
   a double-precision language has to be wrong in the same way it is.
+
+  The rain extends the curve further out, and it is the cleanest statement of what the
+  floor actually *is*: a wrapped drop's column is `hash(i * 13.1 + rainSeed * 0.0001)`,
+  and `rainSeed` is a whole uint32, so the argument reaches 4.3e5 and the `sin` inside
+  `hash` is taken near **5.5e7** -- where the two engines part by **2.9e-6**, four
+  orders worse than the heightfield's 5e-11. So the floor is not a constant of the
+  port; it is a function of how large the argument gets, and everything else about the
+  drop (its fall, its wrap, the count) is exact. It costs nothing -- a hundredth of a
+  pixel, once per wrap -- but it is worth knowing before a later system hashes
+  something with a session seed in it and expects the heightfield's number.
 
   What that costs: sub-nanometre ground, and — for the one thing derived rather
   than sent — a chance of two peers disagreeing about a device that is the odds
@@ -778,6 +847,16 @@ site. Every float in a `Vector2`/`Vector3`/`Color` in this project is float32 �
 including, as sections 3 and 9 note, the sky's — so a value that has to survive a
 comparison should be carried as an integer or a double and narrowed as late as
 possible.
+
+The celestial bodies are the same trap from a third side, and the thing worth naming
+is the *scale* that makes it bite: `sun_dir` returns a `Vector3` (float32) and a node
+position is one, so a direction rounded to float32 and then multiplied by
+`CELESTIAL_R` 600 lands 1.8e-5 m from where double arithmetic puts it, however right
+the rule is. That is 3e-8 of a radian -- invisible, and the same order as the
+position's own float32 storage -- so `verify_weather.gd` compares the coordinates
+*relative* to 600 rather than absolutely, and the honest claim is "the bodies are on
+the light's line to within float32" rather than "exactly". A port that promised the
+second would be promising something `Node3D.position` cannot hold.
 - **An oracle written from the port proves nothing, and it is the easiest mistake
   here to make.** Every gate in this project checks a transcription against the
   JavaScript the scene runs, and every one of them had to be *written from
@@ -803,21 +882,16 @@ Both spikes have landed, and the interop check passes in both modes: a Godot
 client joins the shipping `goatsd`, chats, receives its world, and is refused by
 digest when it presents the wrong mods (section 3). And the scene is a *game*: a goat
 you drive, on a heightfield, in a meadow it can eat, among mines it can set off,
-under the scene's own sky, with a host's herd mirrored alongside it and your goat
-published back. The next steps, in order:
+under the scene's own sky, with a weather that runs itself, with a host's herd
+mirrored alongside it and your goat published back. The next steps, in order:
 
-1. **The weather state machine and the celestial bodies.** The machine is what takes
-the sky from `clear` to `rain` on its own and makes `GOATS_CLOUD` unnecessary; the
-sun and moon *discs* (`drawCelestial`) are the last piece of the sky; and the rain is
-what the `weatherSpeed` and `weatherDrain` already wired into the goat are waiting
-for.
-2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
+1. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
    and no way to paste a ticket, choose a setting or ask the world a question; every
    staging knob is an environment variable because of it. The console is the port's own
    debug surface and the mods' (`goats.command`), so it pays twice.
-3. **Water, then the bots' own AI in GDScript.** The herd is a mirror; a scene that
+2. **Water, then the bots' own AI in GDScript.** The herd is a mirror; a scene that
    simulates its own bots is what makes `goatsd` optional rather than required.
-4. **Finish stage 1's edges.** The `tuning.json` merge, reload and `--watch`,
+3. **Finish stage 1's edges.** The `tuning.json` merge, reload and `--watch`,
    asset bytes handed to an engine shim rather than a map, the wasm path through
    `crates/plugin`, and the remaining `goats` member groups.
 
@@ -838,7 +912,10 @@ mirroring its world in one mode and refused by digest in another
 (`interop.sh join`, `interop.sh refuse`); runs the mirror scene against it,
 standing seven real goats on Godot-drawn ground at a 0.07 m worst gap
 (`interop.sh herd`); measures the ported heightfield against the JavaScript one
-at 5.0e-11 m (`godot/tools/verify_terrain.gd`); and builds the scene's own 48x48
+at 5.0e-11 m (`godot/tools/verify_terrain.gd`); builds the scene's own 48x48
 grid from it, wound and normalised the way the client winds it
-(`godot/tools/verify_terrain_mesh.gd`). Every one of them exits zero.
+(`godot/tools/verify_terrain_mesh.gd`); and steps the ported weather machine 5400
+frames against `weather.js`'s own -- the two bodies over 15 hours x 4 cloudinesses and
+a rain pool after every drop has wrapped -- with no disagreement about which state the
+world is in (`godot/tools/verify_weather.gd`). Every one of them exits zero.
 The rest is read from the tree.*

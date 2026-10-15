@@ -22,9 +22,9 @@ func _ready() -> void:
 
 ## Refresh from the goat and the world, once a frame.
 ##
-## `hours` is the clock `main.gd` owns, `weather` the session's own or empty
-## offline, and `tuning` is none of its business: every number here is one a rule
-## already decided.
+## `hours` is the clock `main.gd` owns, `weather` the session's own snapshot or the
+## local machine's values offline, and `tuning` is none of its business: every number
+## here is one a rule already decided.
 func show_for(goat: PlayerGoat, hours: float, weather: Dictionary) -> void:
 	var lines: Array[String] = [
 		goat.status(),
@@ -46,8 +46,9 @@ static func clock_text(hours: float) -> String:
 ## rain and the slowdown only when there is any to report -- so a clear frame reads
 ## exactly as it always has.
 ##
-## The state is the wire's, because offline the weather state machine is not ported:
-## see `PORT.md`. So this prints `clear` until a host says otherwise.
+## The state travels *with* the dictionary: a session's wire snapshot, or the local
+## machine's own values offline (`main.gd` `_weather_now`). So this reads the real state
+## in both cases rather than being pinned to `clear`.
 static func weather_text(weather: Dictionary) -> String:
 	var text: String = String(weather.get("kind", "clear"))
 	var wx: float = float(weather.get("wind_x", 0.0))

@@ -27,6 +27,9 @@ plan.
 | `src/craters.gd` | The holes a bang leaves, as a term in the heightfield, healing over four minutes |
 | `src/sky.gd` | The day/night curve, the sun's arc, the light and the ambient, transcribed from `world.js` and `lighting.js` and measured against them |
 | `src/sky.gdshader` | The sky, drawn: `sky.js`'s raymarched cloud slab as a `shader_type sky` |
+| `src/weather.gd` | The weather: `weather.js`'s state machine, the values a session mirrors and the rain's own integration |
+| `src/celestial.gd` | The two bodies: `world.js`'s `celestialPlacement` as real sun and moon spheres, with the sun's additive glare |
+| `src/rain.gd` | The rain, drawn: `weather.js`'s `drawRain` streaks as a screen-space overlay under the HUD |
 | `tools/` | Headless verification scripts, and `interop.sh` |
 
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
@@ -56,7 +59,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Thirteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Fourteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -112,9 +115,14 @@ Thirteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 # dish -- and a goat standing on a mine, end to end.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_devices.gd
+
+# The weather: 5400 frames of the state machine and the C key, the two bodies over an
+# hour x cloudiness grid, and the rain's pool after every drop has wrapped.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_weather.gd
 ```
 
-All thirteen pass against Godot 4.7.2 today.
+All fourteen pass against Godot 4.7.2 today.
 
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that
@@ -154,16 +162,21 @@ still Godot's rather than the scene's is the *lighting model*: the terrain, the
 grass and the goat are lit by Godot materials under a `DirectionalLight3D` with
 Godot's shadows, not by the scene's own lit program and hand-rolled shadow map
 (`PORT.md` section 5). The port's colours also run through Godot's linear pipeline,
-which the sky compensates for and the ground does not (`PORT.md` section 9). And the
-HUD is one `Label` rather than the scene's bars, action menu and console: the words
-are the scene's, the layout is stage 6.
+which the sky compensates for and the ground does not (`PORT.md` section 9). The two
+bodies are Godot meshes — the moon lit by a light only it sees — rather than the
+scene's celestial shader, and the rain is a `Control` drawing the scene's own streaks.
+And the HUD is one `Label` rather than the scene's bars, action menu and console: the
+words are the scene's, the layout is stage 6.
 
-Two environment variables stage what there is no UI for yet: `GOATS_HOUR` pins the
-clock and `GOATS_CLOUD` the cloudiness, so an hour or an overcast sky can be
-looked at before the weather state machine exists. A third, `GOATS_BOOM`, sets off a
-bang beside the goat a moment into the run, which is how a bang and the hole it
-leaves can be *looked* at rather than measured. All three are ignored while a
-session is up, because the host owns the world.
+Five environment variables stage what there is no UI for yet: `GOATS_HOUR` pins the
+clock and `GOATS_CLOUD` the cloudiness; `GOATS_WEATHER` pins the state machine's
+*state*, which is what a downpour needs — the rain is drawn and not measured, so only
+a picture can judge it; `GOATS_CAM=yaw,pitch[,dist]` aims the camera, which is the only
+way to photograph the two bodies, because they sit on the light's line *behind* the
+boot camera and a person would drag the mouse; and `GOATS_BOOM` sets off a bang beside
+the goat a moment into the run, which is how a bang and the hole it leaves can be
+*looked* at rather than measured. All of them are ignored while a session is up,
+because the host owns the world.
 
 ## Running against the shipping host
 
@@ -211,6 +224,7 @@ SPACE          jump
 E              eat the grass in reach
 Z              sleep / wake
 R              restart, once dead
+C              the next weather state (offline only; for previewing the cycle)
 mouse drag     orbit the camera
 mouse wheel    zoom
 arrow keys     the camera, if you have no mouse

@@ -15,6 +15,14 @@
 # *publishes* its goat, about twenty times a second, so a raylib client or another
 # Godot one sees it exactly as it sees theirs.
 #
+# The weather and the two celestial bodies are the last of the world to land, and both
+# are stitched in here. Offline the weather is a *machine* (`weather.gd`) whose clock
+# and easing `_advance` moves, and the wind, the grass's sway and the goat's own
+# slowdown all come off it; in a session it only *mirrors* the host's values, because
+# the host owns the weather. Either way the rain still falls locally -- a client is sent
+# a *rate*, not a list of drops -- and the sun and the moon (`celestial.gd`) move,
+# because both are derived from values on the wire rather than sent as events.
+#
 # Two modes, one scene:
 #
 #   * a game -- set `GOATSD_TICKET` and play with other people, or set nothing at all
@@ -54,7 +62,9 @@ const PROBE_RELIEF := 0.05
 @onready var terrain: TerrainMesh = $Terrain
 @onready var grass: Grass = $Grass
 @onready var explosions: Explosions = $Explosions
+@onready var celestial: Celestial = $Celestial
 @onready var hud: Hud = $Ui/Hud
+@onready var rain: Rain = $Ui/Rain
 @onready var sun: DirectionalLight3D = $Sun
 @onready var world_environment: WorldEnvironment = $WorldEnvironment
 
@@ -88,6 +98,11 @@ var _restart_pressed := false
 ## The meadow: the eaten cells, their countdowns and the tufts a bite can reach.
 var meadow := Meadow.new()
 
+## The weather: offline this scene's own state machine, and in a session a mirror of
+## the host's values (see `weather.gd`). The rain overlay draws its pool and
+## `PlayerGoat` reads its rain and wind through `_weather_now`.
+var weather := Weather.new()
+
 ## Whether the scene is in a session as a *client*. It is what the pose publishing
 ## hangs on, and its window is the wire's.
 var _joined := false
@@ -110,17 +125,30 @@ var _wind_sway := 0.0
 ## The last `weather` the host sent, or empty while there is no session -- which is
 ## what decides whether the clock runs locally or follows the wire.
 var _weather := {}
-## `GOATS_HOUR` / `GOATS_CLOUD`: pin the hour and the cloudiness, for looking at a sky
-## phase or exercising the cloud march. They are staging knobs for the same reason the
-## ticket is one -- the console and the menu are stage 6, and the weather state machine
-## that would take the sky from `clear` to `rain` on its own is not ported yet -- and
-## a session's own weather wins, because that is the host's to decide.
+## The staging knobs: everything there is no UI for yet. The console and the menu are
+## stage 6, so each of these is an environment variable, and a session's own values win,
+## because the host owns the world.
+##
+##   `GOATS_HOUR`             pin the hour, for looking at a sky phase.
+##   `GOATS_CLOUD`            pin the sky's cloudiness, for exercising the cloud march.
+##                            The state machine still runs, so rain still comes and goes
+##                            around it.
+##   `GOATS_WEATHER=<state>`  pin the machine's state (`clear`, `cloudy`, `rain`,
+##                            `clearing`), which `GOATS_CLOUD` cannot do -- it moves the
+##                            sky but not the rain. A downpour has no UI either, and it
+##                            is the one thing only a picture can judge (the overlay is
+##                            drawn, not measured), so this is the knob that shows it.
+##   `GOATS_CAM=yaw,pitch[,dist]`
+##                            aim the camera. The two bodies sit on the light's line
+##                            *behind* the boot camera (`TUNING.camera.yaw` 0.7), so a
+##                            script cannot photograph one without this and a person
+##                            would drag the mouse. Missing parts keep their defaults.
+##   `GOATS_BOOM`             set off a bang beside the goat a moment into the run, so a
+##                            bang and the hole it leaves can be *looked at* rather than
+##                            measured. The one that changes the world rather than the
+##                            view.
 var _forced_hour := -1.0
 var _forced_cloud := -1.0
-## `GOATS_BOOM`: set off a bang beside the goat a moment into the run, so a bang and
-## the hole it leaves can be *looked at*. It is a staging knob for the same reason the
-## others are -- the console is stage 6 and there is no in-game way to ask for one --
-## and it is the only one that changes the world rather than the view.
 var _boom := false
 var _boom_frame := 0
 
@@ -153,6 +181,20 @@ func _ready() -> void:
 	_boom = not OS.get_environment("GOATS_BOOM").is_empty()
 	if _forced_hour >= 0.0:
 		_hours = _forced_hour
+	# `GOATS_WEATHER` is a one-shot: `Weather.hold` leaves the machine *in* the state
+	# (its targets are the current values), so nothing here has to remember it.
+	var forced_weather := OS.get_environment("GOATS_WEATHER")
+	if not forced_weather.is_empty():
+		weather.hold(forced_weather)
+	var forced_cam := OS.get_environment("GOATS_CAM")
+	if not forced_cam.is_empty():
+		var parts: PackedStringArray = forced_cam.split(",")
+		if parts.size() >= 1 and parts[0].is_valid_float():
+			_cam_yaw = parts[0].to_float()
+		if parts.size() >= 2 and parts[1].is_valid_float():
+			_cam_pitch = parts[1].to_float()
+		if parts.size() >= 3 and parts[2].is_valid_float():
+			_cam_dist = parts[2].to_float()
 
 	var node := ClassDB.instantiate("NetBridge") as Node
 	add_child(node)
@@ -216,7 +258,7 @@ func _process(delta: float) -> void:
 
 	# The goat: it is what the camera, the ground and the meadow are placed around,
 	# and it is the only thing in this scene that decides anything.
-	goat.step(delta, _controls(), _sky_light, _weather, meadow)
+	goat.step(delta, _controls(), _sky_light, _weather_now(), meadow)
 	# The meadow is the host's in a session, so a client only mirrors it.
 	meadow.update(delta, _weather.is_empty())
 	_orbit(delta)
@@ -234,8 +276,12 @@ func _process(delta: float) -> void:
 	_place_camera(camera)
 	_advance(delta, camera.global_position)
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
+	# The two bodies and the rain, from the values `_advance` just settled: the sun and
+	# the moon ride the light's own line, and the rain is screen space over everything.
+	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
+	rain.show_for(weather, _wind_x)
 	_publish_pose(delta)
-	hud.show_for(goat, _hours, _weather)
+	hud.show_for(goat, _hours, _weather_now())
 	_boom_if_asked()
 
 	if _settle >= 0.0:
@@ -352,6 +398,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				_sleep_pressed = true
 			KEY_R:
 				_restart_pressed = true
+			KEY_C:
+				# `weather.js`'s `C`: jump to the next state now, for previewing the cycle.
+				# The scene gates it on `netWeatherLocal()` -- a client may not force the
+				# host's weather -- and so does this.
+				if _weather.is_empty():
+					weather.force()
 			KEY_F11:
 				var full: bool = DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_FULLSCREEN
 				DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if full \
@@ -377,9 +429,13 @@ func _advance(delta: float, camera: Vector3) -> void:
 	_sky_time += delta
 	_sway_time += delta
 	if _weather.is_empty():
+		# Offline (or hosting): the weather is ours. The machine walks its own clock and
+		# eases toward the state it is in, and the wind is read off the cloudiness it
+		# leaves behind -- `updateWind` reads `cloudiness`, so the two are one step.
 		if _forced_hour < 0.0:
 			_hours = SkyDome.mod24(_hours + delta / SkyDome.DAY_LENGTH * 24.0)
-		var cloud: float = SkyDome.CLOUDINESS_CLEAR
+		weather.update(delta)
+		var cloud: float = weather.cloudiness
 		if _forced_cloud >= 0.0:
 			cloud = _forced_cloud
 		var gust: Dictionary = SkyDome.wind(_sway_time, cloud)
@@ -388,15 +444,32 @@ func _advance(delta: float, camera: Vector3) -> void:
 		_wind_sway = gust["sway"]
 		_cloudiness = cloud
 	else:
+		# A client: the host owns the weather, so the machine mirrors its values and
+		# keeps only the rain's own integration and this goat's effects.
+		weather.apply_wire(_weather)
 		_hours = float(_weather.get("world_time", _hours))
 		_wind_x = float(_weather.get("wind_x", 0.0))
 		_wind_z = float(_weather.get("wind_z", 0.0))
 		_wind_sway = float(_weather.get("wind_sway", 0.0))
 		_cloudiness = float(_weather.get("cloudiness", 0.0))
 
+	# The rain falls whether or not there is a session: a client is sent the *rate* and
+	# still has to move its own drops, which is what `weather.js` keeps `rainSeed`
+	# separate for.
+	weather.update_rain(delta, _wind_x)
+
 	_sky_light = float(SkyDome.sample(_hours)["light"])
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,
 		_sky_light, _cloudiness, _wind_x, _wind_z, _sky_time)
+
+## This frame's weather, in the shape the goat and the HUD read it: the session's own
+## snapshot in a session, and the local machine's values offline. It is the same
+## dictionary `weather.js` `sceneWeatherState` puts on the wire, so offline the scene
+## is its own host and the goat feels the rain it is standing in.
+func _weather_now() -> Dictionary:
+	if _weather.is_empty():
+		return weather.values(_wind_x, _wind_z, _wind_sway, _hours)
+	return _weather
 
 ## Set off the staging bang, if one was asked for. It lands beside the goat rather
 ## than under it, so both the hole and the goat are in shot.
@@ -422,8 +495,11 @@ func _handle(line: String) -> void:
 		"session":
 			# The seed the world is built from, sent once before anything else. The
 			# device field is *derived* from it, so this is what puts this scene's mines
-			# where the host's are without a word about where they are.
-			explosions.use_seed(int(event.get("seed", 0)))
+			# where the host's are without a word about where they are -- and the weather
+			# stream too, which a host runs from this same seed (`sceneUseSeed`).
+			var seed: int = int(event.get("seed", 0))
+			explosions.use_seed(seed)
+			weather.use_seed(seed)
 		"welcome":
 			print("welcome: ", event.get("name"))
 		"world":
