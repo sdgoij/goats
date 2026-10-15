@@ -99,6 +99,30 @@ func centre() -> Vector3:
 func count() -> int:
 	return _goats.size()
 
+## The mirrored herd's wake actors: `(x, z, py)` a goat, in index order -- which is the
+## order the scene's own `BOTS` array has, so `Water`'s wake marks and the host's bots stay
+## paired. A client splashes the herd it mirrors, which is the one part of M20d that would
+## otherwise need a simulation to see.
+##
+## It reports where a goat is *drawn* rather than where the snapshot put it, because the
+## wake is a thing the eye follows, and the height above the ground is the arc lift the
+## snapshot carried, read back off the same ground the host used.
+func actors() -> PackedFloat64Array:
+	var indexes: Array = _goats.keys()
+	indexes.sort()
+	var out := PackedFloat64Array()
+	out.resize(indexes.size() * 3)
+	var at: int = 0
+	for index in indexes:
+		var node: Node3D = _goats[index]["node"]
+		var x: float = node.position.x
+		var z: float = node.position.z
+		out[at] = x
+		out[at + 1] = z
+		out[at + 2] = node.position.y - Terrain.height_at(x, z) - _ground_offset
+		at += 3
+	return out
+
 ## The worst remaining gap between a *grounded* goat and where the host last said
 ## it was. A mirror that has converged reports ~0; one that is not moving reports
 ## the distance it failed to cover.

@@ -583,7 +583,30 @@ Two things there are worth the space. The **winding** is the same one `terrain_m
 
 And the **cut** turned out to be knife-edge, which is a new shape of the determinism risk rather than another instance of it. `waterCut` keeps a quad when some corner stands under the table's ceiling, and the ceiling is the field's own *midline* -- so about half the grid sits within the heightfield's 5e-11 `sin` floor of it, and a quad that straddles the boundary flips between the two engines: **65 of 2304 quads**, 22 of them holes the scene fills and the port would not. The two directions are not symmetric. A quad drawn and dry is invisible, because nothing above the ceiling can ever be wet; a quad *culled* and wet is a hole in a pool. So `water_mesh.gd` widens the cut by a micrometre, which closes all 22 and adds nothing: the 43 quads it keeps beyond the scene sit within a picometre of the ceiling, measured.
 
-What is *not* here is the wake, the splashes and the grass the water hides (M20d), and the reflection tiers (M20e, which Godot answers with the environment rather than with the scene's own bake and mirrored pass). The picture is `GOATS_FLOOD=0.5`, which is `water.js`'s own `flood <h>` verb: a level sheet following the terrain's contours, transparent over the grass it has submerged, the chop's crossed ripples carrying the sun along a glitter path — `WATER_FS`'s "a point the chop spreads into a path" — and the HUD reading `water 0.50 m   slowed 29%`.
+What is left of the water is the reflection tiers (M20e, which Godot answers with the environment rather than with the scene's own bake and mirrored pass); the wake, the splashes and the grass a pool hides are M20D and are just below. The picture is `GOATS_FLOOD=0.5`, which is `water.js`'s own `flood <h>` verb: a level sheet following the terrain's contours, transparent over the grass it has submerged, the chop's crossed ripples carrying the sun along a glitter path — `WATER_FS`'s "a point the chop spreads into a path" — and the HUD reading `water 0.50 m   slowed 29%`.
+
+**The wake and the splashes** (`verify_water_wake.gd`): M20D -- `waterActorStep`'s rings and drops, and the grass a pool hides. The wake is **three named `vec4` uniforms** (`water_ripple0..2`), not an array, because the scene's own shader could not carry one either; each is a centre, a front radius in metres and a strength the *emitter has already decayed*, which is what keeps the shader stateless about time. `ripple_grad` is summed into the same gradient the chop uses, so a ring is one more term in an existing function rather than a second system. A splash is not a particle system: `waterSplash` draws its drops off the same `value_hash`, in fixed slots of a `SPLASH_MAX` ring buffer, and `water_splash.gd` is one `MultiMeshInstance3D` over those slots -- no allocation, no lifetime to manage, the pool *is* the fix. And the grass a pool hides is the same kind of question asked of a different value: `drawTufts` skips a tuft whose own *swayed* place stands under the water, and `submerged_at` counts what it skipped.
+
+Three of the scene's rules are named here because two of them are easy to get subtly wrong. **The herd gets the edge and the footfall but no ring** -- `RIPPLE_MAX` is three slots and a bot is not allowed to spend one -- so the herd throws drops and lays nothing. **A stride in water throws a splash, not only a step in**, and the ring's distance gate had to move off the *last frame* and onto the *last ring*: a goat at a walk moves two centimetres a frame and never reaches `RIPPLE_STEP`, so a gate measured against the previous frame's position laid no rings at all -- the scene's own bug, and the port inherited it until the gate showed the tape's goat walking through the bowl without rippling. And the two water tests are **not the same question**: `in_water` is the HUD's own line (the bilinear depth at a point at or above `HUD_MIN`, the rule that decides when a *sleeper* wakes) while `submerged_at` is the **grid vertex** nearest a point (the rule that decides whether `drawTufts` draws a tuft at all).
+
+```
+grid: 2401 vertices at anchor (0, 0), lowest ground -1.451661, dry level -1.551661
+oracle answered 120 frame(s), 120 drop table(s), 5 level(s), 3 grass case(s)
+wake: 120 frame(s), 21960 value(s), 80 splash(es) thrown, up to 3 ring(s) at once, 18 dry
+largest wake disagreement: 0.00000058607232289 (ring 0.00001000000000000, drop 0.00010000000000000, life 0.00000000100000000)
+  worst at frame 98 drop 10 field 5: scene -0.52107595941057039, port -0.52107654548289328
+water tests: 5 level(s) x 104 point(s), 0 mismatch(es), 7 disagreement(s) between the two
+  case 0: scene [236, 0], port 236 tuft(s) / 0 culled, 236 oracle line(s)
+  case 1: scene [57, 179], port 57 tuft(s) / 179 culled, 57 oracle line(s)
+  case 2: scene [0, 236], port 0 tuft(s) / 236 culled, 0 oracle line(s)
+submerged grass: 3 case(s), 293 tuft(s) kept, 415 culled, 0 mismatch(es)
+ripples pushed: ok
+splash node drew 24 of 24 live drop(s)
+edges: unbuilt quiet ok, entry 1 ring(s), re-entry 2 (want 1 then 2)
+OK: the GDScript wake is the scene's wake, and it throws what the scene throws
+```
+
+The tape walks out of the bowl, stands, hops, then spends **eighteen dry frames** with the pool gone and re-enters -- so the no-water branch is exercised rather than assumed. The 5.86e-7 is the `value_hash`'s own floor seen through an angle (a drop's direction is a second `sin` of the hash, `sin` at arguments in the thousands), which is why the drops carry a tolerance four orders looser than the life's: the drop's *life* is pure arithmetic and is checked at 1e-9 with the counts. And `entry 1, re-entry 2` is the one claim in the gate that is the *port's* rather than a transcription: a pool that drains and comes back must lay a **second** entering ring, because `update()` clears the mark while the water is gone, so a goat standing exactly where it stood has, in effect, arrived again.
 
 **The herd** (`verify_bots.gd`): `bots.gd` is the scene hosting itself. Seven goats with
 a temperament each -- `TUNING.herd.spec`'s coat colour, body scale, `bold` and `lazy` --
@@ -661,7 +684,7 @@ host's goats on the model's own material, so a client's herd is seven goats of o
 a coat there needs the host's spec table on the wire, which is a protocol change and not
 a drawing one.
 
-What is *not* yet proven: the water's wake and its reflection; the cloud *billboards* (`drawClouds` — the fallback
+What is *not* yet proven: the water's reflection; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the HUD as a `Control` tree, the menu and the console (stage 6 —
 there is a one-`Label` read-out and no way to paste a ticket *in game*); audio; the mods state, bites, bangs and
@@ -709,11 +732,11 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | System | Reference | Godot home |
 | --- | --- | --- |
 | Terrain heightfield (3-octave noise, materials, drifting) | `game/world.js` | **Done**: `terrain.gd` (the field) + `terrain_mesh.gd` (the grid) |
-| Grass field (per-cell hash, follows the goat, sways) | `game/weather.js` | **Done**: `grass.gd`, a `MultiMesh` |
+| Grass field (per-cell hash, follows the goat, sways) | `game/weather.js` | **Done**: `grass.gd`, a `MultiMesh`, culled where a pool hides it |
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
 | Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` + `sky.gdshader`, and the two discs in `celestial.gd` |
 | Lighting + shadows | `game/lighting.js` | `DirectionalLight3D` + Godot's shadow atlas |
-| Water pools (level, chop, fresnel) | `game/water.js` | **Done** apart from the wake and the reflection: `water.gd` (the table and the wading) + `water_mesh.gd` + `water.gdshader` (the surface and the chop) |
+| Water pools (level, chop, fresnel, wake, splashes) | `game/water.js` | **Done** apart from the reflection: `water.gd` (the table, the wading and the wake) + `water_mesh.gd` + `water.gdshader` (the surface, the chop and the rings) + `water_splash.gd` (the drops) |
 | Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
 | Bots (collision, temperaments, fleece) | `game/bots.js` | **Done**: `bots.gd`, the herd's own state machine, collision and coats -- real rigs, not the `MultiMesh` sketched here |
 | Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
@@ -851,8 +874,8 @@ Sizes are judgement, not measurement.
 | 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **discovery, manifests, ordering, assets and one entry done**; the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree remains | 2–3 |
-| 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the water's wake and the mods reaching GDScript | 3–5 |
-| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights; the water's wake and its reflection remain** | 3–5 |
+| 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
+| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights; the water's reflection remains** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
@@ -911,6 +934,13 @@ Stage 2 is independent of everything else and can start immediately.
   into it hangs the process, with no error and nothing on stderr. `terrain.gd`
   annotates every local for that reason, and the gates are run under `timeout`
   because a hang is otherwise indistinguishable from a slow start.
+
+  The wake's gate found a quieter one of the same family: **Godot's `%` has no scientific
+  specifier**. `"%.0e" % [x]` does not raise — it leaves the format string in the output
+  *and* mangles the line after it, so a diagnostic can be corrupt while the gate still
+  exits zero. The fix is `%.17f`, which reads the smallest tolerance here (1e-9) in full;
+  the lesson is to distrust a `%` specifier that is not in Godot's short list rather than
+  assume a bad one fails loudly.
 
 - **An extension class as a node type in a `.tscn`.** Found the hard way, and the
   sibling of the trap above: a `class_name` script and a GDExtension class cannot
@@ -1004,6 +1034,27 @@ culled and wet is a hole -- and `verify_water_mesh.gd` asserts both halves of th
 of the scene's quads dropped, and nothing kept that is not within the widening. The
 lesson for a later system is to look for a comparison *at* the edge of a declared band,
 not only at a floating-point floor.
+- **One rule can carry two floors of different sizes, and the check has to keep them
+apart.** The wake is the first system whose numbers arrive from two places at once. A
+ring is pushed to the shader as a `Vector4`, so it is float32 -- the same rounding the
+vector bullet below records -- good to about 1e-6 m at the field's rim. A drop's
+*direction* is `value_hash` read through a second `sin`, which is the heightfield's
+5e-11 floor seen through an angle, about 1e-6 too; its *life* is `SPLASH_LIFE` less whole
+frame steps and is arithmetic and nothing else. A single tolerance would have to be the
+loosest (1e-4), and the life -- which could be compared to 1e-9 -- would then be checked
+four orders more loosely than it can be, which is how a gate goes *less* precise than the
+thing it checks (the mistake recorded two bullets down). So `RING_TOLERANCE` (1e-5),
+`DROP_TOLERANCE` (1e-4) and the life's own `TOLERANCE` (1e-9) are separate and the
+comparison picks by field; the worst the tape found is 5.9e-7, inside the drop's floor,
+and the life never had to inherit it.
+
+The same water keeps **two tests that look redundant and are not**, and the gate asserts
+they *disagree*. `in_water` is the HUD's own line -- the bilinear depth at a point at or
+above `HUD_MIN`, the rule that decides when a sleeper wakes -- and `submerged_at` is the
+*grid vertex* nearest a point, the rule that decides whether a tuft is drawn. They agree
+with the scene at 0 mismatch and part from each other in 7 of 520 probes; collapsing them
+into one would pass while checking neither, which is why the gate counts the
+disagreements and fails if there are none.
 - **An oracle written from the port proves nothing, and it is the easiest mistake
   here to make.** Every gate in this project checks a transcription against the
   JavaScript the scene runs, and every one of them had to be *written from
@@ -1056,14 +1107,15 @@ under the scene's own sky, with a weather that runs itself, with **a herd of its
 when there is no host and a host's herd mirrored when there is**, and your goat
 published back. The next steps, in order:
 
-1. **The water's wake and its reflection.** The table, the wading, the surface and the chop
-   are in and gated, and so is the herd's own AI -- which is the work that made `goatsd`
-   optional rather than required. What is left of the water is `waterActorStep`'s wake and
-   splashes and the grass it hides (M20D), and the reflection tiers (M20e, which Godot
-   answers with the environment rather than with the scene's own bake and mirrored pass).
-   It is the last of the scene's *rules* this port's gates can still check against the
-   JavaScript -- section 8's stage order puts the rest of the world ahead of the UI, and
-   that order is the right one.
+1. **The water's reflection.** The table, the wading, the surface, the chop, the wake, the
+   splashes and the grass a pool hides are all in and gated -- M20D closed the last of
+   them -- and so is the herd's own AI, which is the work that made `goatsd` optional
+   rather than required. What is left of the water is the reflection tiers (M20e, which
+   Godot answers with the environment rather than with the scene's own bake and mirrored
+   pass); the honest answer there may be "the engine already does this" rather than a
+   transcription. That closes the last of the scene's *rules* this port's gates can check
+   against the JavaScript -- section 8's stage order puts the rest of the world ahead of
+   the UI, and that order is the right one.
 2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
    and no way to paste a ticket, choose a setting or ask the world a question; every
    staging knob is an environment variable because of it. The console is the port's own
@@ -1101,6 +1153,9 @@ does, all 2304 quads of the cut included (`godot/tools/verify_water_mesh.gd`); a
 63 s of the herd's own AI -- a spawn, a grazing walk, a bite, a thrown bot, a killed one
 and its respawn, the push-apart and the water waking a sleeper -- against `bots.js` frame
 for frame, 223020 values compared with nothing out by more than 6.1e-13
-(`godot/tools/verify_bots.gd`). Every one
+(`godot/tools/verify_bots.gd`); and runs the wake -- 120 frames of rings and drops with
+eighteen dry ones among them, the two water tests told apart where they part, and the
+grass a deep pool hides -- against `water.js` and `weather.js`, 21960 values compared
+with the worst drop out by 5.9e-7 (`godot/tools/verify_water_wake.gd`). Every one
 of them exits zero.
 The rest is read from the tree.*

@@ -777,7 +777,7 @@ func _initialize() -> void:
 	bots.meadow = Meadow.new()
 	bots.trap = Callable(self, "_stub_trap")
 	bots.armed = Callable(self, "_stub_armed")
-	bots.submerged = Callable(self, "_stub_submerged")
+	bots.in_water = Callable(self, "_stub_in_water")
 	# The herd is built *before* anything reads it: the rig is where the clips by role come
 	# from, and the spawn is the first thing either side does to its stream.
 	bots.set_herd_size(Bots.COUNT)
@@ -989,7 +989,7 @@ func _initialize() -> void:
 			# count of the rule firing rather than a second implementation of it.
 			for i in bots.count():
 				if previous_modes[i] == "sleep" \
-						and _stub_submerged(previous_x[i], previous_z[i]):
+						and _stub_in_water(previous_x[i], previous_z[i]):
 					wakes += 1
 			# Whether this frame's push-apart had anything to do, which is the only way
 			# to tell a collision rule that holds from a herd that never touched.
@@ -1205,11 +1205,16 @@ func _stub_trap(cx: int, cz: int, _x: float, _z: float) -> bool:
 func _stub_armed(cx: int, cz: int) -> bool:
 	return (cx + cz) % 2 == 0
 
-## The water stub, `Water.submerged_at`'s shape: the ground more than sixteen metres south
+## The water stub, `Water.in_water`'s shape: the ground more than sixteen metres south
 ## of the player is flooded. It has to be the *goat's own latitude* rather than a fixed
 ## lake, because the scene has two water rules about a sleep -- the doze a bot is refused
 ## and the one the rain ends -- and a lake that never moves can only ever exercise the
 ## first: a bot cannot doze into one. Parking the goat far north walks the line south over
 ## the herd, which is what wakes anybody already lying down.
-func _stub_submerged(x: float, z: float) -> bool:
+##
+## It stands in for `waterInWater` -- the HUD's own line, `depthAt >= 0.01` -- and a *stub*
+## rather than that rule because the herd's own gate is about what the herd does with the
+## answer. The rule itself is `verify_water_wake.gd`'s, and so is the difference between it
+## and `waterSubmergedAt`, which is the grass cull's and not the sleep rule's.
+func _stub_in_water(x: float, z: float) -> bool:
 	return z < _goat.pz - 16.0

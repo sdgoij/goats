@@ -33,6 +33,13 @@
 # (`terrain_mesh.gd`) hands Godot's pipeline its per-vertex colours the same way, so
 # the grass and the ground it stands on agree about how bright green is.
 #
+# The meadow is also the one field a *pool* edits: a tuft standing under the water is
+# skipped (M20d), because the surface is drawn over the ground and a tuft inside a pool
+# would stand out of it. The scene does that in `drawTufts`, a line after it has built the
+# tuft pool; here the test is the last thing `field` does to a cell, so the tufts a frame
+# *keeps* are one function's answer and a gate can hold them. `submerged` is the seam --
+# `Water.submerged_at` in the scene, and nothing at all when there is no water.
+#
 # Every local is annotated rather than inferred -- see the `:=` note in
 # `terrain.gd`.
 class_name Grass
@@ -61,6 +68,9 @@ const STRIDE := 7
 var _multimesh: MultiMesh
 ## How many times the field has been rebuilt, which is what a gate reads.
 var rebuilds := 0
+## The water this field is drawn through: a tuft under it is skipped (M20d). `main.gd`
+## hands it in, and with none nothing is culled.
+var water: Water
 
 func _ready() -> void:
 	_multimesh = MultiMesh.new()
@@ -89,9 +99,14 @@ func _ready() -> void:
 ## `eaten` is the meadow the host has grazed, as `tuftKey` values. The snapshot
 ## carries it (`eaten` in the world event), so a joiner's meadow thins where the
 ## host's herd has fed.
+##
+## `water` is what culls the tufts a pool is hiding (M20d).
 func update(centre: Vector3, sway_time: float, wind_sway: float, eaten: Dictionary) -> void:
+	var cull: Callable = Callable()
+	if water != null:
+		cull = Callable(water, "submerged_at")
 	var positions: PackedFloat64Array = field(
-		centre.x, centre.z, CULL2, DETAIL2, sway_time, wind_sway, eaten)
+		centre.x, centre.z, CULL2, DETAIL2, sway_time, wind_sway, eaten, cull)
 	var tufts: int = positions.size() / STRIDE
 	rebuilds += 1
 
@@ -131,9 +146,11 @@ func _cube(x: float, y: float, z: float, size: Vector3) -> Transform3D:
 
 ## The visible tufts around `(gx, gz)`, flat: `STRIDE` doubles each, `ax, ay, az,
 ## bx, by, bz, detail`. `weather.js` `tuftField`, verbatim apart from the emulated
-## 32-bit arithmetic and the dropped height cache.
+## 32-bit arithmetic, the dropped height cache, and the water cull `drawTufts` does a
+## line later -- merged here for the reason the header gives.
 static func field(gx: float, gz: float, cull2: float, detail2: float,
-		sway_time: float, wind_sway: float, eaten: Dictionary) -> PackedFloat64Array:
+		sway_time: float, wind_sway: float, eaten: Dictionary,
+		submerged: Callable = Callable()) -> PackedFloat64Array:
 	var radius: float = sqrt(cull2)
 	var cx0: int = int(floor((gx - radius) * 0.5))
 	var cx1: int = int(ceil((gx + radius) * 0.5))
@@ -159,6 +176,12 @@ static func field(gx: float, gz: float, cull2: float, detail2: float,
 			if d2 > cull2:
 				continue
 			var off: float = sin(sway_time * 3.0 + Meadow.unit(hash.z) * 6.28) * 0.11 * wind_sway
+			# A tuft standing under the water is skipped (`drawTufts`), and the test is the
+			# tuft's *swayed* place -- the position the scene asks `waterSubmergedAt` about.
+			# Where the count of what it skips lives is `Water`'s business: it is the test's
+			# one caller and the number `state` reports.
+			if submerged.is_valid() and bool(submerged.call(x + off, z + off * 0.4)):
+				continue
 			# The tuft sits on the heightfield, so the grass follows the ground.
 			var gy: float = Terrain.height_at(x, z)
 			out.append(x + off)

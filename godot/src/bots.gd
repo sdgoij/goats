@@ -167,10 +167,12 @@ var trap: Callable = Callable()
 ## came back onto one would be blown up before it took a step, which reads as a bug rather
 ## than as a minefield.
 var armed: Callable = Callable()
-## Whether the ground under a point is under water, `Water.submerged_at`: a bot does not
-## doze in the water any more than the player's goat does (M20f'), and one the rain
-## reaches gets up.
-var submerged: Callable = Callable()
+## Whether a point is *in* the water, `Water.in_water`: a bot does not doze in it any more
+## than the player's goat does (M20f'), and one the rain reaches gets up. It is the HUD's own
+## line (`depth_at >= HUD_MIN`) and deliberately *not* `Water.submerged_at`, which is the
+## grid test the grass cull asks: near a pool's edge the two disagree, and one of them is
+## the one the scene's sleep rule uses.
+var in_water: Callable = Callable()
 
 ## The herd, oldest first. A bot that dies is replaced by itself rather than by nothing,
 ## so the index is stable and the length is the setting's.
@@ -205,6 +207,24 @@ func set_herd_size(count: int) -> void:
 	while _bots.size() < want:
 		if not _add(_bots.size()):
 			break
+
+## The herd's own wake actors: `(x, z, py)` a bot, in bot order. A *flat* run rather than an
+## array of arrays, because the wake takes one of these a frame and gives it straight back to
+## `Water.wake_step`, and because the numbers are doubles the water's own mark measures a
+## stride against.
+##
+## `py` is the height above the ground a bot is drawn at, which is what the wake's own test
+## reads: a bot in the air over a pool is not in it.
+func actors() -> PackedFloat64Array:
+	var out := PackedFloat64Array()
+	out.resize(_bots.size() * 3)
+	var at: int = 0
+	for bot: Bot in _bots:
+		out[at] = bot.x
+		out[at + 1] = bot.z
+		out[at + 2] = bot.py
+		at += 3
+	return out
 
 ## How many goats the herd holds.
 func count() -> int:
@@ -433,7 +453,7 @@ func update(delta: float, weather: Dictionary) -> void:
 		# player's goat does: `new_action` is where a sleep is refused and this is where
 		# one that has already started ends. No draw is taken -- the timer goes to zero,
 		# so the plan that follows is the ordinary one for this frame.
-		if bot.mode == "sleep" and _submerged(bot.x, bot.z):
+		if bot.mode == "sleep" and _in_water(bot.x, bot.z):
 			bot.mode = "idle"
 			bot.timer = 0.0
 		if bot.jump_cool > 0.0:
@@ -525,7 +545,7 @@ func new_action(bot: Bot) -> void:
 		# rather than taking a second draw. The water is only asked when the roll says so,
 		# which is `&&`'s short circuit and not a saving of anything.
 		var dozing: bool = bot_rnd() < 0.10
-		if dozing and not _submerged(bot.x, bot.z):
+		if dozing and not _in_water(bot.x, bot.z):
 			bot.mode = "sleep"
 			bot.timer = 5.0 + bot_rnd() * 6.0
 		else:
@@ -929,12 +949,12 @@ func _nearest(x: float, z: float, reach: float) -> Dictionary:
 		return {}
 	return meadow.nearest(x, z, reach)
 
-## Whether the ground under a point is under water, through the seam `main.gd` wires to
-## `Water.submerged_at`. Off the water -- or with no water handed in -- nothing is.
-func _submerged(x: float, z: float) -> bool:
-	if not submerged.is_valid():
+## Whether a point is in the water, through the seam `main.gd` wires to `Water.in_water`.
+## Off the water -- or with no water handed in -- nothing is.
+func _in_water(x: float, z: float) -> bool:
+	if not in_water.is_valid():
 		return false
-	return bool(submerged.call(x, z))
+	return bool(in_water.call(x, z))
 
 ## Whether an armed mine stands under a point, through the seam `main.gd` wires to
 ## `Explosions.mine_armed`. The cell is the 2 m device grid's, not the meadow's.

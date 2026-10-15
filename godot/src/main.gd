@@ -64,6 +64,8 @@ const PROBE_RELIEF := 0.05
 @onready var goat: PlayerGoat = $Goat
 @onready var terrain: TerrainMesh = $Terrain
 @onready var water_surface: WaterMesh = $Water
+## The splashes the water throws, drawn as their own node (`water_splash.gd`, M20d).
+@onready var water_splash: WaterSplash = $Splash
 @onready var grass: Grass = $Grass
 @onready var explosions: Explosions = $Explosions
 @onready var celestial: Celestial = $Celestial
@@ -207,6 +209,11 @@ func _ready() -> void:
 	water.rebuild(terrain.heights(), terrain.anchor())
 	_terrain_builds = terrain.rebuilds
 	water_surface.build(terrain.heights(), terrain.anchor())
+	# The two nodes that *read* the water rather than rebuild with it: the grass, which culls
+	# a tuft a pool is hiding (M20d), and the splash node, which draws its drops. Both are
+	# told once; neither follows the grid.
+	grass.water = water
+	water_splash.water = water
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
@@ -264,7 +271,10 @@ func _ready() -> void:
 		bots.meadow = meadow
 		bots.trap = _eat_trap
 		bots.armed = Callable(explosions, "mine_armed")
-		bots.submerged = Callable(water, "submerged_at")
+		# The sleep rule's own test, and deliberately not the grass cull's: a bot does not doze
+		# in the HUD's water (`Water.in_water`), while a *tuft* is skipped where the grid vertex
+		# under it is drowned (`submerged_at`). Near a pool's edge the two disagree.
+		bots.in_water = Callable(water, "in_water")
 		bots.set_herd_size(Bots.COUNT)
 		return
 	print("join -> ", bridge.call("join", ticket, "godot"))
@@ -339,6 +349,7 @@ func _process(delta: float) -> void:
 	_place_camera(camera)
 	_advance(delta, camera.global_position)
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
+	water_splash.update()
 	# The two bodies and the rain, from the values `_advance` just settled: the sun and
 	# the moon ride the light's own line, and the rain is screen space over everything.
 	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
@@ -533,7 +544,13 @@ func _advance(delta: float, camera: Vector3) -> void:
 	# clock runs only while there is water to draw, and the wind is the weather's, turned
 	# into the unit direction and gust share the shader wants.
 	water.advance_clock(delta)
+	# ...and the wake, which `waterDraw` steps in the same place and behind the same switch:
+	# the clock, then the rings and the drops the frame's own actors laid, then the surface
+	# they belong to. A dry field has no wake to have.
+	water.wake_step(delta, _wake_actors())
 	water_surface.set_chop(water.clock(), water.wave_wind(_wind_x, _wind_z, _wind_sway))
+	water_surface.set_ripples(water.ripple_uniform(0), water.ripple_uniform(1),
+		water.ripple_uniform(2))
 
 	_sky_light = float(SkyDome.sample(_hours)["light"])
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,
@@ -557,6 +574,17 @@ func _wading() -> Dictionary:
 		"speed": water.speed_factor(goat.px, goat.pz),
 		"drain": water.drain_factor(goat.px, goat.pz),
 	}
+
+## The wake's own actors, in the order `waterActorStep` reads them: the player's goat first,
+## then the herd -- the scene's own offline and the host's when joined, which is the one
+## `BOTS` array the scene has on either side of the wire.
+##
+## One flat `(x, z, py)` run and not an array of triples: the water keys its wake marks by a
+## position in this list, so the order is the contract rather than a convenience.
+func _wake_actors() -> PackedFloat64Array:
+	var actors := PackedFloat64Array([goat.px, goat.pz, goat.py])
+	actors.append_array(herd.actors() if _joined else bots.actors())
+	return actors
 
 ## Set off the staging bang, if one was asked for. It lands beside the goat rather
 ## than under it, so both the hole and the goat are in shot.

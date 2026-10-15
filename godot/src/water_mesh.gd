@@ -63,6 +63,17 @@ func set_chop(clock: float, wind: Vector3) -> void:
 	_material.set_shader_parameter("water_time", clock)
 	_material.set_shader_parameter("water_wind", wind)
 
+## The wake's three rings, pushed each frame with the chop's own inputs: the shader sums
+## them into the chop's gradient, so they ride the same amplitude and the same distance
+## fade. Every slot is set, a spent ring as nothing, so a ring cannot linger in the shader
+## after its strength reached zero.
+func set_ripples(first: Vector4, second: Vector4, third: Vector4) -> void:
+	if _material == null:
+		return
+	_material.set_shader_parameter("water_ripple0", first)
+	_material.set_shader_parameter("water_ripple1", second)
+	_material.set_shader_parameter("water_ripple2", third)
+
 ## Build the surface over the terrain grid's own heights, at the grid's anchor.
 func build(heights: PackedFloat64Array, anchor: Vector2) -> void:
 	_anchor = anchor

@@ -13,14 +13,15 @@
 //   * the absorption. The tint runs shallow -> deep with the water's own *depth* (so a
 //     puddle reads thin and a pool reads deep), and the alpha runs out over the shore
 //     band with it, which is what makes the water's edge a fade rather than a drawn line.
-//   * the chop (M20c). `waterNormal`, transcribed: two crossed wave trains whose gradient
-//     tilts the surface per *fragment*, faded out where one pixel spans a crest. It is
-//     not displaced -- the mesh is the terrain's 2 m grid and a wave is centimetres
+//   * the chop (M20c) and the wake (M20d). `waterNormal`, transcribed: two crossed wave
+//     trains whose gradient tilts the surface per *fragment*, faded out where one pixel
+//     spans a crest, and the wake's three rings summed into that *same* gradient so a hoof
+//     in a pool tips the reflection and spreads the glitter exactly as a wave does. None of
+//     it is displaced -- the mesh is the terrain's 2 m grid and a wave is centimetres
 //     across, which no quad that size can carry -- but a tilted normal is what the
-//     reflection and the specular read, so it is the whole of what "a ripple" means here.
-//     The wake's own rings (M20d) sum into the same gradient in `WATER_FS`; they are
-//     absent here, which is exactly the zero-strength case, since a spent ring
-//     contributes nothing.
+//     reflection and the specular read, so it is the whole of what a ripple means here.
+//     The rings ride the chop's own amplitude and its own fade, which is why one in thin
+//     water is as subtle as the water around it.
 //
 // Everything `WATER_FS` spent its last third on is Godot's, exactly as the ground's
 // lighting is: the sun, the ambient and the shadow map are the engine's, and the
@@ -31,9 +32,11 @@
 // colours are *not* `source_color`, for the reason section 9 gives about the ground:
 // the scene authored them in display space and the port hands them over as they are.
 //
-// Not here, and each is its own slice in the ROADMAP: the wake and the splashes (M20d)
-// and the reflection tiers (M20e: the bake and the mirrored pass, which Godot answers
-// with the environment rather than with a second scene submission).
+// Not here, and each is its own slice in the ROADMAP: the reflection tiers (M20e: the bake
+// and the mirrored pass, which Godot answers with the environment rather than with a second
+// scene submission) and swimming (M20g). The *drops* a splash throws are not here either,
+// and for a different reason: `water_splash.gd` draws them, because a drop is a ball rather
+// than a fragment of this surface.
 shader_type spatial;
 
 // `TUNING.water.low`, until the frame's own level arrives.
@@ -49,6 +52,16 @@ uniform vec3 water_wave = vec3(0.03, 0.6, 1.2);
 uniform float water_time = 0.0;
 uniform vec3 water_wind = vec3(1.0, 0.0, 0.2);
 
+// The wake (M20d): three rings at once, each `(x, z, the front's radius in metres, its
+// strength)`. Named rather than an array on purpose -- the scene's reason is that its
+// shader surface takes a *name* rather than an index, and a fixed handful of uniforms is a
+// question every renderer can answer. The strength arrives already decayed by the emitter,
+// which is what keeps this stateless about time; a spent ring is pushed as a zero and
+// contributes nothing.
+uniform vec4 water_ripple0 = vec4(0.0);
+uniform vec4 water_ripple1 = vec4(0.0);
+uniform vec4 water_ripple2 = vec4(0.0);
+
 // `WATER_VS`'s `fragDepth`: the water standing on this vertex, which the tint and the
 // alpha are both read from.
 varying float water_depth;
@@ -62,6 +75,15 @@ void vertex() {
 	water_depth = depth;
 	VERTEX.y = ground + depth;
 	water_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
+// One ring's gradient: an expanding front with a damped wave train behind it, which is what
+// a hoof in water leaves. `WATER_FS` `rippleGrad`, transcribed.
+vec2 ripple_grad(vec2 p, vec4 r, float w) {
+	if (r.w <= 0.001) return vec2(0.0);
+	vec2 d = p - r.xy;
+	float dist = max(length(d), 1e-3);
+	return (d / dist) * (cos((dist - r.z) * w) * w * exp(-dist * 1.2) * r.w);
 }
 
 // `WATER_FS` `waterNormal`: the wave height field, differentiated.
@@ -85,6 +107,12 @@ vec3 water_normal(vec2 p, float depth) {
 	float p1 = dot(d1, p) * k + t;
 	float p2 = dot(d2, p) * k * 1.7 + t * 1.3;
 	vec2 grad = d1 * (cos(p1) * k) + d2 * (cos(p2) * k * 1.7 * 0.6);
+	// The rings are summed into that gradient and ride the same amplitude, so one in thin
+	// water is as subtle as the chop around it. Three crests per `water_wave.y`, which is
+	// what a splash looks like.
+	float rw = 6.2831853 / max(water_wave.y * 3.0, 0.05);
+	grad += ripple_grad(p, water_ripple0, rw) + ripple_grad(p, water_ripple1, rw)
+		+ ripple_grad(p, water_ripple2, rw);
 	float phase = max(fwidth(p1), fwidth(p2));
 	grad *= 1.0 - smoothstep(0.5, 1.6, phase);
 	return normalize(vec3(-grad.x * amp, 1.0, -grad.y * amp));
