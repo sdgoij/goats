@@ -39,9 +39,16 @@ const HALF := 48.0
 const DETAIL_SIZE := 64
 const UV_SCALE := 0.06
 
+## The ground as the mirror draws it (M20e): the same mesh and the same look, seen from under
+## the terrain. See `mirror_material`.
+const MIRROR_SHADER := preload("res://src/terrain_mirror.gdshader")
+
 var _heights := PackedFloat64Array()
 var _mesh: ArrayMesh
 var _material: StandardMaterial3D
+## The detail texture, made once and shared: `_material` and `mirror_material` both read it, so
+## the ground and its reflection cannot drift apart.
+var _detail: ImageTexture
 var _anchor := Vector2(INF, INF)
 var _built := false
 ## How many times the grid has been rebuilt, which is what a gate reads to tell a
@@ -195,6 +202,12 @@ func build(anchor_x: float, anchor_z: float) -> void:
 	_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	_mesh.surface_set_material(0, _material)
 
+## The detail texture, made on first use.
+func _detail_texture() -> ImageTexture:
+	if _detail == null:
+		_detail = _make_detail_texture()
+	return _detail
+
 ## The scene's detail texture: neutral grain around 0.85, so the per-vertex
 ## material colours keep a texture up close without an atlas. `world.js`
 ## `makeTerrainTexture`, transcribed.
@@ -217,8 +230,19 @@ func _make_detail_texture() -> ImageTexture:
 func _make_material() -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.vertex_color_use_as_albedo = true
-	material.albedo_texture = _make_detail_texture()
+	material.albedo_texture = _detail_texture()
 	# Ground is not shiny, and a specular highlight on a hillside reads as water.
 	material.roughness = 1.0
 	material.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	return material
+
+## The ground's material as the **mirror** draws it (M20e): the same mesh, the same detail
+## texture and the same look, with the two differences a camera under the terrain needs --
+## `cull_front`, so the quads that camera faces are the drawn ones, and a cut at the waterline.
+## `terrain_mirror.gdshader` carries the why; `water_mirror.gd` owns the instance that wears
+## this and pushes the level into it every frame.
+func mirror_material() -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	material.shader = MIRROR_SHADER
+	material.set_shader_parameter("detail_texture", _detail_texture())
 	return material

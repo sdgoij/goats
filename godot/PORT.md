@@ -617,24 +617,26 @@ The port answers the *mirror* with **`renderWaterMirror` transcribed** -- `water
 The one thing the port had to invent is what a tier *draws*. The scene's three answers are three mechanisms (a bake, a render texture, or nothing); the port's are three answers to one pass, said with a `cull_mask` over layers `main.gd` sets:
 
 ```
-tier     mask         draws                                   runs
-sky      0            nothing -- the engine's own sky          no
-ground   layer 5      the ground, and not the goat            yes
-mirror   all but 6    everything but the surface and meadow   yes
+tier     mask              draws                                   runs
+sky      0                 nothing -- the engine's own sky          no
+ground   layer 7           the ground the mirror can see, no goat  yes
+mirror   all but 5 and 6   everything but the two grounds, the
+                           surface and the meadow                  yes
 ```
 
-Layer 5 is the ground and layer 6 is what must never be in a reflection (the surface, the drops and the meadow); everything else -- the goat, the herd, the devices and the bodies -- keeps layer 1, which is what makes "the ground and not the goat" expressible at all. **The layers start at 5 and that is not arbitrary:** layer 2 is already the moon's (`celestial.gd`'s `MOON_LAYER`, the layer its own light is masked to), and the collision is silent and expensive -- the ground moved onto it went pale, because the moon's light was suddenly lighting the terrain as well as the moon. A layer is a global number and nothing checks it is free.
+The layers are the ground as the *main* pass draws it (5), the surface, the drops and the meadow, which must never be in a reflection (6), and the ground as the *mirror* draws it (7). Everything else -- the goat, the herd, the devices and the bodies -- keeps layer 1, which is what makes "the ground and not the goat" expressible at all. **The ground needs two of them because it needs two draws:** its quads face away from a camera under it, so each camera has to be kept to its own mesh, and a single layer would cost a draw of terrain nobody can see at best. **And the layers start at 5 for a reason that is not arbitrary:** layer 2 is already the moon's (`celestial.gd`'s `MOON_LAYER`, the layer its own light is masked to), and the collision is silent and expensive -- the ground moved onto it went pale, because the moon's light was suddenly lighting the terrain as well as the moon. A layer is a global number and nothing checks it is free.
 
-Three things in the gate are worth the space. The **rule is transcribed exactly**: the leaf's clamp over twelve leaves (a number in 0..2 and *not* rounded -- `tuningCoerce` clamps and `waterReflectTier` rounds), the promise over all 48 combinations of leaf x ground x mirror, and the three words `setting reflect` spells. The **masks are pins** rather than transcriptions -- the two engines answer the tier differently -- so they are asserted as the properties the mapping exists for (the sky runs no pass; the ground draws the ground's layer and *not* layer 1; the mirror draws the goat and not what must not be in a reflection; the mirror draws everything the ground tier does; no two tiers draw the same layers). And the **plumbing** is checked the only way a name can be: the shader must *declare* `water_reflect` and `water_mirror`, and `apply` must land the tier on **both** the material and the pass, which is what `mirror.mask()` and `mirror.running()` read back off the camera and the target rather than off a second copy of the tier.
+Three things in the gate are worth the space. The **rule is transcribed exactly**: the leaf's clamp over twelve leaves (a number in 0..2 and *not* rounded -- `tuningCoerce` clamps and `waterReflectTier` rounds), the promise over all 48 combinations of leaf x ground x mirror, and the three words `setting reflect` spells. The **masks are pins** rather than transcriptions -- the two engines answer the tier differently -- so they are asserted as the properties the mapping exists for (the sky runs no pass; the ground draws the mirror's ground and *not* layer 1, and not the main pass's ground either, since that one faces away from it; the mirror draws the goat and not what must not be in a reflection; the mirror draws everything the ground tier does; no two tiers draw the same layers). And the **plumbing** is checked the only way a name can be: both shaders must *declare* the names the tier is pushed under -- `water_reflect` and `water_mirror`, and `water_level` and `detail_texture` in the ground's own -- and `apply` must land the tier on **both** the material and the pass, which is what `mirror.mask()` and `mirror.running()` read back off the camera and the target rather than off a second copy of the tier, with `use_ground`/`has_ground` checked the same way round.
 
 ```
 oracle answered 12 leaf/leaves, 48 tier(s), 5 word(s)
 clamp: 12 leaf/leaves, 0 mismatch(es)
 promise: 48 value(s) over 12 leaf/leaves x ground x mirror, 0 mismatch(es)
 words: 5, 0 mismatch(es)
-drawing: sky 0, ground 16, mirror 1048543 (nothing 0, ground 16, noreflect 32), 0 problem(s)
+drawing: sky 0, ground 64, mirror 1048527 (nothing 0, ground-mirror 64, noreflect 32), 0 problem(s)
 declared: water_level, ..., water_reflect, water_mirror
-landing: 3 wish(es), 0 mismatch(es)
+declared (ground): water_level, detail_texture
+landing: 3 wish(es) and the ground, 0 mismatch(es)
 display server: headless, can pass: false
 degrade: 3 wish(es), 0 mismatch(es)
 edges: ok
@@ -643,9 +645,11 @@ OK: the port's reflection tiers are the scene's, on the port's own mirror
 
 The **promise degrades a tier rather than drawing nothing**, and the port's half of it is the engine's: a mirrored pass needs a *frame*, so `--headless` has none and answers `sky` however the leaf is set. That is the port's `can_mirror` -- "a render texture beside a window to size it to", with Godot's texture always present and only the window left to ask about.
 
-What a picture adds is the only thing a case cannot. `GOATS_FLOOD=0.7 GOATS_REFLECT=mirror` aimed with `GOATS_CAM=0.7,0.10,6.0` shows the goat **mirrored in the water** -- inverted, grazing-angle-strong, and nothing like a shadow, which is the thing this slice was rejected twice for; the same frame at `sky` has no reflection at all and at `ground` has no goat in it. Measured as the mean absolute pixel difference from the same frame, `mirror` differs from `sky` by **0.003815** (47,728 of 921,600 pixels) and from `ground` by **0.003459**, where `ground` differs from `sky` by **0.000571**. At the boot camera those fall to 0.001037 and 0.000329, and that is physics rather than a bug: a sheet of water seen steeply reflects almost nothing, and the scene's own fresnel says so, so the reflection lives at grazing angles and nowhere else.
+What a picture adds is the only thing a case cannot. `GOATS_FLOOD=0.7 GOATS_REFLECT=mirror` aimed with `GOATS_CAM=0.7,0.10,6.0` shows the goat **mirrored in the water** -- inverted, grazing-angle-strong, and nothing like a shadow, which is the thing this slice was rejected twice for -- with the ground's own reflection as a band along the far shore and around the goats' feet; the same frame at `sky` has no reflection at all and at `ground` has no goat in it. Measured with `GOATS_HOUR=8` pinned so that the clock cannot drift between runs, `mirror` differs from the sky alone by **0.001534** of a frame (21,508 of 921,600 pixels) and `ground` from `sky` by **0.000236** (8,762), against a **run-to-run floor of 0.000433** (2,189) -- the herd is a little elsewhere between two runs, and the floor is measured rather than assumed so the numbers above can be read against it. At the boot camera the reflection falls to about a third of that, and that is physics rather than a bug: a sheet of water seen steeply reflects almost nothing, and the scene's own fresnel says so, so the reflection lives at grazing angles and nowhere else.
 
-**What the mirror does not contain, and cannot as it stands.** The pass draws the goat, the herd and the terrain's silhouette, but not the ground's own reflection as a surface. A heightfield seen from a camera below it is a back face -- and the mirrored eye sits under the terrain by construction -- so the terrain is culled, which is also why nothing occludes the goat. The scene can put terrain in its mirror because `LIT_FS` keeps the *authored* normal (so an underside is shaded as ground rather than flipped dark, which is what Godot's `StandardMaterial3D` does) and because `mirrorClip` discards everything below the waterline, which is exactly the near slab that would otherwise hide the goat. Neither has an equivalent here: the clip wants a per-pass uniform, and the port's terrain material is shared with the main pass, where it must *not* clip, because the submerged ground is M20b's. Until that is solved -- a terrain `ShaderMaterial` with a height clip and no back-face normal flip is the shape of it -- the **ground tier draws the ground and the ground is not visible in it**, so at the shipped default the two lower tiers look alike. That is the honest state of it; what the tier exists to show, the goat in the water, is right.
+**The ground has a draw of its own.** A heightfield seen from a camera below it is a back face, and the mirrored eye sits under the terrain by construction, so the mesh the main pass draws is invisible to the mirror. The scene can put terrain in its mirror because `LIT_FS` keeps the *authored* normal -- an underside is shaded as ground rather than flipped dark, which is what Godot's `StandardMaterial3D` does -- and because `mirrorClip` discards everything below the waterline, which is exactly the near slab that would otherwise hide the goat. It is one global shader there and a per-pass uniform; here the material is shared with the main pass and must *not* clip, because the submerged ground is M20b's. So `terrain_mirror.gdshader` is a second **instance** of the same `ArrayMesh`, on a layer of its own, and it changes only what a camera under the terrain needs: `cull_front`, so the faces the mirrored eye sees are the ones the main pass throws away; the authored normal carried across as a varying rather than read back, so no back-face flip can reach it; and the waterline cut, pushed as `water_level`. `main.gd` keeps each camera to its own layer, so the twin costs one draw at half the viewport and no geometry at all.
+
+Two things about that are worth the space. The twin is the **ground tier's** subject as well as the mirror's, which is what makes that tier more than a cheaper mirror, and its own target proves it: with `GOATS_REFLECT=ground` the pass's image holds two slivers of mound and **no goat**, which is "the ground, and not the goat" said literally. And the ground's reflection is a *band* rather than a surface: at the shipped `GOATS_FLOOD=0.7` the whole hollow is a lake and only the mounds the goats stand on and the far shore are above the waterline, so that is all there is to reflect.
 
 **The herd** (`verify_bots.gd`): `bots.gd` is the scene hosting itself. Seven goats with
 a temperament each -- `TUNING.herd.spec`'s coat colour, body scale, `bold` and `lazy` --
@@ -723,7 +727,7 @@ host's goats on the model's own material, so a client's herd is seven goats of o
 a coat there needs the host's spec table on the wire, which is a protocol change and not
 a drawing one.
 
-What is *not* yet proven: the ground's own reflection -- the mirror pass draws the goat and the herd and the terrain's silhouette, but not the ground as a surface, and `PORT.md` section 3 says why; the cloud *billboards* (`drawClouds` — the fallback
+What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the HUD as a `Control` tree, the menu and the console (stage 6 —
 there is a one-`Label` read-out and no way to paste a ticket *in game*); audio; the mods state, bites, bangs and
@@ -775,7 +779,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
 | Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` + `sky.gdshader`, and the two discs in `celestial.gd` |
 | Lighting + shadows | `game/lighting.js` | `DirectionalLight3D` + Godot's shadow atlas |
-| Water pools (level, chop, fresnel, wake, splashes, reflection) | `game/water.js` | **Done**: `water.gd` (the table, the wading and the wake) + `water_mesh.gd` + `water.gdshader` (the surface, the chop, the rings and what reads the mirror) + `water_splash.gd` (the drops) + `water_reflect.gd` (the three tiers) + `water_mirror.gd` (the mirrored pass) |
+| Water pools (level, chop, fresnel, wake, splashes, reflection) | `game/water.js` | **Done**: `water.gd` (the table, the wading and the wake) + `water_mesh.gd` + `water.gdshader` (the surface, the chop, the rings and what reads the mirror) + `water_splash.gd` (the drops) + `water_reflect.gd` (the three tiers) + `water_mirror.gd` (the mirrored pass) + `terrain_mirror.gdshader` (the ground's own draw, seen from under it) |
 | Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
 | Bots (collision, temperaments, fleece) | `game/bots.js` | **Done**: `bots.gd`, the herd's own state machine, collision and coats -- real rigs, not the `MultiMesh` sketched here |
 | Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
@@ -914,7 +918,7 @@ Sizes are judgement, not measurement.
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree remains | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
-| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e)** | 3–5 |
+| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
@@ -1115,23 +1119,30 @@ disagreements and fails if there are none.
   and the port's own screen-space march written into the shader, which measured fine and *looked*
   wrong -- a hard splat of the goat in a pool the goat was nowhere near -- because a march with
   no upper bound counts "merely behind the frame's surface" as a hit. The mirror is what
-  survived, and it is checkable the same way: `mirror` differs from `sky` by 0.003815 and from
-  `ground` by 0.003459 at a grazing aim, against 0.000571 for `ground` from `sky`. None of those
-  numbers says the reflection *looks* good; they say the tiers are three different, ordered
-  things, and after that only a picture answers.
+  survived, and it is checkable the same way: with the hour pinned, `mirror` differs from the
+  sky alone by 0.001534 and `ground` from `sky` by 0.000236, against a measured run-to-run
+  floor of 0.000433. None of those numbers says the reflection *looks* good; they say the
+  tiers are three different, ordered things, and after that only a picture answers. The floor
+  is worth its own line: **a picture's measurement is only as good as the frame it is taken
+  against**, and this scene's herd walks, so two runs of the *same* tier are already 0.000433
+  apart. Without that number, 0.000236 reads as signal.
 - **A reflection pass cannot be told apart from the main pass from inside a shader, and the
-  scene's two tricks for it do not transplant.** The scene's mirror works because `LIT_FS` keeps
-  the *authored* normal -- so ground seen from below is shaded as ground rather than flipped
-  dark -- and because `mirrorClip` throws away everything under the waterline, which is exactly
-  the near slab that would otherwise occlude the goat. Godot's `StandardMaterial3D` flips the
-  normal on a back face for a double-sided material, and disabling culling on the terrain is
-  what proved both halves at once: its reflection came back a **black slab** with the goat
-  hidden *behind* it, which is the occlusion `mirrorClip` exists to remove. And a clip wants a
-  per-pass uniform, which a material shared with the main pass cannot have -- the main pass must
-  *not* clip, because the submerged ground is M20b's. So the terrain is culled out of the mirror
-  and the pass carries the goat and the herd. The general shape is worth keeping: when a pass is
-  a *second submission* of the same nodes, anything per-pass has to be per-viewport, and Godot's
-  shader parameters are per-material.
+  scene's two tricks for it do not transplant -- so the ground gets a second draw instead.**
+  The scene's mirror works because `LIT_FS` keeps the *authored* normal -- so ground seen from
+  below is shaded as ground rather than flipped dark -- and because `mirrorClip` throws away
+  everything under the waterline, which is exactly the near slab that would otherwise occlude
+  the goat. Godot's `StandardMaterial3D` flips the normal on a back face for a double-sided
+  material, and disabling culling on the terrain is what proved both halves at once: its
+  reflection came back a **black slab** with the goat hidden *behind* it, which is the occlusion
+  `mirrorClip` exists to remove. A clip likewise wants a per-pass uniform, and a material shared
+  with the main pass cannot have one -- the main pass must *not* clip, because the submerged
+  ground is M20b's. What resolved it was not a smarter shader but a second **instance**: the same
+  `ArrayMesh` on its own layer, worn by `terrain_mirror.gdshader`, with `cull_front` (the faces
+  the mirrored eye sees are exactly the ones the main pass throws away), the authored normal
+  carried over as a varying rather than read back (so no flip can reach it), and the waterline
+  cut as a uniform. The general shape is worth keeping: when a pass is a *second submission* of
+  the same nodes, anything per-pass has to be per-*instance*, not per-material -- and two
+  instances of one mesh over two layers is cheaper than any shader that tries to be both.
 - **A shader stage's built-ins are scoped to its stage function, and the fragment stage has no
   `PROJECTION_MATRIX` at all.** This one was paid for by the screen-space march that the mirror
   replaced, and it is kept because it is true of any shader here. The march had to project a ray
@@ -1255,8 +1266,9 @@ for frame, 223020 values compared with nothing out by more than 6.1e-13
 eighteen dry ones among them, the two water tests told apart where they part, and the
 grass a deep pool hides -- against `water.js` and `weather.js`, 21960 values compared
 with the worst drop out by 5.9e-7 (`godot/tools/verify_water_wake.gd`); and aims the water's
-reflection -- the leaf and its clamp, the promise a build can keep, and the mask each of the
-three tiers hands the mirrored pass -- against `water.js`'s own
+reflection -- the leaf and its clamp, the promise a build can keep, the mask each of the three
+tiers hands the mirrored pass, and the ground that pass draws on a layer of its own -- against
+`water.js`'s own
 (`godot/tools/verify_water_reflect.gd`). Every one
 of them exits zero.
 The rest is read from the tree.*

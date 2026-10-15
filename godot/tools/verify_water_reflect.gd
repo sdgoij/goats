@@ -13,7 +13,10 @@
 #   * the three words `setting reflect` and the menu's combo box spell (`ctl.js` `CTL_REFLECT`);
 #   * what each tier's pass *draws*, which is the scene's own two exclusions said as a
 #     `cull_mask` -- "the ground, and not the goat" and "everything but what must not be in a
-#     reflection" -- and which is where this slice's substance is;
+#     reflection" -- and which is where this slice's substance is. The ground has a layer of its
+#     own *twice over*: the mesh the main pass draws is a back face to a camera under the
+#     terrain, so the mirror draws a second instance of it on `LAYER_GROUND_MIRROR`, and each
+#     camera is kept to its own;
 #   * and that the tier reaches both the surface's material and the pass, under names the shader
 #     actually declares: a misspelling is silent on both sides, which is the one thing a name
 #     can be checked for at all here.
@@ -164,14 +167,18 @@ func _initialize() -> void:
 		drawing.append("the sky tier runs a pass; it is meant to sample nothing at all")
 	if not WaterMirror.runs(WaterReflect.GROUND):
 		drawing.append("the ground tier runs no pass")
-	if (ground_mask & WaterMirror.LAYER_GROUND) == 0:
-		drawing.append("the ground tier does not draw the ground")
+	if (ground_mask & WaterMirror.LAYER_GROUND_MIRROR) == 0:
+		drawing.append("the ground tier does not draw the ground the mirror can see")
+	if (ground_mask & WaterMirror.LAYER_GROUND) != 0:
+		drawing.append("the ground tier draws the main pass's terrain, which faces away from it")
 	if (ground_mask & 1) != 0:
 		drawing.append("the ground tier draws layer 1, so it reflects the goat")
 	if (world_mask & 1) == 0:
 		drawing.append("the mirror tier cannot draw the goat it exists to reflect")
 	if (world_mask & WaterMirror.LAYER_NOREFLECT) != 0:
 		drawing.append("the mirror tier draws what must not be in a reflection")
+	if (world_mask & WaterMirror.LAYER_GROUND) != 0:
+		drawing.append("the mirror tier draws the main pass's terrain as well as its own")
 	if (world_mask & ground_mask) != ground_mask:
 		drawing.append("the mirror does not draw everything the ground tier does")
 	if sky_mask == ground_mask or ground_mask == world_mask or sky_mask == world_mask:
@@ -179,8 +186,8 @@ func _initialize() -> void:
 	for which in WaterReflect.NAMES.size():
 		if WaterMirror.runs(which) != (WaterMirror.mask_of(which) != 0):
 			drawing.append("tier %d's pass runs and its mask disagree" % which)
-	print("drawing: sky %d, ground %d, mirror %d (nothing %d, ground %d, noreflect %d), %d problem(s)"
-		% [sky_mask, ground_mask, world_mask, 0, WaterMirror.LAYER_GROUND,
+	print("drawing: sky %d, ground %d, mirror %d (nothing %d, ground-mirror %d, noreflect %d), %d problem(s)"
+		% [sky_mask, ground_mask, world_mask, 0, WaterMirror.LAYER_GROUND_MIRROR,
 			WaterMirror.LAYER_NOREFLECT, drawing.size()])
 	for problem in drawing:
 		print("  ", problem)
@@ -196,6 +203,15 @@ func _initialize() -> void:
 	for needed in ["water_reflect", "water_mirror"]:
 		if not declared.has(needed):
 			missing.append(needed)
+	# The ground's own reflection is a second shader, and a misspelling in it is just as silent:
+	# it must declare the level its `discard` cuts at, and the texture it shares with the ground.
+	var ground_shader: Shader = load("res://src/terrain_mirror.gdshader")
+	var ground_declared: PackedStringArray = []
+	for uniform: Dictionary in ground_shader.get_shader_uniform_list():
+		ground_declared.append(String(uniform["name"]))
+	for needed in ["water_level", "detail_texture"]:
+		if not ground_declared.has(needed):
+			missing.append("terrain_mirror: " + needed)
 
 	var mirror := WaterMirror.new()
 	var surface := WaterMesh.new()
@@ -229,11 +245,26 @@ func _initialize() -> void:
 				first_landing = "wish %.1f: the pass runs %s, want %s" % [
 					wish, mirror.running(), WaterMirror.runs(want)]
 	print("declared: ", ", ".join(declared))
+	print("declared (ground): ", ", ".join(ground_declared))
 	if not missing.is_empty():
 		print("  missing: ", ", ".join(missing))
-	print("landing: 3 wish(es), %d mismatch(es)" % landing)
+	print("landing: 3 wish(es) and the ground, %d mismatch(es)" % landing)
 	if first_landing != "":
 		print("  first: ", first_landing)
+
+	# ...and the ground the pass draws, which is named after the fact: nothing before it is asked
+	# for, something after, and what it lands on is the layer the ground tier's mask names.
+	if mirror.has_ground():
+		landing += 1
+		if first_landing == "":
+			first_landing = "the pass has a ground before one is named"
+	var ground_material := ShaderMaterial.new()
+	ground_material.shader = ground_shader
+	mirror.use_ground(ArrayMesh.new(), ground_material)
+	if not mirror.has_ground():
+		landing += 1
+		if first_landing == "":
+			first_landing = "the ground named for the pass did not land"
 
 	# 5. The degrade: the promise falls a tier rather than drawing nothing, and the port's half
 	#    of it is a *frame* -- a mirrored pass needs one, so `--headless` answers sky however the
@@ -287,7 +318,7 @@ func _initialize() -> void:
 	if not drawing.is_empty():
 		failures.append("the tiers do not draw what they are meant to")
 	if not missing.is_empty():
-		failures.append("the shader does not declare: %s" % ", ".join(missing))
+		failures.append("a shader does not declare: %s" % ", ".join(missing))
 	if landing != 0:
 		failures.append("the tier does not reach the surface and the pass: %d place(s)" % landing)
 	if degrade_mismatches != 0:

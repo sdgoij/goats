@@ -22,6 +22,7 @@ plan.
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
 | `src/terrain.gd` | The heightfield, transcribed from `world.js` and measured against it |
 | `src/terrain_mesh.gd` | The ground, drawn: the scene's 48x48 grid as one `ArrayMesh`, rebuilt as the anchor drifts |
+| `src/terrain_mirror.gdshader` | The ground, drawn for the mirror: the same mesh under `cull_front`, with a cut at the waterline (M20e) |
 | `src/grass.gd` | The meadow, drawn: `weather.js`'s `tuftField` as a `MultiMesh`, following the goat and thinning where it has grazed |
 | `src/meadow.gd` | The meadow as food: the cell hash, the nearest tuft, bites and regrowth (`food.js`) |
 | `src/explosions.gd` | The devices: the derived minefield, the trapped tufts, the fuse, the bang and the effects (`explosions.js`) |
@@ -211,8 +212,8 @@ the water is a `spatial` shader carrying the scene's vertex lift, its absorption
 chop and its wake under Godot's own light and reflection — the rings are three `vec4`
 uniforms and the splashes are a `MultiMeshInstance3D` (`water_splash.gd`), a deep pool
 thins the meadow where it hides it (`grass.gd`), and the reflection is the port's **own
-mirrored pass** (`water_mirror.gd`), because Godot's `ssr_enabled` does not reach a
-transparent surface (M20e).
+mirrored pass** (`water_mirror.gd`) — the goat, the herd and, on a second draw of the ground
+itself, the shore — because Godot's `ssr_enabled` does not reach a transparent surface (M20e).
 And the HUD is one `Label` rather than the scene's bars, action menu and console: the
 words are the scene's, the layout is stage 6.
 
@@ -225,7 +226,9 @@ is the water's reflection (`setting reflect`'s own words, M20e), and it is a *se
 rather than a march: `sky` runs no pass and stands on the sky alone, which is what shipped
 before M20e; the default `ground` runs the pass drawing the ground and not the goat; and
 `mirror` runs the pass drawing everything but the surface and the meadow, so the goat is in
-the water. It is grazing-angle-strong and near-invisible from above, which is what the
+the water. (The ground is a second draw of the terrain's own mesh, because a heightfield's
+quads face away from a camera under it — `terrain_mirror.gdshader`.) It is
+grazing-angle-strong and near-invisible from above, which is what the
 scene's own fresnel says: `GOATS_CAM=0.7,0.10,6` is the aim that shows it. `GOATS_WEATHER` pins the
 state machine's *state*, which is what a downpour needs — the rain is drawn and not
 measured, so only a picture can judge it; `GOATS_CAM=yaw,pitch[,dist]` aims the camera,

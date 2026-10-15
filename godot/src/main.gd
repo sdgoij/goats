@@ -230,11 +230,17 @@ func _ready() -> void:
 	# the ground on one of its own, and the surface, the drops and the meadow on another. That is
 	# what says "the ground, and not the goat" (the ground tier draws the ground's layer alone)
 	# and "everything but what must not be in a reflection" (the mirror tier draws the rest).
+	# The ground's *own* reflection is a second draw of the same mesh on a second layer, because a
+	# heightfield is a back face to a camera under it; `use_ground` below hands it over, and the
+	# camera a few lines down keeps the main pass away from it.
 	terrain.layers = WaterMirror.LAYER_GROUND
 	water_surface.layers = WaterMirror.LAYER_NOREFLECT
 	grass.layers = WaterMirror.LAYER_NOREFLECT
 	water_splash.layers = WaterMirror.LAYER_NOREFLECT
 	add_child(water_mirror)
+	# The mesh is the terrain's own, so the twin follows a rebuilt grid without a copy of it, and
+	# the material is the ground's look with the mirror's own two differences.
+	water_mirror.use_ground(terrain.mesh, terrain.mirror_material())
 	# The tier is the console's (`setting reflect`) once there is one; until then it is the
 	# staging knob, and a word the scene does not know leaves the leaf where it is. The surface
 	# and the pass are both told, because neither can work the tier out for itself.
@@ -246,6 +252,9 @@ func _ready() -> void:
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
+	# The ground's twin is the mirror's own, and only the mirror's camera may see it: from above,
+	# `cull_front` throws every quad of it away, so a main pass that drew it would pay for nothing.
+	camera.cull_mask = camera.cull_mask & ~WaterMirror.LAYER_GROUND_MIRROR
 	_forced_hour = _environment_float("GOATS_HOUR", -1.0)
 	_forced_cloud = _environment_float("GOATS_CLOUD", -1.0)
 	_boom = not OS.get_environment("GOATS_BOOM").is_empty()

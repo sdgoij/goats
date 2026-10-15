@@ -24,6 +24,13 @@
 # does not reflect the goat" is said -- and it is also where that tier's saving is, since the
 # goats are what a mirror frame has to pose twice.
 #
+# The ground is the one thing here that needs a **second instance** rather than a second
+# `cull_mask` entry: a heightfield's quads face away from a camera under it, so the mesh the
+# main pass draws is invisible to this one and vice versa. `use_ground` takes the terrain's own
+# `ArrayMesh` and the material `terrain_mesh.gd` builds for it, and the twin lives on a layer of
+# its own that the main camera is told to skip -- so the reflection costs one draw at half the
+# viewport and no geometry at all.
+#
 # One thing here is **not** the scene's, and it is the cost it pays for being a mirror at all.
 # The scene's tier 1 was a heightfield baked once, so it was camera-independent and cost
 # nothing a frame. A mirror cannot be: its image depends on where the camera is, so the port's
@@ -33,10 +40,16 @@
 class_name WaterMirror
 extends Node
 
-## The two layers the masks are built from: the ground (the heightfield grid, craters and all,
-## since a crater is a term in the heights) and the things that must never be in a reflection.
-## Everything else -- the goat, the herd, the devices, the bodies -- keeps layer 1, which is
-## what makes "the ground and not the goat" expressible at all.
+## The three layers the masks are built from: the ground as the *main* pass draws it, the
+## things that must never be in a reflection, and the ground as the *mirror* draws it. Everything
+## else -- the goat, the herd, the devices, the bodies -- keeps layer 1, which is what makes "the
+## ground and not the goat" expressible at all.
+##
+## **The ground needs two layers because it needs two draws.** A heightfield's quads face away
+## from a camera under it, so the mesh the main pass draws is invisible to the mirror and the
+## mesh the mirror draws is invisible to the main pass (`terrain_mirror.gdshader` carries the
+## why). Two layers is what keeps each camera to its own; a single layer would put one of them
+## on the wrong side and cost a draw of terrain nobody can see at best.
 ##
 ## They start at layer 5, and that is not arbitrary: **layer 2 is already the moon's**
 ## (`celestial.gd`'s `MOON_LAYER`, the layer its own light is masked to), and a collision with
@@ -45,19 +58,29 @@ extends Node
 ## nothing checks it is free.
 const LAYER_GROUND := 1 << 4
 const LAYER_NOREFLECT := 1 << 5
+const LAYER_GROUND_MIRROR := 1 << 6
 
 ## What a tier's pass draws, indexed by `water.js`'s tier number. The sky tier draws nothing at
-## all, which is why `runs` can be read off the mask rather than kept beside it.
+## all, which is why `runs` can be read off the mask rather than kept beside it. The ground tier
+## draws the *mirror's* ground -- and not layer 1, which is the goat, and not the main pass's
+## terrain, whose quads face away from this camera.
 const MASK_SKY := 0
-const MASK_GROUND := LAYER_GROUND
-const MASK_WORLD := 0xFFFFF & ~LAYER_NOREFLECT
+const MASK_GROUND := LAYER_GROUND_MIRROR
+const MASK_WORLD := 0xFFFFF & ~(LAYER_NOREFLECT | LAYER_GROUND)
 const MASKS := [MASK_SKY, MASK_GROUND, MASK_WORLD]
 
-## The pass's target and the camera that fills it. Built on first use, so a node can be created
-## before the tree it will share a world with.
+## The pass's target, the camera that fills it and the ground's own twin. Built on first use, so
+## a node can be created before the tree it will share a world with.
 var _viewport: SubViewport
 var _camera: Camera3D
 var _size := Vector2i.ZERO
+## The ground as this pass draws it: a second `MeshInstance3D` over the *same* `ArrayMesh` as
+## the terrain, wearing `terrain_mesh.gd`'s mirror material. Null until `use_ground` names one,
+## because the terrain is not this object's to find.
+var _ground: MeshInstance3D
+var _ground_material: ShaderMaterial
+## The level last pushed into that material, so a still pool costs no write.
+var _ground_level := NAN
 
 ## How many times the pass has run, which is the port's answer to the scene's `mirrorPasses`:
 ## a case reads the difference across a frame, and a picture shows a goat's reflection only when
@@ -97,6 +120,33 @@ func build() -> void:
 	_size = Vector2i.ZERO
 	_viewport.add_child(_camera)
 	_camera.current = true
+	# The ground's twin, on the layer only this pass draws. It is off until a tier asks for the
+	# ground, and it wears whatever mesh and material `use_ground` names -- which is the terrain's
+	# own `ArrayMesh`, so a rebuilt grid is a rebuilt reflection with nothing to copy.
+	_ground = MeshInstance3D.new()
+	_ground.name = "GroundMirror"
+	_ground.layers = LAYER_GROUND_MIRROR
+	# The ground the main pass casts from is the same geometry; a second caster would be the same
+	# depth map written twice.
+	_ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_ground.visible = false
+	add_child(_ground)
+
+## Name the ground this pass draws: the terrain's own mesh, and the material the mirror draws it
+## with (`terrain_mesh.gd`'s `mirror_material`). The *instance* is this object's because the pass
+## is; the *look* is the terrain's because the ground is.
+func use_ground(mesh: Mesh, material: ShaderMaterial) -> void:
+	build()
+	_ground.mesh = mesh
+	_ground.material_override = material
+	_ground_material = material
+	_ground_level = NAN
+
+## Whether there is a ground for the pass to draw, which is what a caller checks before asking
+## the tier to show one.
+func has_ground() -> bool:
+	build()
+	return _ground.mesh != null
 
 ## Point the pass at a tier: what it draws, and whether it runs at all. Called where the wish
 ## moves rather than every frame, because a tier is a setting.
@@ -105,6 +155,9 @@ func set_tier(which: int) -> void:
 	_camera.cull_mask = mask_of(which)
 	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if runs(which) \
 		else SubViewport.UPDATE_DISABLED
+	# The twin is only in a tier whose mask names its layer, so a tier that does not draw the
+	# ground does not submit it either -- the pass is half the viewport but the draw is not free.
+	_ground.visible = (mask_of(which) & LAYER_GROUND_MIRROR) != 0
 
 ## What the pass draws this frame, and whether it runs at all -- the two things `set_tier`
 ## decides, read back off the camera and the target rather than kept beside them. There is no
@@ -126,6 +179,11 @@ func texture() -> ViewportTexture:
 ## size. `level` is the water's plane, so the eye and what it looks at both flip through it.
 func run(source: Camera3D, level: float) -> void:
 	build()
+	# The ground's own cut is the water's plane, so the twin is told where it is -- once, because a
+	# still pool would otherwise be a uniform write a frame for nothing.
+	if _ground_material != null and (is_nan(_ground_level) or absf(level - _ground_level) > 1e-6):
+		_ground_level = level
+		_ground_material.set_shader_parameter("water_level", level)
 	if _viewport.render_target_update_mode == SubViewport.UPDATE_DISABLED:
 		return
 	var size: Vector2i = (source.get_viewport().get_visible_rect().size / 2.0).floor()
