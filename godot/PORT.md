@@ -608,6 +608,28 @@ OK: the GDScript wake is the scene's wake, and it throws what the scene throws
 
 The tape walks out of the bowl, stands, hops, then spends **eighteen dry frames** with the pool gone and re-enters -- so the no-water branch is exercised rather than assumed. The 5.86e-7 is the `value_hash`'s own floor seen through an angle (a drop's direction is a second `sin` of the hash, `sin` at arguments in the thousands), which is why the drops carry a tolerance four orders looser than the life's: the drop's *life* is pure arithmetic and is checked at 1e-9 with the counts. And `entry 1, re-entry 2` is the one claim in the gate that is the *port's* rather than a transcription: a pool that drains and comes back must lay a **second** entering ring, because `update()` clears the mark while the water is gone, so a goat standing exactly where it stood has, in effect, arrived again.
 
+**The reflection** (`verify_water_reflect.gd`): M20e, and the one part of the water that is mostly a *look*. The scene answers "what does the surface reflect" three ways -- the sky alone, the ground baked into a texture the fragment shader marches, and the world rendered mirrored about the table -- behind one clamped leaf, `TUNING.water.reflection`, with the **wish** the leaf holds and the **promise** the frame can keep told apart (`waterReflectTier`): no texture, no bake; no render texture, no mirror; else the sky. The port answers the same question with **Godot's own environment** rather than with the scene's bake and mirrored pass, and the mapping is exact where it can be. A `ReflectionProbe`'s background is the sky, so what a tier *sees* is `cull_mask` -- nothing, the ground, or the world -- and what it *costs* is `update_mode`: `UPDATE_ONCE` for the two static tiers and `UPDATE_ALWAYS` for the mirror, which is the scene's own ladder (one bake, no pass at all, and a pass a frame).
+
+The design's two exclusions *are* the two masks, and they are only expressible because the ground and the things that must not be in a reflection sit on layers of their own: **tier 1 is the ground and not the goat** (the scene's bake has no goat in it) and **tier 2 is everything but the meadow** (a tuft is two cubes of noise in a reflection, and the grass is the frame's largest phase) -- and, for a reason the scene never had to state, not the surface either, since a reflection that contained the reflector would reflect itself. `reflection_mask` is the probe's other half: it reflects onto the surface's layer alone, because a probe reflects onto every instance in its box and the ground is a single 96 m mesh.
+
+```
+oracle answered 12 leaf/leaves, 48 tier(s), 5 word(s)
+clamp: 12 leaf/leaves, 0 mismatch(es)
+promise: 48 value(s) over 12 leaf/leaves x ground x mirror, 0 mismatch(es)
+words: 5, 0 mismatch(es)
+mapping: sky 0, ground 16, mirror 1048479, reflects onto 32, 0 problem(s)
+display server: headless, can ground: true, can mirror: false
+wiring: 3 wish(es), 0 mismatch(es)
+mirror claimed: tier 2, mask 1048479, mode 1 (want 2, 1048479, 1)
+bakes: set 6, quiet 6, cadence 7, ground 8; mirror 9 -> 9
+no tree: quiet ok
+OK: the port's reflection tiers are the scene's, on the engine's own probe
+```
+
+Three things in it are worth the space. The **promise degrades a tier rather than drawing nothing**, and the port's half of it is the engine's: a probe needs a tree to be in (no probe at all is the scene's build-without-the-bindings, and it answers `sky`), and the mirror needs a *renderer* to bake from a frame, which is the port's `waterMirrorOK` -- Godot has the bindings the scene had to check for, so what is left is the window, and `--headless` has none. That is why the gate runs its checks on the first `_process` frame rather than in `_initialize`: `SceneTree.root` is **not inside the tree yet** while `_initialize` runs, and the whole of the port's half of the promise is a probe that knows where it is. The **bake cadence** is a port number with a reason: a `ReflectionProbe` in `UPDATE_ONCE` re-bakes when its *transform* moves and not when the ground under it changes (Godot says so, and it is why a probe carries moving geometry by being *moved*), so the port's re-bake is a tenth-millimetre nudge and this node owns when it happens -- with the ground, and on `REFRESH` seconds, because the same cubemap carries the *sky* and the scene's tier 1 has a live sky over a frozen ground only because its bake holds nothing but the ground. And the **mirror never bakes on that cadence at all**: `UPDATE_ALWAYS` is already a submission a frame.
+
+What a picture adds is the only thing a gate cannot: that the three tiers are three *different* looks, in the right order. Measured as the mean absolute pixel difference from the same frame with no probe at all, `sky` is 0.000245, `ground` 0.000794 and `mirror` 0.002060 -- small, ordered, and with `sky` within a fifth of a thousandth of the look that shipped before M20e, which is exactly what tier 0 is *for*. What is left for the eye is the same gap M20b shipped with, and one finding the pictures produced is section 9's.
+
 **The herd** (`verify_bots.gd`): `bots.gd` is the scene hosting itself. Seven goats with
 a temperament each -- `TUNING.herd.spec`'s coat colour, body scale, `bold` and `lazy` --
 roaming a small state machine: eat, stand, doze, or walk, trot or run to a target, with
@@ -736,7 +758,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
 | Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` + `sky.gdshader`, and the two discs in `celestial.gd` |
 | Lighting + shadows | `game/lighting.js` | `DirectionalLight3D` + Godot's shadow atlas |
-| Water pools (level, chop, fresnel, wake, splashes) | `game/water.js` | **Done** apart from the reflection: `water.gd` (the table, the wading and the wake) + `water_mesh.gd` + `water.gdshader` (the surface, the chop and the rings) + `water_splash.gd` (the drops) |
+| Water pools (level, chop, fresnel, wake, splashes, reflection) | `game/water.js` | **Done**: `water.gd` (the table, the wading and the wake) + `water_mesh.gd` + `water.gdshader` (the surface, the chop and the rings) + `water_splash.gd` (the drops) + `water_reflect.gd` (the three tiers on a `ReflectionProbe`) |
 | Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
 | Bots (collision, temperaments, fleece) | `game/bots.js` | **Done**: `bots.gd`, the herd's own state machine, collision and coats -- real rigs, not the `MultiMesh` sketched here |
 | Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
@@ -875,7 +897,7 @@ Sizes are judgement, not measurement.
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree remains | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
-| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights; the water's reflection remains** | 3–5 |
+| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is Godot's own probe (M20e)** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
@@ -941,6 +963,16 @@ Stage 2 is independent of everything else and can start immediately.
   exits zero. The fix is `%.17f`, which reads the smallest tolerance here (1e-9) in full;
   the lesson is to distrust a `%` specifier that is not in Godot's short list rather than
   assume a bad one fails loudly.
+
+  A third one is about *when* a `SceneTree` script runs at all, and it cost the reflection
+  gate two rewrites: **`SceneTree.root` is not inside the tree while `_initialize` runs.**
+  `root.is_inside_tree()` is false there and true a frame later, so a node added in
+  `_initialize` is a node that has not had `_ready`, that resolves no `@onready` reference,
+  and that reports the wrong answer to every question about where it is. The gates that add
+  nodes there and only read *data* off them are fine; the one whose whole subject is a probe
+  knowing where it is had to move its body into `_process`. The same trap then bit the
+  throwaway photographs, which looked like they were testing the scene and were testing a
+  half-initialised one.
 
 - **An extension class as a node type in a `.tscn`.** Found the hard way, and the
   sibling of the trap above: a `class_name` script and a GDExtension class cannot
@@ -1055,6 +1087,26 @@ above `HUD_MIN`, the rule that decides when a sleeper wakes -- and `submerged_at
 with the scene at 0 mismatch and part from each other in 7 of 520 probes; collapsing them
 into one would pass while checking neither, which is why the gate counts the
 disagreements and fails if there are none.
+- **A layer is a global number and nothing checks it is free.** The reflection's three tiers
+  are three `cull_mask`s, and the masks need the ground, the surface and the meadow on layers
+  of their own -- so the port picked three. The ground went to layer 2, which is *already the
+  moon's*:
+  `celestial.gd`'s `MOON_LAYER`, the layer the moon's own light is masked to. The collision
+  was silent and it was not subtle -- the terrain was suddenly lit by the moon's light as
+  well as the sun's, and the whole meadow went pale -- and it took four photographs to find,
+  because the first two things blamed (the probe's ambient, and the probe's reflection
+  reaching the ground) were each *disabled in turn* without changing the picture, and each
+  disabling was measured through the same broken layer. A throwaway that sets a node's layer
+  is not a valid test of the *other* change while the first is in place. All three layers now
+  start at 5 (5, 6 and 7), above anything the scene uses, and the reason is written down where
+  the numbers are.
+
+  The probe needed a second decision, and it is worth stating as a decision rather than as a
+  finding, because the photographs did not measure it: a `ReflectionProbe` reflects onto
+  *every* instance inside its box, and only the surface should receive -- so `reflection_mask`
+  names the surface's layer alone, and the probe's ambient is pinned in the frame loop to the
+  same flat grade the environment carries (`sky.gd`'s own), so the ground inside the box keeps
+  the lighting the scene gave it rather than the sky's captured ambient.
 - **An oracle written from the port proves nothing, and it is the easiest mistake
   here to make.** Every gate in this project checks a transcription against the
   JavaScript the scene runs, and every one of them had to be *written from
@@ -1107,15 +1159,14 @@ under the scene's own sky, with a weather that runs itself, with **a herd of its
 when there is no host and a host's herd mirrored when there is**, and your goat
 published back. The next steps, in order:
 
-1. **The water's reflection.** The table, the wading, the surface, the chop, the wake, the
-   splashes and the grass a pool hides are all in and gated -- M20D closed the last of
-   them -- and so is the herd's own AI, which is the work that made `goatsd` optional
-   rather than required. What is left of the water is the reflection tiers (M20e, which
-   Godot answers with the environment rather than with the scene's own bake and mirrored
-   pass); the honest answer there may be "the engine already does this" rather than a
-   transcription. That closes the last of the scene's *rules* this port's gates can check
-   against the JavaScript -- section 8's stage order puts the rest of the world ahead of
-   the UI, and that order is the right one.
+1. **M20g: swimming, buoyancy and drinking.** The water's rules are complete -- the table,
+   the wading, the surface, the chop, the wake, the splashes and now the reflection (M20e) --
+   and so is the herd's own AI, which is the work that made `goatsd` optional rather than
+   required. What the water has never held is the *goat above its own depth*: M20g is what the
+   `ROADMAP` calls the next planned step rather than a deferral, and it is the last of the
+   scene's own rules this port's gates can still check against the JavaScript. After it the
+   water is a closed system and section 8's stage order puts the rest of the world ahead of
+   the UI, which is the right order.
 2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
    and no way to paste a ticket, choose a setting or ask the world a question; every
    staging knob is an environment variable because of it. The console is the port's own
@@ -1156,6 +1207,9 @@ for frame, 223020 values compared with nothing out by more than 6.1e-13
 (`godot/tools/verify_bots.gd`); and runs the wake -- 120 frames of rings and drops with
 eighteen dry ones among them, the two water tests told apart where they part, and the
 grass a deep pool hides -- against `water.js` and `weather.js`, 21960 values compared
-with the worst drop out by 5.9e-7 (`godot/tools/verify_water_wake.gd`). Every one
+with the worst drop out by 5.9e-7 (`godot/tools/verify_water_wake.gd`); and aims the water's
+reflection -- the leaf and its clamp, the promise a build can keep, and the mask and
+bake-ladder each of the three tiers wires into Godot's probe -- against `water.js`'s own
+(`godot/tools/verify_water_reflect.gd`). Every one
 of them exits zero.
 The rest is read from the tree.*

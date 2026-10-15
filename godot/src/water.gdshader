@@ -25,18 +25,18 @@
 //
 // Everything `WATER_FS` spent its last third on is Godot's, exactly as the ground's
 // lighting is: the sun, the ambient and the shadow map are the engine's, and the
-// reflection is the *environment's*. This is a dielectric with `SPECULAR` set so that
-// F0 is the scene's own `waterFresnel` -- Godot's 0.5 is F0 0.04, so 0.02 is a quarter
-// of it -- which means the engine's Schlick term does the fresnel the scene mixed by
-// hand, and its sky reflection does what the scene's own reflection tiers did. The
-// colours are *not* `source_color`, for the reason section 9 gives about the ground:
-// the scene authored them in display space and the port hands them over as they are.
+// reflection is the *environment's* -- a `ReflectionProbe` whose three tiers are
+// `water_reflect.gd` (M20e), so what this surface samples is chosen by the setting and
+// culled by a layer mask rather than by a branch here. This is a dielectric with
+// `SPECULAR` set so that F0 is the scene's own `waterFresnel` -- Godot's 0.5 is F0 0.04,
+// so 0.02 is a quarter of it -- which means the engine's Schlick term does the fresnel
+// the scene mixed by hand. The colours are *not* `source_color`, for the reason section 9
+// gives about the ground: the scene authored them in display space and the port hands
+// them over as they are.
 //
-// Not here, and each is its own slice in the ROADMAP: the reflection tiers (M20e: the bake
-// and the mirrored pass, which Godot answers with the environment rather than with a second
-// scene submission) and swimming (M20g). The *drops* a splash throws are not here either,
-// and for a different reason: `water_splash.gd` draws them, because a drop is a ball rather
-// than a fragment of this surface.
+// Not here, and its own slice in the ROADMAP: swimming (M20g). The *drops* a splash throws
+// are not here either, and for a different reason: `water_splash.gd` draws them, because a
+// drop is a ball rather than a fragment of this surface.
 shader_type spatial;
 
 // `TUNING.water.low`, until the frame's own level arrives.

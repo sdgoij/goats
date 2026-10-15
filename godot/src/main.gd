@@ -66,6 +66,7 @@ const PROBE_RELIEF := 0.05
 @onready var water_surface: WaterMesh = $Water
 ## The splashes the water throws, drawn as their own node (`water_splash.gd`, M20d).
 @onready var water_splash: WaterSplash = $Splash
+@onready var water_reflect: WaterReflect = $Reflect
 @onready var grass: Grass = $Grass
 @onready var explosions: Explosions = $Explosions
 @onready var celestial: Celestial = $Celestial
@@ -171,6 +172,10 @@ var _weather := {}
 ##                            `flood <h>` console verb. A downpour only floods the
 ##                            hollows, so this is what makes a pool *visible* to a camera
 ##                            and to a picture.
+##   `GOATS_REFLECT=<tier>`   what the water reflects (M20e): `sky`, `ground` or `mirror`,
+##                            which are the words `setting reflect` takes -- the console
+##                            route this stands in for until stage 6. A word the scene does
+##                            not know leaves the leaf where it is, as `ctl.js` does.
 var _forced_hour := -1.0
 var _forced_cloud := -1.0
 var _boom := false
@@ -214,6 +219,23 @@ func _ready() -> void:
 	# told once; neither follows the grid.
 	grass.water = water
 	water_splash.water = water
+	# The reflection (M20e) is a probe, and its tier is a *mask*: the ground is on a layer of
+	# its own so `cull_mask` can say "the ground, and not the goat" (tier 1), and the meadow
+	# and the drops are on another so it can say "everything but those" (tier 2). The surface
+	# is on a third, because it is the one node that *receives* the reflection and because a
+	# reflection must not contain the thing that reflects. The two outer masks are built
+	# against layer 1, which everything else keeps.
+	terrain.layers = WaterReflect.LAYER_GROUND
+	water_surface.layers = WaterReflect.LAYER_WATER
+	grass.layers = WaterReflect.LAYER_NOREFLECT
+	water_splash.layers = WaterReflect.LAYER_NOREFLECT
+	# The tier is the console's (`setting reflect`) once there is one; until then it is the
+	# staging knob, and a word the scene does not know leaves the leaf where it is.
+	var reflect_word: String = OS.get_environment("GOATS_REFLECT")
+	var reflect_tier: int = WaterReflect.word_tier(reflect_word)
+	if reflect_tier >= 0:
+		water_reflect.wish = float(reflect_tier)
+	water_reflect.apply()
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
@@ -341,10 +363,16 @@ func _process(delta: float) -> void:
 	# wherever the terrain mesh is rebuilt (`waterRebuild`), and `rebuilds` is what says
 	# one happened. The grid is *read*, never written, so it must be taken again after a
 	# rebuild rather than held.
+	var ground_changed := false
 	if terrain.rebuilds != _terrain_builds:
 		_terrain_builds = terrain.rebuilds
 		water.rebuild(terrain.heights(), terrain.anchor())
 		water_surface.build(terrain.heights(), terrain.anchor())
+		ground_changed = true
+	# The reflection's own bake (M20e): a probe frozen in `UPDATE_ONCE` is re-armed with the
+	# ground it is a function of, and on a slow cadence besides, because the same cubemap
+	# carries the sky and a sky an hour old is a visible thing.
+	water_reflect.refresh(delta, ground_changed)
 	var camera := $Camera3D as Camera3D
 	_place_camera(camera)
 	_advance(delta, camera.global_position)
@@ -555,6 +583,9 @@ func _advance(delta: float, camera: Vector3) -> void:
 	_sky_light = float(SkyDome.sample(_hours)["light"])
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,
 		_sky_light, _cloudiness, _wind_x, _wind_z, _sky_time)
+	# ...and the reflection's ambient, which is the same grade: a probe overrides the
+	# environment's ambient inside its own box (M20e).
+	water_reflect.set_ambient(world_environment.environment.ambient_light_color)
 
 ## This frame's weather, in the shape the goat and the HUD read it: the session's own
 ## snapshot in a session, and the local machine's values offline. It is the same
