@@ -30,6 +30,7 @@ plan.
 | `src/weather.gd` | The weather: `weather.js`'s state machine, the values a session mirrors and the rain's own integration |
 | `src/celestial.gd` | The two bodies: `world.js`'s `celestialPlacement` as real sun and moon spheres, with the sun's additive glare |
 | `src/rain.gd` | The rain, drawn: `weather.js`'s `drawRain` streaks as a screen-space overlay under the HUD |
+| `src/water.gd` | The water: `water.js`'s hydrostatic table over the terrain grid, and the drag and drain of wading in it |
 | `tools/` | Headless verification scripts, and `interop.sh` |
 
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
@@ -59,7 +60,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Fourteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Fifteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -120,9 +121,14 @@ Fourteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 # hour x cloudiness grid, and the rain's pool after every drop has wrapped.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_weather.gd
+
+# The water: a scripted rain history through the table, the depth at five probes, the
+# HUD line, the two bisect handles -- and that the goat's speed and drain use it.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_water.gd
 ```
 
-All fourteen pass against Godot 4.7.2 today.
+All fifteen pass against Godot 4.7.2 today.
 
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that

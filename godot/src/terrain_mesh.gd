@@ -79,6 +79,16 @@ func refresh() -> void:
 func anchor() -> Vector2:
 	return _anchor
 
+## The grid's own heights, by row then column (`k = j * N + i`), which is `world.js`'s
+## `T_H` -- the water reads them because the drawn surface *is* this grid, so the depth
+## a goat wades in has to be the depth of the thing it is standing in.
+##
+## They are kept in double precision (the mesh narrows its own copy to float32 for
+## Godot) and handed over as the array itself, so a caller must not write it -- and
+## must re-read it after a rebuild, which is when it is refilled.
+func heights() -> PackedFloat64Array:
+	return _heights
+
 ## Build the whole grid at an anchor. The scene patches rectangles for a crater or
 ## a collapse; nothing changes the ground here yet, so every rebuild is the whole
 ## field.

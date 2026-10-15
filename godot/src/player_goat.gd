@@ -24,8 +24,8 @@
 #     because the height it orbits is `goatBaseY` plus the 0.85 the scene aims at.
 #
 # Not ported, and each is a deliberate hole rather than an oversight: the collision
-# between goats (`resolveGoatCollisions`), the water (there is no water), and the
-# death's X-eye sprite (the model's own death clip carries it).
+# between goats (`resolveGoatCollisions`) and the death's X-eye sprite (the model's own
+# death clip carries it).
 #
 # Every local is annotated rather than inferred -- see the `:=` note in
 # `terrain.gd`.
@@ -137,6 +137,11 @@ var _last_mode := "idle"
 ## rather than a parameter because `ground_speed` and `start_jump` -- two of the
 ## scene's own helpers -- read the weather without being handed it.
 var _weather_speed_now := 1.0
+## ...and this frame's shares that the *water* leaves it, which are the caller's because
+## they are a function of where the goat is standing (`water.gd`'s own two factors).
+## Both are 1 out of water, so dry ground is exactly the frame it has always been.
+var _water_speed_now := 1.0
+var _water_drain_now := 1.0
 
 func _ready() -> void:
 	ready_up()
@@ -169,8 +174,13 @@ func ready_up() -> void:
 ## `trap` is a bite's device test, handed to `start_eat`; it may be invalid, and then a
 ## bite is the plain meal it always was. It is a `Callable` and not a device type for
 ## the reason `Meadow.nearest`'s filter is one -- see `start_eat`.
+##
+## `water` is the wading the frame's own field imposes, as the two factors `water.js`
+## derives from it: `{ "speed": ..., "drain": ... }`, both 1 out of water. They are
+## derived by the caller because they depend on where the goat is standing, which the
+## field answers and this does not.
 func step(delta: float, controls: Dictionary, sky_light: float, weather: Dictionary,
-		meadow: Meadow, trap: Callable = Callable()) -> void:
+		meadow: Meadow, trap: Callable = Callable(), water: Dictionary = {}) -> void:
 	var move: int = int(controls.get("move", 0))
 	var turn: int = int(controls.get("turn", 0))
 	var gait: String = String(controls.get("gait", "walk"))
@@ -224,16 +234,18 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 		else:
 			_idle_timer = 0.0
 
-	# The weather, before anything reads the speed it decides. The keys are the
-	# world snapshot's (`WeatherState` on the wire, which `weather.js`
-	# `applyWeatherState` reads with the same names).
+	# The weather and the water, before anything reads the speed they decide. The keys are
+	# the world snapshot's (`WeatherState` on the wire, which `weather.js`
+	# `applyWeatherState` reads with the same names); the water's two are the caller's.
 	_weather_speed_now = weather_speed(
 		satiety, float(weather.get("rain_amount", 0.0)),
 		float(weather.get("wind_sway", 0.0)))
+	_water_speed_now = float(water.get("speed", 1.0))
+	_water_drain_now = float(water.get("drain", 1.0))
 
 	# The belly empties whatever the mode is doing (`food.js` `updateFood`).
 	satiety = maxf(0.0, satiety - Meadow.SATIETY_DECAY * delta)
-	if _update_stats(delta, sky_light, weather_drain(weather)) == "die":
+	if _update_stats(delta, sky_light, weather_drain(weather) * _water_drain_now) == "die":
 		mode = "dead"
 		_death_time = 0.0
 
@@ -326,8 +338,9 @@ func run_speed() -> float:
 		return derived
 	return walk_speed() * 3.5
 
-## `goat.js` `groundSpeed`: nothing asleep or dead, the mode's gait otherwise, and
-## the weather's share of it.
+## `goat.js` `groundSpeed`: nothing asleep or dead, the mode's gait otherwise, and the
+## weather's and the water's shares of it -- both 1 on dry ground in the clear, so the
+## frame is untouched until something is actually wrong with the ground or the sky.
 func ground_speed() -> float:
 	if mode == "sleep" or mode == "dead":
 		return 0.0
@@ -336,7 +349,7 @@ func ground_speed() -> float:
 		base = run_speed()
 	elif mode == "trot":
 		base = trot_speed()
-	return base * _weather_speed_now
+	return base * _weather_speed_now * _water_speed_now
 
 ## A one-shot's length: the clip's own duration when the model has one, the scene's
 ## fallback when it does not.
@@ -461,7 +474,7 @@ func start_jump(move: int, gait: String) -> void:
 		base = run_speed()
 	elif gait == "trot":
 		base = trot_speed()
-	_jump_speed = base * _weather_speed_now
+	_jump_speed = base * _weather_speed_now * _water_speed_now
 	energy = maxf(0.0, energy - JUMP_ENERGY_COST)
 
 ## Eat a tuft: turn onto it, take it out of the meadow, and bank what it gives.

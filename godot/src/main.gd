@@ -103,6 +103,14 @@ var meadow := Meadow.new()
 ## `PlayerGoat` reads its rain and wind through `_weather_now`.
 var weather := Weather.new()
 
+## The water: a level over the terrain *grid* (`water.gd`). It is rebuilt where the grid
+## is and steps once a frame, and what it produces is the wading the goat feels -- its
+## surface is a later slice.
+var water := Water.new()
+## The grid's build count the water was last rebuilt at, which is how a rebuild is told
+## from a no-op without the water reaching into the mesh.
+var _terrain_builds := -1
+
 ## A bite's device test, built once and handed to the goat every frame: `food.js`
 ## `startEat` asks whether the tuft it just ate was trapped, and `explosions.gd` is what
 ## answers. It is a `Callable` and not the node because `PlayerGoat` does not link
@@ -182,6 +190,11 @@ func _ready() -> void:
 	# ...and the same wiring the other way for the bite: the goat asks the devices
 	# whether the tuft it just ate was trapped (`food.js` `startEat`).
 	_eat_trap = Callable(explosions, "trip_trap_at")
+	# The water's field is the terrain *grid's*, so it is built where the grid is: once
+	# here -- a child's `_ready` runs before its parent's, so the terrain has built --
+	# and again whenever the grid is rebuilt (below).
+	water.rebuild(terrain.heights(), terrain.anchor())
+	_terrain_builds = terrain.rebuilds
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
@@ -267,7 +280,7 @@ func _process(delta: float) -> void:
 
 	# The goat: it is what the camera, the ground and the meadow are placed around,
 	# and it is the only thing in this scene that decides anything.
-	goat.step(delta, _controls(), _sky_light, _weather_now(), meadow, _eat_trap)
+	goat.step(delta, _controls(), _sky_light, _weather_now(), meadow, _eat_trap, _wading())
 	# The meadow is the host's in a session, so a client only mirrors it.
 	meadow.update(delta, _weather.is_empty())
 	_orbit(delta)
@@ -281,6 +294,13 @@ func _process(delta: float) -> void:
 		terrain.refresh()
 	var here := Vector3(goat.px, 0.0, goat.pz)
 	terrain.follow(here.x, here.z)
+	# The water is the table over the grid, so it follows the grid: the scene rebuilds it
+	# wherever the terrain mesh is rebuilt (`waterRebuild`), and `rebuilds` is what says
+	# one happened. The grid is *read*, never written, so it must be taken again after a
+	# rebuild rather than held.
+	if terrain.rebuilds != _terrain_builds:
+		_terrain_builds = terrain.rebuilds
+		water.rebuild(terrain.heights(), terrain.anchor())
 	var camera := $Camera3D as Camera3D
 	_place_camera(camera)
 	_advance(delta, camera.global_position)
@@ -290,7 +310,7 @@ func _process(delta: float) -> void:
 	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
 	rain.show_for(weather, _wind_x)
 	_publish_pose(delta)
-	hud.show_for(goat, _hours, _weather_now())
+	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz))
 	_boom_if_asked()
 
 	if _settle >= 0.0:
@@ -467,6 +487,11 @@ func _advance(delta: float, camera: Vector3) -> void:
 	# separate for.
 	weather.update_rain(delta, _wind_x)
 
+	# The water's own clock, once a frame on either path (`goat.js` `waterStep`): the
+	# table rises to the rain the instant it moves and drains over `TUNING.water.wetDown`,
+	# so a shower leaves standing water behind it.
+	water.step(delta, float(_weather_now().get("rain_amount", 0.0)))
+
 	_sky_light = float(SkyDome.sample(_hours)["light"])
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,
 		_sky_light, _cloudiness, _wind_x, _wind_z, _sky_time)
@@ -479,6 +504,16 @@ func _weather_now() -> Dictionary:
 	if _weather.is_empty():
 		return weather.values(_wind_x, _wind_z, _wind_sway, _hours)
 	return _weather
+
+## The wading this frame, as the two factors `water.gd` derives for the goat's own place
+## -- `{ "speed": ..., "drain": ... }`, both 1 out of water. It is derived here because
+## it is a function of where the goat is standing, which the field knows and the goat
+## does not.
+func _wading() -> Dictionary:
+	return {
+		"speed": water.speed_factor(goat.px, goat.pz),
+		"drain": water.drain_factor(goat.px, goat.pz),
+	}
 
 ## Set off the staging bang, if one was asked for. It lands beside the goat rather
 ## than under it, so both the hole and the goat are in shot.

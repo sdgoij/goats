@@ -23,16 +23,17 @@ func _ready() -> void:
 ## Refresh from the goat and the world, once a frame.
 ##
 ## `hours` is the clock `main.gd` owns, `weather` the session's own snapshot or the
-## local machine's values offline, and `tuning` is none of its business: every number
-## here is one a rule already decided.
-func show_for(goat: PlayerGoat, hours: float, weather: Dictionary) -> void:
+## local machine's values offline, `water` the water's own line from `water.gd`
+## (already empty when the goat is dry), and `tuning` is none of its business: every
+## number here is one a rule already decided.
+func show_for(goat: PlayerGoat, hours: float, weather: Dictionary, water: String) -> void:
 	var lines: Array[String] = [
 		goat.status(),
 		"health %3d   energy %3d%s" % [
 			int(round(goat.health)), int(round(goat.energy)),
 			"   exhausted" if goat.exhausted else ""],
 		"belly %.2f   speed %.2f m/s" % [goat.satiety, goat.speed],
-		"%s   %s" % [clock_text(hours), weather_text(weather)],
+		"%s   %s" % [clock_text(hours), weather_text(weather, water)],
 	]
 	text = "\n".join(lines)
 
@@ -49,7 +50,10 @@ static func clock_text(hours: float) -> String:
 ## The state travels *with* the dictionary: a session's wire snapshot, or the local
 ## machine's own values offline (`main.gd` `_weather_now`). So this reads the real state
 ## in both cases rather than being pinned to `clear`.
-static func weather_text(weather: Dictionary) -> String:
+##
+## `water` is the water's own line, appended the way `updateWeatherEffects` appends it:
+## empty on dry ground, so a `clear` frame on dry ground reads exactly as it always has.
+static func weather_text(weather: Dictionary, water: String = "") -> String:
 	var text: String = String(weather.get("kind", "clear"))
 	var wx: float = float(weather.get("wind_x", 0.0))
 	var wz: float = float(weather.get("wind_z", 0.0))
@@ -57,4 +61,6 @@ static func weather_text(weather: Dictionary) -> String:
 	var rain: float = float(weather.get("rain_amount", 0.0))
 	if rain > 0.02:
 		text += "   rain %d%%" % int(round(rain * 100.0))
+	if water != "":
+		text += "   " + water
 	return text

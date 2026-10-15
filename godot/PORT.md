@@ -544,7 +544,29 @@ sky is one pass. The cloud *billboards* (`drawClouds`) are skipped outright: the
 `goat.js`'s `if (!skyShaderOn)` fallback, and the port always has a sky shader, so its
 clouds are the raymarched ones and `GOATS_CLOUD`/cloudiness is what moves them.
 
-What is *not* yet proven: the water; the cloud *billboards* (`drawClouds` — the fallback
+**The water** (`verify_water.gd`): `water.js`'s table is one expression — `depth(x, z) = max(0, W - ground(x, z))` — so it is a *level* over a *ground* rather than a simulation, and the level is the rain's own: `W` is `low + wetting * fill * (high - low)`, the wetting a concave curve of the rain with `seep` for a floor, and the only thing that ages is its drain. That is what lets two peers agree with nothing on the wire, and what makes a client that joins mid-shower right on its first frame.
+
+```
+grid: 2401 vertices at anchor (0, 0), lowest ground -1.451661
+oracle answered 22 state(s), 110 probe(s)
+wiring: dry 0.872727 m/s, at half the water's speed 0.436364 m/s, ratio 0.500000
+wiring: 60 idle frames cost 0.400000 energy, and 0.800000 at double the water's drain
+compared 770 value(s) over 22 state(s)
+largest disagreement: 0.000000000000000 (tolerance 0.000000001000000)
+  worst at tag 900 point 2 field 0: scene 0.97612043610582100, port 0.97612043610582055
+mismatches: 0
+OK: the GDScript water is the scene's water
+```
+
+A scripted rain history — a dry spell, a shower rising through `seep` exactly at 0.05, a downpour, then the drain in 60-second bites and one `wetDown`-long step that snaps the wetting to a hard zero — and the level, the wetting, the wet-cell count, the volume, the deepest point, the `flood <h>` override and the `enabled` leaf all agree. The 4.4e-16 above is the last bit of a double, and the HUD's *strings* match character for character.
+
+The ground it reads is the one shared input, and it is named rather than duplicated: `water.js` is the table over the *terrain grid's vertex heights* and not over the continuous field, because the drawn surface is that grid and the depth a goat wades in has to be the depth of the thing it is standing in. The gate injects the grid into the oracle so both sides read identical ground, and the grid's own correctness is `verify_terrain_mesh.gd`'s.
+
+The four lines above the comparison are the *wiring*, which no number in the field can see: `player_goat.gd` takes the two factors and multiplies them into `groundSpeed` and `updateStats`, so the gate drives a real goat at half the water's speed and at double its drain and asserts the ratios. A gate that checked the field and not the seam would pass with both multiplications deleted — the mistake section 9 records twice.
+
+What is *not* here is the surface: the mesh and the `WATER_VS`/`WATER_FS` shader that lifts it to the table (M20b), the chop (M20c), the wake, the splashes and the grass cull under water (M20d), and the reflection (M20e, which in Godot is a `ReflectionProbe` or the sky rather than the scene's own mirrored pass). What *is* here is the half a goat can feel, and the HUD reads it out.
+
+What is *not* yet proven: the water's *surface*; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the HUD as a `Control` tree, the menu and the console (stage 6 —
 there is a one-`Label` read-out and no way to paste a ticket *in game*); the bots' own
@@ -597,7 +619,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
 | Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` + `sky.gdshader`, and the two discs in `celestial.gd` |
 | Lighting + shadows | `game/lighting.js` | `DirectionalLight3D` + Godot's shadow atlas |
-| Water pools (level, chop, fresnel) | `game/water.js` | mesh + `ShaderMaterial` |
+| Water pools (level, chop, fresnel) | `game/water.js` | **Done** apart from the surface, the chop, the wake and the reflection: `water.gd` (the table and the wading) |
 | Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
 | Bots (collision, temperaments, fleece) | `game/bots.js` | GDScript + `MultiMesh` |
 | Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
@@ -736,7 +758,7 @@ Sizes are judgement, not measurement.
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree and the bots' own AI remain | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, and the weather machine runs offline and mirrors a host, all gated; the bots' own AI remains** | 3–5 |
-| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights; water remains** | 3–5 |
+| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights; water's surface remains** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
@@ -889,11 +911,14 @@ you drive, on a heightfield, in a meadow it can eat, among mines it can set off,
 under the scene's own sky, with a weather that runs itself, with a host's herd
 mirrored alongside it and your goat published back. The next steps, in order:
 
-1. **Water, then the bots' own AI in GDScript.** The herd is a mirror; a scene that
-   simulates its own bots is what makes `goatsd` optional rather than required, and the
-   water is the last of the world's own systems. Both are the scene's *rules*, which is
-   the work this port's gates can still check against the JavaScript -- section 8's own
-   stage order already puts them ahead of the UI, and that order is the right one.
+1. **The water's surface, then the bots' own AI in GDScript.** The table and the wading
+   are in and gated (`water.gd`), so what is left of the water is what a picture would
+   judge: the mesh, the shader that lifts it to the table, the chop, the wake, the
+   splashes and the grass the water hides. Then the herd, which is still a mirror: a
+   scene that simulates its own bots is what makes `goatsd` optional rather than
+   required. Both are the scene's *rules*, which is the work this port's gates can still
+   check against the JavaScript -- section 8's own stage order already puts them ahead of
+   the UI, and that order is the right one.
 2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
    and no way to paste a ticket, choose a setting or ask the world a question; every
    staging knob is an environment variable because of it. The console is the port's own
@@ -920,8 +945,10 @@ standing seven real goats on Godot-drawn ground at a 0.07 m worst gap
 (`interop.sh herd`); measures the ported heightfield against the JavaScript one
 at 5.0e-11 m (`godot/tools/verify_terrain.gd`); builds the scene's own 48x48
 grid from it, wound and normalised the way the client winds it
-(`godot/tools/verify_terrain_mesh.gd`); and steps the ported weather machine 5400
+(`godot/tools/verify_terrain_mesh.gd`); steps the ported weather machine 5400
 frames against `weather.js`'s own -- the two bodies over 15 hours x 4 cloudinesses and
 a rain pool after every drop has wrapped -- with no disagreement about which state the
-world is in (`godot/tools/verify_weather.gd`). Every one of them exits zero.
+world is in (`godot/tools/verify_weather.gd`); and runs a scripted rain history through
+the water's table, agrees with `water.js` to the last bit and proves the goat's speed and
+drain use it (`godot/tools/verify_water.gd`). Every one of them exits zero.
 The rest is read from the tree.*
