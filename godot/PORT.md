@@ -471,9 +471,13 @@ the bang: ok
   crater under it: -0.450 m, 2 live
   health after: 55.0 of 100
   mode flung, 7.05 m above the ground, 11.586 m from the blast
+the bite: ok
+  after the bite: mode eat, energy 49.99, satiety 0.00
 ```
 
-The hashes are compared as **bits**, the minefield over 5202 cells at two salts, and `relocateDevice`'s *destination* for a cell that fired — which is the other half of "the wire carries the key and nothing about where the device went". The last block is the only thing in this port that says the pieces are wired to each other: a goat stands on a mine, the fuse runs out, and the tuning's own numbers come out the far end — 45 damage at the centre clamped by the floor, a 0.45 m dish, `flung`, seven metres up and eleven out. (Two craters, because the bang chained to a neighbour: `chainDepth` is 1, so a minefield is a bang and not a wall of them.)
+The hashes are compared as **bits**, the minefield over 5202 cells at two salts, and `relocateDevice`'s *destination* for a cell that fired — which is the other half of "the wire carries the key and nothing about where the device went". Two of the blocks say the pieces are wired to each other, and they are the *two* ways a device can reach a goat: a goat stands on a mine, the fuse runs out, and the tuning's own numbers come out the far end — 45 damage at the centre clamped by the floor, a 0.45 m dish, `flung`, seven metres up and eleven out (two craters, because the bang chained to a neighbour: `chainDepth` is 1, so a minefield is a bang and not a wall of them); and a goat *bites* a trapped tuft from 1.0 m away, which the walk-in trigger's own 0.6 m query cannot reach, and the bite is what sets it off — the tuft eaten, the fuse lit, the trap spent, the mode `eat`, and no meal banked, because the goat ate a mine.
+
+The bite case is the one this gate was extended for, and it is the sharper of the two because the two reaches differ: the eat range is 1.1 m and the trigger is 0.6 m, so before the devices' own `tripTrapAt` hook reached `PlayerGoat.startEat`, pressing E the moment a tuft came into reach was a free meal off a device the scene makes a goat pay for. It is also the reason the hook is a `Callable` and not a node reference: `explosions.js`'s `startEat` reaches for `trapAt` out of the module scope it shares with the devices, and GDScript's way to say that without `player_goat.gd` linking against `explosions.gd` is the same way `Meadow.nearest` takes its filter.
 
 And this gate earned its keep twice over, in opposite directions. **The port was too accurate.** `trapAt` calls the cell hash with `cx ^ 0x5bf03635`, so `cx * 374761393` is about 5.6e17 — past 2**53, where a JavaScript number stops being able to hold an integer exactly. The scene's own sum is therefore *rounded* before `| 0` takes its low 32 bits, and an exact 64-bit multiply in GDScript takes different bits: 8% of the traps were in the wrong cells. The gates that only pass small cells (the meadow's, whose products stay under 2**53) see no difference at all, which is why this took a device gate to find. It joins the `value_hash` `sin` floor in section 9 as the same lesson from the other side.
 
@@ -885,18 +889,20 @@ you drive, on a heightfield, in a meadow it can eat, among mines it can set off,
 under the scene's own sky, with a weather that runs itself, with a host's herd
 mirrored alongside it and your goat published back. The next steps, in order:
 
-1. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
+1. **Water, then the bots' own AI in GDScript.** The herd is a mirror; a scene that
+   simulates its own bots is what makes `goatsd` optional rather than required, and the
+   water is the last of the world's own systems. Both are the scene's *rules*, which is
+   the work this port's gates can still check against the JavaScript -- section 8's own
+   stage order already puts them ahead of the UI, and that order is the right one.
+2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
    and no way to paste a ticket, choose a setting or ask the world a question; every
    staging knob is an environment variable because of it. The console is the port's own
    debug surface and the mods' (`goats.command`), so it pays twice.
-2. **Water, then the bots' own AI in GDScript.** The herd is a mirror; a scene that
-   simulates its own bots is what makes `goatsd` optional rather than required.
 3. **Finish stage 1's edges.** The `tuning.json` merge, reload and `--watch`,
    asset bytes handed to an engine shim rather than a map, the wasm path through
    `crates/plugin`, and the remaining `goats` member groups.
 
-Order 1–3 is the scene's own roadmap read in the port's direction; 4 is independent
-and is the cheaper win whenever the context is fresh.
+Order 1-2 is the scene's own roadmap read in the port's direction; 3 is independent and is the cheaper win whenever the context is fresh.
 
 ---
 
