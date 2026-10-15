@@ -55,6 +55,14 @@ func set_level(level: float) -> void:
 	if _material != null:
 		_material.set_shader_parameter("water_level", level)
 
+## The chop's two moving inputs -- the wave clock and the wind -- pushed each frame.
+## `water_wave` itself is a constant and is set once with the material.
+func set_chop(clock: float, wind: Vector3) -> void:
+	if _material == null:
+		return
+	_material.set_shader_parameter("water_time", clock)
+	_material.set_shader_parameter("water_wind", wind)
+
 ## Build the surface over the terrain grid's own heights, at the grid's anchor.
 func build(heights: PackedFloat64Array, anchor: Vector2) -> void:
 	_anchor = anchor
@@ -115,6 +123,10 @@ func build(heights: PackedFloat64Array, anchor: Vector2) -> void:
 	if _material == null:
 		_material = ShaderMaterial.new()
 		_material.shader = SHADER
+		# The chop's shape is a constant, so it goes with the material rather than with the
+		# frame: `TUNING.water.wave`, as the shader's `waterWave`.
+		_material.set_shader_parameter("water_wave",
+			Vector3(Water.WAVE_HEIGHT, Water.WAVE_SCALE, Water.WAVE_SPEED))
 		material_override = _material
 	_built = true
 	rebuilds += 1

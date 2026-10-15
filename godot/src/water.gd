@@ -55,6 +55,15 @@ const MAX_DEPTH := 0.6
 ## and the extra energy wading burns.
 const DRAG := 0.35
 const DRAG_ENERGY := 0.25
+## `TUNING.water.wave`: the chop's own numbers -- a 3 cm crest every 60 cm, and the share
+## of the gust that drives it. `TUNING.water.fresnel` is the shader's, since `SPECULAR`
+## carries it there.
+const WAVE_HEIGHT := 0.03
+const WAVE_SCALE := 0.6
+const WAVE_SPEED := 1.2
+const WAVE_WIND := 0.8
+## `TUNING.weather.windNorm`, which `waterSetUniforms` reads for the gust's share.
+const WIND_NORM := 1.4
 ## `water.js`'s three structural numbers beside the tuning: the wetting curve's own
 ## exponent, the point where a draining table is called dry, and the depth below which
 ## the HUD says nothing.
@@ -85,6 +94,11 @@ var _force := NAN
 var _heights := PackedFloat64Array()
 var _anchor := Vector2(0.0, 0.0)
 var _ready := false
+## The waves' own seconds, and *only* while there is water to draw -- `water.js`
+## `waterDraw`: the clock advances where the surface does, so a phase that ran on through
+## a dry spell would have a fresh pool already mid-cycle. It is deliberately not
+## `worldTime`, which wraps at midnight.
+var _clock := 0.0
 ## The rain the last `step` handed in, which `update` reads -- the scene's `rainAmount`
 ## is a module global there and this keeps the same shape without the global.
 var _rain := 0.0
@@ -226,6 +240,26 @@ func hud_text(x: float, z: float) -> String:
 ## and what `state` reports rounded.
 func level() -> float:
 	return _level
+
+## The wave clock, advanced one frame while the table is above the ground.
+func advance_clock(delta: float) -> void:
+	if _on:
+		_clock += delta
+
+## The wave clock's own seconds, which the chop's phase rides.
+func clock() -> float:
+	return _clock
+
+## The chop's wind: the wind as a *unit* direction whatever it is doing, and the share of
+## the amplitude the gust drives. `water.js` `waterSetUniforms`, and the direction is a
+## unit even in a dead calm -- a still pool still chops, and the shader normalises it
+## again anyway. Returns `(dx, dz, the gust's share)`, which is the shader's `waterWind`.
+func wave_wind(wind_x: float, wind_z: float, wind_sway: float) -> Vector3:
+	var length: float = sqrt(wind_x * wind_x + wind_z * wind_z)
+	var dx: float = wind_x / length if length > 1e-3 else 1.0
+	var dz: float = wind_z / length if length > 1e-3 else 0.0
+	var gust: float = clampf(wind_sway / WIND_NORM, 0.0, 1.0)
+	return Vector3(dx, dz, (1.0 - WAVE_WIND) + WAVE_WIND * gust)
 
 ## The seam a console and a mod read, and the gate's own view of the field: the level,
 ## how much of it the table covers, where the deepest point is and how deep it is under

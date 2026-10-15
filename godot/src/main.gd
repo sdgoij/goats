@@ -505,6 +505,11 @@ func _advance(delta: float, camera: Vector3) -> void:
 	# whole reason the mesh carries the ground rather than the water: a rising pool costs
 	# this line and not a rebuild.
 	water_surface.set_level(water.level())
+	# The chop's own clock and wind (`waterDraw`'s `waterClock`, `waterSetUniforms`): the
+	# clock runs only while there is water to draw, and the wind is the weather's, turned
+	# into the unit direction and gust share the shader wants.
+	water.advance_clock(delta)
+	water_surface.set_chop(water.clock(), water.wave_wind(_wind_x, _wind_z, _wind_sway))
 
 	_sky_light = float(SkyDome.sample(_hours)["light"])
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,

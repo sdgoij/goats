@@ -165,6 +165,22 @@ function sceneWater(px, pz) {
 
 const GOAT_X = __GOAT_X__, GOAT_Z = __GOAT_Z__;
 const PROBES = __PROBES__;
+
+// ---- the chop's wind (water.js waterSetUniforms) ---------------------------------
+// The wind as a unit direction whatever it is doing -- a dead calm still chops, and the
+// shader normalises it again anyway -- and the share of the amplitude the gust drives.
+const WIND_NORM = 1.4, WAVE_WIND = 0.8;
+function clampTo(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+const WINDS = __WINDS__;
+for (const w of WINDS) {
+    const wx = w[0], wz = w[1], sway = w[2];
+    const len = Math.sqrt(wx * wx + wz * wz);
+    const dx = len > 1e-3 ? wx / len : 1.0;
+    const dz = len > 1e-3 ? wz / len : 0.0;
+    const gustNorm = clampTo(sway / WIND_NORM, 0, 1);
+    console.log('W ' + wx + ' ' + wz + ' ' + sway + ' ' + dx + ' ' + dz + ' ' +
+        ((1 - WAVE_WIND) + WAVE_WIND * gustNorm));
+}
 function emitState(tag) {
     const st = sceneWater(GOAT_X, GOAT_Z);
     console.log('S ' + tag + ' ' + [st.level, st.wetting, st.on ? 1 : 0, st.wet, st.volume,
@@ -242,10 +258,29 @@ const PROBES := [
 	Vector2(6.5, -2.5),
 ]
 
+## The winds the chop's direction is compared over, as `(windX, windZ, windSway)`: a
+## dead calm (which still chops, from a direction the scene picks by hand), a breeze, a
+## full gust, a wind under the `1e-3` floor that falls back the same way, and a gust past
+## `windNorm` -- which the share clamps rather than growing.
+const WINDS := [
+	Vector3(0.0, 0.0, 0.0),
+	Vector3(1.6, 0.2, 0.4),
+	Vector3(-2.1, 0.9, 1.4),
+	Vector3(0.0005, 0.0, 0.7),
+	Vector3(0.0, -3.0, 2.0),
+]
+
 ## The field is `pow` and division, so the two engines differ by an ULP or two of the
 ## libm and nothing else. A nanometre of water is nine orders above that and nothing at
 ## all in a table whose band is 2.1 m.
 const TOLERANCE := 1e-9
+
+## The chop's wind is arithmetic the port carries in a `Vector3`, and every Godot vector
+## is **float32** -- so the gust's share comes back as 0.200000003 where the JavaScript's
+## double says 0.2. That is not a transcription error and no amount of care removes it;
+## it is the same rounding `PORT.md` section 9 records for the meadow and the two bodies,
+## and it is why this check has a tolerance of its own rather than the field's.
+const WIND_TOLERANCE := 1e-6
 
 func _initialize() -> void:
 	var failures: Array[String] = []
@@ -277,6 +312,9 @@ func _initialize() -> void:
 	var probes: Array = []
 	for p: Vector2 in PROBES:
 		probes.append([p.x, p.y])
+	var winds: Array = []
+	for w: Vector3 in WINDS:
+		winds.append([w.x, w.y, w.z])
 
 	var source: String = JS \
 		.replace("__HEIGHTS__", JSON.stringify(as_array)) \
@@ -285,6 +323,7 @@ func _initialize() -> void:
 		.replace("__GOAT_X__", str(GOAT.x)) \
 		.replace("__GOAT_Z__", str(GOAT.y)) \
 		.replace("__PROBES__", JSON.stringify(probes)) \
+		.replace("__WINDS__", JSON.stringify(winds)) \
 		.replace("__SCRIPT__", JSON.stringify(SCRIPT))
 	var host: Object = ClassDB.instantiate("ModHost")
 	var evaluated: String = host.call("eval_js", source)
@@ -296,11 +335,14 @@ func _initialize() -> void:
 	var answers: PackedStringArray = host.call("poll_lines")
 	var states: Array[String] = []
 	var depths: Array[String] = []
+	var wind_lines: Array[String] = []
 	for line in answers:
 		if line.begins_with("log S "):
 			states.append(line.substr(6))
 		elif line.begins_with("log D "):
 			depths.append(line.substr(6))
+		elif line.begins_with("log W "):
+			wind_lines.append(line.substr(6))
 	print("oracle answered ", states.size(), " state(s), ", depths.size(), " probe(s)")
 
 	var water := Water.new()
@@ -464,6 +506,57 @@ func _initialize() -> void:
 		% [spent, spent_heavy])
 	if spent <= 0.0 or absf(spent_heavy - spent * 2.0) > 1e-9:
 		wire_failures.append("the goat's energy drain does not take the water's factor")
+
+	# The chop's wind, which is a *rule* the shader only consumes: the direction is a unit
+	# whatever the wind is doing (a dead calm still chops) and the gust's share drives the
+	# amplitude. Gated, because the shading it feeds is a picture's business and this is
+	# not.
+	var wind_mismatches := 0
+	var worst_wind := 0.0
+	var first_wind := ""
+	for i in WINDS.size():
+		if i >= wind_lines.size():
+			break
+		var parts: PackedStringArray = wind_lines[i].split(" ")
+		if parts.size() != 6:
+			continue
+		# Cast before reaching into it: a `const` array's element is a Variant to the
+		# analyser, and a member read off one is what `weather.gd` casts for too.
+		var wind: Vector3 = WINDS[i]
+		var mine: Vector3 = water.wave_wind(wind.x, wind.y, wind.z)
+		var wanted: Array[float] = [float(parts[3]), float(parts[4]), float(parts[5])]
+		for k in 3:
+			compared += 1
+			var gap: float = absf(mine[k] - wanted[k])
+			worst_wind = maxf(worst_wind, gap)
+			if gap > WIND_TOLERANCE:
+				wind_mismatches += 1
+				if first_wind == "":
+					first_wind = "wind %d field %d: scene %.17f, port %.17f" % [
+						i, k, wanted[k], mine[k]]
+	print("chop wind: %d case(s) over %d oracle line(s), %d mismatch(es), worst %.15f"
+		% [WINDS.size(), wind_lines.size(), wind_mismatches, worst_wind])
+	if first_wind != "":
+		print("  first: ", first_wind)
+	if wind_mismatches != 0 or wind_lines.size() != WINDS.size():
+		wire_failures.append("the chop's wind is not the scene's")
+
+	# ...and the wave clock, which `waterDraw` advances *only* while there is water to
+	# draw. A port that ran it every frame would have a fresh pool already mid-cycle --
+	# and that is the sort of thing no number above can see and no screenshot can show.
+	var clocked := Water.new()
+	clocked.rebuild(heights, anchor)
+	clocked.advance_clock(1.0)
+	var dry_clock: float = clocked.clock()
+	clocked.step(0.0, 1.0)
+	clocked.advance_clock(1.0)
+	var wet_clock: float = clocked.clock()
+	print("wave clock: %.6f s through a dry spell, %.6f s with water" % [dry_clock, wet_clock])
+	if absf(dry_clock) > 1e-12 or absf(wet_clock - 1.0) > 1e-12:
+		wire_failures.append("the wave clock does not stand still without water")
+	# `clocked` is a `RefCounted` and needs no `free` -- and calling one on it is not a
+	# leak but a corruption, which is how this gate first hung.
+
 	dry.free()
 	light.free()
 	heavy.free()

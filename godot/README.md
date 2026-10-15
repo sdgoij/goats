@@ -32,7 +32,7 @@ plan.
 | `src/rain.gd` | The rain, drawn: `weather.js`'s `drawRain` streaks as a screen-space overlay under the HUD |
 | `src/water.gd` | The water: `water.js`'s hydrostatic table over the terrain grid, and the drag and drain of wading in it |
 | `src/water_mesh.gd` | The water's surface as an `ArrayMesh`: the grid's ground, cut to the quads that can ever be wet |
-| `src/water.gdshader` | The surface, drawn: `WATER_VS`'s vertex lift and `WATER_FS`'s absorption, with Godot's light and reflection |
+| `src/water.gdshader` | The surface, drawn: `WATER_VS`'s vertex lift, `WATER_FS`'s absorption and `WATER_FS`'s chop, under Godot's own light and reflection |
 | `tools/` | Headless verification scripts, and `interop.sh` |
 
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
@@ -125,7 +125,8 @@ Sixteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
     --script res://tools/verify_weather.gd
 
 # The water: a scripted rain history through the table, the depth at five probes, the
-# HUD line, the two bisect handles -- and that the goat's speed and drain use it.
+# HUD line, the two bisect handles, the chop's own wind and wave clock -- and that the
+# goat's speed and drain use it.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_water.gd
 
@@ -178,8 +179,8 @@ Godot's shadows, not by the scene's own lit program and hand-rolled shadow map
 which the sky compensates for and the ground does not (`PORT.md` section 9). The two
 bodies are Godot meshes — the moon lit by a light only it sees — rather than the
 scene's celestial shader, the rain is a `Control` drawing the scene's own streaks, and
-the water is a `spatial` shader carrying the scene's vertex lift and its absorption
-under Godot's own light and reflection.
+the water is a `spatial` shader carrying the scene's vertex lift, its absorption and its
+chop under Godot's own light and reflection.
 And the HUD is one `Label` rather than the scene's bars, action menu and console: the
 words are the scene's, the layout is stage 6.
 
