@@ -15,8 +15,8 @@ extends SceneTree
 
 ## `weather.js` / `food.js` / `core.js`, transcribed *from their sources*: the
 ## heightfield (as `verify_grass.gd` carries it, `TUNING.terrain` inlined) and
-## `nearestTuft`, with the trap filter dropped -- a trapped tuft needs
-## `explosions.js`, which is not ported.
+## `nearestTuft`, with the trap filter dropped -- a trap is `explosions.gd`'s and
+## `verify_devices.gd` is its gate, so this asks the food question and only that.
 const JS := """
 function hash(n) { const s = Math.sin(n * 127.1) * 43758.5453; return s - Math.floor(s); }
 function vnoise2(x, y) {

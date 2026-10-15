@@ -23,10 +23,11 @@
 #     is `sceneFrame`'s three lines, and it is *here* rather than in `main.gd`
 #     because the height it orbits is `goatBaseY` plus the 0.85 the scene aims at.
 #
-# Not ported, and each is a deliberate hole rather than an oversight: the blast's
-# arc (`flung` -- `explosions.js` is a later stage), the collision between goats
-# (`resolveGoatCollisions`), the water (there is no water), and the death's X-eye
-# sprite (the model's own death clip carries it).
+# Not ported, and each is a deliberate hole rather than an oversight: the collision
+# between goats (`resolveGoatCollisions`), the water (there is no water), the death's
+# X-eye sprite (the model's own death clip carries it), and `startEat`'s device test
+# (`explosions.gd` trips a trap at 0.6 m as the goat *walks*, but the eat reach is
+# 1.1 m and a bite takes only the meadow -- see `start_eat`).
 #
 # Every local is annotated rather than inferred -- see the `:=` note in
 # `terrain.gd`.
@@ -365,8 +366,8 @@ func clip_role() -> String:
 	if mode == "eat" and has_role("eat"):
 		return "eat"
 	# The arc (M19c): the flung clip when the model has one, the jump when it does
-	# not. Nothing sets this mode yet -- `explosions.js` is not ported -- but the
-	# branch is the scene's and the model has the clip.
+	# not. `explosions.gd` is what sets this mode -- a bang within reach calls
+	# `start_fling`.
 	if mode == "flung":
 		return "flung" if has_role("flung") else "jump"
 	if mode == "jump" and has_role("jump"):
@@ -462,8 +463,12 @@ func start_jump(move: int, gait: String) -> void:
 	energy = maxf(0.0, energy - JUMP_ENERGY_COST)
 
 ## Eat a tuft: turn onto it, take it out of the meadow, and bank what it gives.
-## `food.js` `startEat`, without its device test -- a trapped tuft needs
-## `explosions.js`, which is not ported.
+## `food.js` `startEat` **minus its device test**: the scene consumes the tuft and then
+## asks `trapAt`, setting the device off instead of feeding the goat, and this has no
+## device to ask -- the meadow is all it is handed. `explosions.gd` `check_triggers`
+## covers a goat that *walks* onto one (its trigger is 0.6 m), so the reachable hole is
+## a trapped tuft between there and the 1.1 m eat reach, which a bite takes from the
+## outside.
 ##
 ## A meal the belly is already nearly full of goes into the goat instead
 ## (`satedHeal`), read *before* the meal, because what decides is the state the goat

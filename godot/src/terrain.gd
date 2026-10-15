@@ -30,8 +30,9 @@
 # name. A language with neither a compiler nor a name resolver to tell you is one
 # where a naming mistake is a silent behaviour change.
 #
-# Not ported yet: the craters are a *term* in `height_at` rather than geometry of
-# their own, so they live in `craters.gd` and this file only adds them.
+# The craters are a *term* in `height_at` rather than geometry of their own, so they
+# live in `craters.gd` and this file only adds them (see `height_at` for why that
+# shape is the point).
 class_name Terrain
 extends RefCounted
 

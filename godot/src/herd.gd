@@ -19,10 +19,10 @@
 # What this does is the client's half: place a herd from the wire. Where a goat
 # *stands* is `terrain.gd`'s -- the same heightfield the host simulates on,
 # rebuilt from the session seed (see that file on why that has to be a
-# transcription rather than a lookalike). What this does **not** do is the
-# terrain's own detail: craters are not ported, so a goat stands on ground that
-# has never been blown up. Nor are bots' per-spec scale, which the client gets
-# from its own seed-derived spec table rather than from the snapshot.
+# transcription rather than a lookalike), craters included: they ride the world
+# snapshot and are a term in the field, so a mirrored goat stands in the same holes
+# the host has blown. What it does **not** take from the wire is bots' per-spec
+# scale, which the client gets from its own seed-derived spec table.
 class_name Herd
 extends Node3D
 
