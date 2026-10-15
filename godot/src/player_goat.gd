@@ -179,6 +179,11 @@ func ready_up() -> void:
 ## derives from it: `{ "speed": ..., "drain": ... }`, both 1 out of water. They are
 ## derived by the caller because they depend on where the goat is standing, which the
 ## field answers and this does not.
+##
+## `bite` is called with a `(cx, cz)` a meal actually took, and only then. It is what tells a
+## session about the bite (`food.js`'s `netQueue({"type":"consume"})`), and it is a `Callable`
+## for the same reason `trap` is: this file does not link against the network.
+var bite: Callable = Callable()
 func step(delta: float, controls: Dictionary, sky_light: float, weather: Dictionary,
 		meadow: Meadow, trap: Callable = Callable(), water: Dictionary = {}) -> void:
 	var move: int = int(controls.get("move", 0))
@@ -512,6 +517,10 @@ func start_eat(target: Dictionary, meadow: Meadow, trap: Callable = Callable()) 
 	mode = "eat"
 	_eat_time = 0.0
 	cycle_variant("eat")
+	# In a session the meadow is the host's, so tell it about the bite; it comes back in the next
+	# world snapshot, which replaces this optimistic one (`food.js` `startEat`'s own last line).
+	if bite.is_valid():
+		bite.call(int(target["cx"]), int(target["cz"]))
 	return true
 
 ## `goat.js` `startSleep`. There is no water to refuse it here, so the only way it

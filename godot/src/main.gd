@@ -58,6 +58,9 @@ const PROBE_MOTION := 0.01
 const PROBE_RELIEF := 0.05
 
 @onready var herd: Herd = $Herd
+## The other *players*: one goat per peer the server relays. `Herd` is the host's bots; this
+## is the host's people, and they are two modules because they are two rules (`peers.gd`, M21).
+@onready var peers: Peers = $Peers
 ## The scene's own herd, when there is no session to mirror one from (`bots.gd`). It is
 ## empty in a session -- the host owns the bots' AI there, and `Herd` places what it sends.
 @onready var bots: Bots = $Bots
@@ -215,6 +218,11 @@ func _ready() -> void:
 	# ...and the same wiring the other way for the bite: the goat asks the devices
 	# whether the tuft it just ate was trapped (`food.js` `startEat`).
 	_eat_trap = Callable(explosions, "trip_trap_at")
+	# ...and the bite itself, which a *client* also owes the session: the host owns the
+	# meadow, so a bite here is a report (`food.js`'s `netQueue({"type":"consume"})`), and it
+	# comes back in the next world snapshot. A callback and not a `main.gd` poll, for the
+	# reason `trap` is one -- the goat knows which tuft it ate and this file does not.
+	goat.bite = Callable(self, "_report_bite")
 	# The water's field is the terrain *grid's*, so it is built where the grid is: once
 	# here -- a child's `_ready` runs before its parent's, so the terrain has built --
 	# and again whenever the grid is rebuilt (below).
@@ -683,12 +691,40 @@ func _handle(line: String) -> void:
 				herd.apply(event)
 				_worlds += 1
 				_last_bots = bots.size()
-				if _settle < 0.0:
+				# The settle clock is a *probe's*, and it arms only for one. It used to arm for
+				# anybody who received a herd, and the report at the far end of it `quit()`s --
+				# so every Godot client that joined a session with a herd in it quit eight
+				# seconds in. `interop.sh herd` sets `GOATS_PROBE`, which is why the gate never
+				# saw it; `interop.sh pair` runs two clients that are not probes, which is what
+				# found it.
+				if _probe and _settle < 0.0:
 					_settle = 0.0
 		"notice", "error":
 			print(String(event.get("type", "")), ": ", event.get("text"))
+		"peer":
+			# Another player's goat, on the same rates and the same easing rules a bot's is
+			# (`Net`), except that a peer is addressed by *name* and carries a gait its own
+			# owner chose -- so it lands in `Peers` rather than in `Herd`.
+			peers.apply(String(event.get("name", "")), event.get("state", null))
+		"left":
+			# A peer that left takes its goat with it. This is the *only* thing that removes
+			# a peer: a snapshot stream that stops leaves a goat standing, which is what the
+			# client does too, and better than a herd that blinks.
+			peers.remove(String(event.get("name", "")))
+		"consume":
+			# A *client's* bite, arriving at the host: record it in this meadow, and the next
+			# world snapshot carries it back to everyone -- including the goat that bit.
+			meadow.consume_key(int(event.get("key", 0)))
 		_:
 			pass
+
+## Tell the session about a bite this goat took. A client's duty and nobody else's: a host
+## *is* the meadow, and offline there is no session to tell -- which is `food.js`'s own
+## `if (!netWorldLocal())` guard, and why this is silent rather than an error.
+func _report_bite(cx: int, cz: int) -> void:
+	if not _joined:
+		return
+	bridge.call("consume", Meadow.key(cx, cz))
 
 func _probe_report() -> void:
 	var failures: Array[String] = []

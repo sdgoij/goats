@@ -5,20 +5,23 @@
 #   godot/tools/interop.sh          # goatsd --no-mods: the client joins
 #   godot/tools/interop.sh refuse   # goatsd with the repo's mods: the client is refused
 #   godot/tools/interop.sh herd     # ...and the mirror scene places the herd
+#   godot/tools/interop.sh pair     # ...and *two* clients see each other's goat
 #   godot/tools/interop.sh offline  # no server: the scene boots without a session
 #   godot/tools/interop.sh shot     # ...and a window renders it, with the herd in it
 #
-# All five are evidence. `join` proves the transport, the join handshake, the chat
+# All six are evidence. `join` proves the transport, the join handshake, the chat
 # routing and the world datagrams work against the *shipping* binary, not just
 # between two Godot peers. `refuse` proves the world-mod digest comparison
 # (`APIv1.md` section 6.3) crosses two independent implementations -- the failure
 # a player with the wrong mods actually sees. `herd` runs the real scene
 # (`scenes/herd.tscn`) instead of a probe script, so it is the one that shows the
-# core doing something with the wire rather than only reading it. And `offline`
-# checks the thing a player hits first: pressing play with no session must leave
-# them in a *world*, not in an error. `shot` is the one piece of evidence no gate
-# can carry -- whether it *looks* like a world -- and it needs a window, so it is
-# the one mode that is run by hand on a machine with a GPU.
+# core doing something with the wire rather than only reading it. `pair` is the
+# same scene twice against one host, which is the only way to see a *peer*: a
+# `peer` frame is somebody else's goat, so one client can never produce one. And
+# `offline` checks the thing a player hits first: pressing play with no session
+# must leave them in a *world*, not in an error. `shot` is the one piece of
+# evidence no gate can carry -- whether it *looks* like a world -- and it needs a
+# window, so it is the one mode that is run by hand on a machine with a GPU.
 #
 # Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server).
 set -eu
@@ -30,7 +33,7 @@ log=$root/target/interop-goatsd.log
 
 mode=${1:-join}
 case "$mode" in
-    join|refuse|herd|offline|shot) ;;
+    join|refuse|herd|pair|offline|shot) ;;
     *)
         echo "interop.sh: unknown mode '$mode' (want join, refuse, herd, offline or shot)" >&2
         exit 2
@@ -90,7 +93,7 @@ fi
 # `--no-mods` is what lets a client presenting no world mods in; without it,
 # goatsd resolves the repository's own `mods/` and requires the world set in it.
 case "$mode" in
-    join|herd|shot) mods_flag=--no-mods ;;
+    join|herd|pair|shot) mods_flag=--no-mods ;;
     refuse) mods_flag= ;;
 esac
 
@@ -133,7 +136,34 @@ fi
 echo "interop.sh: goatsd up as godot-host (${mode} mode)"
 
 set +e
-if [ "$mode" = "herd" ]; then
+if [ "$mode" = "pair" ]; then
+    # The same scene twice against one host. Both ends publish their own goat, the
+    # server relays each to the other, and each end's mirror either places a goat
+    # or does not -- which is the whole of M21 proved end to end, and the one thing
+    # a single client cannot show.
+    a=$root/target/peers-a.log
+    b=$root/target/peers-b.log
+    : > "$a"
+    : > "$b"
+    GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        --script res://tools/verify_peers_live.gd > "$a" 2>&1 &
+    pid_a=$!
+    GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        --script res://tools/verify_peers_live.gd > "$b" 2>&1 &
+    pid_b=$!
+    wait "$pid_a"
+    status_a=$?
+    wait "$pid_b"
+    status_b=$?
+    status=0
+    if [ "$status_a" -ne 0 ] || [ "$status_b" -ne 0 ]; then
+        status=1
+    fi
+    # Both ends are read, not only the exit codes: a client that never saw a peer
+    # says so, and which one failed is the first thing worth knowing.
+    grep -E "^(OK|FAIL|peers:)" "$a" || true
+    grep -E "^(OK|FAIL|peers:)" "$b" || true
+elif [ "$mode" = "herd" ]; then
     # The real scene, with the probe switched on: it settles, reports and exits.
     GOATSD_TICKET="$ticket" GOATS_PROBE=1 \
         "$godot_bin" --headless --path "$(to_native "$godot_dir")"

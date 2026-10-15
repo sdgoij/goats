@@ -19,6 +19,7 @@ plan.
 | `src/player_goat.gd` | The local goat: `goat.js`'s gait state machine, movement and stats — the goat you drive |
 | `src/hud.gd` | The state, health, energy and clock, as one `Label` until stage 6's `Control` tree |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
+| `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
 | `src/terrain.gd` | The heightfield, transcribed from `world.js` and measured against it |
 | `src/terrain_mesh.gd` | The ground, drawn: the scene's 48x48 grid as one `ArrayMesh`, rebuilt as the anchor drifts |
@@ -153,6 +154,11 @@ Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_water_wake.gd
 
+# The peers: `net.js`'s mirror of the other *players* -- the one-shot gaits, the role table
+# over every model that could lack a clip, and the three easing lines -- against `net.js`'s own.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_peers.gd
+
 # The reflection: the leaf and its clamp, the wish/promise a build keeps, the setting's own
 # words, what each tier's pass draws, and that the tier reaches the surface's material and
 # the pass under the names the shader actually declares.
@@ -160,7 +166,9 @@ Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
     --script res://tools/verify_water_reflect.gd
 ```
 
-All nineteen pass against Godot 4.7.2 today.
+All nineteen pass against Godot 4.7.2 today. Two more need a live session and are run by
+`tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
+(two clients, `interop.sh pair`).
 
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that
@@ -259,6 +267,11 @@ godot/tools/interop.sh refuse
 # rather than a probe script, so it is the closest thing here to the game.
 godot/tools/interop.sh herd
 
+# The same scene *twice* against one host: two clients whose goats face each other,
+# which is the only way to see a `peer` -- a peer frame is somebody else's goat, so
+# one client can never produce one (M21).
+godot/tools/interop.sh pair
+
 # No server at all: the scene must boot and keep running, and its own herd with it.
 # Needs no goatsd.
 godot/tools/interop.sh offline
@@ -283,7 +296,9 @@ push each other — and you — apart rather than walking through anybody.
 
 Join a session and the herd stops being yours: the host owns the bots' AI, and the
 scene mirrors the seven goats it is sent instead (`herd.gd`). Your own goat is the same
-either way.
+either way. If somebody *else* joins too, their goat arrives as a peer and is mirrored
+beside you (`peers.gd`, M21) -- and a bite you take in a session is reported to the host,
+whose meadow owns it.
 
 ```
 W / S          walk forward / backward

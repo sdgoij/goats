@@ -36,6 +36,7 @@ enum Command {
     Host { name: String },
     Join { ticket: String, name: String },
     Say { text: String },
+    Consume { key: i64 },
     Pose(PeerState),
     Close,
 }
@@ -137,6 +138,18 @@ impl NetBridge {
         self.queue_command(Command::Say {
             text: text.to_string(),
         })
+    }
+
+    /// Report a bite this player took, so the host's meadow can record it. The
+    /// cell is the meadow's own `Meadow.key(cx, cz)`, which is what the wire
+    /// carries.
+    ///
+    /// A client's alone, for the same reason a pose is: the host's own meadow is
+    /// local to its scene, and there is nobody to tell. A path is not a poison to
+    /// a non-biting build -- a goat that never eats never calls this.
+    #[func]
+    fn consume(&mut self, key: i64) -> GString {
+        self.queue_command(Command::Consume { key })
     }
 
     /// Publish this player's goat: `x`, `z` and `yaw` in metres and turns,
@@ -319,6 +332,17 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue) {
                 Some(Live::Host(host)) => host.publish(&state).await,
                 None => {}
             },
+            // A bite this player took, reported to the host so its meadow can
+            // record it -- and the next world snapshot carries it back to
+            // everyone. Silent while offline, where the meadow is already local,
+            // and on a host, which *is* the meadow.
+            Outcome::Command(Some(Command::Consume { key })) => {
+                if let Some(Live::Client(client)) = live.as_mut()
+                    && let Err(error) = client.consume(key).await
+                {
+                    push(&queue, notice(error.to_string()));
+                }
+            }
             Outcome::Command(Some(command)) => {
                 if let Some(session) = live.take() {
                     session.close().await;
@@ -371,7 +395,7 @@ async fn start(command: Command, queue: &Queue) -> Option<Live> {
             }
         },
         // Handled in `run`, which has the live session in hand.
-        Command::Say { .. } | Command::Pose(_) | Command::Close => None,
+        Command::Say { .. } | Command::Consume { .. } | Command::Pose(_) | Command::Close => None,
     }
 }
 

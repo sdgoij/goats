@@ -269,6 +269,46 @@ terrain mesh: 1 rebuild(s), anchored (0, 0)
 OK: the herd mirrors goatsd's bots, on Godot-drawn ground
 ```
 
+**The other players** (`verify_peers.gd`, `interop.sh pair`): M21. The port mirrored the host's
+*bots* from the beginning and never the host's *people* -- a `peer` event fell through
+`main.gd`'s dispatch unused -- so two clients in one session could not see each other and a
+Godot client could not see a raylib one. `peers.gd` is `net.js`'s peer half, and it is a
+*buffering* rule rather than a drawing one: a snapshot is a target, a one-shot gait is posed
+straight from the phase the wire carried (`netPeerShot`) with no easing and no wrap, a looped
+phase wraps so `0.9 -> 0.1` is a tenth of a lap *forward*, a yaw takes the short way round, and
+the flung height is applied outright -- a parabola whose apex is smoothed is a lower arc, and a
+mirrored goat would fly through a trajectory its owner never did. The gate asks `peerRole`'s
+`flung -> jump -> walk` chain of every model that could be a clip short rather than only of this
+one, and the three easing lines over 384 rows:
+
+```
+oracle answered 9 gait(s), 207 role(s), 384 of 384 step(s)
+shots: 9 gait(s), 0 mismatch(es)
+roles: 207 value(s) over 9 gait(s) x 23 model(s), 0 mismatch(es)
+steps: 384 row(s) x 4 axis/axes, 0 mismatch(es)
+wraps: 0.9 -> 0.1 moves +0.1000 of a lap, 0.1 -> 0.9 moves -0.1000, yaw 3.0 -> -3.0 is 3.2832
+placed: (5.0, 0.0, -2.0) yaw 3.0000, clip GoatWalk
+one-shot: phase 0.8000, gap 8.9443 m to the next snapshot
+held: y 1.4713 (py 1.5 applied), clip GoatJump, phase 0.8000, gap 8.9443 -> 0.0000 m
+removal: left and rejoined -> 1 goat(s) at x 1.0, an unknown name is quiet
+OK: the port's peers are the scene's, on the port's own mirror
+```
+
+Placing a peer is the one thing a gate cannot prove alone, because a `peer` frame is *somebody
+else's* goat: one client can never produce one. `interop.sh pair` starts `goatsd` and two
+clients, and both ends hold the session for the whole window -- a client that leaves the moment
+it sees a peer takes its own poses with it, which tests one direction and hides the other:
+
+```
+OK: a Godot client mirrors the other player's goat, gap 0.0000 m
+OK: a Godot client mirrors the other player's goat, gap 0.0000 m
+```
+
+And a bite, which the port had never sent either: `food.js` queues a `consume` when the meadow
+is not local, the goat now reports its own bite through a callback (`PlayerGoat.bite`, the shape
+`trap` already had), the bridge grew a `consume` intent, and the host's `consume` event lands in
+`Meadow.consume_key` -- which had no caller from the wire at all.
+
 **The ground itself** (`verify_terrain_mesh.gd`): the 48x48 grid the client builds
 through `makeModel`, as an `ArrayMesh` -- 2401 vertices and 4608 triangles, a
 normal from central differences, a per-vertex material colour from the scene's
@@ -730,10 +770,10 @@ a drawing one.
 What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the HUD as a `Control` tree, the menu and the console (stage 6 —
-there is a one-`Label` read-out and no way to paste a ticket *in game*); audio; the mods state, bites, bangs and
-voice reaching GDScript (they are carried on the wire but the core does not consume them
-yet, and the Godot client publishes its own goat but does not yet report a bite —
-`NetBridge` has no `consume`); the asset bytes reaching an engine shim (`rl.loadSound`
+there is a one-`Label` read-out and no way to paste a ticket *in game*); audio; the mods state and the
+bangs and voice reaching GDScript (they are carried on the wire but the core does not consume
+them yet -- `NetBridge` has no `blast`/`voice`; a *bite* was in this list too, and M21 closed
+it both ways); the asset bytes reaching an engine shim (`rl.loadSound`
 and friends) rather than a map; the tuning merge, reload and the file watcher; the wasm
 path through `crates/plugin`; and the other 16 `goats` member groups. Those are sections
 6 and 7.
@@ -915,7 +955,7 @@ Sizes are judgement, not measurement.
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
 | 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **discovery, manifests, ordering, assets and one entry done**; the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain | 2–3 |
-| 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
+| 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last); the mods, bang and voice paths, and a client that can *host*, remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree remains | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
@@ -1165,6 +1205,17 @@ disagreements and fails if there are none.
   *same* frame came back with the previous shader restored: a bisect that moves the shader and
   changes nothing has not found the shader. `interop.sh offline` greps for `SCRIPT ERROR` for
   precisely this, and the run that confirmed it named the line.
+- **A gate that announces itself with an environment variable tests the *harnessed* path, and can
+  hide a bug on the other one.** The scene's probe reports and `quit()`s eight seconds after a
+  world carrying a herd arrives, which is what makes `interop.sh herd` a bounded run rather than
+  a hang. What it did not do was check that it *was* a probe: the settle clock armed for anybody
+  who received a herd, so **every Godot client that joined a session with a herd in it quit eight
+  seconds in** -- and the only session the suite ran was `interop.sh herd`, which sets
+  `GOATS_PROBE`. The variable the probe is defined by was exactly why the probe was the only path
+  anyone exercised. `interop.sh pair` found it on its first run, because two clients that are not
+  probes have to stay up for fifteen seconds to see each other. The shape is worth keeping: when a
+  check makes itself known through the environment, the *unmarked* path is the one with no
+  coverage, and it is the one a player takes.
 - **An oracle written from the port proves nothing, and it is the easiest mistake
   here to make.** Every gate in this project checks a transcription against the
   JavaScript the scene runs, and every one of them had to be *written from
@@ -1209,31 +1260,47 @@ disagreements and fails if there are none.
 
 ## 10. Next steps
 
-Both spikes have landed, and the interop check passes in both modes: a Godot
+Both spikes have landed, and the interop check passes in four modes: a Godot
 client joins the shipping `goatsd`, chats, receives its world, and is refused by
-digest when it presents the wrong mods (section 3). And the scene is a *game*: a goat
+digest when it presents the wrong mods (section 3); two of them face each other and mirror
+each other's goat (`interop.sh pair`). And the scene is a *game*: a goat
 you drive, on a heightfield, in a meadow it can eat, among mines it can set off,
 under the scene's own sky, with a weather that runs itself, with **a herd of its own
-when there is no host and a host's herd mirrored when there is**, and your goat
-published back. The next steps, in order:
+when there is no host and a host's herd mirrored when there is**, with **the other
+players' goats mirrored too**, and your goat published back.
 
-1. **M20g: swimming, buoyancy and drinking.** The water's rules are complete -- the table,
-   the wading, the surface, the chop, the wake, the splashes and now the reflection (M20e) --
-   and so is the herd's own AI, which is the work that made `goatsd` optional rather than
-   required. What the water has never held is the *goat above its own depth*: M20g is what the
-   `ROADMAP` calls the next planned step rather than a deferral, and it is the last of the
-   scene's own rules this port's gates can still check against the JavaScript. After it the
-   water is a closed system and section 8's stage order puts the rest of the world ahead of
-   the UI, which is the right order.
-2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
-   and no way to paste a ticket, choose a setting or ask the world a question; every
-   staging knob is an environment variable because of it. The console is the port's own
-   debug surface and the mods' (`goats.command`), so it pays twice.
-3. **Finish stage 1's edges.** The `tuning.json` merge, reload and `--watch`,
-   asset bytes handed to an engine shim rather than a map, the wasm path through
-   `crates/plugin`, and the remaining `goats` member groups.
+**The order below changed when the goal was stated plainly: every feature the JavaScript client
+has, before anything it does not.** M20g is *not* in the JavaScript client -- the `ROADMAP` calls
+it the next planned step there as well -- so it is no longer first, and what is left is ordered
+the other way round: the multiplayer gaps the JS client has closed, then the UI it has, then the
+audio and the mod surface, and new work last.
 
-Order 1-2 is the scene's own roadmap read in the port's direction; 3 is independent and is the cheaper win whenever the context is fresh.
+1. **The rest of the multiplayer surface.** Two paths remain where the JavaScript client has
+   something this one does not, and both are the shape M21's peers had -- a wire path with no
+   consumer. A client cannot **host**: `NetBridge::host` exists and GDScript never calls it,
+   because `main.gd` joins and only joins. And a relayed **bang** and a peer's **blast report**
+   are still dropped, where a `consume` no longer is (`explosions.js`'s `applyRemoteBlast` and
+   `netBlastReport` are the rules). `interop.sh pair` is the harness both want: two clients, one
+   host, and a bang either can set off in front of the other.
+2. **The UI -- stage 6, and the largest block by far.** The HUD is one `Label` against a `drawHud`
+   with health and energy bars, an action prompt, a sleep cue, a status line and a damage pulse;
+   the menu has four screens; and the console is absent entirely, with it its sixty-odd verbs,
+   chat, the settings screen, the keymap and the Mods screen. This is also what retires the
+   `GOATS_*` environment variables, which exist for no other reason than a missing console.
+3. **Audio -- stage 7.** Ten slots (four of them one rule: a random variant, a copy that is not
+   already playing, a pitch jitter, and a distance attenuation that is not panning), three looping
+   beds started at zero volume so a weather change does not click, and voice -- which is Rust
+   already (`crates/goats/src/audio.rs`, captured, gated, Opus-coded and mixed) and needs a Godot
+   playback stream and a capture path rather than a rewrite.
+4. **The mod surface -- stages 1 and 8.** One of `goats`' seventeen member groups is implemented
+   and one of its eighteen events fires; of the repository's five mods, one runs and runs degraded.
+   This is the largest block by any measure and it is what the port's own goal names first, which
+   is why it is worth doing carefully rather than early: the facade, the scene driver, the tuning
+   merge, the asset path and the wasm ABI are one piece of work or none of it.
+5. **M20g, and anything else the JavaScript does not have.** Last on purpose.
+
+Orders 1-4 are "the same game the JavaScript client is"; 5 is new work in both, and
+section 8's stage table is the same plan in sizes rather than in order.
 
 ---
 
@@ -1248,7 +1315,8 @@ snapshots between two Godot peers over iroh (`godot/tools/verify_net.gd`); joins
 mirroring its world in one mode and refused by digest in another
 (`interop.sh join`, `interop.sh refuse`); runs the mirror scene against it,
 standing seven real goats on Godot-drawn ground at a 0.07 m worst gap
-(`interop.sh herd`); measures the ported heightfield against the JavaScript one
+(`interop.sh herd`); runs the scene **twice** against one host and requires each end to mirror the
+other player's goat, settling at a 0.0 m gap (`interop.sh pair`, M21); measures the ported heightfield against the JavaScript one
 at 5.0e-11 m (`godot/tools/verify_terrain.gd`); builds the scene's own 48x48
 grid from it, wound and normalised the way the client winds it
 (`godot/tools/verify_terrain_mesh.gd`); steps the ported weather machine 5400

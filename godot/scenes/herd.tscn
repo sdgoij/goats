@@ -1,4 +1,4 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=16 format=3]
 
 [ext_resource type="Script" path="res://src/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/herd.gd" id="2_herd"]
@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://src/water_mesh.gd" id="10_water"]
 [ext_resource type="Script" path="res://src/bots.gd" id="11_bots"]
 [ext_resource type="Script" path="res://src/water_splash.gd" id="12_splash"]
+[ext_resource type="Script" path="res://src/peers.gd" id="13_peers"]
 
 [sub_resource type="Sky" id="Sky_1"]
 
@@ -32,6 +33,9 @@ script = ExtResource("5_goat")
 
 [node name="Herd" type="Node3D" parent="."]
 script = ExtResource("2_herd")
+
+[node name="Peers" type="Node3D" parent="."]
+script = ExtResource("13_peers")
 
 [node name="Bots" type="Node3D" parent="."]
 script = ExtResource("11_bots")
