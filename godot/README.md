@@ -23,6 +23,8 @@ plan.
 | `src/terrain_mesh.gd` | The ground, drawn: the scene's 48x48 grid as one `ArrayMesh`, rebuilt as the anchor drifts |
 | `src/grass.gd` | The meadow, drawn: `weather.js`'s `tuftField` as a `MultiMesh`, following the goat and thinning where it has grazed |
 | `src/meadow.gd` | The meadow as food: the cell hash, the nearest tuft, bites and regrowth (`food.js`) |
+| `src/explosions.gd` | The devices: the derived minefield, the trapped tufts, the fuse, the bang and the effects (`explosions.js`) |
+| `src/craters.gd` | The holes a bang leaves, as a term in the heightfield, healing over four minutes |
 | `src/sky.gd` | The day/night curve, the sun's arc, the light and the ambient, transcribed from `world.js` and `lighting.js` and measured against them |
 | `src/sky.gdshader` | The sky, drawn: `sky.js`'s raymarched cloud slab as a `shader_type sky` |
 | `tools/` | Headless verification scripts, and `interop.sh` |
@@ -54,7 +56,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Eleven headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Thirteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -105,9 +107,14 @@ Eleven headless gates, all `SceneTree` scripts that exit non-zero on failure:
 # its idle clip.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_input.gd
+
+# The devices: the minefield's derivation, where a fired device moves, the crater
+# dish -- and a goat standing on a mine, end to end.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_devices.gd
 ```
 
-All eleven pass against Godot 4.7.2 today.
+All thirteen pass against Godot 4.7.2 today.
 
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that
@@ -153,8 +160,10 @@ are the scene's, the layout is stage 6.
 
 Two environment variables stage what there is no UI for yet: `GOATS_HOUR` pins the
 clock and `GOATS_CLOUD` the cloudiness, so an hour or an overcast sky can be
-looked at before the weather state machine exists. Both are ignored while a
-session is up, because the host owns the weather.
+looked at before the weather state machine exists. A third, `GOATS_BOOM`, sets off a
+bang beside the goat a moment into the run, which is how a bang and the hole it
+leaves can be *looked* at rather than measured. All three are ignored while a
+session is up, because the host owns the world.
 
 ## Running against the shipping host
 

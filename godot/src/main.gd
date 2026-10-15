@@ -53,6 +53,7 @@ const PROBE_RELIEF := 0.05
 @onready var goat: PlayerGoat = $Goat
 @onready var terrain: TerrainMesh = $Terrain
 @onready var grass: Grass = $Grass
+@onready var explosions: Explosions = $Explosions
 @onready var hud: Hud = $Ui/Hud
 @onready var sun: DirectionalLight3D = $Sun
 @onready var world_environment: WorldEnvironment = $WorldEnvironment
@@ -116,6 +117,12 @@ var _weather := {}
 ## a session's own weather wins, because that is the host's to decide.
 var _forced_hour := -1.0
 var _forced_cloud := -1.0
+## `GOATS_BOOM`: set off a bang beside the goat a moment into the run, so a bang and
+## the hole it leaves can be *looked at*. It is a staging knob for the same reason the
+## others are -- the console is stage 6 and there is no in-game way to ask for one --
+## and it is the only one that changes the world rather than the view.
+var _boom := false
+var _boom_frame := 0
 
 var _probe := false
 var _worlds := 0
@@ -132,11 +139,18 @@ var _settle := -1.0
 
 func _ready() -> void:
 	_set_up_sky()
+	# The devices need the goat they hurt and the meadow a trap has to land in; the
+	# scene's own field is wired the same way (`explosions.js` reads the goat and
+	# `EATEN` out of the module scope it shares with them).
+	explosions.goat = goat
+	explosions.meadow = meadow
+	explosions.terrain = terrain
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
 	_forced_hour = _environment_float("GOATS_HOUR", -1.0)
 	_forced_cloud = _environment_float("GOATS_CLOUD", -1.0)
+	_boom = not OS.get_environment("GOATS_BOOM").is_empty()
 	if _forced_hour >= 0.0:
 		_hours = _forced_hour
 
@@ -189,17 +203,31 @@ func _process(delta: float) -> void:
 	for line in bridge.call("poll_events"):
 		_handle(String(line))
 
-	# The goat first: it is what the camera, the ground and the meadow are placed
-	# around, and it is the only thing in this scene that decides anything.
+	# The ground, the fuses and the effects first, which is `sceneFrame`'s order: a
+	# crater ages, a fuse runs out and a bang lands *before* the goat moves, so a goat
+	# thrown this frame is thrown on the ground this frame.
+	explosions.update(delta)
+	# Walk onto something. The trigger is tested once per arrival rather than once per
+	# frame -- the stamp is a half-metre bucket, so a goat standing still is one
+	# compare -- and neither a sleeping goat nor a dead one is walking anywhere.
+	if goat.mode != "sleep" and goat.mode != "dead":
+		goat.trip_stamp = explosions.check_triggers(
+			goat.px, goat.pz, goat.airborne(), goat.trip_stamp)
+
+	# The goat: it is what the camera, the ground and the meadow are placed around,
+	# and it is the only thing in this scene that decides anything.
 	goat.step(delta, _controls(), _sky_light, _weather, meadow)
 	# The meadow is the host's in a session, so a client only mirrors it.
 	meadow.update(delta, _weather.is_empty())
 	_orbit(delta)
 
-	# The ground rebuilds only when its snapped anchor moves (`terrain.gd` /
-	# `terrainEnsure`) and the grass is recomputed every frame, because it sways and
-	# because the scene's meadow is a function of where the goat is (`world.js`
-	# `terrainEnsure(goat.px, goat.pz)`).
+	# The ground rebuilds when its snapped anchor moves (`terrain.gd` /
+	# `terrainEnsure`) and when something has blown a hole in it, and the grass is
+	# recomputed every frame, because it sways and because the scene's meadow is a
+	# function of where the goat is.
+	if Craters.dirty:
+		Craters.dirty = false
+		terrain.refresh()
 	var here := Vector3(goat.px, 0.0, goat.pz)
 	terrain.follow(here.x, here.z)
 	var camera := $Camera3D as Camera3D
@@ -208,6 +236,7 @@ func _process(delta: float) -> void:
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
 	_publish_pose(delta)
 	hud.show_for(goat, _hours, _weather)
+	_boom_if_asked()
 
 	if _settle >= 0.0:
 		_settle += delta
@@ -269,10 +298,14 @@ func _orbit(delta: float) -> void:
 ## Put the camera where the scene's own camera goes: an orbit of the goat, aimed at
 ## its shoulders. There is always a goat -- one you drive, offline or not -- so there
 ## is no case where the camera has nothing to orbit.
+##
+## The blast's knock moves the camera *and* what it looks at by the same offset, so
+## the world shifts rather than the view swinging (`sceneFrame`).
 func _place_camera(camera: Camera3D) -> void:
 	var focus: Vector3 = goat.focus()
-	camera.position = PlayerGoat.orbit_eye(focus, _cam_yaw, _cam_pitch, _cam_dist)
-	camera.look_at(focus)
+	var knock: Vector3 = explosions.shake_offset()
+	camera.position = PlayerGoat.orbit_eye(focus, _cam_yaw, _cam_pitch, _cam_dist) + knock
+	camera.look_at(focus + knock)
 
 ## Publish this goat to the session, about twenty times a second -- which is the rate
 ## `NetBridge::pose` documents, because the datagrams are unreliable by design and a
@@ -365,6 +398,15 @@ func _advance(delta: float, camera: Vector3) -> void:
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,
 		_sky_light, _cloudiness, _wind_x, _wind_z, _sky_time)
 
+## Set off the staging bang, if one was asked for. It lands beside the goat rather
+## than under it, so both the hole and the goat are in shot.
+func _boom_if_asked() -> void:
+	if not _boom:
+		return
+	_boom_frame += 1
+	if _boom_frame == 20:
+		explosions.blast("mine", goat.px + 2.0, goat.pz, 0.417, 0)
+
 ## An environment variable as a float, or `fallback` when it is unset or not a number.
 func _environment_float(name: String, fallback: float) -> float:
 	var text: String = OS.get_environment(name)
@@ -377,6 +419,11 @@ func _handle(line: String) -> void:
 	if not (event is Dictionary):
 		return
 	match String(event.get("type", "")):
+		"session":
+			# The seed the world is built from, sent once before anything else. The
+			# device field is *derived* from it, so this is what puts this scene's mines
+			# where the host's are without a word about where they are.
+			explosions.use_seed(int(event.get("seed", 0)))
 		"welcome":
 			print("welcome: ", event.get("name"))
 		"world":
@@ -388,6 +435,10 @@ func _handle(line: String) -> void:
 				_weather = weather
 			var eaten: Variant = event.get("eaten", null)
 			meadow.apply_wire(eaten)
+			# The ground the host has cratered and the devices it has seen go off: state
+			# rather than events, because a joiner has to see the world as it stands.
+			Craters.apply_wire(event.get("craters", null))
+			explosions.apply_spent(event.get("spent", null))
 			var bots: Variant = event.get("bots", [])
 			if bots is Array and bots.size() > 0:
 				_measure_motion(bots)

@@ -106,14 +106,19 @@ static func cell_at(x: float, z: float) -> Vector2i:
 ## The nearest *edible* tuft within `range` of `(x, z)`, as
 ## `{x, z, cx, cz, d2}`, or an empty dictionary.
 ##
-## `food.js` `nearestTuft`, without its `trappedOnly` filter: that one asks
-## `trapAt` (`explosions.js`), and the device field is not ported. So this finds the
-## tuft a goat would eat, and a trapped tuft is not yet a different thing.
+## `filter` sees each candidate cell `(cx, cz)` and answers whether it counts. The
+## scene has two callers: everything (`nearestTuft` with no filter) and *only trapped
+## tufts* (the walk-over trigger), and the second is `explosions.trap_at` -- so what
+## "trapped" means stays the device system's business and this stays the meadow's.
+## The scene's own `trappedOnly` flag is that filter, spelled as a flag because it had
+## one caller; a `Callable` is how GDScript says the same thing without the meadow
+## having to link against the devices.
 ##
 ## The search walks every cell in range and keeps the closest, rather than stopping
 ## at the first: the jitter is +-0.9 m and a neighbour's tuft can be nearer than
 ## the goat's own cell's.
-func nearest(x: float, z: float, reach: float = EAT_RANGE) -> Dictionary:
+func nearest(x: float, z: float, reach: float = EAT_RANGE,
+		filter: Callable = Callable()) -> Dictionary:
 	var r: int = int(ceil(reach / Terrain.CELL))
 	var centre: Vector2i = cell_at(x, z)
 	var best := {}
@@ -123,6 +128,8 @@ func nearest(x: float, z: float, reach: float = EAT_RANGE) -> Dictionary:
 			if not cell_exists(i, j):
 				continue
 			if eaten.has(key(i, j)):
+				continue
+			if filter.is_valid() and not bool(filter.call(i, j)):
 				continue
 			var spot: Vector2 = tuft_at(i, j)
 			var dx: float = spot.x - x

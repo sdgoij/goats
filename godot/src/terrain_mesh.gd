@@ -62,6 +62,19 @@ func follow(x: float, z: float) -> bool:
 	build(ax, az)
 	return true
 
+## Rebuild the grid where it already is, because the *ground* changed under it rather
+## than the goat moving: a bang dishes it and a crater heals. `Craters.dirty` is what
+## says so, and `main.gd` is what calls this.
+##
+## The whole grid, not the cells the crater reaches. The scene patches the affected
+## rectangle (`terrainStampCraters`) because it measured a full rebuild as too much;
+## the port rebuilds the whole field on an anchor move already (every 24 units of
+## travel, so every eight seconds at a run), so a bang costs what a walk past a
+## boundary costs and nothing more.
+func refresh() -> void:
+	if _built:
+		build(_anchor.x, _anchor.y)
+
 ## The field's centre: the grid spans `anchor +/- HALF`.
 func anchor() -> Vector2:
 	return _anchor

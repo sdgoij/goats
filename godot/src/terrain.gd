@@ -30,10 +30,8 @@
 # name. A language with neither a compiler nor a name resolver to tell you is one
 # where a naming mistake is a silent behaviour change.
 #
-# Not ported yet: the craters (`craterDipAt`, `explosions.js`), so `height_at` is
-# the field *before* anything has been blown up in it. `terrainHeight` in the
-# client is base + craters, and the split exists there for the mesh rebuild's
-# sake, so this is the base half.
+# Not ported yet: the craters are a *term* in `height_at` rather than geometry of
+# their own, so they live in `craters.gd` and this file only adds them.
 class_name Terrain
 extends RefCounted
 
@@ -89,11 +87,14 @@ static func base_height(x: float, z: float) -> float:
 	var relief: float = (shape(x, z) - 0.5) * 2.0 * RELIEF * t
 	return relief
 
-## The ground at a point, which is what every reader wants. Craters are not
-## ported yet, so this is `base_height` today -- and it is the function the client
-## calls `terrainHeight`.
+## The ground at a point, which is what every reader wants: the field, plus whatever
+## has been blown out of it. This is the function the client calls `terrainHeight`.
+##
+## The craters are a **term in here** rather than geometry of their own, which is what
+## makes a bang's hole free for everything that reads the ground: the goat, the herd,
+## the grass and the drawn mesh all ask this one function.
 static func height_at(x: float, z: float) -> float:
-	var y: float = base_height(x, z)
+	var y: float = base_height(x, z) + Craters.dip_at(x, z)
 	return y
 
 ## Ground material from the height, the slope (0 flat .. 1 steep) and the

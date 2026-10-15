@@ -66,6 +66,11 @@ const NIGHT_LIGHT := 0.25
 
 ## `TUNING.jump`: the cube fallback's hop, used when the model has no jump clip.
 const JUMP_FALLBACK_TIME := 0.6
+## `TUNING.explosions.fling`: the arc's gravity and the ceiling on the pose's stretch.
+## The gravity is several times life on purpose -- the scene's note is that it is
+## 7.3 g, so the goat leaves and lands hard rather than floating.
+const FLING_GRAVITY := -72.0
+const FLING_MAX_FLIGHT := 2.5
 ## `food.js` `EAT_FALLBACK_TIME`: a cube-fallback meal's length.
 const EAT_FALLBACK_TIME := 2.4
 ## `core.js` V_STRIDE / V_CYCLE: the cube fallback's stride and cycle, which is what
@@ -113,6 +118,17 @@ var _ground_offset := 0.0
 var _jump_time := 0.0
 var _jump_speed := 0.0
 var _jump_dir := 0
+## The arc (M19c): a world-space velocity in absolute height, so a slope the goat
+## crosses mid-air cannot drag it along, and `py` is derived from it.
+var _fling_time := 0.0
+var _fling_vx := 0.0
+var _fling_vz := 0.0
+var _fling_vy := 0.0
+var _fling_y := 0.0
+var _fling_flight := 0.0
+## The device trigger stamp (`explosions.gd` `check_triggers`): a half-metre bucket
+## with the airborne bit packed beside it, so a goat standing still is one compare.
+var trip_stamp := 0
 var _eat_time := 0.0
 var _sleep_time := 0.0
 var _death_time := 0.0
@@ -158,13 +174,15 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 	if exhausted:
 		gait = "walk"
 
-	# The yaw comes first, and every mode but the three that lock it steers. A
-	# sleeping, dead or eating goat does not turn.
+	# The yaw comes first, and every mode but the three that lock it steers. A sleeping,
+	# dead or eating goat does not turn -- a *flung* one does, which reads as "no
+	# steering" because the arc's velocity is world-space: the model spins and the
+	# flight does not change.
 	if mode != "sleep" and mode != "dead" and mode != "eat":
 		yaw += turn * TURN_RATE * delta
 
-	# The state machine: jump, sleep, eat and death lock the mode; everything else
-	# follows the requested gait.
+	# The state machine: jump, sleep, eat, fling and death lock the mode; everything
+	# else follows the requested gait.
 	if mode == "dead":
 		if bool(controls.get("restart", false)):
 			restart()
@@ -177,6 +195,10 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 		_jump_time += delta
 		if _jump_time >= jump_duration():
 			mode = gait if move != 0 else "idle"
+	elif mode == "flung":
+		# Not in charge until the feet touch: no jumping out of it, no eating. The
+		# arc is advanced in `_integrate`.
+		pass
 	elif mode == "eat":
 		_eat_time += delta
 		if _eat_time >= eat_duration():
@@ -219,14 +241,23 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 		_last_mode = mode
 
 	speed = ground_speed()
-	_integrate(delta, move)
+	_integrate(delta, move, gait)
 	_place()
 	_pose_role()
 
 ## The goat's height above the world's origin: the ground under it plus whatever it
-## is holding above that (only the jump, today). `world.js` `goatBaseY`.
+## is holding above that -- the flung arc's height, or nothing.
+## `world.js` `goatBaseY`.
 func base_y() -> float:
 	return Terrain.height_at(px, pz) + py
+
+## Whether the goat is over the ground rather than on it. The model's hop is the
+## clip's root motion, so `py` stays 0 through a jump and the *mode* is what says
+## airborne there; a flung goat owns its own height, so it is airborne by
+## construction. `explosions.js` `goatAirborne`, minus the cube fallback -- the port
+## always has the model.
+func airborne() -> bool:
+	return mode == "flung" or mode == "jump"
 
 ## Where the camera looks, and what `orbit_eye` orbits: the scene's `ty`. The 0.85
 ## is `sceneFrame`'s -- the goat's shoulders, not its feet.
@@ -478,6 +509,14 @@ func restart() -> void:
 	phase = 0.0
 	satiety = 0.0          # a new life starts hungry
 	mode = "idle"
+	# A death (or a restart) mid-arc must not leave the next life hovering.
+	_fling_time = 0.0
+	_fling_vx = 0.0
+	_fling_vz = 0.0
+	_fling_vy = 0.0
+	_fling_y = 0.0
+	_fling_flight = 0.0
+	trip_stamp = 0
 
 ## The HUD's lines, as `drawHud` decides them. The *drawing* is stage 6; this is the
 ## words, which is the part that has rules.
@@ -499,6 +538,31 @@ func status() -> String:
 	if exhausted:
 		return "exhausted"
 	return "standing"
+
+## Take a blast's impulse (M19c). The caller has already decided this goat is in
+## range and scaled the impulse by the falloff; this is where the goat starts being
+## flown. A second blast mid-arc *adds* to the arc rather than restarting it, which
+## is what a chain reaction through a minefield should look like.
+func start_fling(vx: float, vz: float, vy: float) -> void:
+	if mode != "flung":
+		_fling_y = base_y()          # the arc starts where the goat is
+		_fling_time = 0.0
+		mode = "flung"
+	_fling_vx += vx
+	_fling_vz += vz
+	_fling_vy += vy
+	# The pose is stretched over the ballistic time the remaining upward impulse
+	# implies, counted from the start of the arc, so the phase keeps rising towards 1
+	# instead of jumping back.
+	var air: float = 0.4
+	if _fling_vy > 0.0 and FLING_GRAVITY < 0.0:
+		air = (-2.0 * _fling_vy) / FLING_GRAVITY
+	_fling_flight = clampf(_fling_time + air, 0.3, FLING_MAX_FLIGHT)
+
+## How far through the arc the goat is, in `[0, 1]`. The pose is stretched over the
+## flight with it, and it is the phase a peer is told.
+func fling_progress() -> float:
+	return minf(_fling_time / _fling_flight, 1.0)
 
 ## The goat's world position: the ground under it, the arc's height above that, and
 ## the model's own offset so its feet are on the ground rather than at its origin.
@@ -542,10 +606,29 @@ func _update_stats(delta: float, sky_light: float, drain_factor: float) -> Strin
 			health = minf(STATS_MAX, health + IDLE_HEALTH_RECOVER * delta)
 	return "die" if health <= 0.0 else "awake"
 
-## One frame of movement, `sceneFrame`'s blocks in its order. The flung arc is not
-## here (no `explosions.js`), and neither is the fallback's vertical hop: the port
-## always has the model, so `py` is 0 outside a jump.
-func _integrate(delta: float, move: int) -> void:
+## One frame of movement, `sceneFrame`'s blocks in its order: the arc, the jump, the
+## locked modes, then the gaits.
+func _integrate(delta: float, move: int, gait: String) -> void:
+	if mode == "flung":
+		# The arc is integrated in *absolute* height with `py` derived from it, so a
+		# slope the goat crosses mid-air cannot drag it along. The clip's own hop
+		# rides on top of the arc, which is the placeholder's cost and not a rule.
+		_fling_time += delta
+		px += _fling_vx * delta
+		pz += _fling_vz * delta
+		_fling_vy += FLING_GRAVITY * delta
+		_fling_y += _fling_vy * delta
+		py = _fling_y - Terrain.height_at(px, pz)
+		# Ground contact is what ends the flight, not the ballistic time: that is what
+		# lands the goat on the ground it really meets, on a slope or beside a crater
+		# wall. The model rests at 0.
+		if _fling_vy <= 0.0 and py <= 0.0:
+			py = 0.0
+			_fling_vx = 0.0
+			_fling_vz = 0.0
+			_fling_vy = 0.0
+			mode = gait if move != 0 else "idle"
+		return
 	if mode == "jump":
 		# Horizontal travel continues at the speed frozen at take-off; the vertical
 		# arc is the clip's own, so `py` stays at rest.
@@ -566,7 +649,9 @@ func _integrate(delta: float, move: int) -> void:
 ## clamped fraction for a jump, a meal or a death -- the only thing that can pose a
 ## clip that is not a loop.
 func _pose_role() -> void:
-	if mode == "jump":
+	if mode == "flung":
+		_pose("flung" if has_role("flung") else "jump", fling_progress())
+	elif mode == "jump":
 		_pose(clip_role(), minf(_jump_time / jump_duration(), 1.0))
 	elif mode == "dead":
 		_pose("death", minf(_death_time / maxf(clip_length("death"), 0.001), 1.0))

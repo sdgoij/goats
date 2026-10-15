@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://src/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/herd.gd" id="2_herd"]
@@ -6,6 +6,7 @@
 [ext_resource type="Script" path="res://src/grass.gd" id="4_grass"]
 [ext_resource type="Script" path="res://src/player_goat.gd" id="5_goat"]
 [ext_resource type="Script" path="res://src/hud.gd" id="6_hud"]
+[ext_resource type="Script" path="res://src/explosions.gd" id="7_explosions"]
 
 [sub_resource type="Sky" id="Sky_1"]
 
@@ -32,6 +33,9 @@ script = ExtResource("3_terrain")
 
 [node name="Grass" type="MultiMeshInstance3D" parent="."]
 script = ExtResource("4_grass")
+
+[node name="Explosions" type="Node3D" parent="."]
+script = ExtResource("7_explosions")
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 shadow_enabled = true

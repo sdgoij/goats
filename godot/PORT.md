@@ -457,6 +457,28 @@ The first version of this gate compared the `[0, 1)` the bits divide into, and l
 JavaScript array, not the port. Comparing bits removed the question, and the port's
 `Meadow.cell_hash` returns the bit patterns for exactly that reason (section 9).
 
+**The devices** (`verify_devices.gd`): the minefield, the traps, the bangs and the holes — `explosions.js`, the last big system. It is the port's *sharpest* determinism question, sharper than the heightfield: the devices are **derived** from the session seed and nothing about where they are travels at boot, so a peer that computes a different field has mines where this one has grass, and the first anyone finds out is a bang the other cannot explain.
+
+```
+oracle answered 162 hash(es), 5202 cell(s), 10 move(s), 5043 dip(s)
+hash mismatches: 0
+the field: port 59 mine(s), 211 trap(s); scene 59 mine(s), 211 trap(s)
+field mismatches: 0 mine, 0 trap
+relocation mismatches: 0
+crater dip disagreement: 0.000000000000 (tolerance 0.000000000001)
+book-keeping: ok (a mine at (-28, -29) went, and a replacement is at (-27, -25))
+the bang: ok
+  crater under it: -0.450 m, 2 live
+  health after: 55.0 of 100
+  mode flung, 7.05 m above the ground, 11.586 m from the blast
+```
+
+The hashes are compared as **bits**, the minefield over 5202 cells at two salts, and `relocateDevice`'s *destination* for a cell that fired — which is the other half of "the wire carries the key and nothing about where the device went". The last block is the only thing in this port that says the pieces are wired to each other: a goat stands on a mine, the fuse runs out, and the tuning's own numbers come out the far end — 45 damage at the centre clamped by the floor, a 0.45 m dish, `flung`, seven metres up and eleven out. (Two craters, because the bang chained to a neighbour: `chainDepth` is 1, so a minefield is a bang and not a wall of them.)
+
+And this gate earned its keep twice over, in opposite directions. **The port was too accurate.** `trapAt` calls the cell hash with `cx ^ 0x5bf03635`, so `cx * 374761393` is about 5.6e17 — past 2**53, where a JavaScript number stops being able to hold an integer exactly. The scene's own sum is therefore *rounded* before `| 0` takes its low 32 bits, and an exact 64-bit multiply in GDScript takes different bits: 8% of the traps were in the wrong cells. The gates that only pass small cells (the meadow's, whose products stay under 2**53) see no difference at all, which is why this took a device gate to find. It joins the `value_hash` `sin` floor in section 9 as the same lesson from the other side.
+
+The *look* is the port's, and the rules are the scene's: the fireball and the smoke column are Godot sprites driven by the tuning's times and scales, not `fxAtlasPixels`'s generated flipbook, and the scorch tint on the ground is not drawn. The debris ballistics, the light and the camera knock are the scene's numbers. `GOATS_BOOM` sets off a bang beside the goat so a bang and its hole can be looked at.
+
 What is *not* yet proven: the water; the weather state machine (so the scene stays
 `clear` without a session, and `GOATS_CLOUD` is a staging knob); the sun and moon
 discs; the *devices* — mines, craters and the blast that flings a goat
@@ -515,7 +537,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Water pools (level, chop, fresnel) | `game/water.js` | mesh + `ShaderMaterial` |
 | Weather state machine, wind | `game/weather.js` | GDScript; must stay deterministic |
 | Bots (collision, temperaments, fleece) | `game/bots.js` | GDScript + `MultiMesh` |
-| Mines, craters, flipbook FX | `game/explosions.js` | GDScript + generator atlases |
+| Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
 | Menu, HUD, console | `game/menu.js`, `console.js` | `Control` trees |
 | Touch surface | `game/touch.js` | `InputEventScreenTouch` |
 
@@ -650,7 +672,7 @@ Sizes are judgement, not measurement.
 | 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **discovery, manifests, ordering, assets and one entry done**; the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree and the bots' own AI remain | 2–3 |
-| 4 | Weather, bots, food, mines | the README's world features, rules matching the JS | 3–5 |
+| 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **the mines, the trapped tufts, the bangs and the craters are in and gated, and the meadow is live; the weather machine and the bots' own AI remain** | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`) and the lit and shadow work is Godot's own materials and lights; water and the celestial discs remain** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
@@ -676,6 +698,16 @@ Stage 2 is independent of everything else and can start immediately.
   `Math.sin` bottoms out in, and across 17 sample points the two agree to
   **5.0e-11 m** and no closer. Everything else in the field (the octaves, the
   bowl, the interpolation, the order) is identical, which the same check shows.
+
+  The devices then found the same lesson **from the other side, and it is the more
+  surprising one: being *more* accurate is being wrong.** `trapAt` calls the cell
+  hash with `cx ^ 0x5bf03635`, so `cx * 374761393` is about 5.6e17 — past 2**53,
+  where a JavaScript number can no longer hold an integer exactly. The scene's sum is
+  therefore rounded before `| 0` takes its low 32 bits, and an exact 64-bit multiply
+  in GDScript takes *different* bits: 8% of the traps landed in the wrong cells, and
+  the mines were fine, because `mineAt` passes small cells. `trap_noise` now does
+  that first sum in double precision on purpose, and the comment says why. A port of
+  a double-precision language has to be wrong in the same way it is.
 
   What that costs: sub-nanometre ground, and — for the one thing derived rather
   than sent — a chance of two peers disagreeing about a device that is the odds
@@ -770,29 +802,26 @@ possible.
 Both spikes have landed, and the interop check passes in both modes: a Godot
 client joins the shipping `goatsd`, chats, receives its world, and is refused by
 digest when it presents the wrong mods (section 3). And the scene is a *game*: a goat
-you drive, on a heightfield, in a meadow it can eat, under the scene's own sky, with
-a host's herd mirrored alongside it and your goat published back. The next steps, in
-order:
+you drive, on a heightfield, in a meadow it can eat, among mines it can set off,
+under the scene's own sky, with a host's herd mirrored alongside it and your goat
+published back. The next steps, in order:
 
-1. **The devices (stage 4's sharp end).** Mines, craters and the blast that flings a
-goat: `explosions.js`. It is the largest single feature left, it is what the
-meadow's *trapped* tufts and the goat's `flung` mode are waiting for, and it is the
-one system that changes the ground under the goat (a crater is a term in
-`terrainHeight`, so it reaches the mesh, the grass and both shadows for free).
-2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
-and no way to paste a ticket, choose a setting or ask the world a question; every
-staging knob is an environment variable because of it. The console is the port's own
-debug surface and the mods' (`goats.command`), so it pays twice.
-3. **The weather state machine and the celestial bodies.** The machine is what takes
+1. **The weather state machine and the celestial bodies.** The machine is what takes
 the sky from `clear` to `rain` on its own and makes `GOATS_CLOUD` unnecessary; the
-sun and moon *discs* (`drawCelestial`) are the last piece of the sky.
-4. **Water, then the bots' own AI in GDScript.** The herd is a mirror; a scene that
-simulates its own bots is what makes `goatsd` optional rather than required.
-5. **Finish stage 1's edges.** The `tuning.json` merge, reload and `--watch`,
-asset bytes handed to an engine shim rather than a map, the wasm path through
-`crates/plugin`, and the remaining `goats` member groups.
+sun and moon *discs* (`drawCelestial`) are the last piece of the sky; and the rain is
+what the `weatherSpeed` and `weatherDrain` already wired into the goat are waiting
+for.
+2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
+   and no way to paste a ticket, choose a setting or ask the world a question; every
+   staging knob is an environment variable because of it. The console is the port's own
+   debug surface and the mods' (`goats.command`), so it pays twice.
+3. **Water, then the bots' own AI in GDScript.** The herd is a mirror; a scene that
+   simulates its own bots is what makes `goatsd` optional rather than required.
+4. **Finish stage 1's edges.** The `tuning.json` merge, reload and `--watch`,
+   asset bytes handed to an engine shim rather than a map, the wasm path through
+   `crates/plugin`, and the remaining `goats` member groups.
 
-Order 1–4 is the scene's own roadmap read in the port's direction; 5 is independent
+Order 1–3 is the scene's own roadmap read in the port's direction; 4 is independent
 and is the cheaper win whenever the context is fresh.
 
 ---
