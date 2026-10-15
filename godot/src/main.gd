@@ -117,10 +117,13 @@ var water := Water.new()
 ## from a no-op without the water reaching into the mesh.
 var _terrain_builds := -1
 
-## The water's reflection (M20e): the setting's leaf and the promise, and the march the surface
-## runs for it (`water_reflect.gd`). It is a plain object rather than a node -- what it drives
-## is the surface's material, and what decides the tier is a leaf, not a place in the world.
+## The water's reflection (M20e): the setting's leaf and the promise, and the pass a tier buys
+## (`water_reflect.gd`). It is a plain object rather than a node -- what decides the tier is a
+## leaf, not a place in the world.
 var water_reflect := WaterReflect.new()
+## ...and the pass itself: `renderWaterMirror`'s second camera, in a `SubViewport` that shares
+## this scene's world (`water_mirror.gd`).
+var water_mirror := WaterMirror.new()
 
 ## A bite's device test, built once and handed to the goat every frame: `food.js`
 ## `startEat` asks whether the tuft it just ate was trapped, and `explosions.gd` is what
@@ -223,15 +226,23 @@ func _ready() -> void:
 	# told once; neither follows the grid.
 	grass.water = water
 	water_splash.water = water
-	# The reflection (M20e): the tier is the console's (`setting reflect`) once there is one;
-	# until then it is the staging knob, and a word the scene does not know leaves the leaf
-	# where it is. The surface is told which march to run, and that is the whole of it -- there
-	# is no node to keep in step and no bake to re-arm.
+	# The reflection (M20e) is a mirrored pass, so the layers its `cull_mask` reads are set here:
+	# the ground on one of its own, and the surface, the drops and the meadow on another. That is
+	# what says "the ground, and not the goat" (the ground tier draws the ground's layer alone)
+	# and "everything but what must not be in a reflection" (the mirror tier draws the rest).
+	terrain.layers = WaterMirror.LAYER_GROUND
+	water_surface.layers = WaterMirror.LAYER_NOREFLECT
+	grass.layers = WaterMirror.LAYER_NOREFLECT
+	water_splash.layers = WaterMirror.LAYER_NOREFLECT
+	add_child(water_mirror)
+	# The tier is the console's (`setting reflect`) once there is one; until then it is the
+	# staging knob, and a word the scene does not know leaves the leaf where it is. The surface
+	# and the pass are both told, because neither can work the tier out for itself.
 	var reflect_word: String = OS.get_environment("GOATS_REFLECT")
 	var reflect_tier: int = WaterReflect.word_tier(reflect_word)
 	if reflect_tier >= 0:
 		water_reflect.set_wish(float(reflect_tier))
-	water_reflect.apply(water_surface)
+	water_reflect.apply(water_surface, water_mirror)
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
@@ -358,18 +369,18 @@ func _process(delta: float) -> void:
 	# The water is the table over the grid, so it follows the grid: the scene rebuilds it
 	# wherever the terrain mesh is rebuilt (`waterRebuild`), and `rebuilds` is what says
 	# one happened. The grid is *read*, never written, so it must be taken again after a
-	# rebuild rather than held. The reflection needs nothing here: it marches what the frame
-	# has already drawn, so a rebuilt ground is simply the next frame's ground.
+	# rebuild rather than held. The reflection needs nothing here: the pass is placed from the
+	# camera every frame (below), so a rebuilt ground is simply the next frame's ground.
 	if terrain.rebuilds != _terrain_builds:
 		_terrain_builds = terrain.rebuilds
 		water.rebuild(terrain.heights(), terrain.anchor())
 		water_surface.build(terrain.heights(), terrain.anchor())
 	var camera := $Camera3D as Camera3D
 	_place_camera(camera)
-	# The reflection's march projects its own ray points, and a spatial *fragment* shader cannot
-	# see `PROJECTION_MATRIX` -- so the camera's own is handed over, once a frame (it changes
-	# only when the field of view or the window does, and it is four rows either way).
-	water_surface.set_projection(camera.get_camera_projection())
+	# The reflection's pass (M20e): `renderWaterMirror` runs *before* the frame's own 3D pass, and
+	# so does this -- the camera it draws from is the world's own, mirrored through the water's
+	# plane, and the surface reads what it drew at its own screen position.
+	water_mirror.run(camera, water.level())
 	_advance(delta, camera.global_position)
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
 	water_splash.update()

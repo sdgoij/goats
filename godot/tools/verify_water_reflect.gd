@@ -2,24 +2,23 @@
 #
 #   Godot --headless --path godot --script res://tools/verify_water_reflect.gd
 #
-# M20e is the one part of the water that is mostly a *look*, and the port answers it with its
-# own screen-space march in `water.gdshader` rather than with Godot's `ssr_enabled` -- because
-# Godot's is computed from the opaque pass and does not reach an alpha-blended surface (a
-# measurement: toggling it moves a frame by 0.000064 with this water transparent and by
-# 0.003081 with it temporarily opaque). So what a headless run can hold is the part that is a
-# *rule*, plus the plumbing that carries it:
+# M20e is mostly a *look*, and the port answers it with `water_mirror.gd`'s second camera --
+# `renderWaterMirror` transcribed -- rather than with Godot's `ssr_enabled`, which never reaches
+# a transparent material. So what a headless run can hold is the part that is a *rule*, plus the
+# plumbing that carries it:
 #
 #   * the leaf and its clamp, which `tuningCoerce` does and not `waterReflectTier`;
 #   * the promise `waterReflectTier` makes -- the wish rounded, and a tier the build cannot
 #     keep falling to the one below it rather than to nothing;
 #   * the three words `setting reflect` and the menu's combo box spell (`ctl.js` `CTL_REFLECT`);
-#   * the *budget* each tier buys, which is the port's own invention and is checked against the
-#     shader's own ceiling and against the order the tiers are meant to have;
-#   * and that the tier and its budget reach the surface's material, under names the shader
-#     actually declares -- a misspelling is silent on both sides, which is the one thing a
-#     name can be checked for at all here.
+#   * what each tier's pass *draws*, which is the scene's own two exclusions said as a
+#     `cull_mask` -- "the ground, and not the goat" and "everything but what must not be in a
+#     reflection" -- and which is where this slice's substance is;
+#   * and that the tier reaches both the surface's material and the pass, under names the shader
+#     actually declares: a misspelling is silent on both sides, which is the one thing a name
+#     can be checked for at all here.
 #
-# What no case can hold is whether the march *looks* right -- the same gap M20b and M20c
+# What no case can hold is whether the mirror *looks* right -- the same gap M20b and M20c
 # shipped with, and the reason `GOATS_FLOOD`/`GOATS_REFLECT` pictures exist.
 extends SceneTree
 
@@ -154,48 +153,51 @@ func _initialize() -> void:
 	if first_word != "":
 		print("  first: ", first_word)
 
-	# 3. The budget each tier buys, and the shader's own ceiling. The ceiling is a `const`, so
-	#    no engine call reaches it -- it is read out of the source, and a budget the shader
-	#    would clip has to be caught here or nowhere.
-	var shader: Shader = load("res://src/water.gdshader")
-	var ceiling: int = _max_steps(shader.code)
-	var budget: Array[String] = []
-	if ceiling <= 0:
-		budget.append("the shader's MAX_STEPS could not be read (%d)" % ceiling)
+	# 3. What each tier's pass draws. These are pins rather than transcriptions -- the two
+	#    engines answer the tier differently -- so they are asserted as the properties the
+	#    mapping exists for, not as restated constants.
+	var sky_mask: int = WaterMirror.mask_of(WaterReflect.SKY)
+	var ground_mask: int = WaterMirror.mask_of(WaterReflect.GROUND)
+	var world_mask: int = WaterMirror.mask_of(WaterReflect.MIRROR)
+	var drawing: Array[String] = []
+	if WaterMirror.runs(WaterReflect.SKY) or sky_mask != 0:
+		drawing.append("the sky tier runs a pass; it is meant to sample nothing at all")
+	if not WaterMirror.runs(WaterReflect.GROUND):
+		drawing.append("the ground tier runs no pass")
+	if (ground_mask & WaterMirror.LAYER_GROUND) == 0:
+		drawing.append("the ground tier does not draw the ground")
+	if (ground_mask & 1) != 0:
+		drawing.append("the ground tier draws layer 1, so it reflects the goat")
+	if (world_mask & 1) == 0:
+		drawing.append("the mirror tier cannot draw the goat it exists to reflect")
+	if (world_mask & WaterMirror.LAYER_NOREFLECT) != 0:
+		drawing.append("the mirror tier draws what must not be in a reflection")
+	if (world_mask & ground_mask) != ground_mask:
+		drawing.append("the mirror does not draw everything the ground tier does")
+	if sky_mask == ground_mask or ground_mask == world_mask or sky_mask == world_mask:
+		drawing.append("two tiers' passes draw the same layers")
 	for which in WaterReflect.NAMES.size():
-		if WaterReflect.steps_of(which) > ceiling:
-			budget.append("tier %s marches %d step(s), more than the shader's %d"
-				% [WaterReflect.tier_word(which), WaterReflect.steps_of(which), ceiling])
-	if WaterReflect.steps_of(WaterReflect.SKY) != 0 \
-			or WaterReflect.reach_of(WaterReflect.SKY) != 0.0:
-		budget.append("the sky tier marches something; it is meant to sample nothing at all")
-	if WaterReflect.steps_of(WaterReflect.MIRROR) <= WaterReflect.steps_of(WaterReflect.GROUND):
-		budget.append("the mirror does not march further than the ground")
-	if WaterReflect.reach_of(WaterReflect.MIRROR) <= WaterReflect.reach_of(WaterReflect.GROUND):
-		budget.append("the mirror does not reach further than the ground")
-	if WaterReflect.reach_of(WaterReflect.GROUND) <= 0.0:
-		budget.append("the ground tier reaches nowhere")
-	print("budget: ceiling %d, sky %d/%.1f, ground %d/%.1f, mirror %d/%.1f, %d problem(s)"
-		% [ceiling, WaterReflect.steps_of(0), WaterReflect.reach_of(0),
-			WaterReflect.steps_of(1), WaterReflect.reach_of(1),
-			WaterReflect.steps_of(2), WaterReflect.reach_of(2), budget.size()])
-	for problem in budget:
+		if WaterMirror.runs(which) != (WaterMirror.mask_of(which) != 0):
+			drawing.append("tier %d's pass runs and its mask disagree" % which)
+	print("drawing: sky %d, ground %d, mirror %d (nothing %d, ground %d, noreflect %d), %d problem(s)"
+		% [sky_mask, ground_mask, world_mask, 0, WaterMirror.LAYER_GROUND,
+			WaterMirror.LAYER_NOREFLECT, drawing.size()])
+	for problem in drawing:
 		print("  ", problem)
 
 	# 4. The plumbing: the surface's shader must *declare* the names the tier is pushed under
-	#    (a misspelling is silent on both sides), and `apply` must land the tier and its budget
-	#    on the material.
+	#    (a misspelling is silent on both sides), and `apply` must land the tier on both the
+	#    material and the pass.
+	var shader: Shader = load("res://src/water.gdshader")
 	var declared: PackedStringArray = []
 	for uniform: Dictionary in shader.get_shader_uniform_list():
 		declared.append(String(uniform["name"]))
 	var missing: Array[String] = []
-	for needed in ["water_reflect", "water_steps", "water_reach"]:
+	for needed in ["water_reflect", "water_mirror"]:
 		if not declared.has(needed):
 			missing.append(needed)
-	print("declared: ", ", ".join(declared))
-	if not missing.is_empty():
-		print("  missing: ", ", ".join(missing))
 
+	var mirror := WaterMirror.new()
 	var surface := WaterMesh.new()
 	surface.build(_flat_heights(), Vector2(0.0, 0.0))
 	var reflect := WaterReflect.new()
@@ -204,7 +206,7 @@ func _initialize() -> void:
 	var first_landing := ""
 	for wish in [0.0, 1.0, 2.0]:
 		reflect.set_wish(wish)
-		reflect.apply(surface)
+		reflect.apply(surface, mirror)
 		var want: int = WaterReflect.promise(wish, not headless, not headless)
 		var material: ShaderMaterial = surface.material_override
 		if material == null:
@@ -216,31 +218,32 @@ func _initialize() -> void:
 			if first_landing == "":
 				first_landing = "wish %.1f: the material says tier %d, want %d" % [
 					wish, int(material.get_shader_parameter("water_reflect")), want]
-		if int(material.get_shader_parameter("water_steps")) != WaterReflect.steps_of(want):
+		if int(mirror.mask()) != WaterMirror.mask_of(want):
 			landing += 1
 			if first_landing == "":
-				first_landing = "wish %.1f: the material marches %d step(s), want %d" % [
-					wish, int(material.get_shader_parameter("water_steps")),
-					WaterReflect.steps_of(want)]
-		if float(material.get_shader_parameter("water_reach")) != WaterReflect.reach_of(want):
+				first_landing = "wish %.1f: the pass draws %d, want %d" % [
+					wish, mirror.mask(), WaterMirror.mask_of(want)]
+		if mirror.running() != WaterMirror.runs(want):
 			landing += 1
 			if first_landing == "":
-				first_landing = "wish %.1f: the material reaches %.1f m, want %.1f" % [
-					wish, float(material.get_shader_parameter("water_reach")),
-					WaterReflect.reach_of(want)]
+				first_landing = "wish %.1f: the pass runs %s, want %s" % [
+					wish, mirror.running(), WaterMirror.runs(want)]
+	print("declared: ", ", ".join(declared))
+	if not missing.is_empty():
+		print("  missing: ", ", ".join(missing))
 	print("landing: 3 wish(es), %d mismatch(es)" % landing)
 	if first_landing != "":
 		print("  first: ", first_landing)
 
 	# 5. The degrade: the promise falls a tier rather than drawing nothing, and the port's half
-	#    of it is a *frame* -- a screen-space march needs one, so `--headless` answers sky
-	#    however the leaf is set.
+	#    of it is a *frame* -- a mirrored pass needs one, so `--headless` answers sky however the
+	#    leaf is set.
 	var degrade_mismatches := 0
 	var first_degrade := ""
-	print("display server: ", DisplayServer.get_name(), ", can march: ", reflect.can_ground())
+	print("display server: ", DisplayServer.get_name(), ", can pass: ", reflect.can_ground())
 	if reflect.can_ground() != (not headless):
 		degrade_mismatches += 1
-		first_degrade = "the ability to march does not follow the renderer"
+		first_degrade = "the ability to run a pass does not follow the renderer"
 	for wish in [0.0, 1.0, 2.0]:
 		reflect.set_wish(wish)
 		var want: int = WaterReflect.promise(wish, not headless, not headless)
@@ -250,8 +253,8 @@ func _initialize() -> void:
 				first_degrade = "wish %.1f: tier %d, want %d" % [wish, reflect.tier(), want]
 	var report: Dictionary = reflect.report()
 	if int(report["reflect"]) != roundi(reflect.wish) or int(report["tier"]) != reflect.tier() \
-			or int(report["steps"]) != WaterReflect.steps_of(reflect.tier()) \
-			or float(report["reach"]) != WaterReflect.reach_of(reflect.tier()):
+			or int(report["mask"]) != WaterMirror.mask_of(reflect.tier()) \
+			or bool(report["running"]) != WaterMirror.runs(reflect.tier()):
 		degrade_mismatches += 1
 		if first_degrade == "":
 			first_degrade = "the report does not agree with the tier it reports"
@@ -263,9 +266,12 @@ func _initialize() -> void:
 	#    stored clamped rather than rounded.
 	var edge_ok := WaterReflect.word_tier("") == -1 and WaterReflect.word_tier("nope") == -1 \
 		and WaterReflect.tier_word(-1) == "" and WaterReflect.tier_word(3) == "" \
-		and WaterReflect.clamp_wish(-5.0) == 0.0 and WaterReflect.clamp_wish(9.0) == 2.0
+		and WaterReflect.clamp_wish(-5.0) == 0.0 and WaterReflect.clamp_wish(9.0) == 2.0 \
+		and WaterMirror.mask_of(-1) == 0 and WaterMirror.mask_of(9) == 0 \
+		and WaterReflect.mask_of(WaterReflect.GROUND) == WaterMirror.MASK_GROUND
 	print("edges: ", "ok" if edge_ok else "WRONG")
 
+	mirror.free()
 	host.free()
 
 	if oracle_stored.size() != RAW.size():
@@ -278,12 +284,12 @@ func _initialize() -> void:
 			% [rule_mismatches, compared])
 	if word_mismatches != 0:
 		failures.append("the setting's words are not the scene's: %d place(s)" % word_mismatches)
-	if not budget.is_empty():
-		failures.append("the tiers' own budget is not the one they are meant to have")
+	if not drawing.is_empty():
+		failures.append("the tiers do not draw what they are meant to")
 	if not missing.is_empty():
 		failures.append("the shader does not declare: %s" % ", ".join(missing))
 	if landing != 0:
-		failures.append("the tier does not reach the surface's material: %d place(s)" % landing)
+		failures.append("the tier does not reach the surface and the pass: %d place(s)" % landing)
 	if degrade_mismatches != 0:
 		failures.append("the promise is not the one the build can keep: %d place(s)"
 			% degrade_mismatches)
@@ -291,24 +297,13 @@ func _initialize() -> void:
 		failures.append("a word or a leaf outside the setting's range did not answer quietly")
 
 	if failures.is_empty():
-		print("OK: the port's reflection tiers are the scene's, on the port's own march")
+		print("OK: the port's reflection tiers are the scene's, on the port's own mirror")
 		quit(0)
 	else:
 		# `print`, not `printerr`: a non-zero `quit()` truncates stderr before it flushes.
 		for f in failures:
 			print("FAIL: ", f)
 		quit(1)
-
-## The march's ceiling, out of the shader's own source: it is a `const`, so no engine call can
-## reach it, and a budget the shader would silently clip has to be caught here or nowhere.
-func _max_steps(code: String) -> int:
-	var pattern := RegEx.new()
-	if pattern.compile("const\\s+int\\s+MAX_STEPS\\s*=\\s*(\\d+)") != OK:
-		return -1
-	var found: RegExMatch = pattern.search(code)
-	if found == null:
-		return -1
-	return int(found.get_string(1))
 
 ## Level ground, so every quad of the surface survives `build`'s cut and the material is made.
 func _flat_heights() -> PackedFloat64Array:

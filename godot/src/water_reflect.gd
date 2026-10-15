@@ -9,27 +9,28 @@
 # below it rather than failing, the way `applySettings` degrades a shadow mode the engine has
 # no map for.
 #
-# The port answers the same question with its **own screen-space march**, written into
-# `water.gdshader` rather than handed to Godot's `ssr_enabled`, and that is a measurement
-# rather than a preference: Godot's screen-space reflections are computed from the *opaque*
-# pass, so they do not reach an alpha-blended surface at all -- toggling `ssr_enabled` moves a
-# frame by 0.000064 with this water transparent and by 0.003081 with it temporarily opaque, a
-# 48x difference. The water has to be transparent (the shore fade and the submerged ground are
-# M20b's), so the pass has nothing to apply its result to, and the march is the port's.
+# The port answers it with **`water_mirror.gd`'s own second camera** -- `renderWaterMirror`
+# transcribed -- and that is a measurement rather than a preference. Godot's own `ssr_enabled`
+# never reaches a transparent material (it is computed from the opaque pass: toggling it moves
+# a frame by 0.000064 with this water transparent against 0.003081 with it made opaque), and
+# the port's own screen-space march in the shader found only what sits near the reflector's
+# own screen footprint -- a pool reflected a splat of the goat and nothing else.
 #
-# The scene's tier 1 and tier 2 differ in *what* they read (a baked grid, a mirrored pass); a
-# screen-space march can only differ in how far it goes, so the port's ladder is the **cost**
-# one that the setting exists to be a lever over:
+# So the three tiers are the three things the scene's were:
 #
-#   SKY      no march at all, and the engine's specular reflection of the sky stands -- which
-#            is exactly what M20b-M20d shipped, and the fallback a build with no rasteriser
+#   SKY      no pass at all, and the engine's specular reflection of the sky stands -- which is
+#            exactly what M20b-M20d shipped, and the fallback a build with no rasteriser
 #            degrades to.
-#   GROUND   a short march: the near shore, which is what a grazing view actually sees.
-#   MIRROR   a deep one: the same march with three times the reach and twice the steps.
+#   GROUND   the pass, drawing the ground **and not the goat** -- the scene's own exclusion
+#            ("the bake has no goat in it"), said with a `cull_mask` of the ground's layer
+#            alone. It is also where that tier's saving is, since the goats are what a mirror
+#            frame has to pose twice.
+#   MIRROR   the pass, drawing everything but the surface and the meadow -- so the goat and the
+#            herd are in the water, which is the scene's tier 2.
 #
-# The rule itself is transcribed exactly -- the leaf and its clamp, the promise, and the words
-# `setting reflect` and the menu's combo box spell -- and only the budget behind each tier is
-# the port's. See `WATER_STEPS` and `WATER_REACH`.
+# The rule is transcribed exactly -- the leaf and its clamp, the promise, and the words
+# `setting reflect` and the menu's combo box spell -- and what each tier *draws* is
+# `water_mirror.gd`'s table, beside the camera that uses it.
 #
 # Every local is annotated rather than inferred -- see the `:=` note in `terrain.gd`.
 class_name WaterReflect
@@ -49,15 +50,6 @@ const MOST := 2
 ## `ctl.js`'s `CTL_REFLECT`, which is what both the `setting reflect` route and the menu's
 ## combo box spell the tiers with.
 const NAMES: Array[String] = ["sky", "ground", "mirror"]
-
-## Each tier's march, as `(steps, reach in metres)`. The steps are capped by the shader's own
-## `MAX_STEPS` and the reach is what a step is a slice of, so the two together are the whole
-## budget: the sky tier marches nothing, the ground tier looks 12 m with a step a metre, and
-## the mirror looks 48 m with a step of two. The numbers are the port's own -- the scene's
-## tiers bought different *sources* rather than different distances -- and they are the one
-## place this slice had to invent.
-const WATER_STEPS := [0, 12, 24]
-const WATER_REACH := [0.0, 12.0, 48.0]
 
 ## The leaf itself (`TUNING.water.reflection`): a finite number in `LEAST..MOST`, and *not*
 ## an integer -- `tuningCoerce` clamps it and `waterReflectTier` is what rounds it, which is
@@ -94,22 +86,17 @@ static func tier_word(tier: int) -> String:
 		return ""
 	return NAMES[tier]
 
-## How many steps a tier's march takes, and how far it reaches. Both are zero for the sky,
-## which marches nothing at all.
-static func steps_of(tier: int) -> int:
-	if tier < SKY or tier > MIRROR:
-		return 0
-	return WATER_STEPS[tier]
+## What a tier's pass draws, and whether it runs one at all. Both live in `water_mirror.gd`,
+## beside the camera that does the drawing: this object owns the *rule*, not the pass.
+static func mask_of(which: int) -> int:
+	return WaterMirror.mask_of(which)
 
-static func reach_of(tier: int) -> float:
-	if tier < SKY or tier > MIRROR:
-		return 0.0
-	return WATER_REACH[tier]
+static func runs(which: int) -> bool:
+	return WaterMirror.runs(which)
 
-## Whether the ground tier can be kept. The scene's asks whether the bake was made; a
-## screen-space march needs a *frame*, so the port's asks for a rasteriser -- `--headless` has
-## none, and a tier that needs a frame a frame degrades to the sky there rather than drawing
-## nothing.
+## Whether the ground tier can be kept. The scene's asks whether the bake was made; a mirrored
+## pass needs a *frame*, so the port's asks for a rasteriser -- `--headless` has none, and a
+## tier that needs a submission degrades to the sky there rather than drawing nothing.
 func can_ground() -> bool:
 	return DisplayServer.get_name() != "headless"
 
@@ -127,18 +114,20 @@ func tier() -> int:
 func set_wish(value: float) -> void:
 	wish = clamp_wish(value)
 
-## Push the tier the surface should march with, and its budget. Called where the wish moves.
-func apply(surface: WaterMesh) -> void:
+## Point the surface and the pass at the tier. Called where the wish moves -- a tier is a
+## setting, and neither the material's uniform nor a camera's cull mask wants touching a frame.
+func apply(surface: WaterMesh, mirror: WaterMirror) -> void:
 	var which: int = tier()
-	surface.set_reflection(which, steps_of(which), reach_of(which))
+	surface.set_reflection(which, mirror.texture())
+	mirror.set_tier(which)
 
 ## `sceneWater`'s own two keys -- the leaf's wish and the frame's promise, which can differ --
-## with the budget the promise buys.
+## with what the promise draws, and whether it draws anything.
 func report() -> Dictionary:
 	var which: int = tier()
 	return {
 		"reflect": roundi(wish),
 		"tier": which,
-		"steps": steps_of(which),
-		"reach": reach_of(which),
+		"mask": mask_of(which),
+		"running": runs(which),
 	}

@@ -74,21 +74,14 @@ func set_ripples(first: Vector4, second: Vector4, third: Vector4) -> void:
 	_material.set_shader_parameter("water_ripple1", second)
 	_material.set_shader_parameter("water_ripple2", third)
 
-## The reflection (M20e): the tier, and the march's own budget. Pushed where the tier settles
-## rather than every frame -- a tier is a setting, and the shader's `water_reflect` is read
-## once a fragment either way.
-func set_reflection(tier: int, steps: int, reach: float) -> void:
+## The reflection (M20e): which tier the surface reads its mirror at, and the mirror's own
+## image. Pushed where the tier settles rather than every frame -- a tier is a setting, and the
+## texture the pass fills is the same one either way.
+func set_reflection(tier: int, mirror: Texture2D) -> void:
 	if _material == null:
 		return
 	_material.set_shader_parameter("water_reflect", tier)
-	_material.set_shader_parameter("water_steps", steps)
-	_material.set_shader_parameter("water_reach", reach)
-
-## The camera's own projection, pushed once a frame: a `spatial` fragment shader cannot see
-## `PROJECTION_MATRIX` and the reflection's march has to project a ray point from exactly there.
-func set_projection(matrix: Projection) -> void:
-	if _material != null:
-		_material.set_shader_parameter("water_projection", matrix)
+	_material.set_shader_parameter("water_mirror", mirror)
 
 ## Build the surface over the terrain grid's own heights, at the grid's anchor.
 func build(heights: PackedFloat64Array, anchor: Vector2) -> void:
