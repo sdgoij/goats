@@ -136,10 +136,16 @@ func _initialize() -> void:
 			hashes[Vector2i(int(parts[2]), int(parts[3]))] = Vector3i(
 				int(parts[4]), int(parts[5]), int(parts[6]))
 		elif line.begins_with("log N ") and parts.size() == 8:
-			nearest[int(parts[2])] = Vector4(
-				float(parts[3]), float(parts[4]), float(parts[5]), float(parts[6]))
+			# `PackedFloat64Array` and not a `Vector4`, and that is the whole reason this
+			# gate is worth reading twice: a Godot vector type is **float32**, so storing the
+			# oracle's positions in one rounds the *oracle* to the port's own grid -- and the
+			# two then agree perfectly about a mistake they are sharing. It passed that way
+			# for as long as `meadow.gd` narrowed its tuft positions through a `Vector2`, and
+			# only showed up once the port stopped. See `PORT.md` section 9.
+			nearest[int(parts[2])] = PackedFloat64Array([
+				float(parts[3]), float(parts[4]), float(parts[5]), float(parts[6])])
 		elif line.begins_with("log N ") and parts.size() == 4 and parts[3] == "none":
-			nearest[int(parts[2])] = Vector4(INF, 0.0, 0.0, 0.0)
+			nearest[int(parts[2])] = PackedFloat64Array([INF, 0.0, 0.0, 0.0])
 
 	print("oracle answered ", hashes.size(), " cell hash(es), ", nearest.size(), " search(es)")
 
@@ -175,9 +181,9 @@ func _initialize() -> void:
 	var first_cell_mismatch := ""
 	for i in SAMPLES.size():
 		var spot: Array = SAMPLES[i]
-		var wanted: Vector4 = nearest[i]
+		var wanted: PackedFloat64Array = nearest[i]
 		var got: Dictionary = meadow.nearest(spot[0], spot[1], EAT_RANGE)
-		if wanted.x == INF:
+		if wanted[0] == INF:
 			# The oracle found nothing in reach: the port must not either.
 			if not got.is_empty():
 				not_found += 1
@@ -186,13 +192,13 @@ func _initialize() -> void:
 		if got.is_empty():
 			not_found += 1
 			continue
-		worst_search = maxf(worst_search, absf(float(got["x"]) - wanted.x))
-		worst_search = maxf(worst_search, absf(float(got["z"]) - wanted.y))
-		if int(got["cx"]) != int(wanted.z) or int(got["cz"]) != int(wanted.w):
+		worst_search = maxf(worst_search, absf(float(got["x"]) - wanted[0]))
+		worst_search = maxf(worst_search, absf(float(got["z"]) - wanted[1]))
+		if int(got["cx"]) != int(wanted[2]) or int(got["cz"]) != int(wanted[3]):
 			cell_mismatches += 1
 			if first_cell_mismatch == "":
 				first_cell_mismatch = "sample %d: js cell (%d, %d), gd (%d, %d)" % [
-					i, int(wanted.z), int(wanted.w), int(got["cx"]), int(got["cz"])]
+					i, int(wanted[2]), int(wanted[3]), int(got["cx"]), int(got["cz"])]
 
 	print("cell hashes disagreed by at most %d bit(s)" % int(worst_hash))
 	print("cell hash mismatches: ", hash_mismatches)

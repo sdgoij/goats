@@ -19,6 +19,7 @@ plan.
 | `src/player_goat.gd` | The local goat: `goat.js`'s gait state machine, movement and stats — the goat you drive |
 | `src/hud.gd` | The state, health, energy and clock, as one `Label` until stage 6's `Control` tree |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
+| `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
 | `src/terrain.gd` | The heightfield, transcribed from `world.js` and measured against it |
 | `src/terrain_mesh.gd` | The ground, drawn: the scene's 48x48 grid as one `ArrayMesh`, rebuilt as the anchor drifts |
 | `src/grass.gd` | The meadow, drawn: `weather.js`'s `tuftField` as a `MultiMesh`, following the goat and thinning where it has grazed |
@@ -62,7 +63,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Sixteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Seventeen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -134,9 +135,16 @@ Sixteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 # them, and the winding Godot needs to draw them at all.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_water_mesh.gd
+
+# The herd: 3780 frames of `bots.js`'s own AI -- a spawn, a grazing walk and a bite, a
+# shower, a flung bot, a killed one and its respawn, the push-apart, and the water
+# waking a sleeper -- with every bot's position, yaw, phase, timer, mode, satiety,
+# health and clip compared frame for frame.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_bots.gd
 ```
 
-All sixteen pass against Godot 4.7.2 today.
+All seventeen pass against Godot 4.7.2 today.
 
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that
@@ -171,7 +179,12 @@ session, long enough for a host's herd to arrive (see below).
 
 What it shows is the scene's own world: the scene's goat, the scene's ground, the
 scene's meadow, the scene's sky and the scene's light — the world derived, not
-received, with a host's herd mirrored in beside yours when there is one. What is
+received. Offline the picture carries the scene's own **herd** as well: seven goats of
+different sizes and coats, each on its own coat's mottled fleece (`bots.gd`), standing
+on the ground with Godot's shadows. In a session the seven goats are the host's,
+mirrored in beside yours (`herd.gd`) — and they wear the authored fleece rather than a
+coat, because the mirror is the one slice that does not know which spec a bot was born
+with until it also reads the host's seed table. What is
 still Godot's rather than the scene's is the *lighting model*: the terrain, the
 grass and the goat are lit by Godot materials under a `DirectionalLight3D` with
 Godot's shadows, not by the scene's own lit program and hand-rolled shadow map
@@ -217,7 +230,8 @@ godot/tools/interop.sh refuse
 # rather than a probe script, so it is the closest thing here to the game.
 godot/tools/interop.sh herd
 
-# No server at all: the scene must boot and keep running. Needs no goatsd.
+# No server at all: the scene must boot and keep running, and its own herd with it.
+# Needs no goatsd.
 godot/tools/interop.sh offline
 
 # ...and render it: the real scene against a live host, in a window, ten seconds
@@ -230,9 +244,17 @@ It reads `GODOT_BIN` and `GOATSD_BIN` if the defaults do not fit.
 ## Running the scene
 
 Pressing play with no `GOATSD_TICKET` is the normal way to play it: **a session is
-optional**, and the scene says so and then runs. What you get is a goat you drive,
-on the ground the game's own heightfield describes, in a meadow it can eat, under
-the scene's own sky.
+optional**, and the scene says so and then runs. What you get is a goat you drive, on
+the ground the game's own heightfield describes, in a meadow it can eat, under the
+scene's own sky — and **a herd of seven goats of its own**, with their own temperament,
+coat and opinions (`bots.gd`). They graze, stroll, trot, occasionally sprint, rarely
+doze, wander around you and come back when they drift too far. They eat the same tufts
+you do, so the meadow thins for them too; a bang throws and can kill them; and they
+push each other — and you — apart rather than walking through anybody.
+
+Join a session and the herd stops being yours: the host owns the bots' AI, and the
+scene mirrors the seven goats it is sent instead (`herd.gd`). Your own goat is the same
+either way.
 
 ```
 W / S          walk forward / backward

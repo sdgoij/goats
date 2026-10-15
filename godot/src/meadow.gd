@@ -4,9 +4,17 @@
 # the same hash, and the port keeps it in one place: a cell's existence and its
 # jitter are `cell_hash`, so the grass a goat can see and the grass it can eat
 # cannot drift apart. (The scene carries that arithmetic twice, in `food.js` and
-# `weather.js`, deliberately, to keep the per-frame call depth down. GDScript has
-# the same cost per call and this is called ~600 times a frame, which is why the
-# function returns a `Vector3` -- a value type -- rather than a dictionary.)
+# `weather.js`, deliberately, to keep the per-frame call depth down; the port keeps
+# the *hash* in one function and inlines only the arithmetic around it, which is
+# what `food.js`'s own `nearestTuft` does with the hash itself.)
+#
+# A tuft's position is returned as **two doubles in a dictionary**, never as a
+# `Vector2`, and that cost a gate: every Godot vector type is float32 (see
+# `cell_hash`), so `Vector2(tx, tz)` is out by ~2e-6 m at the field's rim. Invisible
+# to draw, and not invisible to a rule -- `bots.gd` turns a goat with
+# `atan2(-dz, dx)` onto exactly this point, and the herd's tape came apart on a yaw
+# that was 4e-7 off. The scene never has the problem because `food.js` hands its
+# callers plain numbers.
 #
 # Eating records the cell and schedules its return (`TUNING.food.regrowMin` to
 # `regrowMax`, jittered per cell off a private PRNG so the weather's and the herd's
@@ -48,7 +56,6 @@ var eaten_count := 0
 var _rng := RNG_SEED
 
 ## A cell's three hashes as **uint32 bit patterns**, one per axis of a `Vector3i`.
-##
 ## Integer, and not the three `[0, 1)` values the field wants, for a reason that cost
 ## a gate: every Godot vector type stores **float32**, and a `Vector3` of the divided
 ## values is only good to ~4e-9 -- which is fine for a jitter of +-0.9 m and *not*
@@ -84,11 +91,13 @@ static func cell_exists(cx: int, cz: int) -> bool:
 ## Where the cell's tuft stands, in metres: jittered +-0.9 m about the cell's own
 ## even corner (`cx * TUNING.terrain.cell`). The jitter is the cell's own hash, so
 ## it is the position the grass draws and the position a goat walks to.
-static func tuft_at(cx: int, cz: int) -> Vector2:
-	var hash: Vector3i = cell_hash(cx, cz)
-	return Vector2(
-		cx * Terrain.CELL + (unit(hash.y) - 0.5) * 1.8,
-		cz * Terrain.CELL + (unit(hash.x) - 0.5) * 1.8)
+##
+## Two plain numbers and not a `Vector2` -- see the header on what that cost.
+static func tuft_x(cx: int, cz: int, bits: Vector3i) -> float:
+	return cx * Terrain.CELL + (unit(bits.y) - 0.5) * 1.8
+
+static func tuft_z(cx: int, cz: int, bits: Vector3i) -> float:
+	return cz * Terrain.CELL + (unit(bits.x) - 0.5) * 1.8
 
 ## A cell's identity as one number, unique for the cell range the field spans.
 ## `food.js` `tuftKey`, and the form the wire's `eaten` list uses.
@@ -131,13 +140,15 @@ func nearest(x: float, z: float, reach: float = EAT_RANGE,
 				continue
 			if filter.is_valid() and not bool(filter.call(i, j)):
 				continue
-			var spot: Vector2 = tuft_at(i, j)
-			var dx: float = spot.x - x
-			var dz: float = spot.y - z
+			var bits: Vector3i = cell_hash(i, j)
+			var tx: float = tuft_x(i, j, bits)
+			var tz: float = tuft_z(i, j, bits)
+			var dx: float = tx - x
+			var dz: float = tz - z
 			var d2: float = dx * dx + dz * dz
 			if d2 <= best_d2:
 				best_d2 = d2
-				best = {"x": spot.x, "z": spot.y, "cx": i, "cz": j, "d2": d2}
+				best = {"x": tx, "z": tz, "cx": i, "cz": j, "d2": d2}
 	return best
 
 ## The tuft in this cell, as `nearest` would describe it, whether or not it is
@@ -146,8 +157,9 @@ func nearest(x: float, z: float, reach: float = EAT_RANGE,
 func tuft_in(cx: int, cz: int) -> Dictionary:
 	if not cell_exists(cx, cz):
 		return {}
-	var spot: Vector2 = tuft_at(cx, cz)
-	return {"x": spot.x, "z": spot.y, "cx": cx, "cz": cz, "d2": 0.0}
+	var bits: Vector3i = cell_hash(cx, cz)
+	return {"x": tuft_x(cx, cz, bits), "z": tuft_z(cx, cz, bits), "cx": cx, "cz": cz,
+		"d2": 0.0}
 
 ## Whether a tuft is standing in this cell right now -- the meadow as it is, not as
 ## it is derived. `food.js` `EATEN.has`, for the one caller that needs to ask.

@@ -585,11 +585,86 @@ And the **cut** turned out to be knife-edge, which is a new shape of the determi
 
 What is *not* here is the wake, the splashes and the grass the water hides (M20d), and the reflection tiers (M20e, which Godot answers with the environment rather than with the scene's own bake and mirrored pass). The picture is `GOATS_FLOOD=0.5`, which is `water.js`'s own `flood <h>` verb: a level sheet following the terrain's contours, transparent over the grass it has submerged, the chop's crossed ripples carrying the sun along a glitter path — `WATER_FS`'s "a point the chop spreads into a path" — and the HUD reading `water 0.50 m   slowed 29%`.
 
+**The herd** (`verify_bots.gd`): `bots.gd` is the scene hosting itself. Seven goats with
+a temperament each -- `TUNING.herd.spec`'s coat colour, body scale, `bold` and `lazy` --
+roaming a small state machine: eat, stand, doze, or walk, trot or run to a target, with
+the odd hop while a run lasts ("zoomies"), a gaze-at-nothing idle when a tuft is out of
+reach, and a hard backstop that pulls a bot back in once it drifts 80 m. This is what
+makes `goatsd` **optional rather than required**: with no session the scene owns the
+bots' AI, their grazing and the blast that throws and kills them; with one it mirrors the
+host's herd instead (`herd.gd`), which is `sceneFrame`'s `netWorldLocal()` and the same
+switch the meadow's countdown already reads.
+
+The rules are `bots.js`'s, and almost none of them is a formula -- they are a private
+PRNG, a float comparison deciding whether a bot has arrived, and one frame's decision
+changing every frame after it. So the gate is a tape:
+
+```
+oracle answered 3780 frame(s), 7 bot(s), 9 role(s)
+botSpec: 18 spec(s), 0 mismatch(es)
+botRnd: 40 draw(s), 0 mismatch(es)
+use_seed: 4 seed(s), 0 mismatch(es)
+clips by role: 9 role(s), 0 mismatch(es)
+clip durations: worst 0.00000000000000355
+tape: 3780 frame(s), 223020 value(s) compared
+largest disagreement: 0.00000000000060990 (tolerance 0.00000000100000000)
+  worst at frame 1088 bot 1 field 7: scene 0.00735390495772002, port 0.00735390495832992
+field mismatches: 0
+mode mismatches: 0
+clip mismatches: 0
+herd values: 0 mismatch(es), worst 0.00000000000007638
+push-apart: 36 frame(s) with something to separate, 0 frame(s) overlapping after
+modes: eat 1843, sleep 262, jump 781, flung 9, dead 480 frame(s)
+coverage: { "eat": 1843, "sleep": 262, "jump": 781, "flung": 9, "dead": 480, "trapped": 3, "wakes": 1 }, and the gate counted 1 wake(s)
+OK: the GDScript herd is the scene's herd, and it feeds itself
+```
+
+Sixty-three seconds of herd, 223020 values compared, and the worst of them out by
+six-tenths of a picometre. Four things there are worth the space. The **mode and clip
+counts are asserted separately** from the bodies, because a herd that agrees about where
+it is and not about what it is doing is a herd that agrees by coincidence. The
+**coverage line is a claim the gate makes about its own tape** -- every mode the machine
+has, a trapped tuft bitten into, and one sleeping bot reached by water -- because a tape
+that never dozed would pass while checking less than it says it does; the `sleep` and
+`jump` counts are what forced the tape to be 63 s long rather than 20, a doze being one
+draw in ten inside a branch that is itself one draw in two. The **push-apart is checked
+both ways**: nothing overlapping after a pass, *and* at least one frame that had
+something to separate. And the **primitives are checked before the tape** -- `botRnd`'s
+xorshift as raw uint32 states rather than the divided draws, `botSpec` past the sixth
+cycle, `sceneUseSeed`'s *second* draw (the weather's is the first, the salt is the
+fifth), and the model's clips by role against the table `player_goat.gd` reads off the
+same model, which is a second reader of one source and not a second copy of a rule.
+
+Three things in it are **seams rather than transcriptions**, and they are named here
+rather than buried: the traps, the armed mines and the water are pure stubs handed to
+both sides, because the devices are `verify_devices.gd`'s subject and the water is
+`verify_water.gd`'s, and what the herd does *with* them is this gate's. The water stub is
+the one with a rule in it: it is the goat's own latitude less sixteen metres, so parking
+the goat far north walks the water line south over the herd -- which is the only way a bot
+can be *woken* by water, since a bot never dozes in one and a fixed lake can never catch
+one already asleep. The line's *latitude* is therefore part of the tape and not a free
+number: at the first version's `z = 22` the single sleeping bot stood at `z = 16.58`, on
+the dry side of the line, and the gate said so by failing.
+
+What the herd *looks* like is the port's where the engine is better at it. Each bot is a
+real rig (`goat_animated.glb` instantiated per goat, as `herd.gd` does) rather than the
+`MultiMesh` section 5 sketched, because a bot's pose lives *in the model* and one
+transform per goat cannot hold seven `AnimationPlayer`s' worth of it. It wears the
+scene's own fleece: `makeBotTextures`' three octaves of `vnoise2` built as a 64x64
+diffuse per coat colour, one material per coat shared by every bot wearing it. The three
+things not reproduced are all *looks*: the contact blobs under bots outside the scene's
+shadow box (Godot's shadow atlas makes them unnecessary), the tumble of a flung bot
+(the player's goat has no tumble either, and both are posed from the clip), and the
+`spawn`/`despawn`/`blast` mod events (the `goats` surface is stage 8). And the
+**mirrored** herd does not wear the coats the local one does -- `herd.gd` places the
+host's goats on the model's own material, so a client's herd is seven goats of one size;
+a coat there needs the host's spec table on the wire, which is a protocol change and not
+a drawing one.
+
 What is *not* yet proven: the water's wake and its reflection; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the HUD as a `Control` tree, the menu and the console (stage 6 —
-there is a one-`Label` read-out and no way to paste a ticket *in game*); the bots' own
-AI in GDScript (the herd is still a mirror); audio; the mods state, bites, bangs and
+there is a one-`Label` read-out and no way to paste a ticket *in game*); audio; the mods state, bites, bangs and
 voice reaching GDScript (they are carried on the wire but the core does not consume them
 yet, and the Godot client publishes its own goat but does not yet report a bite —
 `NetBridge` has no `consume`); the asset bytes reaching an engine shim (`rl.loadSound`
@@ -640,7 +715,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Lighting + shadows | `game/lighting.js` | `DirectionalLight3D` + Godot's shadow atlas |
 | Water pools (level, chop, fresnel) | `game/water.js` | **Done** apart from the wake and the reflection: `water.gd` (the table and the wading) + `water_mesh.gd` + `water.gdshader` (the surface and the chop) |
 | Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
-| Bots (collision, temperaments, fleece) | `game/bots.js` | GDScript + `MultiMesh` |
+| Bots (collision, temperaments, fleece) | `game/bots.js` | **Done**: `bots.gd`, the herd's own state machine, collision and coats -- real rigs, not the `MultiMesh` sketched here |
 | Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
 | Menu, HUD, console | `game/menu.js`, `console.js` | `Control` trees |
 | Touch surface | `game/touch.js` | `InputEventScreenTouch` |
@@ -775,8 +850,8 @@ Sizes are judgement, not measurement.
 | 0 | Scaffold | model + extension gates green — **done** | — |
 | 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **discovery, manifests, ordering, assets and one entry done**; the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the core's consumption of them, and the mods, bite, bang and voice paths, remain | 3–4 |
-| 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree and the bots' own AI remain | 2–3 |
-| 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, and the weather machine runs offline and mirrors a host, all gated; the bots' own AI remains** | 3–5 |
+| 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree remains | 2–3 |
+| 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the water's wake and the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights; the water's wake and its reflection remain** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
@@ -903,6 +978,18 @@ position's own float32 storage -- so `verify_weather.gd` compares the coordinate
 the light's line to within float32" rather than "exactly". A port that promised the
 second would be promising something `Node3D.position` cannot hold.
 
+The herd is where the same trap finally cost something real, and it is worth the two
+lines because the shape recurs. `Meadow.tuft_at` returned a `Vector2` -- the natural
+thing, and the position the grass draws -- and `bots.gd` aims a goat at that point and
+turns it with `atan2(-dz, dx)`. A `Vector2` is float32, so the point is out by ~2e-6 m at
+the field's rim and the *yaw* built from it out by 4e-7 rad: a herd that had been
+identical for 57 frames diverged on the frame its first bot decided to walk somewhere,
+and every frame after differed. `food.js` never has the problem because it hands its
+callers plain numbers, which is why the port's `Meadow.nearest` now returns doubles in a
+dictionary and `tuft_at` became two `float` helpers. **A value a rule reads must not pass
+through a vector type**, and the place to look for one is wherever a position crosses
+from "what is drawn" to "what is decided".
+
 - **A threshold against a derived band's edge is knife-edge, and it is a *third* shape of
 the same risk.** The other two are a `sin` taken at a huge argument and a product past
 2**53; this one has neither, and it still flips. `waterCut` keeps a quad while some
@@ -929,6 +1016,29 @@ not only at a floating-point floor.
   second, independent assertion (the clip role *on the wire line*, and
   `verify_input.gd` asserting the pose a person sees), and reading the source when
   the transcription is written rather than when it fails.
+
+  There is a second way to write the same tautology without copying a line, and
+  `verify_meadow.gd` did it: it stored the *oracle's* tuft positions in a `Vector4`, so
+  the JavaScript's doubles were rounded to float32 on the way in -- onto the very grid
+  the port was rounding to on the way out. Both sides then agreed perfectly, and the gate
+  reported a disagreement of `0.000000000000 m` for as long as the meadow narrowed its
+  positions through a `Vector2`. It only appeared when the *port* stopped rounding, and
+  then the gate went from "exactly equal" to "out by 4.35e-7" without a line of the
+  scene or of the port changing behaviour. So the rule is not only "transcribe the oracle
+  from the source" but "carry it at the width the source does": a gate is full of its own
+  arithmetic, and a gate *less* precise than the thing it checks agrees with every mistake
+  smaller than its own rounding.
+- **The scene re-reads a field between two uses of it, and caching the first read is a
+  divergence.** `updateBots` computes a bot's clip role and variant once for the gait's
+  *speed*, then calls `botNewAction` -- which may cycle the variant -- and then reads the
+  role and the variant *again* to advance the loop's phase. A bot that re-chose `idle`
+  moves to the next idle clip and advances *that* clip's phase from its first frame; the
+  port had cached both reads, which is 4e-4 of phase on the frames where it happens --
+  one frame's advance, invisible, and never recovered from. It is a distinct shape from
+  the other three: not a floor, not a boundary and not a width, but **ordering inside a
+  frame**. The tell is a helper that reads a field, mutates it, and is read from again;
+  the port's habit of binding a value to a local at the top of a function is what made
+  that easy to write and hard to see.
 - **A second engine to maintain.** The raylib client and the Godot port share a
   protocol and a mod format but not a line of code. Every balance or protocol
   change now has two homes.
@@ -942,16 +1052,18 @@ Both spikes have landed, and the interop check passes in both modes: a Godot
 client joins the shipping `goatsd`, chats, receives its world, and is refused by
 digest when it presents the wrong mods (section 3). And the scene is a *game*: a goat
 you drive, on a heightfield, in a meadow it can eat, among mines it can set off,
-under the scene's own sky, with a weather that runs itself, with a host's herd
-mirrored alongside it and your goat published back. The next steps, in order:
+under the scene's own sky, with a weather that runs itself, with **a herd of its own
+when there is no host and a host's herd mirrored when there is**, and your goat
+published back. The next steps, in order:
 
-1. **The water's wake, then the bots' own AI in GDScript.** The table, the wading, the
-   surface and the chop are in and gated; what is left of the water is `waterActorStep`'s
-   wake and splashes and the grass it hides (M20D), and the reflection tiers (M20e). Then
-   the herd, which is still a mirror: a scene that simulates its own bots is what makes
-   `goatsd` optional rather than required. Both are the scene's *rules*, which is the work
-   this port's gates can still check against the JavaScript -- section 8's own stage order
-   already puts them ahead of the UI, and that order is the right one.
+1. **The water's wake and its reflection.** The table, the wading, the surface and the chop
+   are in and gated, and so is the herd's own AI -- which is the work that made `goatsd`
+   optional rather than required. What is left of the water is `waterActorStep`'s wake and
+   splashes and the grass it hides (M20D), and the reflection tiers (M20e, which Godot
+   answers with the environment rather than with the scene's own bake and mirrored pass).
+   It is the last of the scene's *rules* this port's gates can still check against the
+   JavaScript -- section 8's stage order puts the rest of the world ahead of the UI, and
+   that order is the right one.
 2. **The HUD, the menu and the console (stage 6).** There is a one-`Label` read-out
    and no way to paste a ticket, choose a setting or ask the world a question; every
    staging knob is an environment variable because of it. The console is the port's own
@@ -985,6 +1097,10 @@ world is in (`godot/tools/verify_weather.gd`); and runs a scripted rain history 
 the water's table, agrees with `water.js` to the last bit -- the chop's wind and the wave
 clock with it -- and proves the goat's speed and drain use it
 (`godot/tools/verify_water.gd`); cuts and winds the water's surface the way the client
-does, all 2304 quads of the cut included (`godot/tools/verify_water_mesh.gd`). Every one
+does, all 2304 quads of the cut included (`godot/tools/verify_water_mesh.gd`); and runs
+63 s of the herd's own AI -- a spawn, a grazing walk, a bite, a thrown bot, a killed one
+and its respawn, the push-apart and the water waking a sleeper -- against `bots.js` frame
+for frame, 223020 values compared with nothing out by more than 6.1e-13
+(`godot/tools/verify_bots.gd`). Every one
 of them exits zero.
 The rest is read from the tree.*

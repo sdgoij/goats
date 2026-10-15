@@ -107,6 +107,10 @@ var _debris: MultiMeshInstance3D
 var goat: PlayerGoat
 var meadow: Meadow
 var terrain: TerrainMesh
+## ...and the third: the herd a bang throws and kills (M19a). It is `bots.js`'s own
+## `netWorldLocal()` gate -- offline and on the host the herd is ours to move and takes the
+## blast, and a client's is empty because it only mirrors what the host sends.
+var bots: Bots
 
 func _ready() -> void:
 	_build_fx()
@@ -387,9 +391,10 @@ func trip_trap_at(cx: int, cz: int, x: float, z: float) -> bool:
 # ---- the bang ---------------------------------------------------------------
 
 ## A bang. The hole it digs is the *ground*, so every process that applies a blast
-## digs one; the goat takes the damage and the throw on the scene's own curve; the
-## herd is not simulated here (it is mirrored), so it does not take it; and the light,
-## the effects and the knock are this process's alone.
+## digs one; the goat takes the damage and the throw on the scene's own curve, under the
+## `healthFloor` promise that a mine cannot end *this* player's run; the herd takes the
+## same curve *without* that floor, which is what makes a minefield a thing the herd
+## remembers; and the light, the effects and the knock are this process's alone.
 func blast(kind: String, x: float, z: float, seed: float, depth: int) -> void:
 	blasts += 1
 	Craters.add(x, z, seed)
@@ -410,6 +415,26 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int) -> void:
 		var u: Vector2 = fling_direction(dx, dz, d, seed)
 		goat.start_fling(u.x * BLAST_PUSH * falloff, u.y * BLAST_PUSH * falloff,
 			BLAST_LIFT * falloff)
+	# The herd takes it too, on the player's own curve and off the player's own radius --
+	# but *not* the player's floor. Three bangs on the centre kill a bot and one at the rim
+	# is a bruise, which is the whole of why `botDie` exists. A lethal bang kills *instead
+	# of* throwing, and a bot killed in the air keeps the arc it already had, so a chain on
+	# a flung bot drops a corpse rather than teleporting one to the ground.
+	if bots != null:
+		for index in bots.count():
+			var state: Dictionary = bots.state(index)
+			if String(state["mode"]) == "dead":
+				continue                      # a corpse takes no second bang
+			var bx: float = float(state["x"]) - x
+			var bz: float = float(state["z"]) - z
+			var bd2: float = bx * bx + bz * bz
+			if bd2 > BLAST_RADIUS * BLAST_RADIUS:
+				continue
+			var bd: float = sqrt(bd2)
+			var bfalloff: float = 1.0 - bd / BLAST_RADIUS
+			var bu: Vector2 = fling_direction(bx, bz, bd, seed)
+			bots.blast_at(index, BLAST_DAMAGE * bfalloff * bfalloff,
+				BLAST_PUSH * bfalloff, BLAST_LIFT * bfalloff, bu)
 	spawn_burst(x, z, seed)
 	flash_at(x, z)
 	knock(x, z)

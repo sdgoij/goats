@@ -250,6 +250,20 @@ func advance_clock(delta: float) -> void:
 func clock() -> float:
 	return _clock
 
+## Whether the ground under a point stands below the table -- `water.js` `waterSubmergedAt`,
+## the whole of what "the goat is standing in water" means. It reads the *grid*, so it
+## answers for the vertex nearest the point rather than for an interpolation of it: the
+## caller wants a yes or no rather than a depth, and a bot that dozed at a pool's edge
+## because a bilinear said 3 mm is not a rule anybody wants.
+func submerged_at(x: float, z: float) -> bool:
+	if not _on:
+		return false
+	var i: int = int(round((x - (_anchor.x - HALF)) / CELL))
+	var j: int = int(round((z - (_anchor.y - HALF)) / CELL))
+	if i < 0 or j < 0 or i >= N or j >= N:
+		return false
+	return _heights[j * N + i] < _level
+
 ## The chop's wind: the wind as a *unit* direction whatever it is doing, and the share of
 ## the amplitude the gust drives. `water.js` `waterSetUniforms`, and the direction is a
 ## unit even in a dead calm -- a still pool still chops, and the shader normalises it

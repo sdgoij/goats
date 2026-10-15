@@ -58,6 +58,9 @@ const PROBE_MOTION := 0.01
 const PROBE_RELIEF := 0.05
 
 @onready var herd: Herd = $Herd
+## The scene's own herd, when there is no session to mirror one from (`bots.gd`). It is
+## empty in a session -- the host owns the bots' AI there, and `Herd` places what it sends.
+@onready var bots: Bots = $Bots
 @onready var goat: PlayerGoat = $Goat
 @onready var terrain: TerrainMesh = $Terrain
 @onready var water_surface: WaterMesh = $Water
@@ -192,6 +195,9 @@ func _ready() -> void:
 	explosions.goat = goat
 	explosions.meadow = meadow
 	explosions.terrain = terrain
+	# ...and the herd a bang throws and kills (M19a/M19c). It is empty in a session -- a
+	# client's bots are the host's, and `blast` says so by finding none to move.
+	explosions.bots = bots
 	# ...and the same wiring the other way for the bite: the goat asks the devices
 	# whether the tuft it just ate was trapped (`food.js` `startEat`).
 	_eat_trap = Callable(explosions, "trip_trap_at")
@@ -250,6 +256,16 @@ func _ready() -> void:
 		print("  play alone:         this, with WASD, shift to run, space to jump, E to eat")
 		print("  watch a real herd:  godot/tools/interop.sh herd")
 		print("  join a host:        set GOATSD_TICKET to its ticket")
+		# With no session the scene is its own *host*: `netWorldLocal()` is true, so its
+		# herd is one it simulates rather than one it mirrors (`bots.js`). The seams are
+		# the same callables the goat's bite uses, plus the two the bots ask on their own
+		# -- whether a cell holds an armed mine, and whether the ground is under water.
+		bots.goat = goat
+		bots.meadow = meadow
+		bots.trap = _eat_trap
+		bots.armed = Callable(explosions, "mine_armed")
+		bots.submerged = Callable(water, "submerged_at")
+		bots.set_herd_size(Bots.COUNT)
 		return
 	print("join -> ", bridge.call("join", ticket, "godot"))
 	# The scene is a *client* here, and a client is the one that publishes its goat: a
@@ -290,6 +306,14 @@ func _process(delta: float) -> void:
 	# The goat: it is what the camera, the ground and the meadow are placed around,
 	# and it is the only thing in this scene that decides anything.
 	goat.step(delta, _controls(), _sky_light, _weather_now(), meadow, _eat_trap, _wading())
+	# The herd's own AI, in `sceneFrame`'s order and behind `sceneFrame`'s own gate: the
+	# devices, then the goat, then the bots, then the push-apart that keeps them from
+	# walking through each other. A client simulates none of it -- it mirrors the host's
+	# herd instead (`Herd`), which is why this is the same switch the meadow's countdown
+	# and the blast's herd damage read.
+	if not _joined:
+		bots.update(delta, _weather_now())
+		bots.resolve_collisions()
 	# The meadow is the host's in a session, so a client only mirrors it.
 	meadow.update(delta, _weather.is_empty())
 	_orbit(delta)
@@ -563,6 +587,10 @@ func _handle(line: String) -> void:
 			var seed: int = int(event.get("seed", 0))
 			explosions.use_seed(seed)
 			weather.use_seed(seed)
+			# The herd's stream is `sceneUseSeed`'s *second* draw (`bots.gd`), which only
+			# matters to a scene that hosts a session -- this one joins, and a joiner's
+			# herd is a mirror. It is wired anyway so the three seams stay one story.
+			bots.use_seed(seed)
 		"welcome":
 			print("welcome: ", event.get("name"))
 		"world":
