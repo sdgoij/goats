@@ -24,10 +24,8 @@
 #     because the height it orbits is `goatBaseY` plus the 0.85 the scene aims at.
 #
 # Not ported, and each is a deliberate hole rather than an oversight: the collision
-# between goats (`resolveGoatCollisions`), the water (there is no water), the death's
-# X-eye sprite (the model's own death clip carries it), and `startEat`'s device test
-# (`explosions.gd` trips a trap at 0.6 m as the goat *walks*, but the eat reach is
-# 1.1 m and a bite takes only the meadow -- see `start_eat`).
+# between goats (`resolveGoatCollisions`), the water (there is no water), and the
+# death's X-eye sprite (the model's own death clip carries it).
 #
 # Every local is annotated rather than inferred -- see the `:=` note in
 # `terrain.gd`.
@@ -167,8 +165,12 @@ func ready_up() -> void:
 ## off both.
 ##
 ## `meadow` is what a bite reads and writes. It may be null -- the goat still walks.
+##
+## `trap` is a bite's device test, handed to `start_eat`; it may be invalid, and then a
+## bite is the plain meal it always was. It is a `Callable` and not a device type for
+## the reason `Meadow.nearest`'s filter is one -- see `start_eat`.
 func step(delta: float, controls: Dictionary, sky_light: float, weather: Dictionary,
-		meadow: Meadow) -> void:
+		meadow: Meadow, trap: Callable = Callable()) -> void:
 	var move: int = int(controls.get("move", 0))
 	var turn: int = int(controls.get("turn", 0))
 	var gait: String = String(controls.get("gait", "walk"))
@@ -207,7 +209,7 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 			mode = gait if move != 0 else "idle"
 	elif bool(controls.get("eat", false)) and meadow != null:
 		# A meal is only started on a tuft that is actually there.
-		start_eat(meadow.nearest(px, pz), meadow)
+		start_eat(meadow.nearest(px, pz), meadow, trap)
 	elif bool(controls.get("sleep", false)):
 		start_sleep()
 	elif bool(controls.get("jump", false)):
@@ -463,27 +465,37 @@ func start_jump(move: int, gait: String) -> void:
 	energy = maxf(0.0, energy - JUMP_ENERGY_COST)
 
 ## Eat a tuft: turn onto it, take it out of the meadow, and bank what it gives.
-## `food.js` `startEat` **minus its device test**: the scene consumes the tuft and then
-## asks `trapAt`, setting the device off instead of feeding the goat, and this has no
-## device to ask -- the meadow is all it is handed. `explosions.gd` `check_triggers`
-## covers a goat that *walks* onto one (its trigger is 0.6 m), so the reachable hole is
-## a trapped tuft between there and the 1.1 m eat reach, which a bite takes from the
-## outside.
+##
+## A *trapped* tuft gives nothing back. `food.js` `startEat`: the tuft is still gone,
+## because the goat did eat a mine, but the bite is what sets the device off -- so the
+## eat path needs one test, not a rewrite. That test reaches further than the walk-in
+## trigger does (the eat range is 1.1 m, `mine.trigger` 0.6), which is why a bite needs
+## a test of its own at all rather than trusting `check_triggers` to have caught it.
+##
+## `trap` is that test: a `Callable` taking `(cx, cz, x, z)` and answering whether there
+## was a device to set off. It is a `Callable` and not an `Explosions` for the same
+## reason `Meadow.nearest` takes a filter rather than reaching for one: this file does
+## not link against `explosions.gd`. Give it none and the bite is the plain meal.
 ##
 ## A meal the belly is already nearly full of goes into the goat instead
 ## (`satedHeal`), read *before* the meal, because what decides is the state the goat
 ## ate in.
-func start_eat(target: Dictionary, meadow: Meadow) -> bool:
+func start_eat(target: Dictionary, meadow: Meadow, trap: Callable = Callable()) -> bool:
 	if target.is_empty():
 		return false
 	if meadow != null and not meadow.consume(int(target["cx"]), int(target["cz"])):
 		return false
 	# Face the tuft, so the head comes down where the grass actually was.
 	yaw = atan2(-(float(target["z"]) - pz), float(target["x"]) - px)
-	var heal: float = Meadow.sated_heal(satiety)
-	energy = minf(STATS_MAX, energy + Meadow.EAT_ENERGY)
-	satiety = minf(1.0, satiety + Meadow.EAT_SATIETY)
-	health = minf(STATS_MAX, health + heal)
+	# `food.js` consumes the tuft and asks *after*: the order only decides what the goat
+	# gets back, and both halves of the promise are that it gets nothing.
+	var trapped: bool = trap.is_valid() and bool(trap.call(int(target["cx"]),
+		int(target["cz"]), float(target["x"]), float(target["z"])))
+	if not trapped:
+		var heal: float = Meadow.sated_heal(satiety)
+		energy = minf(STATS_MAX, energy + Meadow.EAT_ENERGY)
+		satiety = minf(1.0, satiety + Meadow.EAT_SATIETY)
+		health = minf(STATS_MAX, health + heal)
 	mode = "eat"
 	_eat_time = 0.0
 	cycle_variant("eat")

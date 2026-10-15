@@ -103,6 +103,12 @@ var meadow := Meadow.new()
 ## `PlayerGoat` reads its rain and wind through `_weather_now`.
 var weather := Weather.new()
 
+## A bite's device test, built once and handed to the goat every frame: `food.js`
+## `startEat` asks whether the tuft it just ate was trapped, and `explosions.gd` is what
+## answers. It is a `Callable` and not the node because `PlayerGoat` does not link
+## against the devices -- the same reason the meadow's own search takes a filter.
+var _eat_trap := Callable()
+
 ## Whether the scene is in a session as a *client*. It is what the pose publishing
 ## hangs on, and its window is the wire's.
 var _joined := false
@@ -173,6 +179,9 @@ func _ready() -> void:
 	explosions.goat = goat
 	explosions.meadow = meadow
 	explosions.terrain = terrain
+	# ...and the same wiring the other way for the bite: the goat asks the devices
+	# whether the tuft it just ate was trapped (`food.js` `startEat`).
+	_eat_trap = Callable(explosions, "trip_trap_at")
 	# The scene's own field of view (`beginMode3D(..., 55)`); Godot's default is 75.
 	var camera := $Camera3D as Camera3D
 	camera.fov = 55.0
@@ -258,7 +267,7 @@ func _process(delta: float) -> void:
 
 	# The goat: it is what the camera, the ground and the meadow are placed around,
 	# and it is the only thing in this scene that decides anything.
-	goat.step(delta, _controls(), _sky_light, _weather_now(), meadow)
+	goat.step(delta, _controls(), _sky_light, _weather_now(), meadow, _eat_trap)
 	# The meadow is the host's in a session, so a client only mirrors it.
 	meadow.update(delta, _weather.is_empty())
 	_orbit(delta)

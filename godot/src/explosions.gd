@@ -368,6 +368,22 @@ func check_triggers(x: float, z: float, airborne: bool, stamp: int) -> int:
 			trip("trap", int(tuft["cx"]), int(tuft["cz"]), float(tuft["x"]), float(tuft["z"]), 0)
 	return here
 
+## Whether the tuft in this cell is trapped, and if it is, set it off.
+##
+## It is `food.js` `startEat`'s `trapAt` + `tripDevice` pair, in one call, and it is one
+## call on purpose: it lets the *goat* ask without linking against the devices, the way
+## `Meadow.nearest`'s filter lets the meadow answer without linking against them.
+##
+## Walking onto a trap is `check_triggers`' job and this is the bite's, and they are not
+## the same reach: the trigger is 0.6 m and the eat range is 1.1 m, so a tuft eaten from
+## the outside is still a tuft that goes off -- which is the joke the scene tells
+## (`food.js`: "the goat did eat a mine").
+func trip_trap_at(cx: int, cz: int, x: float, z: float) -> bool:
+	if not trap_at(cx, cz):
+		return false
+	trip("trap", cx, cz, x, z, 0)
+	return true
+
 # ---- the bang ---------------------------------------------------------------
 
 ## A bang. The hole it digs is the *ground*, so every process that applies a blast

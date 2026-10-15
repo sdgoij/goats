@@ -454,11 +454,70 @@ func _initialize() -> void:
 	for note in notes:
 		print("  ", note)
 
+	# 7. The bite, end to end: a trapped tuft eaten from *outside* the walk-in trigger.
+	#    The eat range is 1.1 m and the trigger is 0.6 m, so a goat that presses E the
+	#    moment a tuft comes into reach would otherwise take a free meal off a device the
+	#    scene makes it pay for. `food.js` `startEat` is where that is decided, so this
+	#    runs the goat's own bite with the devices' hook -- and it asks the *trigger's own
+	#    query* first, so "outside" is the trigger's rule and not this test's arithmetic.
+	var bite := Explosions.new()
+	bite.meadow = Meadow.new()
+	bite.salt = SALTS[0]
+	var bitten := PlayerGoat.new()
+	root.add_child(bitten)
+	bitten.ready_up()
+	bite.goat = bitten
+	var bitable: Dictionary = _bitable_trap(bite, 30)
+	var bite_ok := true
+	var bite_notes: Array[String] = []
+	if bitable.is_empty():
+		bite_ok = false
+		bite_notes.append("no trapped tuft stands in reach of a bite outside the trigger")
+	else:
+		# 1.0 m away in x: inside the 1.1 m eat reach, outside the 0.6 m trigger.
+		bitten.px = float(bitable["x"]) + 1.0
+		bitten.pz = float(bitable["z"])
+		bitten.energy = 50.0
+		bitten.satiety = 0.0
+		var walk: Dictionary = bite.meadow.nearest(bitten.px, bitten.pz,
+			Explosions.MINE_TRIGGER, Callable(bite, "trap_at"))
+		if not walk.is_empty():
+			bite_ok = false
+			bite_notes.append("the walk-in trigger reaches this tuft, so this is no bite test")
+		bitten.step(1.0 / 60.0, {"eat": true}, 1.0, {}, bite.meadow,
+			Callable(bite, "trip_trap_at"))
+		bite_notes.append("after the bite: mode %s, energy %.2f, satiety %.2f"
+			% [bitten.mode, bitten.energy, bitten.satiety])
+		if bitten.mode != "eat":
+			bite_ok = false
+			bite_notes.append("the bite did not start")
+		if bite.meadow.has_tuft(int(bitable["cx"]), int(bitable["cz"])):
+			bite_ok = false
+			bite_notes.append("the trapped tuft was not eaten")
+		if bite.pending.is_empty():
+			bite_ok = false
+			bite_notes.append("eating a trapped tuft lit no fuse")
+		elif String(bite.pending[0]["kind"]) != "trap":
+			bite_ok = false
+			bite_notes.append("the bite lit a fuse on something other than the trap")
+		# The meal is what a trapped tuft must *not* give: the goat ate a mine.
+		if bitten.energy > 50.0 or bitten.satiety > 0.0:
+			bite_ok = false
+			bite_notes.append("a trapped tuft fed the goat")
+		if bite.trap_spent.is_empty():
+			bite_ok = false
+			bite_notes.append("the trap did not leave its cell spent")
+	print("the bite: ", "ok" if bite_ok else "WRONG")
+	for note in bite_notes:
+		print("  ", note)
+
 	host.free()
 	devices.free()
 	book.free()
 	goat.free()
+	bitten.free()
 	world.free()
+	bite.free()
 	Craters.clear()
 
 	if hashes.size() == 0:
@@ -482,6 +541,8 @@ func _initialize() -> void:
 			+ "or nothing was replaced")
 	if not bang_ok:
 		failures.append("a bang is not the scene's: see the notes above")
+	if not bite_ok:
+		failures.append("a bite on a trapped tuft is not the scene's: see the notes above")
 
 	if failures.is_empty():
 		print("OK: the device field, its moves and its holes are the scene's")
@@ -521,3 +582,21 @@ func _first_mine(field: Explosions, span: int) -> Vector2i:
 			if field.mine_armed(cx, cz):
 				return Vector2i(cx, cz)
 	return Vector2i(-99999, -99999)
+
+## A trapped tuft the goat can bite *without* walking into it: the bite test puts the
+## goat 1.0 m away in x -- inside the 1.1 m eat range, outside the 0.6 m trigger -- and
+## this keeps looking until the nearest tuft from there is that very tuft, because
+## otherwise the bite would be a bite on a neighbour and would prove nothing.
+func _bitable_trap(field: Explosions, span: int) -> Dictionary:
+	for cx in range(-span, span + 1):
+		for cz in range(-span, span + 1):
+			if not field.meadow.has_tuft(cx, cz) or not field.trap_at(cx, cz):
+				continue
+			var tuft: Dictionary = field.meadow.tuft_in(cx, cz)
+			var target: Dictionary = field.meadow.nearest(
+				float(tuft["x"]) + 1.0, float(tuft["z"]))
+			if target.is_empty():
+				continue
+			if int(target["cx"]) == cx and int(target["cz"]) == cz:
+				return tuft
+	return {}
