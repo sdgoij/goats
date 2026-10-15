@@ -1,0 +1,14 @@
+# Godot's import cache and exported builds.
+.godot/
+build/
+*.import.bak
+export_presets.cfg
+
+# The GDExtension binary is built by `crates/godot/build.sh` and copied here.
+# A checkout has no copy until that script is run.
+addons/goats_godot/bin/
+
+# What `tools/screenshot.gd` writes, and its import sidecar: committing the
+# sidecar alone would leave every checkout referencing a file it does not have.
+shot.png
+shot.png.import

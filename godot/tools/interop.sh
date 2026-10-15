@@ -1,0 +1,161 @@
+#!/usr/bin/env sh
+#
+# The scene against the shipping host, and against nothing at all.
+#
+#   godot/tools/interop.sh          # goatsd --no-mods: the client joins
+#   godot/tools/interop.sh refuse   # goatsd with the repo's mods: the client is refused
+#   godot/tools/interop.sh herd     # ...and the mirror scene places the herd
+#   godot/tools/interop.sh offline  # no server: the scene boots without a session
+#   godot/tools/interop.sh shot     # ...and a window renders it, with the herd in it
+#
+# All five are evidence. `join` proves the transport, the join handshake, the chat
+# routing and the world datagrams work against the *shipping* binary, not just
+# between two Godot peers. `refuse` proves the world-mod digest comparison
+# (`APIv1.md` section 6.3) crosses two independent implementations -- the failure
+# a player with the wrong mods actually sees. `herd` runs the real scene
+# (`scenes/herd.tscn`) instead of a probe script, so it is the one that shows the
+# core doing something with the wire rather than only reading it. And `offline`
+# checks the thing a player hits first: pressing play with no session must leave
+# them in a *world*, not in an error. `shot` is the one piece of evidence no gate
+# can carry -- whether it *looks* like a world -- and it needs a window, so it is
+# the one mode that is run by hand on a machine with a GPU.
+#
+# Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server).
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+godot_dir=$root/godot
+log=$root/target/interop-goatsd.log
+
+mode=${1:-join}
+case "$mode" in
+    join|refuse|herd|offline|shot) ;;
+    *)
+        echo "interop.sh: unknown mode '$mode' (want join, refuse, herd, offline or shot)" >&2
+        exit 2
+        ;;
+esac
+
+# Godot is a native Windows binary here, so it wants a native path; the server is
+# launched by the shell, which wants the shell's. Convert only where needed.
+to_native() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -w "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+godot_bin=${GODOT_BIN:-/c/Users/T/bin/Godot_v4.7.2-stable_win64.exe}
+if [ ! -x "$godot_bin" ]; then
+    echo "interop.sh: $godot_bin is not executable; set GODOT_BIN" >&2
+    exit 1
+fi
+
+# `offline` is the one mode with no server behind it.
+if [ "$mode" = "offline" ]; then
+    offline_log=$root/target/interop-offline.log
+    : > "$offline_log"
+    set +e
+    # 20 seconds is long enough to boot the scene and long enough that a scene
+    # which *quits* has clearly quit; the timeout killing it is the pass.
+    timeout 20 "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        > "$offline_log" 2>&1
+    status=$?
+    set -e
+    if [ "$status" -ne 124 ]; then
+        echo "interop.sh: the scene exited ($status) instead of running offline. Its output:" >&2
+        grep -vE "^$|Godot Engine|Initialize godot-rust" "$offline_log" >&2
+        exit 1
+    fi
+    if ! grep -q "offline: no GOATSD_TICKET" "$offline_log"; then
+        echo "interop.sh: the scene ran, but never said it was offline. Its output:" >&2
+        grep -vE "^$|Godot Engine|Initialize godot-rust" "$offline_log" >&2
+        exit 1
+    fi
+    # A scene that *runs* is not necessarily a scene that works: this gate passed
+    # once while `_process` failed on a null node every frame -- 60 errors a second,
+    # invisible to a check that only asks whether the process is still alive. The
+    # same trap the `.tscn` note below describes, so the log is read for it.
+    if grep -q "SCRIPT ERROR" "$offline_log"; then
+        echo "interop.sh: the scene ran, but with script errors. Its output:" >&2
+        grep -vE "^$|Godot Engine|Initialize godot-rust" "$offline_log" >&2
+        exit 1
+    fi
+    echo "interop.sh: the scene boots and runs with no session at all"
+    exit 0
+fi
+
+# `--no-mods` is what lets a client presenting no world mods in; without it,
+# goatsd resolves the repository's own `mods/` and requires the world set in it.
+case "$mode" in
+    join|herd|shot) mods_flag=--no-mods ;;
+    refuse) mods_flag= ;;
+esac
+
+server=${GOATSD_BIN:-$root/target/release/goatsd.exe}
+if [ ! -x "$server" ]; then
+    echo "interop.sh: $server is not built; run:" >&2
+    echo "    cargo build --release -p server" >&2
+    exit 1
+fi
+
+# goatsd resolves `mods/` from the working directory, so start it at the root.
+cd "$root"
+: > "$log"
+"$server" godot-host $mods_flag > "$log" 2>&1 &
+server_pid=$!
+
+cleanup() {
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# The ticket is the whole interface; wait for goatsd to print it.
+attempts=0
+ticket=
+while [ "$attempts" -lt 120 ]; do
+    ticket=$(sed -n 's/^ticket //p' "$log" | sed -n '1p')
+    if [ -n "$ticket" ]; then
+        break
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.25
+done
+
+if [ -z "$ticket" ]; then
+    echo "interop.sh: goatsd never printed a ticket. Its log:" >&2
+    cat "$log" >&2
+    exit 1
+fi
+echo "interop.sh: goatsd up as godot-host (${mode} mode)"
+
+set +e
+if [ "$mode" = "herd" ]; then
+    # The real scene, with the probe switched on: it settles, reports and exits.
+    GOATSD_TICKET="$ticket" GOATS_PROBE=1 \
+        "$godot_bin" --headless --path "$(to_native "$godot_dir")"
+    status=$?
+elif [ "$mode" = "shot" ]; then
+    # The real scene, in a window, long enough for a populated world to arrive and
+    # for the herd to ease onto the ground under it. See `tools/screenshot.gd`.
+    GOATSD_TICKET="$ticket" GOATS_SHOT_FRAMES=${GOATS_SHOT_FRAMES:-600} \
+        "$godot_bin" --path "$(to_native "$godot_dir")" \
+        --script res://tools/screenshot.gd --resolution ${GOATS_SHOT_RESOLUTION:-1280x720}
+    status=$?
+    echo "interop.sh: wrote $godot_dir/shot.png"
+else
+    GOATSD_TICKET="$ticket" GOATSD_EXPECT="$mode" \
+        "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        --script res://tools/verify_interop.gd
+    status=$?
+fi
+set -e
+
+echo "---- goatsd said ----"
+# The session's own view: joins, leaves, the roster and chat.
+grep -E "world mods|world set|joined|left|roster|chat|\[net\]" "$log" || true
+
+exit "$status"

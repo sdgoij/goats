@@ -3,7 +3,13 @@
 # the repository root; the client reaches them with a relative `include_bytes!`.
 [workspace]
 resolver = "3"
-members = ["crates/goats", "crates/android", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/server", "crates/session"]
+# `crates/godot` is the GDExtension. It is Godot-specific, but it is Rust
+# first, so it lives with the other Rust crates; `godot/` holds only the Godot
+# project (scenes, GDScript, assets, the `.gdextension` descriptor). It is a
+# member here rather than a workspace of its own so it inherits the
+# `workspace = true` dependencies above and shares this one `Cargo.lock` -- which
+# is what lets it link `session`/`proto`/`plugin` unchanged. See `godot/PORT.md`.
+members = ["crates/goats", "crates/android", "crates/godot", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/server", "crates/session"]
 # `cargo run` and a bare `cargo build` mean the client, so the README's
 # `cargo run --release` keeps working. Use `--workspace` to build or test all.
 default-members = ["crates/goats"]
@@ -42,6 +48,11 @@ zip = { version = "0.6", default-features = false }
 
 # Wire format.
 postcard = { version = "1", default-features = false }
+
+# Godot bindings for the GDExtension (`godot/native`). `api-4-7` selects the
+# bundled 4.7 extension API, so the build needs no Godot binary and no
+# `extension_api.json` on disk. The crate names the feature; this is the pin.
+godot = { version = "0.5.5" }
 
 # Networking (session only).
 iroh = "1.2.0"

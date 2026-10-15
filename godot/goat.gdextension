@@ -1,0 +1,23 @@
+; The GDExtension descriptor: tells Godot to load the Rust library built from
+; `crates/godot`. See `PORT.md` section 7 for why the bridge is Rust.
+;
+; The library paths point at a copy of the built `cdylib`, not at `target/`,
+; because Godot only loads what is under `res://` and would otherwise try to scan
+; the whole Cargo build directory. `crates/godot/build.sh` builds and copies it.
+
+[configuration]
+
+; The symbol `#[gdextension]` generates. Godot dlsyms this from the library.
+entry_symbol = "gdext_rust_init"
+; Built against the 4.7 API (`api-4-7` in `crates/godot/Cargo.toml`).
+compatibility_minimum = "4.7"
+reloadable = true
+
+[libraries]
+
+windows.debug.x86_64 = "res://addons/goats_godot/bin/windows/goats_godot.dll"
+windows.release.x86_64 = "res://addons/goats_godot/bin/windows/goats_godot.dll"
+linux.debug.x86_64 = "res://addons/goats_godot/bin/linux/libgoats_godot.so"
+linux.release.x86_64 = "res://addons/goats_godot/bin/linux/libgoats_godot.so"
+macos.debug = "res://addons/goats_godot/bin/macos/libgoats_godot.dylib"
+macos.release = "res://addons/goats_godot/bin/macos/libgoats_godot.dylib"

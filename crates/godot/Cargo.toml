@@ -1,0 +1,57 @@
+[package]
+# Not `godot`: that is the name of the bindings crate this one depends on, and a
+# package may not share it. The directory stays `crates/godot`; the built
+# library is `goats_godot`.
+name = "goats-godot"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# The GDExtension Godot loads (`godot/goat.gdextension` points at its output).
+# This is the only crate in the tree that can see Godot, and the only one that is
+# a `cdylib`.
+#
+# It is a member of the root workspace on purpose: the point of the port is to
+# reuse `session`, `proto`, `mods`, `pull` and `plugin` *unchanged*, and those
+# declare their internals as `workspace = true`. Being a member here means the
+# same `Cargo.lock` and the same `workspace.dependencies` pins -- so the Godot
+# client speaks byte-for-byte the wire the raylib client speaks
+# (`godot/PORT.md` section 7).
+[lib]
+# A GDExtension is loaded by Godot at runtime, so it is a dynamic library rather
+# than an rlib.
+crate-type = ["cdylib"]
+
+[dependencies]
+# `api-4-7` selects the bundled Godot 4.7 extension API. Without it, gdext looks
+# for a Godot binary to dump `extension_api.json` from at build time, which a
+# build machine may not have.
+godot = { workspace = true, features = ["api-4-7"] }
+
+# The mod loader: discovery, manifest validation, ordering and asset reads. Pure
+# Rust, no engine, already unit-tested -- reused rather than re-grown in the
+# JavaScript facade (`godot/PORT.md` section 6).
+mods = { workspace = true }
+
+# The session layer: iroh transport, tickets, the join handshake and the roster.
+# These are the *same* crates the raylib client and `goatsd` use, which is what
+# makes the wire compatible by construction rather than by care (`godot/PORT.md`
+# section 7): the ALPN, the framed control messages, the packed datagrams and
+# the world-mod digest all come from here.
+session = { workspace = true }
+serde_json = { workspace = true }
+# The runtime the session lives on. It gets a thread of its own
+# (`godot/native`'s sibling concern: a frame loop must never await).
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+# The JavaScript engine, for **mods only** (`godot/PORT.md` section 6). The game
+# is GDScript; JavaScript does not run the frame.
+#
+# * `jit` is the reason Slag was chosen over a small interpreter: a mod runs at
+#   JavaScript speed rather than interpreter speed.
+# * `wasm` (a default feature) keeps the WebAssembly JS API, which the
+#   compiled-mod path (`crates/plugin`, `ABIv1.md`) needs.
+# * Deliberately **not** `raylib`: Godot draws, so the `rl` a mod sees is this
+#   crate's own Godot-backed shim, not raylib (PORT.md section 6, decision 2).
+slag = { workspace = true, features = ["jit"] }
