@@ -241,9 +241,14 @@ func _drive_wasm(dt: float, snapshot: Dictionary) -> void:
 		if player is Dictionary:
 			belly = float((player as Dictionary).get("satiety", 0.0))
 	var answer: String = String(host.call("drive_wasm", dt, world_local, belly))
-	# Empty is the common case -- no compiled mod is loaded -- and it leaves the last frame's maps
-	# alone rather than clearing them, which is what an unloaded host should look like.
+	# An empty answer is "no compiled mod is loaded at all" -- `ModHost::drive_wasm`'s own contract,
+	# which is what keeps a frame with none from costing a JSON round trip. That is *also* the case a
+	# disable reaches, and it has to clear the map: the reference sets `rustModHud` from
+	# `hud_json()` every frame (`{}` when there are none), so a disabled module's bar goes with it.
+	# Leaving the last frame's map standing -- which this used to do -- kept a disabled mod's belly
+	# bar on screen, because the bar lives here in the scene and not in the host that dropped it.
 	if answer.is_empty():
+		wasm_hud = {}
 		return
 	var parsed: Variant = JSON.parse_string(answer)
 	if not (parsed is Dictionary):

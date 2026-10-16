@@ -15,6 +15,9 @@
 #   * **The registrations follow the mod too.** `birds` is a world mod, so a disable that missed its
 #     stream and its extension would leave a flock publishing for a mod that is off --
 #     `world_mods_json` is exactly that answer, and it is `""` with the only world mod disabled.
+#   * **A compiled bar clears.** The wasm mod's `goats_hud` bar is drawn from a value the scene holds
+#     (`wasm_hud`), so a disable the host performed correctly still leaves the bar on screen unless
+#     the scene reads the host's empty answer as an empty map. This is the failure a player saw.
 #   * **The guard is the scene's.** A world mod's side is fixed at join, so changing one mid-session
 #     would desync a joiner. The session is driven through the same `Callable` the frame sets, so the
 #     guard is exercised without binding an endpoint -- and a *client* mod still toggles in it.
@@ -32,6 +35,10 @@ const EXAMPLE_ID := "com.github.sdgoij.goats.hello"
 ## has to drop (`goats.world.registerStream`, `goats.world.extend`) are the ones `world_mods_json`
 ## answers.
 const WORLD_ID := "com.github.sdgoij.goats.birds"
+## The compiled client mod: the one whose `goats_hud` bar the scene paints (`wasm_hud` ->
+## `hud.gd`). Its bar is the one thing a disable has to clear *in the scene*, because the host that
+## drops the module cannot reach the value the scene drew last frame.
+const WASM_ID := "com.github.sdgoij.goats.wasm"
 ## What the example's verb answers, from `verify_mods.gd`.
 const HELLO_REPLY := "ok hello world"
 ## Frames to let the scene boot and the mods load before the checks.
@@ -73,7 +80,7 @@ func _process(_delta: float) -> bool:
 		quit(1)
 		return true
 	if _failures.is_empty():
-		print("OK: a mod toggles off and on, its verb and stream follow it, and a world mod is guarded")
+		print("OK: a mod toggles off and on, its verb, stream and bar follow it, and a world mod is guarded")
 		quit(0)
 	else:
 		# `print`, not `printerr`: a non-zero `quit()` truncates stderr before it flushes.
@@ -149,7 +156,30 @@ func _check() -> void:
 	_expect(String(mods.call("world_mods_json")).contains(WORLD_ID),
 		"the flock did not come back with its mod")
 
-	# 5. An unknown id, and the console's two verbs -- the id is checked before the guard, in the
+	# 5. A compiled client mod's bar goes with it. The bar lives in the *scene* (`wasm_hud`, drawn by
+	#    `hud.gd`), and the host answers the empty string once no compiled mod is left -- so the frame
+	#    that reads that answer is what has to clear it. One `frame` call is one frame of the runtime,
+	#    so the toggle and the bar are asserted inside one frame rather than across two.
+	var bar_before: float = float(mods.call("wasm_hud_fill"))
+	print("wasm bar before -> ", bar_before)
+	_expect(bar_before >= 0.0 and bar_before <= 1.0,
+		"the compiled mod's HUD bar was not up: %s" % bar_before)
+	var woff2: String = String(mods.call("set_enabled", WASM_ID, false))
+	print("disable wasm ->    ", woff2)
+	_expect(woff2 == "ok mod disable " + WASM_ID, "disabling the compiled mod answered '%s'" % woff2)
+	mods.call("frame", 8.0, Vector2(640.0, 480.0), false, null, {}, 0.0)
+	var bar_after: float = float(mods.call("wasm_hud_fill"))
+	print("wasm bar after ->  ", bar_after)
+	_expect(bar_after == -1.0, "the compiled mod's bar outlived its mod: %s" % bar_after)
+	_expect(String(mods.call("set_enabled", WASM_ID, true)) == "ok mod enable " + WASM_ID,
+		"the compiled mod did not re-enable")
+	mods.call("frame", 8.0, Vector2(640.0, 480.0), false, null, {}, 0.0)
+	var bar_back: float = float(mods.call("wasm_hud_fill"))
+	print("wasm bar back ->   ", bar_back)
+	_expect(bar_back >= 0.0 and bar_back <= 1.0,
+		"the compiled mod's bar did not come back: %s" % bar_back)
+
+	# 6. An unknown id, and the console's two verbs -- the id is checked before the guard, in the
 	#    reference's order, so a typo is an unknown-mod error with or without a session.
 	_expect(String(mods.call("set_enabled", "nope", true)) == "error unknown mod: nope",
 		"an unknown id was not refused")
@@ -158,7 +188,7 @@ func _check() -> void:
 	_expect(String(commands.call("run", "mod disable")) == "error mod disable expects an id",
 		"`mod disable` with no id was not refused")
 
-	# 6. The session guard: a world mod may not change mid-session, and the flag is left alone; a
+	# 7. The session guard: a world mod may not change mid-session, and the flag is left alone; a
 	#    client mod still toggles, because its side was never part of the compatibility set.
 	_session = true
 	var guarded: String = String(mods.call("set_enabled", WORLD_ID, false))
@@ -173,7 +203,7 @@ func _check() -> void:
 	mods.call("set_enabled", EXAMPLE_ID, true)
 	_session = false
 
-	# 7. The button's own wiring: `menu.js`'s Enable/Disable is one callback with one argument, which
+	# 8. The button's own wiring: `menu.js`'s Enable/Disable is one callback with one argument, which
 	#    `main.gd` sets to the runtime's `toggle_mod` -- so this calls the same `Callable` a click does.
 	var menu: Object = _main.get("menu")
 	var toggle: Variant = menu.get("mod_toggle") if menu != null else null
