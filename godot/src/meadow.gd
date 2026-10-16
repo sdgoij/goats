@@ -32,17 +32,17 @@ class_name Meadow
 extends RefCounted
 
 ## `TUNING.food.eatRange`: a tuft closer than this is in reach.
-const EAT_RANGE := 1.1
+static var EAT_RANGE: float = 1.1
 ## `TUNING.food.eatEnergy` / `eatSatiety`: what a meal gives.
-const EAT_ENERGY := 8.0
-const EAT_SATIETY := 0.55
+static var EAT_ENERGY: float = 8.0
+static var EAT_SATIETY: float = 0.55
 ## `TUNING.food.fullBelly` / `fullBellyHeal` / `satietyDecay`.
-const FULL_BELLY := 0.85
-const FULL_BELLY_HEAL := 3.0
-const SATIETY_DECAY := 0.02
+static var FULL_BELLY: float = 0.85
+static var FULL_BELLY_HEAL: float = 3.0
+static var SATIETY_DECAY: float = 0.02
 ## `TUNING.food.regrowMin` / `regrowMax`: the window an eaten tuft comes back in.
-const REGROW_MIN := 40.0
-const REGROW_MAX := 90.0
+static var REGROW_MIN: float = 40.0
+static var REGROW_MAX: float = 90.0
 
 ## `food.js` `foodRngState`: the meadow's own stream, seeded so a fresh meadow
 ## regrows in the same order in every process.

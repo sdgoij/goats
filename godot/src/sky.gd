@@ -46,20 +46,20 @@ const OVERCAST_TOP := [96, 102, 116]
 const OVERCAST_BOT := [150, 154, 162]
 
 ## `TUNING.world.dayLength`: real seconds for one 24 h day.
-const DAY_LENGTH := 240.0
+static var DAY_LENGTH: float = 240.0
 ## `TUNING.sky`, the slab geometry the shader marches.
-const CLOUD_BASE := 5.0
-const CLOUD_TOP := 9.5
-const CLOUD_SCALE := 0.055
-const CLOUD_DETAIL := 0.35
-const CLOUD_ABSORB := 1.35
-const CIRRUS_LEVEL := 15.0
-const CLOUD_SPEED := 0.55
+static var CLOUD_BASE: float = 5.0
+static var CLOUD_TOP: float = 9.5
+static var CLOUD_SCALE: float = 0.055
+static var CLOUD_DETAIL: float = 0.35
+static var CLOUD_ABSORB: float = 1.35
+static var CIRRUS_LEVEL: float = 15.0
+static var CLOUD_SPEED: float = 0.55
 ## `TUNING.sky.steps`, indexed by `SETTINGS.cloud` (default 1, "medium"). It is a
 ## `static var` rather than the `const` the scene's `SETTINGS.cloud` is, because the
 ## console's `setting cloud low|medium|high` is what moves it (`commands.gd`) and the
 ## cloud march's step count is the one thing about the sky a setting really changes.
-const CLOUD_STEPS := [6, 12, 22]
+static var CLOUD_STEPS: Array = [6, 12, 22]
 static var cloud_level := 1
 
 ## `weather.js`'s `WEATHER_STATES.clear.cloud`, the cloudiness the scene *boots* with.
@@ -67,9 +67,11 @@ static var cloud_level := 1
 ## the two are the same number on purpose -- a scene that boots into a state should boot
 ## into that state's value.
 const CLOUDINESS_CLEAR := 0.05
-## `TUNING.weather.windBase` and `windNorm`, which `updateWind` reads.
-const WIND_BASE := 1.6
-const WIND_NORM := 1.4
+## `TUNING.weather.windBase` and `windNorm`, which `updateWind` reads. `WIND_NORM` is the
+## one owner of `weather.windNorm`; the goat and the water read *this* rather than a copy
+## (`player_goat.gd`, `water.gd`).
+static var WIND_BASE: float = 1.6
+static var WIND_NORM: float = 1.4
 
 ## The default the scene boots with (`world.js` `worldTime`).
 const DEFAULT_HOUR := 8.0

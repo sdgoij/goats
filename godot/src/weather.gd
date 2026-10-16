@@ -41,7 +41,7 @@ const NEXT := {
 	"clearing": ["clear", "cloudy"],
 }
 ## `TUNING.weather.hold`: seconds a state is held, `[least, most]`.
-const HOLD := {
+static var HOLD: Dictionary = {
 	"clear": [22.0, 45.0],
 	"cloudy": [16.0, 34.0],
 	"rain": [20.0, 40.0],
@@ -49,7 +49,7 @@ const HOLD := {
 }
 ## The ease rate, and `TUNING.weather.rainMax`: how many streaks a downpour is.
 const EASE := 0.6
-const RAIN_MAX := 160
+static var RAIN_MAX: int = 160
 ## `weather.js`'s initial `rngState` -- the weather stream the session seed replaces.
 const SEED := 0x9e3779b9
 ## The rain's own stream, `weather.js` `rainSeed`, kept separate so the weather's and

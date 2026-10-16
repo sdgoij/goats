@@ -25,12 +25,12 @@
 class_name Craters
 extends RefCounted
 
-## `TUNING.explosions.crater`.
-const RADIUS := 1.6
-const DEPTH := 0.45
-const LIP := 0.12
-const HEAL := 240.0
-const MAX := 24
+## `TUNING.explosions.crater` -- `static var` so the tuning tree can write each.
+static var RADIUS: float = 1.6
+static var DEPTH: float = 0.45
+static var LIP: float = 0.12
+static var HEAL: float = 240.0
+static var MAX: int = 24
 ## `CRATER_LIP_OUT`: metres outside the dish's radius where the raised lip has fallen
 ## back to nothing.
 const LIP_OUT := 1.45

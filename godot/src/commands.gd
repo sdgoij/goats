@@ -53,12 +53,9 @@ const HELP_GROUPS := [
 	["flow", "pause resume step quit"],
 ]
 
-## The goat's stats ceiling, and the two camera clamps `ctl.js` reads from `TUNING`.
-const STATS_MAX := 100.0
-const CAM_PITCH_MIN := 0.08
-const CAM_PITCH_MAX := 1.35
-const CAM_DIST_MIN := 2.2
-const CAM_DIST_MAX := 12.0
+## The console's clamps are *not* copies: the stats ceiling is the goat's own leaf
+## (`PlayerGoat.STATS_MAX`) and the camera's are the tree's (`Tuning.CAMERA_*`), so a mod that
+## raises `stats.max` or `camera.maxDist` moves what the console's own verbs allow too.
 
 ## The world modules the scene hands in. Each may be null in a gate that never reaches the
 ## verb that uses it, and every verb guards for that.
@@ -276,18 +273,18 @@ func run(line: String) -> String:
 			var health: Variant = ctl_arg(parts, 1)
 			if health == null:
 				return "error health expects a number"
-			goat.health = clampf(float(health), 0.0, STATS_MAX)
+			goat.health = clampf(float(health), 0.0, PlayerGoat.STATS_MAX)
 			return "ok health " + num(ctl_round(goat.health))
 		"energy":
 			var energy: Variant = ctl_arg(parts, 1)
 			if energy == null:
 				return "error energy expects a number"
-			goat.energy = clampf(float(energy), 0.0, STATS_MAX)
+			goat.energy = clampf(float(energy), 0.0, PlayerGoat.STATS_MAX)
 			goat.exhausted = goat.energy <= 0.0
 			return "ok energy " + num(ctl_round(goat.energy))
 		"heal":
-			goat.health = STATS_MAX
-			goat.energy = STATS_MAX
+			goat.health = PlayerGoat.STATS_MAX
+			goat.energy = PlayerGoat.STATS_MAX
 			goat.exhausted = false
 			return "ok heal"
 
@@ -506,8 +503,8 @@ func _camera(parts: PackedStringArray) -> String:
 	if yaw == null or pitch == null or dist == null:
 		return "error camera expects <yawDeg> <pitchDeg> <dist>"
 	var out_yaw: float = deg_to_rad(float(yaw))
-	var out_pitch: float = clampf(deg_to_rad(float(pitch)), CAM_PITCH_MIN, CAM_PITCH_MAX)
-	var out_dist: float = clampf(float(dist), CAM_DIST_MIN, CAM_DIST_MAX)
+	var out_pitch: float = clampf(deg_to_rad(float(pitch)), Tuning.CAMERA_MIN_PITCH, Tuning.CAMERA_MAX_PITCH)
+	var out_dist: float = clampf(float(dist), Tuning.CAMERA_MIN_DIST, Tuning.CAMERA_MAX_DIST)
 	_call("cmd_set_camera", [out_yaw, out_pitch, out_dist])
 	return "ok camera %s %s %s" % [num(ctl_round(out_yaw)), num(ctl_round(out_pitch)),
 		num(ctl_round(out_dist))]

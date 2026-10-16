@@ -413,15 +413,18 @@ reported, not silently ignored).
 > rather than a value, and it -- and every write -- goes the other way through a `Callable` the
 > scene registers. The writes the scene owns are then in: `player`'s position, heading, mode and
 > restart, `camera.set` with its clamps, `settings.set`, the local-only `world.setTime`/`setWeather`,
-> `net.say`, `bots.setCount` and its four handles, and `explosions.armed` -- whose request is the
-> *mod's*, so a mod's `armed(false)` takes the core devices out of the derivation and a mod that
-> unloads hands the field back (`goatsEnd`). Two families are still *thrown* rather than answered --
-> `assets.override`/`add` (a pre-freeze pair, with no freeze to precede here) and `tuning.set`/`merge`
-> -- so a mod that tries one is named in its own hook rather than silently doing nothing. The port's
-> `tuning` tree is also
-> a **subset**: it gathers the port's own constants, and a path it has not got throws the same
-> "unknown path" a typo does, so a leaf the port never ported is never answered with a wrong
-> number.
+> `net.say`, `bots.setCount` and its four handles, the **tuning tree** (`tuning.set`/`merge`, §4.10)
+> and `explosions.armed` -- whose request is the *mod's*, so a mod's `armed(false)` takes the core
+> devices out of the derivation and a mod that unloads hands the field back (`goatsEnd`). A tuning
+> write is validated against the value it replaces exactly as `tuningCoerce` does -- finite numbers,
+> the leaf's own clamps and integer-ness, an array stays an array -- and routed to the module that
+> owns the leaf; a mod's `tuning.json` merges before its entry runs (§3.4); and every change is said
+> as the `"tuning"` event (§4.2) by the frame that follows it, for the reason the `"blast"` event
+> is the frame's: the write runs inside a mod's own JavaScript. The tree is a **subset**: it gathers
+> the port's own constants, and a path it has not got throws the same "unknown path" a typo does, so
+> a leaf the port never ported is never answered with a wrong number. One family is still *thrown*
+> rather than answered -- `assets.override`/`add`, a pre-freeze pair with no freeze to precede here --
+> so a mod that tries one is named in its own hook rather than silently doing nothing.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.

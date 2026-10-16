@@ -218,6 +218,23 @@ func _check() -> void:
 	if not said:
 		_failures.append("the load report never reached the console")
 
+	# ...and the *example's* own `tuning.json` merged before its entry ran (`APIv1.md` section 3.4). Its
+	# warning is the one thing about the merge a console line proves: `mods/example/tuning.json`
+	# carries a deliberate typo, so a merge that ran *warned* about it -- and a merge that never ran
+	# said nothing. Its declared `camera.dist` is the other half, and the boot camera reads it.
+	var warned := false
+	for line: Dictionary in console.get("lines"):
+		if String(line.get("text", "")).contains("typo.notAThing"):
+			warned = true
+	if not warned:
+		_failures.append("the example mod's declared tuning.json did not warn about its typo")
+	if absf(Tuning.CAMERA_DIST - 6.5) > 1e-6:
+		_failures.append("the example mod's tuning.json did not land: camera.dist is %s"
+			% Tuning.CAMERA_DIST)
+	if absf(float(_main.get("_cam_dist")) - 6.5) > 1e-6:
+		_failures.append("the boot camera did not take the tree's camera.dist: %s"
+			% _main.get("_cam_dist"))
+
 	# 6. The failure path itself, on a mod the gate *stages*. Nothing in the repository fails any
 	#    more, so the property this gate exists to hold -- a mod that throws is **named** rather than
 	#    silently dropped, and the table the Mods screen draws carries the error -- would otherwise

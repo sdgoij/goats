@@ -37,7 +37,7 @@ const HALF := 48.0
 ## The detail texture's size in pixels, and its tiling rate per world unit
 ## (`TUNING.terrain.uv`).
 const DETAIL_SIZE := 64
-const UV_SCALE := 0.06
+static var UV_SCALE: float = 0.06
 
 ## The ground as the mirror draws it (M20e): the same mesh and the same look, seen from under
 ## the terrain. See `mirror_material`.

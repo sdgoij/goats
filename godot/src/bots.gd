@@ -115,17 +115,17 @@ class Bot:
 ## same one `herd.gd` mirrors with.
 const GOAT_SCENE := preload("res://assets/goat_animated.glb")
 
-## `TUNING.herd.count`: how many bots the herd holds. The tuning leaf is a console and
-## menu setting (stage 6); until then this is the number, and `set_herd_size` is what a
-## setting would write.
+## `TUNING.herd.count`'s *boot* value: how many bots a herd is built with. The live count is
+## the tree's (`goats.tuning`), and a write to it resizes through `set_herd_size`, so this is
+## only what a session-less scene starts at.
 const COUNT := 7
 ## `TUNING.herd.count`'s own ceiling -- `setHerdSize` clamps to it.
 const MAX_HERD := 10
 ## `TUNING.herd.deathLinger`: seconds a killed bot lies there before it gets up.
-const DEATH_LINGER := 8.0
+static var DEATH_LINGER: float = 8.0
 ## `TUNING.herd.spec`: coat colour, body scale and temperament. `bold` scales a bot's
 ## cruising speed; `lazy` biases it toward standing still.
-const SPEC := [
+static var SPEC: Array = [
 	{"coat": [196, 168, 128], "scale": 0.80, "bold": 0.95, "lazy": 0.55, "name": "tan kid"},
 	{"coat": [222, 216, 206], "scale": 1.06, "bold": 1.00, "lazy": 0.50, "name": "cream"},
 	{"coat": [116, 92, 70], "scale": 1.22, "bold": 0.70, "lazy": 0.72, "name": "big brown"},
@@ -135,8 +135,8 @@ const SPEC := [
 ]
 ## `TUNING.movement.goatRadius` / `modelScale`: the body collision radius at scale 1, and
 ## the scale the player's own model stands at, so goats block each other.
-const GOAT_RADIUS := 0.45
-const MODEL_SCALE := 1.0
+static var GOAT_RADIUS: float = 0.45
+static var MODEL_SCALE: float = 1.0
 
 ## `bots.js` `GRAZE_SEEK_RANGE`: how far a bot looks for grass to walk to.
 const GRAZE_SEEK_RANGE := 12.0

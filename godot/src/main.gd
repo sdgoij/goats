@@ -373,15 +373,8 @@ func _ready() -> void:
 	# An unset or unreadable `GOATS_FLOOD` is `NAN`, which `set_force` reads as "from the
 	# rain" -- so the knob costs nothing when it is not there.
 	water.set_force(_environment_float("GOATS_FLOOD", NAN))
-	var forced_cam := OS.get_environment("GOATS_CAM")
-	if not forced_cam.is_empty():
-		var parts: PackedStringArray = forced_cam.split(",")
-		if parts.size() >= 1 and parts[0].is_valid_float():
-			_cam_yaw = parts[0].to_float()
-		if parts.size() >= 2 and parts[1].is_valid_float():
-			_cam_pitch = parts[1].to_float()
-		if parts.size() >= 3 and parts[2].is_valid_float():
-			_cam_dist = parts[2].to_float()
+	# The camera's boot pose is read *after* the mods load (below), because a mod's declared
+	# `tuning.json` may aim it (`APIv1.md` section 3.4).
 
 	var node := ClassDB.instantiate("NetBridge") as Node
 	add_child(node)
@@ -430,7 +423,33 @@ func _ready() -> void:
 	# ...and the session guard its toggle consults, for the same reason: a `Callable` rather than a
 	# flag, because a toggle can happen between two frames and a pushed value would be a frame stale.
 	mods.in_session = Callable(self, "_net_in_session")
+	# The three tuning leaves the *scene* owns (`tuning.gd`'s `_live`): `herd.count` is the herd's
+	# size, `water.enabled` the table's switch and `water.reflection` the tier. Registered *before*
+	# `add_child(mods)`, because the runtime merges each mod's `tuning.json` in its own `_ready`
+	# (`APIv1.md` section 3.4) and a merge may name one of them.
+	Tuning.register_live("herd.count",
+		Callable(self, "_tuning_herd_count"), Callable(self, "_tuning_set_herd_count"))
+	Tuning.register_live("water.enabled",
+		Callable(self, "_tuning_water_enabled"), Callable(self, "_tuning_set_water_enabled"))
+	Tuning.register_live("water.reflection",
+		Callable(self, "_tuning_water_reflection"), Callable(self, "_tuning_set_water_reflection"))
 	add_child(mods)
+	# The camera's boot pose is the *tree's* (`TUNING.camera`), read here rather than at declaration
+	# so a mod's declared `tuning.json` -- merged in the runtime's own `_ready`, just above -- aims it,
+	# which is what the reference client does. `GOATS_CAM` is applied after it, for the reason it is a
+	# *staging* knob: the last word.
+	_cam_yaw = Tuning.CAMERA_YAW
+	_cam_pitch = Tuning.CAMERA_PITCH
+	_cam_dist = Tuning.CAMERA_DIST
+	var forced_cam := OS.get_environment("GOATS_CAM")
+	if not forced_cam.is_empty():
+		var parts: PackedStringArray = forced_cam.split(",")
+		if parts.size() >= 1 and parts[0].is_valid_float():
+			_cam_yaw = parts[0].to_float()
+		if parts.size() >= 2 and parts[1].is_valid_float():
+			_cam_pitch = parts[1].to_float()
+		if parts.size() >= 3 and parts[2].is_valid_float():
+			_cam_dist = parts[2].to_float()
 	# After `add_child(mods)`, because the runtime builds its `ModHost` in `_ready` -- and the
 	# world node and the sound pool want that host to turn an asset name into bytes.
 	mod_world.host = mods.host
@@ -704,7 +723,7 @@ func _mod_snapshot() -> Dictionary:
 			"name": _net_name,
 			"roster": _roster.duplicate(),
 		},
-		"tuning": Tuning.tree(herd_count, water.enabled, water_reflect.wish),
+		"tuning": Tuning.tree(),
 		# The built-in half of the asset slots (`APIv1.md` section 4.11). A mod's *declared* half is
 		# already reachable -- it is in the mod table, which the facade can read -- so what the scene
 		# supplies is only what it alone knows: the game's own files.
@@ -754,6 +773,9 @@ func _mod_bots() -> Array:
 ## extension's last use in this process, so it has to happen while the node tree is still here.
 func _exit_tree() -> void:
 	mods.shutdown()
+	# The tuning tree's live leaves are this scene's, and the scene is going: drop them so a gate
+	# that builds a second scene does not keep the first one's `Callable`s.
+	Tuning.reset()
 
 ## Whether this client is in a session, as host or joiner -- `netInSession()`, the guard a world
 ## mod's toggle consults (`Mods.in_session`). Read rather than pushed, because a toggle can happen
@@ -975,6 +997,19 @@ func _mod_call(name: String, args_json: String) -> String:
 			if not bots.face_at(int(args[0]), float(args[1])):
 				return _mod_err("bots.get: no bot at that index")
 			return _mod_ok(null)
+		"tuning.set":
+			# `goats.tuning.set` (`APIv1.md` section 4.10): the *scene's* validated write, whose
+			# answer is the coerced value or the reason it was refused -- the same shape this seam
+			# answers every write with.
+			if args.is_empty():
+				return _mod_err("tuning.set needs a path")
+			return JSON.stringify(Tuning.write(str(args[0]), args[1] if args.size() > 1 else null))
+		"tuning.merge":
+			# Merged leaf by leaf, stopping at the first bad leaf (`APIv1.md` section 4.10), which is
+			# the reference's own shape -- the leaves before the failure have already landed.
+			if args.is_empty() or not (args[0] is Dictionary):
+				return _mod_err("tuning.merge needs an object")
+			return JSON.stringify(Tuning.merge(args[0]))
 	return _mod_err("goats." + name + ": this client does not answer that member")
 
 ## A successful `_mod_call` answer.
@@ -1734,6 +1769,29 @@ func cmd_camera_reset() -> void:
 	_cam_yaw = Tuning.CAMERA_YAW
 	_cam_pitch = Tuning.CAMERA_PITCH
 	_cam_dist = Tuning.CAMERA_DIST
+
+## The three tuning leaves the scene owns (`tuning.gd`'s `_live`): a getter that reads the live
+## value the snapshot carries, and a setter that writes it the scene's own way -- the herd resized,
+## the water woken, the tier's wish stored. They are what makes `goats.tuning.set("herd.count", 4)`
+## the same statement as `goats.bots.setCount(4)`.
+func _tuning_herd_count() -> Variant:
+	return bots.count() if not _joined else herd.count()
+
+func _tuning_set_herd_count(value: Variant) -> void:
+	bots.set_herd_size(int(value))
+
+func _tuning_water_enabled() -> Variant:
+	return 1 if water.enabled else 0
+
+func _tuning_set_water_enabled(value: Variant) -> void:
+	water.enabled = value != 0
+	water.update()
+
+func _tuning_water_reflection() -> Variant:
+	return water_reflect.wish
+
+func _tuning_set_water_reflection(value: Variant) -> void:
+	water_reflect.set_wish(float(value))
 
 func cmd_paused() -> bool:
 	return _paused

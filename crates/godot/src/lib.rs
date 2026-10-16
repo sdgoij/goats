@@ -639,6 +639,22 @@ impl ModHost {
         }
     }
 
+    /// Fire the `"tuning"` hooks, after a leaf changed (`APIv1.md` section 4.2). Two arguments
+    /// rather than one object, because the event's own signature is `(path, value)`: the path is
+    /// a dotted string and the value the coerced leaf, JSON-encoded for `push_world`'s reason --
+    /// a shape rather than a signature, so the value can grow without a method changing here.
+    #[func]
+    fn emit_tuning(&mut self, path: GString, json: GString) -> GString {
+        let args = [
+            JsValue::string(path.to_string()),
+            JsValue::string(json.to_string()),
+        ];
+        match self.call_goats("__fireTuning", &args) {
+            Ok(_) => GString::from("ok"),
+            Err(error) => gstring(format!("error: {error}")),
+        }
+    }
+
     /// The core pushes the in-game clock here each frame; a mod reads it through
     /// `goats.world.time()`. This is the "push the readable values" half of
     /// `godot/PORT.md` section 6, decision 3.

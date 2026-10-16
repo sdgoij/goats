@@ -29,43 +29,44 @@
 class_name Explosions
 extends Node3D
 
-## `TUNING.explosions`, verbatim.
-const SAFE := 8.0
-const FUSE := 0.18
-const MAX_ACTIVE := 24
-const MINE_DENSITY := 0.012
-const MINE_TRIGGER := 0.6
-const MINE_CLEARANCE := 0.45
-const TRAP_CHANCE := 0.04
-const RELOCATE_MIN := 8.0
-const RELOCATE_MAX := 24.0
-const RELOCATE_TRIES := 12
-const BLAST_RADIUS := 3.2
-const BLAST_DAMAGE := 45.0
-const BLAST_HEALTH_FLOOR := 1.0
-const BLAST_PUSH := 13.0
-const BLAST_LIFT := 34.0
-const CHAIN_DELAY := 0.15
-const CHAIN_DEPTH := 1
-const FLASH_TIME := 0.3
-const FLASH_ENERGY := 1.5
-const FLASH_LIFT := 0.9
-const SHAKE_ENERGY := 0.26
-const SHAKE_RANGE := 12.0
-const SHAKE_DECAY := 1.5
-const SHAKE_SPEED := 26.0
-const FX_BLAST_TIME := 0.5
-const FX_BLAST_SCALE := 4.2
-const FX_BLAST_LIFT := 1.1
-const FX_SMOKE_TIME := 1.2
-const FX_SMOKE_SCALE := 5.6
-const FX_SMOKE_LIFT := 2.2
-const DEBRIS_COUNT := 7
-const DEBRIS_TIME := 0.9
-const DEBRIS_SPEED := 7.5
-const DEBRIS_UP := 5.5
-const DEBRIS_GRAVITY := 22.0
-const DEBRIS_SIZE := 0.16
+## `TUNING.explosions`, verbatim -- `static var` so `goats.tuning.set` can write each
+## (`APIv1.md` section 4.10).
+static var SAFE: float = 8.0
+static var FUSE: float = 0.18
+static var MAX_ACTIVE: int = 24
+static var MINE_DENSITY: float = 0.012
+static var MINE_TRIGGER: float = 0.6
+static var MINE_CLEARANCE: float = 0.45
+static var TRAP_CHANCE: float = 0.04
+static var RELOCATE_MIN: float = 8.0
+static var RELOCATE_MAX: float = 24.0
+static var RELOCATE_TRIES: int = 12
+static var BLAST_RADIUS: float = 3.2
+static var BLAST_DAMAGE: float = 45.0
+static var BLAST_HEALTH_FLOOR: float = 1.0
+static var BLAST_PUSH: float = 13.0
+static var BLAST_LIFT: float = 34.0
+static var CHAIN_DELAY: float = 0.15
+static var CHAIN_DEPTH: int = 1
+static var FLASH_TIME: float = 0.3
+static var FLASH_ENERGY: float = 1.5
+static var FLASH_LIFT: float = 0.9
+static var SHAKE_ENERGY: float = 0.26
+static var SHAKE_RANGE: float = 12.0
+static var SHAKE_DECAY: float = 1.5
+static var SHAKE_SPEED: float = 26.0
+static var FX_BLAST_TIME: float = 0.5
+static var FX_BLAST_SCALE: float = 4.2
+static var FX_BLAST_LIFT: float = 1.1
+static var FX_SMOKE_TIME: float = 1.2
+static var FX_SMOKE_SCALE: float = 5.6
+static var FX_SMOKE_LIFT: float = 2.2
+static var DEBRIS_COUNT: int = 7
+static var DEBRIS_TIME: float = 0.9
+static var DEBRIS_SPEED: float = 7.5
+static var DEBRIS_UP: float = 5.5
+static var DEBRIS_GRAVITY: float = 22.0
+static var DEBRIS_SIZE: float = 0.16
 
 ## `weather.js` `trapSalt`: the session salt, deliberately not one of the four
 ## streams and never on the wire -- the layout is derived and never advances, so a
@@ -179,8 +180,8 @@ func wire_spent() -> Array:
 
 ## The pulse's fade, in fractions a second, and the damage a full-strength flash is
 ## (`TUNING.explosions.pulse`).
-const PULSE_DECAY := 2.4
-const PULSE_DAMAGE := 25.0
+static var PULSE_DECAY: float = 2.4
+static var PULSE_DAMAGE: float = 25.0
 
 ## One frame: the ground heals, the fuses run down, the effects age, the knock
 ## decays. Runs whether or not the devices are armed -- a crater that never healed

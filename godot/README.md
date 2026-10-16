@@ -23,7 +23,7 @@ plan.
 | `src/commands.gd` | The command vocabulary: `ctl.js`'s `sceneCommand`, about sixty verbs, the same words the host's stdin channel drives (M24) |
 | `src/menu.gd` | The menu, drawn: `menu.js`'s four screens — main, settings, mods, keymap — as a layout a gate can hold, with the Escape walk (M25) |
 | `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
-| `src/tuning.gd` | The tuning tree `goats.tuning.get` reads (`APIv1.md` §4.10), gathered leaf by leaf from the module that owns each constant — a subset, and an absent path throws |
+| `src/tuning.gd` | The tuning tree `goats.tuning` reads *and writes* (`APIv1.md` §4.10): every leaf is a `static var` on the module that owns it, `get`/`set`/`merge` are a view of those constants and never a second copy, a write is validated against the value it replaces and routed back to its owner — a subset, and an absent path throws |
 | `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`, and the built-in half of `goats.assets`), and the per-frame drive of the **compiled** mods `crates/plugin` instantiates (stages 1 and 8) |
 | `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
 | `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader and a mod's **own** mesh built from its arrays into an `ArrayMesh` (stage 1, 8) |
@@ -127,7 +127,9 @@ Thirty-one headless gates, all `SceneTree` scripts that exit non-zero on failure
 # the mod table, `log`/`warn`/`error`, every world group -- the goat, the camera, the
 # weather and the wind, the herd, the settings, the session and the tuning tree -- against
 # the scene's own values, from inside a `hud` hook where a mod actually reads them, with
-# `terrainHeight` crossing the callback seam, every write refused, the **asset slots**
+# `terrainHeight` crossing the callback seam; the **writes** land on the scene's own fields,
+# the tuning tree among them (a clamp, an int, a nested leaf, a merge, a leaf the scene owns,
+# and the `tuning` event that follows); the **asset slots**
 # and the **entities** one mod offers another -- both halves of the first, and the second from
 # a *different* mod's handle -- and a world mod's **streams** against the reference's own
 # derivation (stage 8).
@@ -546,14 +548,18 @@ mod teleports and turns the goat, sets its mode and restarts it; moves the camer
 the API's own clamps); sets any setting -- `herd` included -- through the scene's own
 `applySettings`; drives the clock and the weather (local-only, and they answer `false` for a client,
 which is what the API documents); says a chat line; and resizes the herd and works its four bot
-handles. Each crosses the same `Callable` seam `terrainHeight` does -- `main.gd`'s `_mod_call` -- so
-a slider in the menu, a line in the console and a mod's call are one code path. `explosions.armed`
-is in too: the request belongs to the *mod* that made it, so `armed(false)` takes the core devices
-out of the derivation and a mod that unloads hands the field back. Two families are still not
-there, and each throws an error naming the member rather than doing nothing quietly:
-`assets.override`/`add` (a *pre-freeze* pair, and this client has no freeze to precede) and
-`tuning.set`/`merge` (the tree is a subset of the API's and the leaves this build has answer, but
-it is still the scene's *constants* rather than something mutable).
+handles; and **retunes the game** (`goats.tuning.set`/`merge`, §4.10). Each crosses the same
+`Callable` seam `terrainHeight` does -- `main.gd`'s `_mod_call` -- so a slider in the menu, a line in
+the console and a mod's call are one code path. `explosions.armed` is in too: the request belongs to
+the *mod* that made it, so `armed(false)` takes the core devices out of the derivation and a mod
+that unloads hands the field back. **The tuning tree is writable**: every leaf is a `static var` on
+the module that owns it, a write is validated against the value it replaces (`tuningCoerce`: finite
+numbers, the leaf's clamps and integer-ness, an array stays an array) and written back to that
+module, a mod's `tuning.json` merges before its entry runs, and every change is said as the `tuning`
+event by the frame that follows it. The tree is a subset of the API's, and a path this build has not
+got throws. One family is still not there, and it throws an error naming the member rather than
+doing nothing quietly: `assets.override`/`add` (a *pre-freeze* pair, and this client has no freeze to
+precede).
 
 To play with somebody, point it at a host:
 

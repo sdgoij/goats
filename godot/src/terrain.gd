@@ -41,13 +41,13 @@ const CELL := 2.0
 ## Quads per side: a field of +/- 48 units.
 const QUADS := 48
 ## Peak displacement, in metres -- `TUNING.terrain.relief`.
-const RELIEF := 2.1
+static var RELIEF: float = 2.1
 ## The spawn bowl's radius, in units, that stays level.
-const FLAT := 6.0
+static var FLAT: float = 6.0
 ## The units over which the bowl reaches full relief.
-const RAMP := 16.0
+static var RAMP: float = 16.0
 ## Rebuild the mesh when the goat has moved this far -- `TUNING.terrain.snap`.
-const SNAP := 24.0
+static var SNAP: float = 24.0
 
 ## The hash the whole field is built from: `core.js`'s, verbatim.
 static func value_hash(n: float) -> float:

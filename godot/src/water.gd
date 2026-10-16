@@ -55,25 +55,25 @@ extends RefCounted
 ## point of the field), `FILL` the share of that band the heaviest rain reaches, `SEEP`
 ## the rain below which the ground stays dry, `WET_DOWN` the seconds the table takes to
 ## drain, and `MAX_DEPTH` the *wading* cap (M20g lifts it for swimming).
-const LOW := -2.1
-const HIGH := 0.0
-const FILL := 0.75
-const SEEP := 0.05
-const WET_DOWN := 600.0
-const MAX_DEPTH := 0.6
+static var LOW: float = -2.1
+static var HIGH: float = 0.0
+static var FILL: float = 0.75
+static var SEEP: float = 0.05
+static var WET_DOWN: float = 600.0
+static var MAX_DEPTH: float = 0.6
 ## `TUNING.water.drag` / `dragEnergy`: the share of its speed a goat loses at the cap,
 ## and the extra energy wading burns.
-const DRAG := 0.35
-const DRAG_ENERGY := 0.25
+static var DRAG: float = 0.35
+static var DRAG_ENERGY: float = 0.25
 ## `TUNING.water.wave`: the chop's own numbers -- a 3 cm crest every 60 cm, and the share
 ## of the gust that drives it. `TUNING.water.fresnel` is the shader's, since `SPECULAR`
 ## carries it there.
-const WAVE_HEIGHT := 0.03
-const WAVE_SCALE := 0.6
-const WAVE_SPEED := 1.2
-const WAVE_WIND := 0.8
-## `TUNING.weather.windNorm`, which `waterSetUniforms` reads for the gust's share.
-const WIND_NORM := 1.4
+static var WAVE_HEIGHT: float = 0.03
+static var WAVE_SCALE: float = 0.6
+static var WAVE_SPEED: float = 1.2
+static var WAVE_WIND: float = 0.8
+## `TUNING.weather.windNorm` is read from its one owner (`SkyDome.WIND_NORM`) rather than a
+## second copy here, for the gust's share below.
 ## `water.js`'s three structural numbers beside the tuning: the wetting curve's own
 ## exponent, the point where a draining table is called dry, and the depth below which
 ## the HUD says nothing.
@@ -631,7 +631,7 @@ func wave_wind(wind_x: float, wind_z: float, wind_sway: float) -> Vector3:
 	var length: float = sqrt(wind_x * wind_x + wind_z * wind_z)
 	var dx: float = wind_x / length if length > 1e-3 else 1.0
 	var dz: float = wind_z / length if length > 1e-3 else 0.0
-	var gust: float = clampf(wind_sway / WIND_NORM, 0.0, 1.0)
+	var gust: float = clampf(wind_sway / SkyDome.WIND_NORM, 0.0, 1.0)
 	return Vector3(dx, dz, (1.0 - WAVE_WIND) + WAVE_WIND * gust)
 
 ## The seam a console and a mod read, and the gate's own view of the field: the level,

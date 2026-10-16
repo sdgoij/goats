@@ -5,8 +5,8 @@
 # GDExtension over `crates/mods` and `crates/plugin`, and the embedded engine -- discovers,
 # validates, orders, runs and drives; the *scene* owns the table the UI draws, the per-frame hooks
 # a mod registered, the console's first refusal, and the one thing only it can know: whether there
-# is a session. What the port does not have yet of `mods.js`'s other half is the tuning *merge*, reload/watch
-# and the asset-to-engine path. Those are stage 8 (`PORT.md` section 6, and section 10's third
+# is a session. What the port does not have yet of `mods.js`'s other half is reload/watch and the
+# asset-to-engine path. Those are stage 8 (`PORT.md` section 6, and section 10's third
 # item); the writes the *scene* owns, and the enable/disable toggle (`set_enabled`, with its session
 # guard), are in.
 #
@@ -106,6 +106,12 @@ func _ready() -> void:
 	# `load_mods` discovers and validates; `load_all` runs every entry, isolating the ones that
 	# throw -- so a broken mod costs its own row and not the load (`APIv1.md` section 7).
 	host.call("load_mods", dir)
+	# A mod's declared `tuning.json` merges *before* any entry runs (`APIv1.md` section 3.4). The table
+	# is the host's and the tree is the scene's, so the scene does the merge -- here, between
+	# discovery and the run. Its changes are dropped rather than queued, because no entry has
+	# registered a `"tuning"` handler yet: the same nobody the reference's pre-entry notify reaches.
+	_merge_declared_tuning(parse_table(host.call("mods_json")))
+	Tuning.take_changed()
 	report = String(host.call("load_all"))
 	for line in report.split("\n"):
 		_line(line)
@@ -114,6 +120,19 @@ func _ready() -> void:
 	# `Callable` -- a gate driving the runtime with no frame behind it -- is handed over as it is,
 	# and the host answers a call with a clear error rather than panicking.
 	host.call("set_scene_call", scene_call)
+
+## Merge every discovered mod's declared `tuning.json` into the tree (`APIv1.md` section 3.4), in
+## load order, before any entry runs. An unknown key is a warning, not a failure: the tree stops at
+## the first bad leaf and the rest of that mod's tree is skipped, which is `sceneMods`' own
+## `try`/`catch` shape.
+func _merge_declared_tuning(discovered: Array) -> void:
+	for meta: Dictionary in discovered:
+		var declared: Variant = meta.get("tuning", null)
+		if not (declared is Dictionary) or (declared as Dictionary).is_empty():
+			continue
+		var answer: Dictionary = Tuning.merge(declared)
+		if answer.has("err"):
+			_line("mod: %s: %s" % [meta.get("id", "?"), answer["err"]])
 
 ## One frame of the runtime. The clock is pushed every frame -- a mod may read it from any hook --
 ## and so is the world snapshot (`snapshot`), which is what `goats.player`, `goats.world`,
@@ -169,6 +188,12 @@ func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
 	if devices != null:
 		for bang: Dictionary in devices.call("take_blast_events"):
 			emit_blast(bang)
+	# ...and the `tuning` events a write produced (`APIv1.md` section 4.2), for the blast events'
+	# reason and in the same place: a write runs inside a mod's own JavaScript, so the leaf it moved
+	# is *said* here, outside every hook, once it has landed in the tree. Drained whether or not
+	# anything is listening, so a write nobody handles clears rather than piling up.
+	for change: Array in Tuning.take_changed():
+		emit_tuning(String(change[0]), change[1])
 	# ...and the **compiled** mods, after the world has moved and outside every JavaScript hook:
 	# the reference's own order (its loop runs the scene's frame, then the Rust plugin host).
 	_drive_wasm(dt, snapshot)
@@ -300,6 +325,13 @@ func update(dt: float) -> void:
 func emit_blast(state: Dictionary) -> void:
 	if host != null:
 		host.call("emit_blast", JSON.stringify(state))
+
+## The `"tuning"` event (`APIv1.md` section 4.2), once per changed leaf. `path` is the dotted leaf
+## and `value` the coerced value it now holds. Fired from the frame and not from the write, for
+## `blast`'s reason: the write ran inside a mod's own JavaScript, where the extension is borrowed.
+func emit_tuning(path: String, value: Variant) -> void:
+	if host != null:
+		host.call("emit_tuning", path, JSON.stringify(value))
 
 ## The `shutdown` event, once, as the scene goes down. It is where a mod frees what it built -- the
 ## flock unloads its three meshes -- and it has to happen while the extension is still alive.

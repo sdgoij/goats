@@ -28,10 +28,11 @@
 #   2. **The values are the scene's.** Each group is held against its module: the goat's health and
 #      its position, the weather machine's `rain_amount`, the frame's `_wind_sway`, the `Settings`
 #      object, the herd's own `report()`.
-#   3. **The tuning tree mirrors its sources.** Every leaf is a module's constant (`stats.max` is
-#      `PlayerGoat.STATS_MAX`, `explosions.blast.lift` is `Explosions.BLAST_LIFT`), so the gate
+#   3. **The tuning tree mirrors its sources.** Every leaf is a module's `static var` (`stats.max`
+#      is `PlayerGoat.STATS_MAX`, `explosions.blast.lift` is `Explosions.BLAST_LIFT`), so the gate
 #      holds the tree against the modules rather than against a second literal -- and an absent
-#      path throws, which is the API's own contract.
+#      path throws, which is the API's own contract. The *writes* (`tuning.set`/`merge`) are held
+#      with the other writes, below: each one lands on the module that owns the leaf.
 #   4. **The handles are reused**, which `APIv1.md` section 4.8 promises and `PERF.md` appendix B
 #      pays for: `list()` twice is the same array, and `get(0)` is the same object as `list()[0]`.
 #   5. **The one functional read crosses and answers** -- `terrainHeight` against `Terrain.height_at`,
@@ -39,10 +40,13 @@
 #   6. **The writes are the scene's** (`APIv1.md` sections 4.5-4.12). Each is applied and held
 #      against the *scene's own* field -- a position, a heading, a gait, a clamped camera, a gain,
 #      a clock, a herd size and a bot's own x/z/yaw -- because a write is a claim about the
-#      simulation and only the simulation can keep its invariants. The two families the port has still
-#      not got (`tuning.set`, `assets.override`) are asserted as refusals with them, so a member that
-#      quietly became a no-op would show. (`explosions.armed` was the third and is now in -- it is
-#      checked with the devices, above.)
+#      simulation and only the simulation can keep its invariants. The tuning tree is written the
+#      same way: `tuning.set`/`merge` are held against the modules that own the leaves, including
+#      one the *scene* owns (`herd.count`), and the three refusals (a branch, an unknown path, a
+#      string where a number belongs) are asserted too. `assets.override` is the one family the
+#      port has still not got, and it is asserted as a refusal with them, so a member that quietly
+#      became a no-op would show. (`explosions.armed` was another and is now in -- it is checked
+#      with the devices, above.)
 #   7. **The asset slots have both of their owners** (`assets`, section 4.11). This is the one group
 #      two things supply -- the built-in half is the scene's own table and the declared half is the
 #      mods' -- so what is held is that both are visible, that a built-in slot's name really loads
@@ -79,6 +83,13 @@ const PROBE_JS := """
     goats.on("hud", function () {
         const p = goats.player.state();
         globalThis.__surfaceHud = { health: p.health, x: p.x, mode: p.mode };
+    });
+
+    // The `"tuning"` event (`APIv1.md` section 4.2): record every change, so the gate can hold the
+    // event's own shape -- the dotted path and the coerced value.
+    globalThis.__surfaceTuning = [];
+    goats.on("tuning", function (path, value) {
+        globalThis.__surfaceTuning.push({ path: path, value: value });
     });
 
     goats.command("modsurface", function () {
@@ -344,12 +355,38 @@ const PROBE_JS := """
         b.zoomies(2);
         b.startle();
         out.bot_wrote = { x: WX + 4, z: WZ - 3, yaw: 1.25 };
-        // The two families still refused: a pre-freeze asset write, and the tuning tree.
-        try { goats.tuning.set("stats.max", 5); out.tune_write = "answered"; }
-        catch (error) { out.tune_write = "threw"; }
+        // The tuning tree (`APIv1.md` section 4.10). Each write lands on the module that *owns* the
+        // leaf and answers the coerced value; the gate holds the scene's side below. A clamp, an int
+        // and a nested dict member prove the coercion and the keys, and `merge` proves the recursion.
+        // (`herd.count`, a leaf the *scene* owns, is written through the seam in the gate itself, so
+        // it does not disturb the herd the checks above just sized.)
+        out.tune = {
+            set: goats.tuning.set("camera.dist", 6.75),
+            int: goats.tuning.set("explosions.relocate.tries", 7.6),
+            clamp: goats.tuning.set("herd.deathLinger", 0.1),
+            nested: goats.tuning.set("stats.energyDrain.idle", 1.25),
+        };
+        goats.tuning.merge({ sky: { absorb: 1.5 }, camera: { pitch: 0.5 } });
+        // A branch is not a leaf, an unknown path is unknown, and a number leaf refuses a string --
+        // the API's own three refusals.
+        out.tune_branch = "answered";
+        try { goats.tuning.set("explosions.blast", 1); }
+        catch (error) { out.tune_branch = "threw"; }
+        out.tune_unknown = "answered";
+        try { goats.tuning.set("no.such.path", 1); }
+        catch (error) { out.tune_unknown = "threw"; }
+        out.tune_type = "answered";
+        try { goats.tuning.set("camera.dist", "wide"); }
+        catch (error) { out.tune_type = "threw"; }
+        // The one family still refused: a pre-freeze asset write.
         try { goats.assets.override("sfx.music", "mod:com.example:sfx.music.mp3"); out.asset_write = "answered"; }
         catch (error) { out.asset_write = "threw"; }
         return JSON.stringify(out);
+    });
+
+    // The `"tuning"` events the listener above recorded (`APIv1.md` section 4.2).
+    goats.command("modtuning", function () {
+        return JSON.stringify(globalThis.__surfaceTuning);
     });
 })();
 """
@@ -484,6 +521,13 @@ func _check() -> void:
 		_failures.append("the write probe did not answer with a table: " + wrote_raw)
 	else:
 		_check_writes(wrote as Dictionary, _main)
+	# The `"tuning"` events the writes queued (`APIv1.md` section 4.2): the mods *say* them at the end
+	# of a frame (outside every hook, for `blast`'s reason), so one more run and the probe's listener
+	# can be read back.
+	mods.call("frame", _main.call("cmd_hours"), Vector2(1280.0, 720.0), true,
+		_main.get_node("Camera3D"), _main.call("_mod_snapshot"))
+	var events: Variant = JSON.parse_string(str(host.call("run_command", "modtuning", "modtuning")))
+	_check_tuning_event(events)
 	_finished = true
 
 ## The asset slots (`APIv1.md` section 4.11), the one group that is a *merge* of two owners: the
@@ -1095,8 +1139,28 @@ func _check_tuning(read: Dictionary, bots: Object, reflect: Object) -> void:
 	# leaf this client never ported -- loud rather than answered with `undefined`.
 	if str(read.get("tuning_unknown")) != "threw":
 		_failures.append("goats.tuning.get on an unknown path did not throw")
+	# ...and every leaf the tree *registers* resolves in the snapshot the scene builds. The leaf table
+	# is the tree's own shape, and a typo'd field name -- the one thing reaching a `static var` by
+	# name through `Object.get` can hide -- would leave a leaf reading `null` rather than failing
+	# loudly. The probe's `t` above is its own sample; this is the whole tree, built the way the
+	# scene pushes it.
+	var full: Dictionary = (_main.call("_mod_snapshot") as Dictionary).get("tuning", {})
+	var missing: Array = []
+	for path: String in Tuning._leaves():
+		var node: Variant = full
+		for part: String in path.split("."):
+			if not (node is Dictionary) or not (node as Dictionary).has(part):
+				node = null
+				break
+			node = (node as Dictionary)[part]
+		if node == null:
+			missing.append(path)
+	if not missing.is_empty():
+		_failures.append("the tuning tree is missing %d leaf(s) it registers: %s"
+			% [missing.size(), ", ".join(PackedStringArray(missing))])
 	print("tuning: stats.max ", t.get("max"), "  blast.lift ", t.get("blast_lift"),
-		"  herd.count ", t.get("herd_count"), "  sky.steps ", t.get("steps"))
+		"  herd.count ", t.get("herd_count"), "  sky.steps ", t.get("steps"),
+		"  ", Tuning._leaves().size(), " leaf(s) resolved")
 
 ## 2f. The session's read, off the frame's own net state. Offline the scene is its own world.
 func _check_calls(read: Dictionary) -> void:
@@ -1111,11 +1175,12 @@ func _check_calls(read: Dictionary) -> void:
 		_failures.append("goats.net.name() is %s with no session" % net.get("name"))
 	print("net: ", net.get("mode"), "  localWorld ", net.get("local"))
 
-## 6. The writes (`APIv1.md` sections 4.5-4.12), held against the **scene's own** fields -- which
+## The writes (`APIv1.md` sections 4.5-4.12), held against the **scene's own** fields -- which
 ## is the whole of a write's contract: the simulation is the thing that has to keep its invariants.
 ## The readable groups answer from the frame pushed *before* the probe ran, so a mod's own read one
 ## instant later cannot show the effect; the scene can, and it is what the reference client's writes
-## move too. The three families the port has still not got are asserted as refusals with them, so a
+## move too. The tuning tree is held the same way (against the modules that own the leaves), and the
+## one family the port has still not got (`assets.override`) is asserted as a refusal with them, so a
 ## member that quietly became a no-op would show.
 func _check_writes(read: Dictionary, main: Node) -> void:
 	var goat: Object = main.get("goat")
@@ -1196,10 +1261,40 @@ func _check_writes(read: Dictionary, main: Node) -> void:
 				or not _near(float(one.get("yaw", 0.0)), float(bw.get("yaw", 0.0))):
 			_failures.append("a bot handle's teleport/face did not land: %s" % one)
 
-	# The two families that are still refused.
-	for member: String in ["tune_write", "asset_write"]:
-		if str(read.get(member)) != "threw":
-			_failures.append("a refused write (%s) did not throw: %s" % [member, read.get(member)])
+	# The tuning tree (`APIv1.md` section 4.10): each write is held against the module that *owns*
+	# the leaf, because the tree is a view of the constants and not a second copy. A clamp
+	# (`herd.deathLinger` 0.1 -> 0.5), an int (`relocate.tries` 7.6 -> 8) and a nested member
+	# (`stats.energyDrain.idle`) prove the coercion and the keys; `merge` proves the recursion.
+	var tune: Dictionary = read.get("tune", {})
+	if not _near(float(Tuning.CAMERA_DIST), 6.75) or not _near(float(tune.get("set", 0.0)), 6.75):
+		_failures.append("tuning.set(\"camera.dist\", 6.75) did not land: %s / %s"
+			% [Tuning.CAMERA_DIST, tune.get("set")])
+	if int(Explosions.RELOCATE_TRIES) != 8 or int(tune.get("int", 0)) != 8:
+		_failures.append("tuning.set on an int leaf stored %s, not 8" % Explosions.RELOCATE_TRIES)
+	if not _near(float(Bots.DEATH_LINGER), 0.5):
+		_failures.append("tuning.set(\"herd.deathLinger\", 0.1) stored %s, not the clamp 0.5"
+			% Bots.DEATH_LINGER)
+	if not _near(float(PlayerGoat.ENERGY_DRAIN["idle"]), 1.25):
+		_failures.append("tuning.set(\"stats.energyDrain.idle\", 1.25) left the drain at %s"
+			% PlayerGoat.ENERGY_DRAIN["idle"])
+	if not _near(float(SkyDome.CLOUD_ABSORB), 1.5) or not _near(float(Tuning.CAMERA_PITCH), 0.5):
+		_failures.append("tuning.merge did not land: absorb %s, pitch %s"
+			% [SkyDome.CLOUD_ABSORB, Tuning.CAMERA_PITCH])
+	for part: String in ["branch", "unknown", "type"]:
+		if str(read.get("tune_" + part)) != "threw":
+			_failures.append("tuning.set on a %s path did not throw" % part)
+	# ...and a leaf the *scene* owns routes to the scene's own setter -- `herd.count` is the herd's
+	# size and `water.enabled` the table's switch, so the write is the same one the console makes.
+	if int(_seam(main, "tuning.set", ["herd.count", 4])) != 4 or int(bots.call("count")) != 4:
+		_failures.append("tuning.set(\"herd.count\", 4) did not resize the herd: %s"
+			% bots.call("count"))
+	if int(_seam(main, "tuning.set", ["water.enabled", 0])) != 0 \
+			or bool(main.get("water").get("enabled")):
+		_failures.append("tuning.set(\"water.enabled\", 0) did not switch the water off")
+
+	# The one family that is still refused.
+	if str(read.get("asset_write")) != "threw":
+		_failures.append("a refused write (asset_write) did not throw: %s" % read.get("asset_write"))
 
 	# ...and the two local-only writes answer `false` for a *client*, which is the API's "could not
 	# take effect" rather than a refusal (`APIv1.md` section 4.7). The flag is the scene's own
@@ -1214,8 +1309,34 @@ func _check_writes(read: Dictionary, main: Node) -> void:
 	if not _near(float(main.call("cmd_hours")), before_hours):
 		_failures.append("a client's setTime moved the clock anyway: %s" % main.call("cmd_hours"))
 	main.set("_joined", false)
-	print("writes: player/camera/settings/world/net/bots took, the two local-only ones answer false " +
-		"for a client, and the rest are still refused")
+	print("writes: player/camera/settings/world/net/bots/tuning took, the two local-only ones " +
+		"answer false for a client, and the asset write is still refused")
+
+## 6b. The `"tuning"` event (`APIv1.md` section 4.2): `(path, value)`, once per changed leaf, said by
+##     the frame that follows the write. The probe's writes are the changes, so the listener's list
+##     must carry each path -- a leaf a module owns (`stats.energyDrain.idle`) and one the *scene*
+##     owns (`herd.count`) -- with the coerced value and not the value it was handed.
+func _check_tuning_event(events: Variant) -> void:
+	if not (events is Array):
+		_failures.append("the tuning listener did not answer with a table")
+		return
+	var list: Array = events
+	var seen: Dictionary = {}
+	for event: Dictionary in list:
+		seen[str(event.get("path"))] = event.get("value")
+	for path: String in ["camera.dist", "stats.energyDrain.idle", "sky.absorb", "camera.pitch",
+			"explosions.relocate.tries", "herd.deathLinger", "herd.count", "water.enabled"]:
+		if not seen.has(path):
+			_failures.append("the \"tuning\" event never named %s" % path)
+	if seen.has("camera.dist") and not _near(float(seen["camera.dist"]), 6.75):
+		_failures.append("the \"tuning\" event's value for camera.dist is %s, not 6.75"
+			% seen["camera.dist"])
+	if seen.has("explosions.relocate.tries") and int(seen["explosions.relocate.tries"]) != 8:
+		_failures.append("the \"tuning\" event carried %s for an int leaf that stores 8"
+			% seen["explosions.relocate.tries"])
+	if seen.has("herd.count") and int(seen["herd.count"]) != 4:
+		_failures.append("the \"tuning\" event's value for herd.count is %s, not 4" % seen["herd.count"])
+	print("tuning event: ", list.size(), " change(s), herd.count ", seen.get("herd.count"))
 
 ## One crossing through the scene's own `_mod_call`, the way the extension makes it, handing back
 ## the `ok` value. A check on a write's *answer* goes through the real seam this way.

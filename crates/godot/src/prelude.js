@@ -80,10 +80,9 @@ if (typeof globalThis.goats === "undefined") {
 
         // A write the port has not got. `APIv1.md` section 7's isolation logs it with the mod's id
         // and the frame goes on, which is a failure a mod author can see instead of a member that
-        // quietly did nothing. Two families are still here, and each for a reason of its own:
-        // `assets.override`/`add` are *pre-freeze* writes and this client has no freeze to precede,
-        // and `tuning.set`/`merge` need the constants lifted into a mutable tree, which the scene
-        // still holds as constants. The readable half of the same member (if any) still works.
+        // quietly did nothing. One family is still here: `assets.override`/`add` are *pre-freeze*
+        // writes and this client has no freeze to precede, so they are refused. The readable half of
+        // the same member (if any) still works.
         function refuse(member) {
             return function () {
                 throw new Error("goats." + member + ": this client has no write path to " +
@@ -1137,17 +1136,23 @@ if (typeof globalThis.goats === "undefined") {
             explosions: explosionsFor("-"),
 
             /**
-             * The game's constants (`APIv1.md` section 4.10), read as a tree of dotted
-             * paths. `get` throws on an unknown path, which is the API's own contract and
-             * is what makes a typo -- or a leaf this client has not ported -- loud rather
-             * than answered with `undefined`.
+             * The game's constants (`APIv1.md` section 4.10), read and written as a tree of dotted
+             * paths. `get` throws on an unknown path, which is the API's own contract and is what
+             * makes a typo -- or a leaf this client has not ported -- loud rather than answered with
+             * `undefined`. `set`/`merge` *cross*: the scene is what validates a write against the
+             * value it replaces and routes it back to the module that owns the leaf, so the answer
+             * is the coerced value (or a thrown error naming what was refused).
              */
             tuning: {
                 get: function (path) {
                     return tuningAt(path);
                 },
-                set: refuse("tuning.set"),
-                merge: refuse("tuning.merge"),
+                set: function (path, value) {
+                    return ask("tuning.set", [String(path), value]);
+                },
+                merge: function (object) {
+                    ask("tuning.merge", [object]);
+                },
             },
 
             /**
@@ -1517,6 +1522,28 @@ if (typeof globalThis.goats === "undefined") {
                             list[j](state);
                         } catch (error) {
                             failed.push(states[i].id + ": blast handler failed: " + error);
+                        }
+                    }
+                }
+                for (let i = 0; i < failed.length; i++) console.log(failed[i]);
+            },
+
+            /**
+             * Fire every `"tuning"` hook, after a leaf changed (`APIv1.md` section 4.2). `path` is
+             * the dotted leaf and `json` the coerced value it now holds. The same isolation as the
+             * other events: a handler that throws is named and costs its own frame, never the write.
+             */
+            __fireTuning: function (path, json) {
+                const value = parseJson(json, null);
+                const states = this.__states();
+                const failed = [];
+                for (let i = 0; i < states.length; i++) {
+                    const list = states[i].hooks["tuning"] || [];
+                    for (let j = 0; j < list.length; j++) {
+                        try {
+                            list[j](path, value);
+                        } catch (error) {
+                            failed.push(states[i].id + ": tuning handler failed: " + String(error));
                         }
                     }
                 }

@@ -35,23 +35,25 @@ extends Node3D
 ## The goat, complete with its rig and clips. The same model the herd mirrors.
 const MODEL := preload("res://assets/goat_animated.glb")
 
-## `TUNING.stats`, verbatim.
-const STATS_MAX := 100.0
-const ENERGY_DRAIN := {"idle": 0.4, "walk": 1.0, "trot": 2.0, "run": 4.0}
-const JUMP_ENERGY_COST := 2.0
-const SLEEP_ENERGY_RECOVER := 12.0
-const SLEEP_HEALTH_RECOVER := 2.0
-const IDLE_HEALTH_RECOVER := 0.1
-const EXHAUST_HEALTH_DRAIN := 3.0
-const RESTED_ENERGY := 20.0
-const AUTO_SLEEP_DELAY := 2.0
+## `TUNING.stats`, verbatim. Each is a `static var` rather than a `const` so the tuning tree
+## can write it (`APIv1.md` section 4.10): the module still *owns* the number and every read
+## site below is unchanged, so a write is the one thing that moves.
+static var STATS_MAX: float = 100.0
+static var ENERGY_DRAIN: Dictionary = {"idle": 0.4, "walk": 1.0, "trot": 2.0, "run": 4.0}
+static var JUMP_ENERGY_COST: float = 2.0
+static var SLEEP_ENERGY_RECOVER: float = 12.0
+static var SLEEP_HEALTH_RECOVER: float = 2.0
+static var IDLE_HEALTH_RECOVER: float = 0.1
+static var EXHAUST_HEALTH_DRAIN: float = 3.0
+static var RESTED_ENERGY: float = 20.0
+static var AUTO_SLEEP_DELAY: float = 2.0
 
 ## `TUNING.movement.turnRate`, in rad/s.
-const TURN_RATE := 1.8
+static var TURN_RATE: float = 1.8
 
 ## `TUNING.gait`: metres of stride per cycle, and the share of the cycle a foot is
 ## on the ground. The speed is derived from these and the clip's duration.
-const GAIT := {
+static var GAIT: Dictionary = {
 	"walk": {"stride": 0.40, "duty": 0.50},
 	"trot": {"stride": 0.46, "duty": 0.50},
 	"run": {"stride": 0.50, "duty": 0.34},
@@ -59,12 +61,12 @@ const GAIT := {
 
 ## `TUNING.world.dayLength`'s job here is the clock, which `main.gd` owns; what the
 ## goat needs from `world` is when the cold starts biting and how much.
-const NIGHT_DRAIN_MULT := 1.6
+static var NIGHT_DRAIN_MULT: float = 1.6
 ## `skyLight` below this counts as night (`updateStats`'s `skyLight < 0.25`).
 const NIGHT_LIGHT := 0.25
 
 ## `TUNING.jump`: the cube fallback's hop, used when the model has no jump clip.
-const JUMP_FALLBACK_TIME := 0.6
+static var JUMP_FALLBACK_TIME: float = 0.6
 ## `TUNING.explosions.fling`: the arc's gravity and the ceiling on the pose's stretch.
 ## The gravity is several times life on purpose -- the scene's note is that it is
 ## 7.3 g, so the goat leaves and lands hard rather than floating.
@@ -78,13 +80,14 @@ const V_STRIDE := 0.20
 const V_CYCLE := 0.70
 
 ## `TUNING.weather` / `TUNING.food.rainShelter`, for the two things the weather does
-## to a goat that is ported: how fast it moves and how fast it tires.
-const RAIN_SLOW := 0.28
-const WIND_SLOW := 0.07
-const WIND_NORM := 1.4
-const RAIN_SHELTER := 0.6
-const WET_DRAIN := 0.65
-const WIND_DRAIN := 0.20
+## to a goat that is ported: how fast it moves and how fast it tires. `windNorm` is the
+## *sky's* leaf (`SkyDome.WIND_NORM`) rather than a second copy here, because `TUNING` has one
+## owner per number and the sky is what derives the gust this normalises.
+static var RAIN_SLOW: float = 0.28
+static var WIND_SLOW: float = 0.07
+static var RAIN_SHELTER: float = 0.6
+static var WET_DRAIN: float = 0.65
+static var WIND_DRAIN: float = 0.20
 
 ## The order the roles are tried in, which is `clipRole()`'s order: the modes that
 ## lock the pose first, then the gaits, then idle.
@@ -340,7 +343,7 @@ static func weather_speed(belly: float, rain: float, wind_sway: float) -> float:
 	if rain <= 0.0:
 		return 1.0
 	var shelter: float = RAIN_SLOW * (1.0 - RAIN_SHELTER * clampf(belly, 0.0, 1.0))
-	var wind: float = WIND_SLOW * minf(1.0, wind_sway / WIND_NORM)
+	var wind: float = WIND_SLOW * minf(1.0, wind_sway / SkyDome.WIND_NORM)
 	return 1.0 - (shelter + wind) * rain
 
 ## `weather.js` `updateWeatherEffects`'s `weatherDrain`: how much faster a soaked goat
@@ -349,7 +352,7 @@ static func weather_drain(weather: Dictionary) -> float:
 	var rain: float = float(weather.get("rain_amount", 0.0))
 	if rain <= 0.0:
 		return 1.0
-	var wind: float = minf(1.0, float(weather.get("wind_sway", 0.0)) / WIND_NORM)
+	var wind: float = minf(1.0, float(weather.get("wind_sway", 0.0)) / SkyDome.WIND_NORM)
 	return 1.0 + (WET_DRAIN + WIND_DRAIN * wind) * rain
 
 ## The speed of a gait, in m/s, from its stride, its duty and the clip's duration --
