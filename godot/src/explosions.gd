@@ -123,6 +123,16 @@ var bots: Bots
 var trigger_sound: Callable = Callable()
 var bang_sound: Callable = Callable()
 var net_fired: Callable = Callable()
+## The `blast` *events* a frame has produced, waiting to be said. **Queued rather than raised**, and
+## that is a rule about where the work can happen rather than a preference (`PORT.md` section 9): a
+## bang a *mod* asked for runs inside that mod's own JavaScript, where the extension is borrowed, so
+## a call back into `ModHost` from there panics (`Gd<T>::bind_mut() failed, already bound`). The same
+## shape `gfx.unload` takes for the same reason: the bang records what happened and the frame says
+## it, outside every mod.
+##
+## The array is drained by `take_blast_events` once per frame, and a handler that sets off another
+## bang appends to the *next* frame's list rather than recursing through this one.
+var blast_events: Array = []
 
 func _ready() -> void:
 	_build_fx()
@@ -494,6 +504,14 @@ func trip_trap_at(cx: int, cz: int, x: float, z: float) -> bool:
 
 # ---- the bang ---------------------------------------------------------------
 
+## The bangs the frame has to say out loud, and the list is emptied as it is handed over: a handler
+## that sets another bang off appends to the *next* frame's, which is what keeps the recursion of
+## "a blast makes a blast" bounded by frames rather than by the stack.
+func take_blast_events() -> Array:
+	var out: Array = blast_events
+	blast_events = []
+	return out
+
 ## A bang. The hole it digs is the *ground*, so every process that applies a blast
 ## digs one; the goat takes the damage and the throw on the scene's own curve, under the
 ## `healthFloor` promise that a mine cannot end *this* player's run; the herd takes the
@@ -513,10 +531,13 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int, key: int =
 		dx = goat.px - x
 		dz = goat.pz - z
 	var d2: float = dx * dx + dz * dz
+	var took: float = 0.0
+	var touched: int = 0
+	var killed: int = 0
 	if goat != null and d2 <= BLAST_RADIUS * BLAST_RADIUS:
 		var d: float = sqrt(d2)
 		var falloff: float = 1.0 - d / BLAST_RADIUS
-		var took: float = BLAST_DAMAGE * falloff * falloff
+		took = BLAST_DAMAGE * falloff * falloff
 		# The floor is the promise that a mine cannot end *this* player's run.
 		goat.health = maxf(BLAST_HEALTH_FLOOR, goat.health - took)
 		# ...and the HUD's flash, scaled by what the blast actually took (`explosions.js`).
@@ -545,8 +566,12 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int, key: int =
 			var bd: float = sqrt(bd2)
 			var bfalloff: float = 1.0 - bd / BLAST_RADIUS
 			var bu: Vector2 = fling_direction(bx, bz, bd, seed)
-			bots.blast_at(index, BLAST_DAMAGE * bfalloff * bfalloff,
-				BLAST_PUSH * bfalloff, BLAST_LIFT * bfalloff, bu)
+			# `blast_at` answers `false` when the bot *died* -- it kills instead of throwing -- so
+			# the two counts the event carries come from one call each rather than a second walk.
+			if not bots.blast_at(index, BLAST_DAMAGE * bfalloff * bfalloff,
+					BLAST_PUSH * bfalloff, BLAST_LIFT * bfalloff, bu):
+				killed += 1
+			touched += 1
 	spawn_burst(x, z, seed)
 	flash_at(x, z)
 	knock(x, z)
@@ -555,6 +580,16 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int, key: int =
 	# off rather than the neighbour it woke.
 	if bang_sound.is_valid():
 		bang_sound.call(x, z, depth)
+	# ...and recorded for the `blast` event, before the chain: the reference emits here, so a handler
+	# sees the bang it was told about and the chained ones arrive as their own events rather than as
+	# one object that changed shape. The nine fields are the reference's own, and `player` is what the
+	# goat lost rather than what the bang was worth -- a goat at the rim takes a bruise. The frame
+	# says it (see `blast_events`); this only writes it down.
+	blast_events.append({
+		"kind": kind, "x": x, "z": z, "seed": seed,
+		"radius": BLAST_RADIUS, "depth": depth,
+		"player": took, "bots": touched, "killed": killed,
+	})
 	if depth < CHAIN_DEPTH:
 		chain_from(x, z, depth + 1)
 	# And told to the others, by the process that fired it -- the reporter does not wait for the

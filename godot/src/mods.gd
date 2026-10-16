@@ -42,6 +42,12 @@ extends Node
 ## The `ModHost` node, or null when the extension did not load. A node and not a bare object
 ## because a mod may draw, and drawing is the frame's.
 var host: Object
+## The devices, for the one thing the frame owes them: the `blast` events a frame produced have to be
+## *said* by the frame rather than inside the bang that made them. A bang a mod asked for runs in
+## that mod's own JavaScript, where the extension is borrowed, and calling back into `ModHost` from
+## there panics (`PORT.md` section 9) -- so `Explosions` records what happened and this says it,
+## which is `gfx.unload`'s shape for `gfx.unload`'s reason. Set by `main.gd` beside `world`.
+var devices: Object
 ## Where a mod's `console.log` and the load report go. Set by the frame *before* this node enters
 ## the tree, because the load report is produced in `_ready` and has nowhere else to land.
 var console: Console
@@ -136,6 +142,12 @@ func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
 		surface.adopt(records)
 	for line in host.call("poll_lines"):
 		_drain(String(line))
+	# ...and the `blast` events this frame produced, last of the frame's mod work and outside every
+	# mod -- see `devices`. Drained whether or not anything is listening, so a bang nobody handles
+	# does not pile up, and *said* a frame late at worst rather than inside the bang.
+	if devices != null:
+		for bang: Dictionary in devices.call("take_blast_events"):
+			emit_blast(bang)
 
 ## The table, as `menu.gd`'s Mods screen and the console's `mod list` want it.
 func mod_table() -> Array:
@@ -148,6 +160,25 @@ func mod_table() -> Array:
 func use_seed(seed: int) -> void:
 	if host != null:
 		host.call("use_seed", seed)
+
+## One frame's `update` event, with the step. The scene sends `dt = 0` while the world is frozen, so
+## this is *not* a gate: a frozen frame still reaches every handler, and a mod that keeps a clock of
+## its own holds still with it (`modFrameTick`).
+func update(dt: float) -> void:
+	if host != null:
+		host.call("emit_update", dt)
+
+## The `blast` event, once per bang (`APIv1.md` section 4.15). `state` is the nine fields the
+## reference sends, and it arrives from the *devices* rather than from here because a bang is theirs.
+func emit_blast(state: Dictionary) -> void:
+	if host != null:
+		host.call("emit_blast", JSON.stringify(state))
+
+## The `shutdown` event, once, as the scene goes down. It is where a mod frees what it built -- the
+## flock unloads its three meshes -- and it has to happen while the extension is still alive.
+func shutdown() -> void:
+	if host != null:
+		host.call("emit_shutdown")
 
 ## First refusal for a console line: a mod's registered verb and its reply, or empty when no mod
 ## claims the word. This is `mods.js`'s `modCommand` for the part the host can answer, and it is

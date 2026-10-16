@@ -427,6 +427,7 @@ func _ready() -> void:
 	# After `add_child(mods)`, because the runtime builds its `ModHost` in `_ready` -- and the
 	# world node and the sound pool want that host to turn an asset name into bytes.
 	mod_world.host = mods.host
+	mods.devices = explosions
 	mods.world = mod_world
 	mod_audio.host = mods.host
 	# Decode the mods' declared sounds *here*, outside any hook: a `goats.sfx` call runs inside a
@@ -612,6 +613,13 @@ func _process(delta: float) -> void:
 	# The mods' own frame: the clock a mod reads, and its `hud` hook while the HUD is up. It is
 	# after `hud.show_for` because that is where this frame decided the HUD is the thing on screen
 	# (`sceneFrame` fires `modEmit("hud", ...)` inside the branch that draws the HUD).
+	#
+	# ...and the `update` event, which is `modFrameTick(dt)` and fires **every** frame -- the
+	# freezing is in the *argument*, not in a gate: a frozen world sends `dt = 0`, so a mod's own
+	# clock holds still while its handler still runs, which is what the reference does and what lets
+	# a mod notice a pause rather than only be skipped by it. Before `frame`, because the frame is
+	# what *says* the `blast` events an `update` produced (`mods.gd`'s `devices`).
+	mods.update(0.0 if frozen else delta)
 	mods.frame(_hours, Vector2(get_viewport().get_visible_rect().size), not menu.is_open(), camera,
 		_mod_snapshot())
 	_boom_if_asked()
@@ -730,15 +738,30 @@ func _mod_bots() -> Array:
 ## **Nothing on this seam may call back into the extension.** It runs inside a mod's own JavaScript,
 ## where `ModHost` is borrowed; the sound members are answered from what `ModAudio.prepare` built at
 ## boot for exactly that reason (`PORT.md` section 9).
+## The scene going down: the one moment a mod's `shutdown` can still free what it built, which is
+## what the flock does with its three meshes (`APIv1.md` section 6, `sceneShutdown`). It is the
+## extension's last use in this process, so it has to happen while the node tree is still here.
+func _exit_tree() -> void:
+	mods.shutdown()
+
 func _mod_call(name: String, args_json: String) -> String:
 	var parsed: Variant = JSON.parse_string(args_json)
 	var args: Array = parsed if parsed is Array else []
 	match name:
 		"world.terrainHeight":
-			# The scene's own function, craters and all -- not a second heightfield, which is
-			# the whole reason this crosses instead of being pushed as values.
+			# The scene's own function, craters and all -- not a second heightfield, which is the
+			# whole reason this crosses instead of being pushed as values.
+			#
+			# The `is int or is float` guard is not a formality: the facade sends `Number(x)`, and a
+			# mod that passed `undefined` sends `null` through `JSON.stringify`. `float(null)` is not
+			# a refusal, it is a *script error* (`Nonexistent 'float' constructor`), and a script
+			# error inside this seam is the one thing the boundary must never produce -- it is
+			# reported as an engine error rather than as the member's own thrown one, so a mod
+			# cannot catch it and the log does not name what asked.
 			if args.size() < 2:
 				return _mod_err("world.terrainHeight needs an x and a z")
+			if not (args[0] is float or args[0] is int) or not (args[1] is float or args[1] is int):
+				return _mod_err("world.terrainHeight needs two numbers")
 			var x: float = float(args[0])
 			var z: float = float(args[1])
 			if is_nan(x) or is_nan(z):
@@ -802,6 +825,31 @@ func _mod_call(name: String, args_json: String) -> String:
 				return _mod_err("player.giveHealth needs a number")
 			goat.health = clampf(goat.health + health, 0.0, PlayerGoat.STATS_MAX)
 			return _mod_ok(goat.health)
+		"water.state":
+			# The read-out the console's own `water` verb prints (`APIv1.md` section 4.17). It takes
+			# the *goat's* position because that is the readout the scene defines -- the goat's own
+			# drag, the wetted share around it -- and not a second derivation of the table.
+			return _mod_ok(water.state(goat.px, goat.pz))
+		"water.level":
+			return _mod_ok(water.level())
+		"water.depthAt":
+			if args.size() < 2:
+				return _mod_err("water.depthAt needs an x and a z")
+			if not (args[0] is float or args[0] is int) or not (args[1] is float or args[1] is int):
+				return _mod_err("water.depthAt needs two numbers")
+			return _mod_ok(water.depth_at(float(args[0]), float(args[1])))
+		"water.setLevel":
+			if args.size() < 1 or not (args[0] is float or args[0] is int):
+				return _mod_err("water.setLevel needs a level in metres")
+			water.set_force(float(args[0]))
+			return _mod_ok(water.level())
+		"water.clear":
+			water.force_off()
+			return _mod_ok(water.level())
+		"water.enabled":
+			water.enabled = args.is_empty() or args[0] != false
+			water.update()
+			return _mod_ok(water.enabled)
 	return _mod_err("goats." + name + ": this client does not answer that member")
 
 ## A successful `_mod_call` answer.

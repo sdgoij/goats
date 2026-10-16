@@ -207,26 +207,33 @@ const PROBE_JS := """
         // one mod would prove the registry and not the crossing.
         const owner = goats.begin("com.example.owner");
         const asker = goats.begin("com.example.asker");
+        // Only *this* mod's offers are counted, and it is not tidiness: the repository's own mods
+        // offer entities too -- the flock is one, and it flies about -- so a raw count would be
+        // asking the birds what the gate did, and would change between two queries in one probe.
+        // What the seam's cross-mod behaviour means is `verify_scene_mods.gd`'s subject.
+        function mineOnly(rows) {
+            return rows.filter(function (e) { return e.from.indexOf("com.example.owner:") === 0; });
+        }
         owner.entities.offer("blob", function () { return [[1, 0.5, 0, 0.5], [9, 9, 9, 1]]; });
         owner.entities.offer("junk", function () { return [[0, 0, 0, 9]]; });
         // A second offer under one name replaces the first, rather than joining it -- which is what
         // the count below holds: the displaced row was inside the range too, so a *join* would have
         // answered three.
         owner.entities.offer("junk", function () { return [[0, 0, 0, 0.25]]; });
-        const near = asker.entities.near(0, 0, 2);
+        const near = mineOnly(asker.entities.near(0, 0, 2));
         out.entity_near = near.length;
         out.entity_from = near.length > 0 ? near[0].from : null;
         out.entity_row = near.length > 0
             ? [near[0].x, near[0].y, near[0].z, near[0].r, near[0].d] : null;
         // The range is the ground plane's, so the far one is dropped and the near one kept.
-        out.entity_far = asker.entities.near(0, 0, 0.1).length;
+        out.entity_far = mineOnly(asker.entities.near(0, 0, 0.1)).length;
         // A callback that throws costs *its own* mod's entities for that query and nobody
         // else's, and a row that is not four finite numbers is skipped rather than thrown.
         owner.entities.offer("boom", function () { throw new Error("nope"); });
         owner.entities.offer("junkrows", function () {
             return [[1, 2, 3], ["a", "b", "c", "d"], [0, 0, 0, 0.5], null];
         });
-        out.entity_threw = asker.entities.near(0, 0, 2).length;
+        out.entity_threw = mineOnly(asker.entities.near(0, 0, 2)).length;
         try {
             owner.entities.offer("bad", "not a function");
             out.entity_offer_check = "accepted";
@@ -736,6 +743,16 @@ func _check_devices(host: Object) -> void:
 			% answer.get("single"))
 	if str(answer.get("armed")) != "threw":
 		_failures.append("goats.explosions.armed did not throw: %s" % answer.get("armed"))
+	# ...and a frame, because the `blast` event a mod's *own* bang produces is **queued** and said by
+	# the frame rather than inside the bang: a bang a mod asked for runs in that mod's JavaScript,
+	# where the extension is borrowed, and a call back into `ModHost` from there panics (`PORT.md`
+	# section 9). So this line is the check for the re-entrancy, and an empty queue afterwards is
+	# what says the frame took it rather than dropped it.
+	var mods: Object = _main.get("mods")
+	mods.call("frame", 12.0, Vector2(1280.0, 720.0), true, _main.get_node("Camera3D"))
+	if not (devices.get("blast_events") as Array).is_empty():
+		_failures.append("the frame left %d blast event(s) unsaid"
+			% (devices.get("blast_events") as Array).size())
 	print("devices: ", answer.get("mines"), " mine(s)  ", answer.get("traps"), " trap(s)  blast ",
 		answer.get("blast"), "  blasts ", devices.get("blasts"))
 

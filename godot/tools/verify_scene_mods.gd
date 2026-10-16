@@ -39,6 +39,11 @@ const WORLD_ID := "com.github.sdgoij.goats.birds"
 ## How many mods the repository's `mods/` holds. Named so a directory that grows fails loudly
 ## rather than silently changing what this gate checked.
 const MOD_COUNT := 5
+## When the flock is sent into the air, and when the gate looks at it: the difference is the sim
+## time `TAKEOFF` needs (0.9 s at the engine's own 60 Hz, with room for a slow first frame), and it
+## is frames of the *scene's* clock rather than a sleep. See `_process`.
+const KICK_FRAME := 4
+const FLY_FRAME := 150
 
 var _failures: Array[String] = []
 var _frames := 0
@@ -61,7 +66,14 @@ func _initialize() -> void:
 
 func _process(_delta: float) -> bool:
 	_frames += 1
-	if _frames < 6:
+	if _frames == KICK_FRAME:
+		# The flock is sent into the air through its own console verb, and then the **scene's** frames
+		# are left to run: `update` is fired by `main.gd`'s `_process`, so driving `mods.frame` from
+		# here would prove the runtime's forwarding and not the scene's wiring. `TAKEOFF` runs 0.9 s,
+		# which is why the wait below is `FLY_FRAME` frames rather than two.
+		print("birds fly ->    ", String(_main.get("commands").call("run", "birds fly")))
+		return false
+	if _frames < FLY_FRAME:
 		return false
 	_check()
 	if _failures.is_empty():
@@ -165,6 +177,8 @@ func _check() -> void:
 	print("mod key ->      ", key)
 	if not key.contains(WORLD_ID + "@"):
 		_failures.append("`mod key` does not name the world mod's digest: '%s'" % key)
+	# 5. The events the examples live in, before the staged failure below replaces the loaded set.
+	_check_events(vocabulary)
 
 	# The HUD hook, driven explicitly: the frame's own call depends on the node's `_process`, and
 	# a gate that relied on that would check the engine's scheduling rather than the mod.
@@ -207,6 +221,27 @@ func _check() -> void:
 	#    go unchecked. It goes through the host's own `load_mods`, which is the same door `mods.gd`
 	#    uses at boot, and it is last because it replaces the loaded set.
 	_check_staged_failure(host)
+
+## The events the examples work through (`APIv1.md` section 6). `update` is the one both of them do
+## everything in, and it is also the one a gate cannot prove by driving the runtime: `main.gd`'s
+## `_process` fires it, so what this holds is the *scene's* wiring -- a flock sent into the air is
+## only out of `takeoff` if the scene's own frames reached the handler, which is the difference
+## between an event that arrived and one that ran.
+func _check_events(vocabulary: Object) -> void:
+	var flock: String = String(vocabulary.call("run", "birds"))
+	print("birds ->        ", flock)
+	var report: Variant = JSON.parse_string(flock.trim_prefix("ok "))
+	if not (report is Dictionary):
+		_failures.append("the flock did not report its state: '%s'" % flock)
+		return
+	var state: Dictionary = report
+	if int(state.get("count", 0)) != 6:
+		_failures.append("the flock is %s bird(s), and it seeds six" % state.get("count"))
+	var counts: Dictionary = state.get("states", {})
+	# `TAKEOFF` is 0.9 s of the flock's own clock, and only `update` advances it.
+	if int(counts.get("fly", 0)) < 1:
+		_failures.append("no bird left takeoff after %d frames (%s), so the `update` event did not reach the flock"
+			% [_frames, counts])
 
 ## Two files written at run time into `user://`, and the host asked to load the directory: one mod
 ## whose entry throws on its first line. Staged rather than shipped because the repository's mods

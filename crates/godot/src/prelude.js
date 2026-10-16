@@ -896,6 +896,43 @@ if (typeof globalThis.goats === "undefined") {
             entities: entitiesFor("-"),
 
             /**
+             * The water (`APIv1.md` section 4.17): the read-out over the surface M20a-M20e built,
+             * and the door a mod drives its table through. The level is *data* rather than a device
+             * -- one scalar the weather sets and the ground turns into pools -- so a mod can drive
+             * it with nothing to register and nothing to hand back but `clear`. Both checked-in
+             * examples read `depthAt` to decide whether the ground they are standing on is dry.
+             *
+             * `pools` is the one member this client has not got: the connected regions are a flood
+             * fill M20f has not been ported for here, and the console's own `pools` verb says so.
+             * It *throws* rather than answering an empty list, because a mod that asked for the
+             * puddles and got none could not tell that from a dry field.
+             */
+            water: {
+                state: function () {
+                    return ask("water.state", []);
+                },
+                level: function () {
+                    return ask("water.level", []);
+                },
+                depthAt: function (x, z) {
+                    return ask("water.depthAt", [Number(x), Number(z)]);
+                },
+                pools: function () {
+                    throw new Error("goats.water.pools: this client has not ported the water's " +
+                        "connected regions yet");
+                },
+                setLevel: function (height) {
+                    return ask("water.setLevel", [Number(height)]);
+                },
+                clear: function () {
+                    return ask("water.clear", []);
+                },
+                enabled: function (on) {
+                    return ask("water.enabled", [on === undefined ? true : on !== false]);
+                },
+            },
+
+            /**
              * The devices (`APIv1.md` section 4.15): `traps(x, z, range)` is the derived field near
              * a point and `blast(x, z, kind)` sets one off. Both *cross*, and each for
              * `terrainHeight`'s reason -- `traps` is a function of the world rather than a statement
@@ -1179,6 +1216,75 @@ if (typeof globalThis.goats === "undefined") {
              */
             __useSeed: function (seed) {
                 seedStreams(seed | 0);
+            },
+
+            /**
+             * Fire every `"update"` hook for one frame, with the step. Both checked-in examples do
+             * their work here, and it is the one event with an argument that is not an object: `dt`,
+             * which the scene sends as **0 while the world is frozen** so a mod freezes with it
+             * (`APIv1.md` section 6, and `ctlStep`'s own rule).
+             *
+             * The same isolation as the drawing hooks, and the same rule about the `catch`: a
+             * handler that throws costs its own frame and is named, and the name is said *after* the
+             * loop rather than inside it -- a host call in a `catch` trips this engine's environment
+             * stack (`entitiesNear` has the detail).
+             */
+            __fireUpdate: function (dt) {
+                const states = this.__states();
+                const failed = [];
+                for (let i = 0; i < states.length; i++) {
+                    const list = states[i].hooks["update"] || [];
+                    for (let j = 0; j < list.length; j++) {
+                        try {
+                            list[j](dt);
+                        } catch (error) {
+                            failed.push(states[i].id + ": update handler failed: " + error);
+                        }
+                    }
+                }
+                for (let i = 0; i < failed.length; i++) console.log(failed[i]);
+            },
+
+            /** Fire every `"shutdown"` hook, once, as the scene goes down. No arguments. */
+            __fireShutdown: function () {
+                const states = this.__states();
+                const failed = [];
+                for (let i = 0; i < states.length; i++) {
+                    const list = states[i].hooks["shutdown"] || [];
+                    for (let j = 0; j < list.length; j++) {
+                        try {
+                            list[j]();
+                        } catch (error) {
+                            failed.push(states[i].id + ": shutdown handler failed: " + error);
+                        }
+                    }
+                }
+                for (let i = 0; i < failed.length; i++) console.log(failed[i]);
+            },
+
+            /**
+             * Fire every `"blast"` hook, after a bang. The object is the scene's own nine fields
+             * (`explosions.js`'s `modEmit("blast", {...})`): `kind`, `x`, `z`, `seed`, `radius`,
+             * `depth`, `player`, `bots` and `killed`. It fires for a *mod's* bang as well, with the
+             * same object -- deliberately, because the event is about the bang and not about who
+             * made it (`APIv1.md` section 4.15).
+             */
+            __fireBlast: function (json) {
+                const state = parseJson(json, null);
+                if (state === null) return;
+                const states = this.__states();
+                const failed = [];
+                for (let i = 0; i < states.length; i++) {
+                    const list = states[i].hooks["blast"] || [];
+                    for (let j = 0; j < list.length; j++) {
+                        try {
+                            list[j](state);
+                        } catch (error) {
+                            failed.push(states[i].id + ": blast handler failed: " + error);
+                        }
+                    }
+                }
+                for (let i = 0; i < failed.length; i++) console.log(failed[i]);
             },
 
             /** Every state, the idle one first, then the mods in load order. */

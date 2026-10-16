@@ -379,6 +379,41 @@ impl ModHost {
         }
     }
 
+    /// Fire the `"update"` hooks for one frame, with the step. It is the event both checked-in
+    /// examples do their work in, and `dt` is **0 while the world is frozen** -- the menu is open,
+    /// the console is up, `P` was pressed -- which is the scene's own `ctlStep` rule and the reason
+    /// a mod freezes with the world rather than running on behind it.
+    #[func]
+    fn emit_update(&mut self, dt: f64) -> GString {
+        let args = [JsValue::number(dt)];
+        match self.call_goats("__fireUpdate", &args) {
+            Ok(_) => GString::from("ok"),
+            Err(error) => gstring(format!("error: {error}")),
+        }
+    }
+
+    /// Fire the `"shutdown"` hooks, once, as the scene goes down -- `sceneShutdown`'s own event.
+    /// It is where a mod frees what it built, which is the one thing a reload cannot do for it.
+    #[func]
+    fn emit_shutdown(&mut self) -> GString {
+        match self.call_goats("__fireShutdown", &[]) {
+            Ok(_) => GString::from("ok"),
+            Err(error) => gstring(format!("error: {error}")),
+        }
+    }
+
+    /// Fire the `"blast"` hooks, after a bang. The argument is the same JSON object the scene's
+    /// own `modEmit("blast", {...})` sends, for `push_world`'s reason: a shape rather than a
+    /// signature, so the event can grow a field without a method changing here.
+    #[func]
+    fn emit_blast(&mut self, json: GString) -> GString {
+        let args = [JsValue::string(json.to_string())];
+        match self.call_goats("__fireBlast", &args) {
+            Ok(_) => GString::from("ok"),
+            Err(error) => gstring(format!("error: {error}")),
+        }
+    }
+
     /// The core pushes the in-game clock here each frame; a mod reads it through
     /// `goats.world.time()`. This is the "push the readable values" half of
     /// `godot/PORT.md` section 6, decision 3.
