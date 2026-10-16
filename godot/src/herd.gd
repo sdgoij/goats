@@ -99,6 +99,22 @@ func centre() -> Vector3:
 func count() -> int:
 	return _goats.size()
 
+## The mirrored herd as the console's `bots` verb reads it: one dictionary per goat, in
+## index order, with the fields the wire carries rather than the ones a simulation would
+## keep. There is no `mode` or `belly` to report -- the host owns those, and a snapshot
+## carries a gait and a phase, so a reader wanting that reads `describe()`.
+func report() -> Array:
+	var indexes: Array = _goats.keys()
+	indexes.sort()
+	var out: Array = []
+	for index in indexes:
+		var node: Node3D = _goats[index]["node"]
+		out.append({
+			"index": int(index), "x": node.position.x, "z": node.position.z,
+			"yaw": node.rotation.y,
+		})
+	return out
+
 ## The mirrored herd's wake actors: `(x, z, py)` a goat, in index order -- which is the
 ## order the scene's own `BOTS` array has, so `Water`'s wake marks and the host's bots stay
 ## paired. A client splashes the herd it mirrors, which is the one part of M20d that would

@@ -86,6 +86,37 @@ const PROBE_RELIEF := 0.05
 ## and a `ClassDB.instantiate` always resolve.
 var bridge: Object
 
+## The console (M24) and the vocabulary it dispatches through. Both are built in code for the
+## bridge's reason: a `class_name` script used as a *node type* in a `.tscn` cannot be resolved
+## while the import pass that registers it is still running. The console is a `Control` added to
+## the UI layer above the HUD.
+var console: Console
+var commands := Commands.new()
+
+## Which screen the UI is showing (`menu.js`'s `uiScreen`): `"hud"` is the game, and the console
+## is only openable from it -- with a menu up, the menu owns the input. Only `hud` is drawn yet
+## (the menu is this stage's other half), but the value is the scene's and the console's `ui`
+## verb reads it.
+var ui_screen := "hud"
+
+## Frames left to run while the world is frozen (`ctl.js`'s `ctlStep`): the console's `step <n>`
+## unsticks the pause gate for a fixed count and re-pauses when it reaches zero, which is what
+## makes a step reproducible.
+var _step_frames := 0
+
+## The two virtual keys the console's movement verbs hold down, layered over the real keyboard
+## the way `ctl.js`'s `ctlHeld` is layered by `ctlKeyDown`: `walk`/`trot`/`run`/`back` set
+## `_held_gait` and `turn` sets `_held_turn`, so a script can drive the goat with no key pressed.
+var _held_gait := "stop"
+var _held_turn := "stop"
+
+## The session's state as the events report it: this player's name, the ticket it joined with
+## (which `copy` with no argument puts on the clipboard), and the roster. A client cannot host
+## yet, so there is no hosting mode and no ticket of this scene's own.
+var _net_name := ""
+var _net_ticket := ""
+var _roster: Array = []
+
 ## The camera's own state: an orbit the mouse drags and the arrow keys nudge, seeded
 ## from and clamped by `TUNING.camera`. The scene's `sceneFrame` owns the same three
 ## numbers and moves them the same way, and they matter more than they look: the
@@ -191,6 +222,11 @@ var _weather := {}
 ##                            which are the words `setting reflect` takes -- the console
 ##                            route this stands in for until stage 6. A word the scene does
 ##                            not know leaves the leaf where it is, as `ctl.js` does.
+##   `GOATS_CONSOLE=<line>`   run a console line at boot with the panel open, so a picture can
+##                            show the console with something in it. It is the one knob that is
+##                            about *seeing* a thing rather than measuring it, and it exists
+##                            because the console is the part of the UI no gate can photograph
+##                            from the inside (M24).
 var _forced_hour := -1.0
 var _forced_cloud := -1.0
 var _boom := false
@@ -304,6 +340,22 @@ func _ready() -> void:
 	add_child(node)
 	bridge = node
 
+	# The console (M24): built in code, added to the UI layer *after* the HUD so it draws over
+	# it, and pointed at the vocabulary. It is wired before the offline return below, so a
+	# player with no ticket still has it -- which is the point, because the console is what the
+	# `GOATS_*` environment variables stand in for and what retires them.
+	console = Console.new()
+	$Ui.add_child(console)
+	console.dispatch = Callable(commands, "run")
+	_build_commands()
+	# `GOATS_CONSOLE=<line>`: run a line at boot with the panel open, so a picture can show the
+	# console with something in it. The command runs through the same dispatch a typed one does,
+	# so a knob that works is a knob that proves the vocabulary is wired to the world.
+	var staged: String = OS.get_environment("GOATS_CONSOLE")
+	if not staged.is_empty():
+		console.toggle()
+		console.submit(staged, console.dispatch)
+
 	_probe = not OS.get_environment("GOATS_PROBE").is_empty()
 	var ticket := OS.get_environment("GOATSD_TICKET")
 	if ticket.is_empty():
@@ -339,8 +391,11 @@ func _ready() -> void:
 		return
 	print("join -> ", bridge.call("join", ticket, "godot"))
 	# The scene is a *client* here, and a client is the one that publishes its goat: a
-	# host's own goat is already local to its owns scene (`NetBridge::pose`).
+	# host's own goat is already local to its owns scene (`NetBridge::pose`). The name lands
+	# when the `welcome` event arrives; until it does, this is the name that was asked for.
 	_joined = true
+	_net_name = "godot"
+	_net_ticket = ticket
 
 ## Give the scene the scene's sky: a `shader_type sky` material on the
 ## `WorldEnvironment`, and the environment told that its ambient is the light's
@@ -372,8 +427,9 @@ func _process(delta: float) -> void:
 	# `P` freezes the *world* and not the view: `sceneFrame`'s own gate wraps the simulation
 	# (`if (!paused || ctlStep > 0)`) while the camera, the mirror, the sway, the sky, the rain and
 	# the HUD are all outside it. What moves the world while it is frozen is the console's
-	# `step <n>`, and that is stage 6's.
-	if not _paused:
+	# `step <n>`, which unsticks this one gate for a fixed count.
+	var frozen: bool = _paused and _step_frames <= 0
+	if not frozen:
 		# The ground, the fuses and the effects first, which is `sceneFrame`'s order: a
 		# crater ages, a fuse runs out and a bang lands *before* the goat moves, so a goat
 		# thrown this frame is thrown on the ground this frame.
@@ -419,11 +475,18 @@ func _process(delta: float) -> void:
 	# so does this -- the camera it draws from is the world's own, mirrored through the water's
 	# plane, and the surface reads what it drew at its own screen position.
 	water_mirror.run(camera, water.level())
-	if not _paused:
+	if not frozen:
 		_advance(delta, camera.global_position)
 		# The sound, once a frame and after the weather has settled: the beds ride the rain and
 		# the wind, the thunder rolls off the rain, and the grit a bang threw lands here.
 		audio.update(delta, float(_weather_now().get("rain_amount", 0.0)), _wind_sway)
+	# `step <n>` counts down here and re-pauses at zero, which is `sceneFrame`'s own "a step
+	# always ends paused". It is after the world and not before it, so the frame a step buys is
+	# a whole one.
+	if _step_frames > 0:
+		_step_frames -= 1
+		if _step_frames == 0:
+			_paused = true
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
 	water_splash.update()
 	# The two bodies and the rain, from the values `_advance` just settled: the sun and the moon
@@ -431,6 +494,12 @@ func _process(delta: float) -> void:
 	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
 	rain.show_for(weather, _wind_x)
 	_publish_pose(delta)
+	# The HUD's three setting read-outs are the console's now (M24): the shadow mode, the sky and
+	# the cloud level, kept where the verbs write them rather than at the fixed defaults M23
+	# shipped. The render is Godot's (see `commands.gd`'s header) and the *words* follow.
+	hud.light_word = Commands.lighting_word(commands.shadow)
+	hud.sky_word = Commands.sky_word_for(commands.sky)
+	hud.cloud_word = commands.cloud
 	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz),
 		_hud_world(controls))
 	_boom_if_asked()
@@ -464,19 +533,36 @@ func _hud_world(controls: Dictionary) -> Dictionary:
 ## This frame's controls, in the form `PlayerGoat.step` wants. `sceneFrame` reads
 ## its keys the same way and combines them the same way: a held axis, a gait chosen
 ## by the modifiers, and the four presses.
+##
+## The console swallows all of it, which is `menu.js`'s `press` and `ctl.js`'s `ctlKeyDown`
+## both: typing must never move the goat, so while it is open the frame reads a neutral
+## control -- no axis, no gait, no press -- and the `wasd` in a line stay in the line. The
+## `_held_*` virtual keys are blocked with the real ones, as `ctlKeyDown` blocks both.
 func _controls() -> Dictionary:
+	if console != null and console.open:
+		return {"move": 0, "turn": 0, "gait": "walk", "jump": false, "eat": false,
+			"sleep": false, "restart": false}
+	# The virtual keys first, then the real ones ORed on top -- `ctlKeyDown`'s own order.
 	var move: int = 0
+	if _held_gait == "walk" or _held_gait == "trot" or _held_gait == "run":
+		move += 1
+	elif _held_gait == "back":
+		move -= 1
 	if Input.is_physical_key_pressed(KEY_W):
 		move += 1
 	if Input.is_physical_key_pressed(KEY_S):
 		move -= 1
 	var turn: int = 0
+	if _held_turn == "left":
+		turn += 1
+	elif _held_turn == "right":
+		turn -= 1
 	if Input.is_physical_key_pressed(KEY_A):
 		turn += 1
 	if Input.is_physical_key_pressed(KEY_D):
 		turn -= 1
-	var running: bool = Input.is_physical_key_pressed(KEY_SHIFT)
-	var trotting: bool = Input.is_physical_key_pressed(KEY_CTRL)
+	var running: bool = Input.is_physical_key_pressed(KEY_SHIFT) or _held_gait == "run"
+	var trotting: bool = Input.is_physical_key_pressed(KEY_CTRL) or _held_gait == "trot"
 	var gait: String = "walk"
 	if running:
 		gait = "run"
@@ -500,7 +586,12 @@ func _controls() -> Dictionary:
 ## The arrow keys as a camera fallback, and the clamps. `sceneFrame`'s own, with
 ## the same rates and the same two limits (`TUNING.camera.minDist`/`maxDist`, and a
 ## pitch that stops short of the poles so the up vector never degenerates).
+##
+## The console owns the arrow keys while it is open -- they move the caret and walk the
+## history there -- so the camera does not also orbit on them.
 func _orbit(delta: float) -> void:
+	if console != null and console.open:
+		return
 	if Input.is_physical_key_pressed(KEY_LEFT):
 		_cam_yaw += 1.6 * delta
 	if Input.is_physical_key_pressed(KEY_RIGHT):
@@ -541,9 +632,17 @@ func _publish_pose(delta: float) -> void:
 	bridge.call("pose", goat.px, goat.pz, goat.yaw, goat.phase, goat.speed, goat.mode,
 		goat.py)
 
-## The mouse: drag to orbit, wheel to zoom, and F11 for fullscreen. `sceneFrame`'s
-## ratios, so the feel matches the thing being ported.
+## The mouse: drag to orbit, wheel to zoom, F11 for fullscreen, and the backquote that opens
+## the console. `sceneFrame`'s ratios, so the feel matches the thing being ported.
+##
+## The console takes the keyboard first, and takes *all* of it while it is open -- a pressed
+## key is its line, not the goat's. That is `consoleUpdate`'s "the frame loop gives the console
+## first refusal", plus `press`'s own gate on the gameplay keys, in one place because Godot
+## delivers an event to one handler rather than polling every key.
 func _unhandled_input(event: InputEvent) -> void:
+	if console != null and console.open and event is InputEventKey:
+		console.handle_key(event as InputEventKey)
+		return
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
 		if button.button_index == MOUSE_BUTTON_LEFT:
@@ -560,6 +659,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		var key := event as InputEventKey
 		if not key.pressed or key.echo:
 			return
+		if key.physical_keycode == KEY_QUOTELEFT:
+			# Backquote toggles the console, but only from the HUD: with a menu up, the menu owns
+			# the input (`consoleUpdate`'s own gate).
+			if ui_screen == "hud":
+				console.toggle()
+			get_viewport().set_input_as_handled()
+			return
 		match key.physical_keycode:
 			KEY_SPACE:
 				_jump_pressed = true
@@ -570,13 +676,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_R:
 				_restart_pressed = true
 			KEY_M:
-				# `goat.js`'s `M`: the master mute. The menu's `bgm`/`sfx` sliders and the console's
-				# `mute` verb are stage 6; this is the key the scene has always bound.
+				# `goat.js`'s `M`: the master mute. The console's `mute` verb drives the same switch,
+				# and the menu's `bgm`/`sfx` sliders are this stage's other half.
 				audio.set_muted(not audio.muted)
 			KEY_P:
 				# `goat.js`'s `P`: freeze the world. The console's `step <n>` is what moves it while
-				# it is frozen, and that verb is stage 6's.
+				# it is frozen.
 				_paused = not _paused
+				_step_frames = 0
 			KEY_C:
 				# `weather.js`'s `C`: jump to the next state now, for previewing the cycle.
 				# The scene gates it on `netWeatherLocal()` -- a client may not force the
@@ -707,6 +814,10 @@ func _environment_float(name: String, fallback: float) -> float:
 		return fallback
 	return text.to_float()
 
+## One event from the session, routed as `net.js`'s `sceneNetEvent` routes it. What is *this*
+## scene's is the world data: the seed, the snapshot a client mirrors, a peer's goat, a bite.
+## Everything the scene only reports goes to the console's own network stream, so a session is
+## visible where the player is typing -- which is what M24 is for.
 func _handle(line: String) -> void:
 	var event: Variant = JSON.parse_string(line)
 	if not (event is Dictionary):
@@ -724,8 +835,40 @@ func _handle(line: String) -> void:
 			# matters to a scene that hosts a session -- this one joins, and a joiner's
 			# herd is a mirror. It is wired anyway so the three seams stay one story.
 			bots.use_seed(seed)
+			console.net_line("net: world seed " + str(seed))
+		"hosting":
+			# A host's own event, which this scene cannot produce yet -- but the console
+			# still has the line, so the day `host` lands it reads right.
+			_net_name = String(event.get("name", ""))
+			console.net_line("net: hosting as " + _net_name)
+		"ticket":
+			_net_ticket = String(event.get("ticket", ""))
+			console.net_line("net: ticket " + _net_ticket)
+			console.system_line("net: `copy` puts the ticket on the clipboard")
 		"welcome":
+			# The canonical name, which may differ from the one asked for: names are first
+			# come, first served. This is also what makes the scene a *client* -- until it
+			# arrives, a join that was refused is a scene that is still alone.
+			_net_name = String(event.get("name", _net_name))
+			_joined = true
 			print("welcome: ", event.get("name"))
+			console.net_line("net: joined as " + _net_name)
+		"joined":
+			var who: String = String(event.get("name", ""))
+			_roster.append(who)
+			console.net_line("net: " + who + " joined")
+		"roster":
+			var names: Variant = event.get("names", [])
+			_roster = (names as Array).duplicate() if names is Array else []
+			console.net_line("net: roster " + ", ".join(PackedStringArray(_roster)))
+		"chat":
+			var from: String = String(event.get("from", ""))
+			console.net_line("net: " + ("dm " if bool(event.get("direct", false)) else "") \
+				+ ("you" if from == _net_name else from) + ": " + String(event.get("text", "")))
+		"disconnected":
+			_joined = false
+			_roster = []
+			console.net_line("net: disconnected")
 		"world":
 			# The weather and the meadow ride every world snapshot, not only the ones
 			# that carry a herd: `goatsd` publishes half-built worlds while it loads its
@@ -739,12 +882,12 @@ func _handle(line: String) -> void:
 			# rather than events, because a joiner has to see the world as it stands.
 			Craters.apply_wire(event.get("craters", null))
 			explosions.apply_spent(event.get("spent", null))
-			var bots: Variant = event.get("bots", [])
-			if bots is Array and bots.size() > 0:
-				_measure_motion(bots)
+			var bots_here: Variant = event.get("bots", [])
+			if bots_here is Array and bots_here.size() > 0:
+				_measure_motion(bots_here)
 				herd.apply(event)
 				_worlds += 1
-				_last_bots = bots.size()
+				_last_bots = bots_here.size()
 				# The settle clock is a *probe's*, and it arms only for one. It used to arm for
 				# anybody who received a herd, and the report at the far end of it `quit()`s --
 				# so every Godot client that joined a session with a herd in it quit eight
@@ -754,6 +897,8 @@ func _handle(line: String) -> void:
 				if _probe and _settle < 0.0:
 					_settle = 0.0
 		"notice", "error":
+			console.net_line("net: " + ("error " if String(event.get("type", "")) == "error" else "") \
+				+ String(event.get("text", "")))
 			print(String(event.get("type", "")), ": ", event.get("text"))
 		"peer":
 			# Another player's goat, on the same rates and the same easing rules a bot's is
@@ -764,13 +909,16 @@ func _handle(line: String) -> void:
 			# A peer that left takes its goat with it. This is the *only* thing that removes
 			# a peer: a snapshot stream that stops leaves a goat standing, which is what the
 			# client does too, and better than a herd that blinks.
-			peers.remove(String(event.get("name", "")))
+			var gone: String = String(event.get("name", ""))
+			peers.remove(gone)
+			_roster.erase(gone)
+			console.net_line("net: " + gone + " left")
 		"consume":
 			# A *client's* bite, arriving at the host: record it in this meadow, and the next
 			# world snapshot carries it back to everyone -- including the goat that bit.
 			meadow.consume_key(int(event.get("key", 0)))
 		_:
-			pass
+			console.net_line("net: unknown event " + line)
 
 ## Tell the session about a bite this goat took. A client's duty and nobody else's: a host
 ## *is* the meadow, and offline there is no session to tell -- which is `food.js`'s own
@@ -843,3 +991,149 @@ func _report(failures: Array, ok_message: String = "") -> void:
 	for failure in failures:
 		print("FAIL: ", failure)
 	get_tree().quit(1)
+
+# ---- the console's own seams (M24) -----------------------------------------
+#
+# `commands.gd` reaches the frame's state through these, by name. Each is one thing the
+# frame owns and no module does -- the clock, the wind, the camera, the pause and its step
+# counter, the UI screen, quitting, the screenshot, the two virtual keys, and the session --
+# so the vocabulary stays a vocabulary and the frame stays the frame.
+
+## Hand the console's vocabulary everything it reads: the world modules as typed references,
+## the console itself, and this frame for the knobs only it owns.
+func _build_commands() -> void:
+	commands.goat = goat
+	commands.meadow = meadow
+	commands.water = water
+	commands.water_reflect = water_reflect
+	commands.explosions = explosions
+	commands.audio = audio
+	commands.weather = weather
+	commands.bots = bots
+	commands.herd = herd
+	commands.console = console
+	commands.scene = self
+
+func cmd_hours() -> float:
+	return _hours
+
+func cmd_set_hours(hours: float) -> void:
+	_hours = hours
+
+func cmd_wind_sway() -> float:
+	return _wind_sway
+
+func cmd_camera() -> Dictionary:
+	return {"yaw": _cam_yaw, "pitch": _cam_pitch, "dist": _cam_dist}
+
+func cmd_set_camera(yaw: float, pitch: float, dist: float) -> void:
+	_cam_yaw = yaw
+	_cam_pitch = clampf(pitch, 0.08, 1.35)
+	_cam_dist = clampf(dist, 2.2, 12.0)
+
+## `camera reset`: the three numbers `TUNING.camera` boots with, which are this frame's
+## starting values.
+func cmd_camera_reset() -> void:
+	_cam_yaw = 0.7
+	_cam_pitch = 0.42
+	_cam_dist = 5.2
+
+func cmd_paused() -> bool:
+	return _paused
+
+func cmd_set_paused(paused: bool) -> void:
+	_paused = paused
+	_step_frames = 0
+
+## `step <n>`: unfreeze for n frames and re-pause at the end of them, which `_process` does.
+func cmd_step(steps: int) -> void:
+	_paused = false
+	_step_frames = steps
+
+func cmd_ui() -> String:
+	return ui_screen
+
+func cmd_set_ui(screen: String) -> void:
+	ui_screen = screen
+
+func cmd_quit() -> void:
+	bridge.call("shutdown")
+	get_tree().quit(0)
+
+## Write the current frame to `path`. A headless run has no rasteriser to read back, which
+## `WaterReflect.can_ground` asks the same way; an empty string is success, a word is the
+## failure `commands.gd` puts after `error screenshot `.
+func cmd_screenshot(path: String) -> String:
+	if DisplayServer.get_name() == "headless":
+		return "needs a window"
+	var image: Image = get_viewport().get_texture().get_image()
+	if image == null:
+		return "could not read the frame"
+	return "" if image.save_png(path) == OK else "could not write " + path
+
+## The direction the console's held gait implies, which is `ctlHeldMove`.
+func cmd_held_move() -> int:
+	if _held_gait == "walk" or _held_gait == "trot" or _held_gait == "run":
+		return 1
+	if _held_gait == "back":
+		return -1
+	return 0
+
+## The gait the console is holding, which is `ctlHeldGait`.
+func cmd_held_gait() -> String:
+	if _held_gait == "run":
+		return "run"
+	if _held_gait == "trot":
+		return "trot"
+	return "walk"
+
+func cmd_set_gait(gait: String) -> void:
+	if gait == "walk" or gait == "trot" or gait == "run" or gait == "back":
+		_held_gait = gait
+	else:
+		_held_gait = "stop"
+
+func cmd_set_turn(dir: String) -> void:
+	_held_turn = dir if dir == "left" or dir == "right" else "stop"
+
+## Whether the frame is a *client*, which is `_joined`: it is what the console's `bots` verb
+## and `netStatus` read.
+func cmd_is_client() -> bool:
+	return _joined
+
+## `netStatus()`: the mode, this player's name, the ticket, and the roster.
+func cmd_net_status() -> Dictionary:
+	return {
+		"mode": "client" if _joined else "off",
+		"name": _net_name,
+		"ticket": _net_ticket,
+		"roster": _roster,
+	}
+
+## `connect`: join the session a ticket names. The scene joins on startup from
+## `GOATSD_TICKET`; this is the console's own way in, and the one the prompt's answer lands in.
+func cmd_join(ticket: String, name: String) -> String:
+	if _joined:
+		return "error already in a session (leave first)"
+	var asked: String = name if name != "" else "godot"
+	bridge.call("join", ticket, asked)
+	_net_ticket = ticket
+	_net_name = asked
+	_joined = true
+	return "ok connect"
+
+func cmd_leave() -> String:
+	if not _joined:
+		return "error not in a session"
+	bridge.call("leave")
+	_joined = false
+	_net_ticket = ""
+	_roster = []
+	return "ok leave"
+
+func cmd_say(text: String) -> String:
+	bridge.call("say", text)
+	return ""
+
+func cmd_ticket() -> String:
+	return _net_ticket

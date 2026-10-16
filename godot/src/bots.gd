@@ -230,6 +230,18 @@ func actors() -> PackedFloat64Array:
 func count() -> int:
 	return _bots.size()
 
+## The herd as the console's `bots` verb reads it (`ctl.js`: `{ count, bots: [{x, z, yaw,
+## mode, belly}] }`), one dictionary per bot in index order. It is a read-out and nothing
+## else: nothing in the simulation goes through it.
+func report() -> Array:
+	var out: Array = []
+	for bot: Bot in _bots:
+		out.append({
+			"x": bot.x, "z": bot.z, "yaw": bot.yaw,
+			"mode": bot.mode, "belly": bot.satiety,
+		})
+	return out
+
 ## Take the herd's stream from the session seed. `weather.js` `sceneUseSeed` draws the
 ## weather first and the bots second, so this is the *second* draw -- the same shape
 ## `explosions.gd` uses for the fifth (`trapSalt`), and only reachable in a session the

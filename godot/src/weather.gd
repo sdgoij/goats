@@ -123,6 +123,18 @@ func hold(state: String) -> void:
 	cloudiness = float((STATES[state] as Dictionary)["cloud"])
 	rain_amount = float((STATES[state] as Dictionary)["rain"])
 
+## `weather <state>` (`ctl.js`): jump *to* a named state now and hold it for the least of
+## its window, letting the machine ease its cloudiness and rain in. It is the difference
+## between this and `hold`: `hold` is the staging knob's steady picture, this is the
+## player's own verb, which the machine then animates out of. Returns false for a word the
+## machine does not know, which is `ctl.js`'s error.
+func go_to(state: String) -> bool:
+	if not STATES.has(state):
+		return false
+	kind = state
+	timer = float((HOLD[state] as Array)[0])
+	return true
+
 ## Adopt the host's weather. A client mirrors the *values* and keeps its own kind
 ## only for the HUD's line, because what a state is *doing* is the values.
 func apply_wire(weather: Dictionary) -> void:

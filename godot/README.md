@@ -19,6 +19,8 @@ plan.
 | `src/main.gd` | The frame loop: it joins a session, drains the bridge each frame, reads the keyboard, drives the world's clock and weather, and (as a probe) reports whether the mirror converged |
 | `src/player_goat.gd` | The local goat: `goat.js`'s gait state machine, movement and stats — the goat you drive |
 | `src/hud.gd` | The HUD, drawn: `goat.js`'s `drawHud` — the bars, the read-out, the action prompt, the weather and status lines and the damage pulse (M23) |
+| `src/console.gd` | The console, drawn: `console.js`'s ring, line, caret, history, wrap and panel — the overlay that is not a menu (M24) |
+| `src/commands.gd` | The command vocabulary: `ctl.js`'s `sceneCommand`, about sixty verbs, the same words the host's stdin channel drives (M24) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
 | `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
@@ -70,7 +72,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Twenty-two headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -176,9 +178,16 @@ Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 # the pass under the names the shader actually declares.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_water_reflect.gd
+
+# The console: the shell's ring, line, caret, history, wrap and panel arithmetic against
+# `console.js` and `drawConsole`; the vocabulary's pure rules (`help`, `ctlArg`, `ctlRound`,
+# the wrap, the panel's own numbers) against `ctl.js`; and then the same vocabulary run
+# against the *live* scene, verb by verb (M24).
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_console.gd
 ```
 
-All twenty-one pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty-two pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -239,10 +248,14 @@ pitch, a bang falls off with the distance past its own radius and drops its grit
 and the three beds swell with the weather — the one part of this port a picture cannot show, and
 so the one whose gate can hold only the rules rather than the result.
 And the HUD is one `Control` drawing `drawHud` — the bars, the read-out, the action prompt, the
-weather and status lines and the damage pulse, at the scene's own pixel coordinates; what is left
-of the UI is the menu, the console and the settings screen, which are stage 6.
+weather and status lines and the damage pulse, at the scene's own pixel coordinates; and the
+**console** is a second one drawing `drawConsole` — a translucent panel over the top half, the
+scrollback's last visible rows in the scene's own five colours, then the line and its caret
+(M24). It is the overlay that is not a menu: it never touches the world, and `main.gd` keeps the
+keyboard out of the goat while it is up, so one player opening it pauses nobody. What is left of
+the UI is the menu's four screens, the settings screen and the keymap, which are this same stage.
 
-**Seven** environment variables stage what there is no UI for yet: `GOATS_HOUR` pins the
+**Eight** environment variables stage what there is no console or menu for yet: `GOATS_HOUR` pins the
 clock, `GOATS_CLOUD` the cloudiness and `GOATS_FLOOD` the water's level — the last of
 those is `water.js`'s own `flood <h>` console verb, and it is the only way to *see* a
 pool, because a downpour floods the hollows and nothing else, and with `GOATS_CAM` aimed
@@ -262,6 +275,14 @@ which is the only way to photograph the two bodies, because they sit on the ligh
 bang beside the goat a moment into the run, which is how a bang and the hole it leaves
 can be *looked* at rather than measured. All of them are ignored while a session is up,
 because the host owns the world.
+
+Six of those seven are now a *console verb* as well, which is what they were standing in for:
+`time <h>` for `GOATS_HOUR`, `setting cloud` for `GOATS_CLOUD`, `weather <state>` for
+`GOATS_WEATHER`, `camera <yaw> <pitch> <dist>` for `GOATS_CAM`, `flood <h>` for `GOATS_FLOOD`
+and `setting reflect` for `GOATS_REFLECT`. Only `GOATS_BOOM` maps to no verb. The eighth
+variable is the console's own: **`GOATS_CONSOLE=<line>`** runs a line at boot with the panel
+open, because a headless gate has no rasteriser and the panel is the one part of this port
+only a picture can judge. `GOATS_CONSOLE=help` is the page `shot.png` carries.
 
 ## Running against the shipping host
 
@@ -332,12 +353,21 @@ arrow keys     the camera, if you have no mouse
 P              freeze the world (the view keeps running)
 M              mute
 F11            fullscreen
+`              the console (type `help`)
 ```
 
 It is the scene's own keyboard (`sceneFrame`), read with the same rates and the
 same camera clamps. Health, energy, exhaustion and the sleep that follows it are the
 scene's too, so standing still costs energy and a hard run costs more — sleep, or
 eat, before it runs out.
+
+Backquote opens the **console**: the same shell `console.js` draws, with the same sixty-odd
+verbs the host's stdin channel takes, so `help`, `state`, `weather rain`, `camera 90 20 6`,
+`flood -0.9`, `setting reflect mirror`, `grass`, `traps`, `craters`, `walk`, `step 10` and the
+rest all work while the world keeps running. It is an overlay and not a menu — nothing about
+it pauses anything — and it swallows the gameplay keys while it is up, so typing never moves
+the goat. In a session it is also the chat box: anything that is not a verb is a line said,
+and `connect <ticket>` / `leave` / `who` / `copy` are how a session is driven by hand.
 
 To play with somebody, point it at a host:
 

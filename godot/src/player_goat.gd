@@ -229,7 +229,7 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 		# The water can arrive under a sleeping goat -- there is none yet -- and so
 		# can a full belly, which is the third way out.
 		if bool(controls.get("sleep", false)) or move != 0 or energy >= STATS_MAX:
-			_wake()
+			wake_up()
 	elif mode == "jump":
 		_jump_time += delta
 		if _jump_time >= jump_duration():
@@ -622,10 +622,22 @@ func _place() -> void:
 	position = Vector3(px, base_y() + _ground_offset, pz)
 	rotation.y = yaw
 
-func _wake() -> void:
+## `goat.js` `wakeUp`, and the console's `wake` verb: a sleeping goat stands up and
+## bleats. It is public because the scene reaches it only through the input path, and a
+## command (or a gate) needs a way in that is not a key. The mode guard is the *verb's*,
+## which is `ctl.js`'s own split (`wake` answers `error not asleep` before calling this).
+func wake_up() -> void:
 	mode = "idle"
 	_sleep_time = 0.0
 	_sound(BLEAT_WAKE)
+
+## `goat.js` `die`: the goat drops where it stands and plays its death clip. The console's
+## `kill` uses it, and the four `_update_stats` returns of `"die"` reach the same state
+## from `step` -- which is why there is one implementation and not two.
+func die() -> void:
+	mode = "dead"
+	_death_time = 0.0
+	_sound(BLEAT_DIE)
 
 ## `goat.js` `updateStats`: drain by mode, faster at night and in the rain; at zero
 ## energy the goat is exhausted and starts losing health; above `restedEnergy` and

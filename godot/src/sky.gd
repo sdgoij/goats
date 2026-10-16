@@ -55,9 +55,12 @@ const CLOUD_DETAIL := 0.35
 const CLOUD_ABSORB := 1.35
 const CIRRUS_LEVEL := 15.0
 const CLOUD_SPEED := 0.55
-## `TUNING.sky.steps`, indexed by `SETTINGS.cloud` (default 1, "medium").
+## `TUNING.sky.steps`, indexed by `SETTINGS.cloud` (default 1, "medium"). It is a
+## `static var` rather than the `const` the scene's `SETTINGS.cloud` is, because the
+## console's `setting cloud low|medium|high` is what moves it (`commands.gd`) and the
+## cloud march's step count is the one thing about the sky a setting really changes.
 const CLOUD_STEPS := [6, 12, 22]
-const CLOUD_LEVEL := 1
+static var cloud_level := 1
 
 ## `weather.js`'s `WEATHER_STATES.clear.cloud`, the cloudiness the scene *boots* with.
 ## The machine that moves it lives in `weather.gd`; this is only where it starts, and
@@ -285,7 +288,7 @@ static func apply(material: ShaderMaterial, env: Environment, sun: DirectionalLi
 	material.set_shader_parameter("cirrus", cirrus_of(cloudiness))
 	material.set_shader_parameter("cirrus_height", CIRRUS_LEVEL)
 	material.set_shader_parameter("night_dim", 1.0 - sky_light)
-	material.set_shader_parameter("cloud_steps", int(CLOUD_STEPS[CLOUD_LEVEL]))
+	material.set_shader_parameter("cloud_steps", int(CLOUD_STEPS[clampi(cloud_level, 0, CLOUD_STEPS.size() - 1)]))
 
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = ambient(sky_light)
