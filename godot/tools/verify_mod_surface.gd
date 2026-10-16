@@ -17,7 +17,7 @@
 # HUD and the wire take theirs from. A snapshot that drifted from the world would be a mod reading
 # a second, wrong world -- which no amount of "the call arrived" would catch.
 #
-# Nine things, and the order is the order of the ways they can be faked:
+# Ten things, and the order is the order of the ways they can be faked:
 #
 #   0. **Every mod knows who it is and can speak.** `goats.api`, `goats.game`, `goats.mods()`,
 #      a handle's own `goats.mod` -- held against the *scene's* table, which is the one the Mods
@@ -47,6 +47,10 @@
 #   8. **Two mods can see each other** (`entities`, section 4.16), which is the only group whose
 #      subject is another mod: an offer is namespaced to the mod that made it, a *different* mod's
 #      `near` finds it, and a callback that throws costs its own mod's rows and nobody else's.
+#   9. **A world mod's stream is the one two peers must agree on** (`rng`, `world.registerStream`,
+#      section 4.13), so it is held against the reference's derivation transcribed into this file --
+#      FNV-1a, xorshift32, and one shared draw per stream from the session seed -- rather than
+#      against a second copy of the port. The seed itself goes through the scene's own path.
 #
 # **The sentinel.** GDScript has no `try`, so a runtime error inside a check aborts that function
 # and leaves the failure it was about to record unrecorded -- a gate that would print `OK` having
@@ -232,6 +236,44 @@ const PROBE_JS := """
         }
         return JSON.stringify(out);
     });
+
+    // The world mods' streams (`APIv1.md` section 4.13). A *verb*, because the sequence has to
+    // outlive one call: the gate registers and draws, then re-derives from a seed through the
+    // scene's own path and draws again -- and the second half is where a stream that restarted,
+    // or that never re-derived, would show.
+    goats.command("modstreams", function (args) {
+        const out = { f: [], v: [] };
+        const birds = goats.begin("com.github.sdgoij.goats.birds");
+        const verb = args.length > 1 ? String(args[1]) : "register";
+        if (verb === "register") {
+            birds.world.registerStream("f", 0x5eed);
+            // A seed of 0 is not a seed: the reference falls through to the key's own hash, so two
+            // mods asking for the same name still get different sequences.
+            birds.world.registerStream("valueless", 0);
+            for (let i = 0; i < 3; i++) out.f.push(birds.rng("f")());
+            for (let i = 0; i < 2; i++) out.v.push(birds.rng("valueless")());
+            out.never = birds.rng("never-registered")();
+            // Only a `side: "world"` mod owns a stream, and the base object has neither member --
+            // both are the reference's own shape (`modWorldFor`, `goatsBegin`).
+            try {
+                goats.begin("com.github.sdgoij.goats.fatguy").world.registerStream("x", 1);
+                out.client = "answered";
+            } catch (error) {
+                out.client = "threw";
+            }
+            try {
+                goats.world.registerStream("base", 1);
+                out.base = "answered";
+            } catch (error) {
+                out.base = "threw";
+            }
+            out.base_rng = typeof goats.rng;
+        } else {
+            for (let i = 0; i < 2; i++) out.f.push(birds.rng("f")());
+            for (let i = 0; i < 1; i++) out.v.push(birds.rng("valueless")());
+        }
+        return JSON.stringify(out);
+    });
 })();
 """
 
@@ -342,6 +384,7 @@ func _check() -> void:
 	_check_identity(read, mods, _main.get("console"))
 	_check_assets(read)
 	_check_entities(read, _main.get("console"))
+	_check_streams(host, mods)
 	_finished = true
 
 ## The asset slots (`APIv1.md` section 4.11), the one group that is a *merge* of two owners: the
@@ -459,6 +502,158 @@ func _check_entities(read: Dictionary, console: Object) -> void:
 	print("entities: ", read.get("entity_near"), " in range from ", read.get("entity_from"),
 		"  at a point ", read.get("entity_far"), "  past a throw ", read.get("entity_threw"),
 		"  named ", named)
+
+## The world mods' streams (`APIv1.md` section 4.13), held against the reference's own derivation
+## rather than against a second copy of the port's: FNV-1a over the namespaced key, xorshift32 for
+## the draw, and a fresh draw per stream from the session seed (`modSeedStreams`). The oracle is
+## written *here* and never asked of the port, because this is the one member whose whole purpose is
+## that two peers compute the same numbers -- a port that answered its own question would prove only
+## that it was self-consistent, and the two implementations could still part.
+##
+## The streams the probe registers, in the order it registers them: the order is part of the answer,
+## because `modSeedStreams` spends one draw of a shared sequence per stream.
+const STREAMS := [
+	{"key": "com.github.sdgoij.goats.birds:f", "seed": 0x5eed},
+	{"key": "com.github.sdgoij.goats.birds:valueless", "seed": 0},
+]
+## The seed the scene is handed on a `session` event. Any non-zero value does; this one is the
+## reference's own trap salt, picked so a transcription error in the derivation shows.
+const STREAM_SEED := 0x2f6e2b1d
+
+## The 32-bit signed reading of a value, which is what every `| 0` in `mods.js` means.
+static func _i32(value: int) -> int:
+	var low: int = value & 0xFFFFFFFF
+	return low - 0x100000000 if low >= 0x80000000 else low
+
+## An unsigned right shift, which GDScript's `>>` is not for a negative operand.
+static func _ushr(value: int, bits: int) -> int:
+	return (value & 0xFFFFFFFF) >> bits
+
+## `modHashKey`: FNV-1a, 32-bit -- and the multiply is done in **double precision on purpose**,
+## because that is what JavaScript's `>>> 0` sees. The product passes 2^53 for a 32-bit hash, where a
+## double can no longer hold every integer and *rounds*: an exact 64-bit multiply takes different
+## low bits, which is off by one at the third character and unrecognisable by the tenth. It is the
+## same floor the port's `trap_noise` had to sit on (`PORT.md` section 9, the devices), and a
+## transcription that "fixed" it would agree with nobody -- including the client it is copying.
+static func _key_hash(key: String) -> int:
+	var hash: int = 2166136261
+	for i: int in key.length():
+		hash = (hash ^ key.unicode_at(i)) & 0xFFFFFFFF
+		var product: float = float(_i32(hash)) * 16777619.0
+		hash = int(product) & 0xFFFFFFFF
+	return hash
+
+## `modRegisterStream`'s `initial`, including the two fall-throughs: a zero seed becomes the key's
+## own hash, and a zero result becomes 1.
+static func _stream_initial(key: String, seed: int) -> int:
+	var initial: int = _i32(seed)
+	if initial == 0:
+		initial = _i32(0x9e3779b9) ^ _key_hash(key)
+	initial = initial & 0xFFFFFFFF
+	return 1 if initial == 0 else initial
+
+## `modStreamNext`: one xorshift32 step, the draw it returns and the state it leaves.
+static func _stream_step(state: int) -> Dictionary:
+	var s: int = state & 0xFFFFFFFF
+	s = s ^ ((s << 13) & 0xFFFFFFFF)
+	s = s ^ _ushr(s, 17)
+	s = s ^ ((s << 5) & 0xFFFFFFFF)
+	s = s & 0xFFFFFFFF
+	return {"draw": float(s) / 4294967296.0, "state": s}
+
+## Advance one stream by one draw and answer it.
+static func _stream_draw(states: Dictionary, key: String) -> float:
+	var step: Dictionary = _stream_step(int(states[key]))
+	states[key] = int(step["state"])
+	return float(step["draw"])
+
+## `modSeedStreams`: one draw of a shared sequence per stream, in insertion order, each mixed into
+## the stream's own seed.
+static func _seed_streams(states: Dictionary, seeds: Dictionary, order: Array, seed: int) -> void:
+	var s: int = _i32(seed)
+	if s == 0:
+		s = 1
+	for key: String in order:
+		s = s ^ ((s << 13) & 0xFFFFFFFF)
+		s = s & 0xFFFFFFFF
+		s = s ^ _ushr(s, 17)
+		s = s ^ ((s << 5) & 0xFFFFFFFF)
+		s = s & 0xFFFFFFFF
+		if s == 0:
+			s = 1
+		var mixed: int = int(seeds[key]) ^ s
+		states[key] = 1 if mixed == 0 else mixed
+
+## One `run_command` answer, as a table; empty when the probe did not answer with one.
+func _mod_command(host: Object, name: String, line: String) -> Dictionary:
+	var answer: Variant = JSON.parse_string(str(host.call("run_command", name, line)))
+	return answer if answer is Dictionary else {}
+
+func _check_streams(host: Object, mods: Object) -> void:
+	var order: Array = []
+	var seeds: Dictionary = {}
+	var states: Dictionary = {}
+	for entry: Dictionary in STREAMS:
+		var key: String = str(entry["key"])
+		order.append(key)
+		seeds[key] = _stream_initial(key, int(entry["seed"]))
+		states[key] = seeds[key]
+
+	var first: Dictionary = _mod_command(host, "modstreams", "modstreams register")
+	if first.is_empty():
+		_failures.append("the streams probe did not answer with a table")
+		return
+	# The named seed is used as given; the zero one falls through to the key's hash, so the two
+	# streams draw different sequences from the same file.
+	var drawn_f: Array = []
+	for i: int in range(3):
+		drawn_f.append(_stream_draw(states, order[0]))
+	var drawn_v: Array = []
+	for i: int in range(2):
+		drawn_v.append(_stream_draw(states, order[1]))
+	_streams_match(first.get("f", []), drawn_f, "the first three draws of a named seed")
+	_streams_match(first.get("v", []), drawn_v, "the draws of a stream whose seed is 0")
+	if float(first.get("never", -1.0)) != 0.0:
+		_failures.append("goats.rng on a name nobody registered answered %s, and the reference says 0"
+			% first.get("never"))
+	if str(first.get("client")) != "threw":
+		_failures.append("a side:\"client\" mod was allowed to register a stream")
+	if str(first.get("base")) != "threw":
+		_failures.append("goats.world.registerStream answered outside a begin, and the reference has no such member")
+	if str(first.get("base_rng")) != "undefined":
+		_failures.append("goats.rng is %s on the base object, and the reference keeps it on the handle"
+			% first.get("base_rng"))
+
+	# ...and the seed, through the *scene's* own path: `mods.use_seed` is what the `session` event
+	# calls, and `sceneUseSeed`'s last act is this same derivation.
+	mods.call("use_seed", STREAM_SEED)
+	_seed_streams(states, seeds, order, STREAM_SEED)
+	var second: Dictionary = _mod_command(host, "modstreams", "modstreams draw")
+	if second.is_empty():
+		_failures.append("the streams probe did not answer after a seed")
+		return
+	var seeded_f: Array = []
+	for i: int in range(2):
+		seeded_f.append(_stream_draw(states, order[0]))
+	var seeded_v: Array = []
+	for i: int in range(1):
+		seeded_v.append(_stream_draw(states, order[1]))
+	_streams_match(second.get("f", []), seeded_f, "the draws after a session seed")
+	_streams_match(second.get("v", []), seeded_v, "the seeded draws of a stream whose seed is 0")
+	print("streams: f ", first.get("f"), " then ", second.get("f"),
+		"  valueless ", first.get("v"), " then ", second.get("v"))
+
+## Two rows of draws, field for field. A draw is a quotient of two exact doubles, so the tolerance
+## is only here so a float32 somewhere cannot make the gate lie.
+func _streams_match(got: Variant, want: Array, what: String) -> void:
+	if not (got is Array) or (got as Array).size() != want.size():
+		_failures.append("%s: the port answered %s and the reference derives %s" % [what, got, want])
+		return
+	var row: Array = got
+	for i: int in range(want.size()):
+		if absf(float(row[i]) - float(want[i])) > 1e-12:
+			_failures.append("%s: draw %d is %s and the reference derives %s"
+				% [what, i, row[i], want[i]])
 
 ## The identity and logging members (`APIv1.md` section 4.1): the API major, the game's version,
 ## the table, a mod's own row, and the three ways to say something -- each held against the

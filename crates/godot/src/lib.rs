@@ -364,6 +364,21 @@ impl ModHost {
         }
     }
 
+    /// Re-derive the world mods' streams from the session seed (`APIv1.md` section 4.13), which
+    /// the scene calls on the `session` event. The scene derives its own four streams from the
+    /// same seed at the same moment (`sceneUseSeed`), and a world mod's draws have to come from
+    /// the same place or a flock the host simulates is not the flock a joiner computes -- so this
+    /// is an *event* and not a snapshot field: the derivation advances per call, and a field
+    /// could not tell a repeated seed from the next frame.
+    #[func]
+    fn use_seed(&mut self, seed: i64) -> GString {
+        let args = [JsValue::number(seed as f64)];
+        match self.call_goats("__useSeed", &args) {
+            Ok(_) => GString::from("ok"),
+            Err(error) => gstring(format!("error: {error}")),
+        }
+    }
+
     /// The core pushes the in-game clock here each frame; a mod reads it through
     /// `goats.world.time()`. This is the "push the readable values" half of
     /// `godot/PORT.md` section 6, decision 3.

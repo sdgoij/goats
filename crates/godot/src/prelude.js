@@ -438,6 +438,169 @@ if (typeof globalThis.goats === "undefined") {
             };
         }
 
+        // --- the world mods' streams ------------------------------------------
+        //
+        // `goats.rng` and `goats.world.registerStream` (`APIv1.md` section 4.13): a `side: "world"`
+        // mod's own seeded PRNG. It is what makes a flock the host simulates the flock a joiner
+        // *computes* -- the birds move one at a time from a stream, not from anything that travels --
+        // so the derivation is `mods.js`'s, transcribed, and it has to be exact: FNV-1a over the
+        // stream's namespaced key, xorshift32 after that, and a fresh draw per stream from the
+        // session seed (`modSeedStreams`) rather than the seed itself, so no two streams move in
+        // lockstep. Iteration order matters for the same reason it does in the reference: the draws
+        // are `next()` calls, so the *registration order* is part of the sequence.
+        const modStreams = {};   // "<id>:<name>" -> { seed, state }
+
+        /** FNV-1a, 32-bit: the reference's own key hash, and why a stream's name is part of it. */
+        function streamHashKey(key) {
+            let hash = 2166136261;
+            for (let i = 0; i < key.length; i++) {
+                hash ^= key.charCodeAt(i);
+                hash = (hash * 16777619) >>> 0;
+            }
+            return hash >>> 0;
+        }
+
+        /** One draw, xorshift32 -- or 0 when nothing registered that stream, as the reference is. */
+        function streamNext(key) {
+            const stream = modStreams[key];
+            if (stream === undefined) return 0;
+            let s = stream.state;
+            s ^= s << 13;
+            s >>>= 0;
+            s ^= s >>> 17;
+            s ^= s << 5;
+            s >>>= 0;
+            stream.state = s;
+            return s / 4294967296;
+        }
+
+        /** Whether `id` is a `side: "world"` mod, the only kind the reference lets own a stream. */
+        function isWorldMod(id) {
+            const mods = parseJson(__goatsMods(), []);
+            for (let i = 0; i < mods.length; i++) {
+                if (mods[i] !== null && typeof mods[i] === "object" && mods[i].id === id) {
+                    return mods[i].side === "world";
+                }
+            }
+            return false;
+        }
+
+        /**
+         * `goats.world.registerStream(name, seed)`: a stream of this mod's own, seeded by `seed`
+         * when it names one and by the key's hash when it does not, so two mods asking for `"f"`
+         * still get different sequences. Returns the draw, which is what a mod keeps.
+         */
+        function registerStreamFor(id, name, seed) {
+            if (!isWorldMod(id)) {
+                throw new Error(
+                    "goats.world.registerStream: only a side:\"world\" mod may do this");
+            }
+            const key = id + ":" + String(name);
+            const initial = (((Number(seed) | 0) || (0x9e3779b9 ^ streamHashKey(key))) || 1) >>> 0;
+            modStreams[key] = { seed: initial, state: initial };
+            return function () { return streamNext(key); };
+        }
+
+        /** `goats.rng(name)`: the same stream, by name, for a mod that registered it elsewhere. */
+        function rngFor(id, name) {
+            const key = id + ":" + String(name);
+            return function () { return streamNext(key); };
+        }
+
+        /**
+         * Re-derive every stream from the session seed, which is `sceneUseSeed`'s own last act
+         * (`weather.js`): the same seed gives the same streams on every peer. Called once per
+         * `session` event through `ModHost::use_seed`, because that is when the reference does it --
+         * not per frame, and not on a snapshot's field changing, since a repeated `useSeed` has to
+         * advance the derivation here exactly as it does there.
+         */
+        function seedStreams(seed) {
+            let s = (seed | 0) || 1;
+            const next = function () {
+                s ^= s << 13;
+                s >>>= 0;
+                s ^= s >>> 17;
+                s ^= s << 5;
+                s >>>= 0;
+                return s || 1;
+            };
+            for (const key in modStreams) {
+                modStreams[key].state = (modStreams[key].seed ^ next()) || 1;
+            }
+        }
+
+        /**
+         * The `world` group (`APIv1.md` section 4.7). Built rather than declared inline because one
+         * of the two members that name a mod lives here: `registerStream` is the reference's
+         * `modWorldFor(id)`, and it is *not* on the base object -- so a mod outside a `begin` gets
+         * the group without it, and asking for it there is the same `TypeError` it is there.
+         *
+         * The rest is read off the frame's own values. `setTime` is the API's documented *safe*
+         * write -- a client that does not own the world answers `false`, which is what this one does,
+         * because the scene's clock is the clock of whichever side is simulating -- and
+         * `terrainHeight` is the one member that *crosses*, because it is a function of the world
+         * rather than a statement about it.
+         */
+        function worldFor(id) {
+            const world = {
+                /**
+                 * The in-game clock, in hours. A read of the world, so it
+                 * crosses: the core pushes the value each frame and this reads
+                 * the last one (PORT.md section 6, decision 3).
+                 */
+                time: function () {
+                    return __goatsWorldTime();
+                },
+                /**
+                 * `worldTime` is the core's, so a scene with no session runs it
+                 * and a client follows the host. The port has no write path to
+                 * the clock yet, and the API's own answer for a call that could
+                 * not take effect is `false` -- which is what a client in a
+                 * session gets here, so a mod that guards on it behaves the same
+                 * either way (`APIv1.md` section 4.7).
+                 */
+                setTime: function () {
+                    return false;
+                },
+                /** The weather machine's own values this frame. */
+                weather: function () {
+                    const w = group("weather");
+                    return {
+                        kind: w.kind,
+                        cloudiness: w.cloudiness,
+                        rain: w.rain,
+                        wind: w.wind,
+                        speed: w.speed,
+                    };
+                },
+                /** `setWeather`, refused the same way and for the same reason `setTime` is. */
+                setWeather: function () {
+                    return false;
+                },
+                /** The wind the frame derived: the gust's direction and its sway share. */
+                wind: function () {
+                    const w = group("wind");
+                    return { x: w.x, z: w.z, sway: w.sway };
+                },
+                /**
+                 * The ground at `(x, z)` -- the *same* function the scene stands a
+                 * goat on, craters and all, which is why it crosses rather than
+                 * being a second heightfield built here.
+                 */
+                terrainHeight: function (x, z) {
+                    return ask("world.terrainHeight", [Number(x), Number(z)]);
+                },
+            };
+            // A stream is a `side: "world"` mod's, so the member that registers one is only on the
+            // handle (`APIv1.md` section 4.13).
+            if (id !== null) {
+                world.registerStream = function (name, seed) {
+                    return registerStreamFor(id, name, seed);
+                };
+            }
+            return world;
+        }
+
         // The API major and the game's version (`APIv1.md` section 4.1). Read once, because they
         // are constants -- the host answers them from its own crate, so a prelude copy could not
         // drift from the contract the loader enforces.
@@ -509,6 +672,12 @@ if (typeof globalThis.goats === "undefined") {
                 // ...and its own entity offers, for the same reason once more: `offer` names them
                 // after the mod that made them (`APIv1.md` section 4.16).
                 handle.entities = entitiesFor(id);
+                // ...and its own stream namespace and `world` group: `registerStream` and `rng` are
+                // the two members that name a mod (`APIv1.md` section 4.13), and the reference has
+                // neither on its base object, so the *absent* member is reproduced too rather than
+                // inventing a base one that would answer for nobody.
+                handle.rng = function (name) { return rngFor(id, name); };
+                handle.world = worldFor(id);
                 return handle;
             },
 
@@ -529,55 +698,14 @@ if (typeof globalThis.goats === "undefined") {
                 (state.hooks[event] || (state.hooks[event] = [])).push(fn);
             },
 
-            world: {
-                /**
-                 * The in-game clock, in hours. A read of the world, so it
-                 * crosses: the core pushes the value each frame and this reads
-                 * the last one (PORT.md section 6, decision 3).
-                 */
-                time: function () {
-                    return __goatsWorldTime();
-                },
-                /**
-                 * `worldTime` is the core's, so a scene with no session runs it
-                 * and a client follows the host. The port has no write path to
-                 * the clock yet, and the API's own answer for a call that could
-                 * not take effect is `false` -- which is what a client in a
-                 * session gets here, so a mod that guards on it behaves the same
-                 * either way (`APIv1.md` section 4.7).
-                 */
-                setTime: function () {
-                    return false;
-                },
-                /** The weather machine's own values this frame. */
-                weather: function () {
-                    const w = group("weather");
-                    return {
-                        kind: w.kind,
-                        cloudiness: w.cloudiness,
-                        rain: w.rain,
-                        wind: w.wind,
-                        speed: w.speed,
-                    };
-                },
-                /** `setWeather`, refused the same way and for the same reason `setTime` is. */
-                setWeather: function () {
-                    return false;
-                },
-                /** The wind the frame derived: the gust's direction and its sway share. */
-                wind: function () {
-                    const w = group("wind");
-                    return { x: w.x, z: w.z, sway: w.sway };
-                },
-                /**
-                 * The ground at `(x, z)` -- the *same* function the scene stands a
-                 * goat on, craters and all, which is why it crosses rather than
-                 * being a second heightfield built here.
-                 */
-                terrainHeight: function (x, z) {
-                    return ask("world.terrainHeight", [Number(x), Number(z)]);
-                },
-            },
+            /**
+             * The world (`APIv1.md` section 4.7), read off the frame's own values. `setTime` is the
+             * API's documented *safe* write -- a client that does not own the world answers `false`,
+             * which is what this one does, because the scene's clock is the clock of whichever side
+             * is simulating -- and `terrainHeight` is the one member here that *crosses*, because it
+             * is a function of the world rather than a statement about it.
+             */
+            world: worldFor(null),
 
             /**
              * The player's goat (`APIv1.md` section 4.5). `state()` is a snapshot of
@@ -926,6 +1054,17 @@ if (typeof globalThis.goats === "undefined") {
             })(),
 
             // --- host entry points (the `__` prefix marks them as the host's) ---
+
+            /**
+             * Re-derive the world mods' streams from the session seed (`APIv1.md` section 4.13),
+             * which the scene calls on the `session` event -- `sceneUseSeed`'s own last act, and
+             * deliberately an *event* rather than a field of the snapshot: a repeated seed has to
+             * advance the derivation here exactly as it does there, and a snapshot field could not
+             * tell a repeat from a frame.
+             */
+            __useSeed: function (seed) {
+                seedStreams(seed | 0);
+            },
 
             /** Every state, the idle one first, then the mods in load order. */
             __states: function () {

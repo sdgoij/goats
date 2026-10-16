@@ -115,9 +115,10 @@ Twenty-nine headless gates, all `SceneTree` scripts that exit non-zero on failur
 # the mod table, `log`/`warn`/`error`, every world group -- the goat, the camera, the
 # weather and the wind, the herd, the settings, the session and the tuning tree -- against
 # the scene's own values, from inside a `hud` hook where a mod actually reads them, with
-# `terrainHeight` crossing the callback seam, every write refused, and the **asset slots**
+# `terrainHeight` crossing the callback seam, every write refused, the **asset slots**
 # and the **entities** one mod offers another -- both halves of the first, and the second from
-# a *different* mod's handle (stage 8).
+# a *different* mod's handle -- and a world mod's **streams** against the reference's own
+# derivation (stage 8).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_surface.gd
 
@@ -498,7 +499,11 @@ another's, and the two are the whole of it — no scene-level entity system, and
 because what travels is what a mod chooses to publish through `world.extend`. A callback that
 throws costs only its own mod's rows and is named on the console, which is what the port's `catch`
 has to be shaped around (see `PORT.md` §9: a host call inside a `catch` trips Slag's environment
-stack, so the failure is recorded and said after the loop). The **writes are not in yet** —
+stack, so the failure is recorded and said after the loop). A `side: "world"` mod also gets its
+own **seeded stream** (`goats.world.registerStream` / `goats.rng`, §4.13), derived from the session
+seed through the same `sceneUseSeed` moment the scene derives its own four at, so the flock a host
+simulates is the flock a joiner *computes* rather than one that travels. The **writes are not in
+yet** —
 `goats.world.setTime` and
 `setWeather` answer `false`, which is what the API documents for a client that does not own the
 world, and every other write throws an error naming the member, so a mod that tries one fails

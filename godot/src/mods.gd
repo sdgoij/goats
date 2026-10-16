@@ -141,6 +141,14 @@ func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
 func mod_table() -> Array:
 	return table
 
+## Re-derive the world mods' streams from the session seed (`APIv1.md` section 4.13). It is
+## `sceneUseSeed`'s last act in the reference client (`weather.js`), which is why it is an *event*
+## and not part of the per-frame snapshot: the derivation advances on every call, so a joiner lands
+## on the same stream the host is on rather than on one derived from a frame.
+func use_seed(seed: int) -> void:
+	if host != null:
+		host.call("use_seed", seed)
+
 ## First refusal for a console line: a mod's registered verb and its reply, or empty when no mod
 ## claims the word. This is `mods.js`'s `modCommand` for the part the host can answer, and it is
 ## what makes a mod's console verb work at all -- the extension's `run_command` is the lookup, and

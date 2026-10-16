@@ -393,8 +393,10 @@ reported, not silently ignored).
 > **Added with the Godot port's readable surface:** the groups a mod *reads* the live world
 > through (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`) are in on the
 > port's side, and so are **identity and logging** (§4.1: `api`, `game`, `mod`, `mods()`, `frozen()`,
-> `log`/`warn`/`error`) and the **asset slots** and **entities** (§4.11's `slots`/`get`/`all`, §4.16's
-> `offer`/`near`). `assets` is the one group with two owners -- the built-in slots are the client's
+> `log`/`warn`/`error`), the **asset slots** and **entities** (§4.11's `slots`/`get`/`all`, §4.16's
+> `offer`/`near`) and a world mod's **seeded stream** (§4.13's `rng` and `registerStream`, derived
+> from the session seed through `ModHost::use_seed` -- an *event*, not a snapshot field, because the
+> derivation advances per call exactly as `sceneUseSeed`'s does). `assets` is the one group with two owners -- the built-in slots are the client's
 > own table and the declared ones are the host's, in the mod table -- so a client implements the
 > merge itself, in load order, with fills replacing and joins appending, and a name either half hands
 > back resolves through `gfx.model` and `sfx.load`. The port's `assets`, `gfx.model` and `sfx.load`

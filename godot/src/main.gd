@@ -1185,6 +1185,10 @@ func _handle(line: String) -> void:
 			bots.use_seed(seed)
 			meadow.use_seed(seed)
 			audio.use_seed(seed)
+			# ...and the *mods'* streams from the same seed, which is `sceneUseSeed`'s own last act: a
+			# `side: "world"` mod's PRNG has to be the same one on every peer, or the flock the host
+			# simulates is not the flock a joiner computes (`APIv1.md` section 4.13).
+			mods.use_seed(seed)
 			console.net_line("net: world seed " + str(seed))
 		"hosting":
 			# This scene is the server. A host keeps simulating the world (`not _joined` in
