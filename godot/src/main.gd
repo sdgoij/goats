@@ -272,6 +272,10 @@ var _boom_frame := 0
 
 var _probe := false
 var _worlds := 0
+## How many *mods* datagrams this client has applied -- the world mods' own, beside the world's
+## (`net.js` `netMaybePublishWorld` queues both). It is a probe's evidence rather than a rule: a
+## session with no world mod has none, which is the common case.
+var _mods_datagrams := 0
 var _last_bots := 0
 ## The largest distance any single bot covered between two snapshots, which is
 ## what tells a mirror that tracks a moving herd from one that agrees with a
@@ -989,6 +993,19 @@ func _publish_world() -> void:
 	if answer != "ok":
 		console.net_line("net: world refused: " + answer)
 		print("world refused: ", answer)
+	# ...and the world mods, on a datagram of their own and at the same rate -- `net.js`
+	# `netMaybePublishWorld` queues both, because a mod's state may be bigger than the world's budget
+	# and losing it costs a mod rather than everyone's world. Nothing is sent when no world mod
+	# contributes anything: the extension answers the empty string, and asking is cheaper than opening
+	# a datagram to say nothing.
+	var contribution: String = mods.world_mods_json()
+	if contribution != "":
+		var verdict: String = String(bridge.call("mods", contribution))
+		# A payload that is not JSON at all is this scene's bug rather than the session's, the same
+		# rule the world's own refusal follows; the *size* refusal is `proto`'s and arrives as a notice.
+		if verdict != "ok":
+			console.net_line("net: mods refused: " + verdict)
+			print("mods refused: ", verdict)
 
 ## The world a host publishes, as the one object both directions of the wire share.
 ##
@@ -1350,6 +1367,17 @@ func _handle(line: String) -> void:
 				# found it.
 				if _probe and _settle < 0.0:
 					_settle = 0.0
+		"mods":
+			# The host's world mods, beside its world: the mods' streams and whatever each world mod
+			# published. A client **adopts** rather than derives -- the streams go on from the host's
+			# sequences, and each world mod is handed the state the host published under its id -- which
+			# is how a joiner's flock is the host's flock rather than a second simulation of it
+			# (`mods.js`'s `sceneApplyWorldMods`, `APIv1.md` section 4.13). A host with nothing to say
+			# sends no datagram at all, so this arm only ever sees a contribution.
+			var contribution: Variant = event.get("mods", null)
+			if contribution is Dictionary:
+				mods.apply_world_mods(JSON.stringify(contribution))
+				_mods_datagrams += 1
 		"notice", "error":
 			console.net_line("net: " + ("error " if String(event.get("type", "")) == "error" else "") \
 				+ String(event.get("text", "")))
@@ -1415,6 +1443,7 @@ func _report_blast(kind: String, key: int, x: float, z: float) -> void:
 func _probe_report() -> void:
 	var failures: Array[String] = []
 	print("world snapshots: ", _worlds, ", mirroring ", _last_bots, " bot(s)")
+	print("mods datagrams: ", _mods_datagrams)
 	print("herd: ", herd.count(), " goat(s), ", herd.airborne_count(), " in the air")
 	print("grounded gap: %.4f m, largest bot step %.4f m"
 		% [herd.worst_gap(), _max_step])

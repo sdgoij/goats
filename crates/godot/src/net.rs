@@ -69,6 +69,13 @@ enum Command {
     },
     Pose(PeerState),
     World(WorldIntent),
+    /// The world mods a host owns, on a datagram of their own (M16, `APIv1.md` section 4.13).
+    /// Deliberately *untyped*, unlike [`Command::World`]: a world mod's published state is opaque
+    /// to the transport by design, so the only schema is that it is JSON, and `proto` bounds it by
+    /// the datagram's size rather than by a shape (`ModsState`). It arrives already built -- the
+    /// scene asks `ModHost::world_mods_json` for it, which is where a JavaScript world mod's state
+    /// and a compiled one's bytes are merged.
+    Mods(serde_json::Value),
     /// A device went off (M19e). An absent `by` is this process's own goat or herd, which is
     /// the only thing a scene ever queues; a `by` names the reporter, and only a host produces
     /// one -- it is relaying a client's bang (`blast_report`) and leaves that player out.
@@ -275,6 +282,26 @@ impl NetBridge {
         }
     }
 
+    /// Publish the world mods' state. The scene queues this only while it is *hosting*, and only
+    /// when there is something to send -- `ModHost::world_mods_json` answers the empty string when
+    /// no world mod contributes anything, which is the common case and the reason a vanilla session
+    /// never opens this datagram at all.
+    ///
+    /// It is opaque here on purpose (`ABIv1.md` section 3.3, `APIv1.md` section 4.13): what a mod
+    /// publishes is its own business, and the transport's only job is to carry it beside the world
+    /// rather than inside it -- a mod's state may be bigger than the world's budget, and losing it
+    /// costs a mod rather than everyone's world.
+    ///
+    /// Returns `ok`, or `error: ...` for a payload that is not JSON at all, which is the one thing
+    /// this end can refuse; the *size* refusal is `proto`'s and arrives as a notice.
+    #[func]
+    fn mods(&mut self, json: GString) -> GString {
+        match serde_json::from_str::<serde_json::Value>(&json.to_string()) {
+            Ok(state) => self.queue_command(Command::Mods(state)),
+            Err(error) => GString::from(format!("error: {error}").as_str()),
+        }
+    }
+
     /// Report a device that went off (M19e): `kind` is `mine` or `trap`, `key` the cell it was
     /// in, and `x`/`z` where *this* process derived it. An empty `by` is this player's own goat
     /// or herd -- the common case, and the only thing a scene queues. A `by` names the reporter,
@@ -401,6 +428,9 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue) {
     // only when the outcome *changes*, because a host publishes ten times a second and "the
     // snapshot is too big" is one fact rather than ten a second.
     let mut last_world: Option<session::WorldOutcome> = None;
+    // The same for the mods datagram, which is a *second* report rather than a second question: a
+    // world mod publishing too much is one fact per change, not ten a second.
+    let mut last_mods: Option<session::ModsOutcome> = None;
     loop {
         enum Outcome {
             Command(Option<Command>),
@@ -487,6 +517,21 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue) {
                     }
                 }
             }
+            // The world mods. A client that queues one is dropped in silence -- the scene never
+            // does, and it is a host's member -- and the outcome is reported only when it changes,
+            // which is `publish_world`'s contract for the same reason: "the state is too big" is
+            // one fact, not one per publish.
+            Outcome::Command(Some(Command::Mods(state))) => {
+                if let Some(Live::Host(host)) = live.as_ref() {
+                    let outcome = host.publish_mods(&session::ModsState(state)).await;
+                    if last_mods != Some(outcome) {
+                        if let Some(report) = outcome.describe() {
+                            push(&queue, notice(report));
+                        }
+                        last_mods = Some(outcome);
+                    }
+                }
+            }
             // A device that went off (M19e). Silent while offline, where the bang is already
             // local and there is nobody to tell -- the same rule a pose follows.
             Outcome::Command(Some(Command::Blast {
@@ -560,6 +605,7 @@ async fn start(command: Command, queue: &Queue) -> Option<Live> {
         | Command::Consume { .. }
         | Command::Pose(_)
         | Command::World(_)
+        | Command::Mods(_)
         | Command::Blast { .. }
         | Command::Close => None,
     }

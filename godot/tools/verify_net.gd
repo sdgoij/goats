@@ -9,11 +9,12 @@
 # `goatsd` use, what this proves is stronger than "the port talks to itself": it
 # is the wire those peers speak. A non-zero exit makes it usable as a gate.
 #
-# The last three checks are M26's: the world a host publishes and a client adopts
+# The last four checks are M26/M14d2's: the world a host publishes and a client adopts
 # (the snapshot `main.gd` `_publish_world` builds, parsed by the same
-# `WorldIntent`), and the two directions of a bang -- a host's own device, and a
-# client's *report* that the host relays, leaving the reporter out (M19e). That
-# last one needs a third player, so one joins late.
+# `WorldIntent`), the **world mods**, on a datagram of their own, and the two
+# directions of a bang -- a host's own device, and a client's *report* that the host
+# relays, leaving the reporter out (M19e). That last one needs a third player, so
+# one joins late.
 #
 # It takes twenty to thirty seconds: a host binds a real iroh endpoint.
 extends SceneTree
@@ -144,6 +145,32 @@ func _initialize() -> void:
 				or String(got_bots[1].get("gait", "")) != "flung" \
 				or int(got_bots[1].get("py", 0)) != 120:
 			failures.append("the snapshot's herd is not the one published: %s" % got_bots)
+
+	# 7b. The world mods, on a datagram of their own (`APIv1.md` section 4.13). It is opaque to the
+	#     transport -- what a mod publishes is its own business -- so the only thing to hold is that
+	#     it arrives whole: the streams' states and the published data, unchanged, in the shape
+	#     `sceneWorldMods` builds. `NetBridge::mods` refuses a payload that is not JSON at all,
+	#     which is the one judgement this end makes; the *size* refusal is `proto`'s.
+	var mods := {
+		"streams": {"com.example.w:f": 4242},
+		"data": {"com.example.w": [[1.0, 2.0, 3.0, 0.5, 1]]},
+	}
+	print("mods ->         ", _host.call("mods", JSON.stringify(mods)))
+	var mods_line: String = _wait(_client, ["\"type\":\"mods\"", "\"com.example.w\""], 30000)
+	print("client mods:    ", mods_line.substr(0, 150))
+	if mods_line.is_empty():
+		failures.append("the client never received the host's world mods")
+	else:
+		var got_mods: Dictionary = JSON.parse_string(mods_line).get("mods", {})
+		var got_streams: Variant = got_mods.get("streams", null)
+		if not (got_streams is Dictionary) \
+				or int((got_streams as Dictionary).get("com.example.w:f", 0)) != 4242:
+			failures.append("the mods streams did not survive the wire: %s" % got_mods)
+		var got_data: Variant = got_mods.get("data", null)
+		var got_rows: Variant = (got_data as Dictionary).get("com.example.w", null) \
+			if got_data is Dictionary else null
+		if not (got_rows is Array) or (got_rows as Array).size() != 1:
+			failures.append("the published data did not survive the wire: %s" % got_mods)
 
 	# 8. A bang (M19e): the host's own device goes off and every client hears it, with the
 	#    host's own coordinates. An empty `by` is the client's way of saying "this is mine"

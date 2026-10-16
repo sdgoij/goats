@@ -605,6 +605,82 @@ if (typeof globalThis.goats === "undefined") {
         }
 
         /**
+         * The state every world mod contributes to the mods datagram (`APIv1.md` section 4.13),
+         * which is `mods.js`'s `sceneWorldMods()`: each registered stream's state and whatever each
+         * extension's `publish` returns. Only a *host* builds this, and only a host sends it.
+         *
+         * The **compiled** mods are not here, and that is the one place this differs from the
+         * reference. A module's published bytes live in its instance's memory, which is Rust's, so
+         * the merge `mods.js` does at the scene boundary (`rustModPublished`, folded in by
+         * `sceneWorldMods`) is done by `ModHost::world_mods_json` instead -- the same merge on the
+         * other side of the same seam.
+         */
+        function worldModsState() {
+            const streams = {};
+            for (const key in modStreams) streams[key] = modStreams[key].state >>> 0;
+            const data = {};
+            for (const key in modExts) {
+                const ext = modExts[key];
+                if (ext.publish === null) continue;
+                try {
+                    data[key] = ext.publish();
+                } catch (error) {
+                    console.log("mods: '" + key + "' publish threw: " + String(error));
+                }
+            }
+            return { streams: streams, data: data };
+        }
+
+        /**
+         * Whether there is any world-mod state to send at all -- `mods.js`'s `modWorldActive`: a
+         * registered stream, or an extension that publishes. Nothing else about a mod is the host's
+         * to broadcast, so this is what keeps a vanilla session from sending an empty datagram ten
+         * times a second. A compiled mod's half is the host's to add, which is why the caller that
+         * has one asks Rust rather than this.
+         */
+        function worldModsActive() {
+            for (const key in modStreams) return true;
+            for (const key in modExts) {
+                if (modExts[key].publish !== null) return true;
+            }
+            return false;
+        }
+
+        /**
+         * A client applies the host's contribution -- `mods.js`'s `sceneApplyWorldMods`. The streams
+         * are **adopted** rather than re-derived, because that is the whole point of sending them: a
+         * joiner continues the host's sequence instead of replaying it from the start, and a flock
+         * the host is mid-simulation of is the flock this end goes on computing. Each extension's
+         * `apply` is then handed what the host published under its id.
+         *
+         * An id nothing here owns is skipped: that is a compiled mod, whose instance is Rust's (see
+         * `worldModsState`), and `ModHost::apply_world_mods` is where that half lands. Skipping
+         * rather than reporting is the reference's own answer for the same case.
+         */
+        function applyWorldMods(mods) {
+            if (mods === null || typeof mods !== "object") return;
+            const streams = mods.streams;
+            if (streams !== null && typeof streams === "object") {
+                for (const key in streams) {
+                    if (modStreams[key] !== undefined) {
+                        modStreams[key].state = Number(streams[key]) >>> 0;
+                    }
+                }
+            }
+            const data = mods.data;
+            if (data === null || typeof data !== "object") return;
+            for (const key in data) {
+                const ext = modExts[key];
+                if (ext === undefined || ext.apply === null) continue;
+                try {
+                    ext.apply(data[key]);
+                } catch (error) {
+                    console.log("mods: '" + key + "' apply threw: " + String(error));
+                }
+            }
+        }
+
+        /**
          * The `world` group (`APIv1.md` section 4.7). Built rather than declared inline because one
          * of the two members that name a mod lives here: `registerStream` is the reference's
          * `modWorldFor(id)`, and it is *not* on the base object -- so a mod outside a `begin` gets
@@ -1216,6 +1292,28 @@ if (typeof globalThis.goats === "undefined") {
              */
             __useSeed: function (seed) {
                 seedStreams(seed | 0);
+            },
+
+            /**
+             * The world-mod state as one JSON string, or `""` when nothing is active.
+             *
+             * `""` rather than `null` is `sceneModsJson`'s contract in `goatsd`
+             * (`crates/server/src/headless.rs`), and it is the useful one: a host publishing ten
+             * times a second asks one question -- "is there anything to say" -- and a false answer
+             * costs no datagram at all. The compiled mods are merged in by the caller
+             * (`ModHost::world_mods_json`), because half of this object's `data` is Rust's.
+             */
+            __worldModsJson: function () {
+                return worldModsActive() ? JSON.stringify(worldModsState()) : "";
+            },
+
+            /**
+             * Apply a host's world-mod state: the streams adopted, every extension's `apply` handed
+             * its own published value. The scene calls this with what the `mods` event carried, which
+             * is the same object `__worldModsJson` built on the host (see `applyWorldMods`).
+             */
+            __applyWorldMods: function (json) {
+                applyWorldMods(parseJson(json, null));
             },
 
             /**

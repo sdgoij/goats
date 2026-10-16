@@ -210,20 +210,24 @@ func _check_staged(host: Object) -> void:
 	if after != before:
 		_failures.append("a mirroring client stepped a world module: %d -> %d" % [before, after])
 
-## Drive the host `frames` times and hand back the `published` map of the last one -- the host's own
-## `{id: base64}`, which is what the mods datagram carries.
+## Drive the host `frames` times, then read the compiled mods' published bytes back off the mods
+## datagram: `world_mods_json`'s `data` map, the host's own `{id: base64}`. The bytes are *not* on
+## the tick's own answer any more -- a host reads them where it builds the datagram, ten times a
+## second, rather than on every frame at sixty -- which is why this reads the same call the scene's
+## send does rather than the `drive_wasm` return.
 func _drive_published(host: Object, frames: int, world_local: bool = true) -> Dictionary:
 	var out: Dictionary = {}
 	for _tick in frames:
-		var answer: String = String(host.call("drive_wasm", 1.0 / 60.0, world_local, 0.0))
-		if answer.is_empty():
-			continue
-		var parsed: Variant = JSON.parse_string(answer)
-		if not (parsed is Dictionary):
-			continue
-		var published: Variant = (parsed as Dictionary).get("published", {})
-		if published is Dictionary:
-			out = published
+		host.call("drive_wasm", 1.0 / 60.0, world_local, 0.0)
+	var answer: String = String(host.call("world_mods_json"))
+	if answer.is_empty():
+		return out
+	var parsed: Variant = JSON.parse_string(answer)
+	if not (parsed is Dictionary):
+		return out
+	var data: Variant = (parsed as Dictionary).get("data", {})
+	if data is Dictionary:
+		out = data
 	return out
 
 func _stat(host: Object, id: String, key: String) -> Variant:

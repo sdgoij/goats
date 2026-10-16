@@ -411,9 +411,11 @@ impl ModHost {
     /// the same bit. `belly` is the player's fullness (0..1), which only a client module can import
     /// -- a world module that asks for it fails to link (`ABIv1.md` section 3.3).
     ///
-    /// The answer is `{"hud": {id: fill}, "published": {id: base64}}`, and it is the empty string
-    /// when no compiled mod is loaded -- the common case, and the reason a frame with none costs
-    /// nothing rather than a JSON round trip.
+    /// The answer is the HUD map a client module reports -- `{id: fill}` -- and it is the empty
+    /// string when no compiled mod is loaded: the common case, and the reason a frame with none
+    /// costs nothing rather than a JSON round trip. A world module's *published* bytes are not here
+    /// and must not be: they are read when the datagram is built ([`ModHost::world_mods_json`]),
+    /// which is ten times a second rather than sixty.
     #[func]
     fn drive_wasm(&mut self, dt: f64, tick_world: bool, belly: f64) -> GString {
         if self.plugins.is_empty() {
@@ -421,14 +423,11 @@ impl ModHost {
         }
         self.plugins.set_belly(belly as f32);
         self.plugins.tick_all(dt as f32, tick_world);
-        // `crates/plugin` builds each bridge as JSON already -- `{id: fill}` and `{id: base64}`,
-        // the two shapes the scene's `sceneWorldMods` and the HUD read -- so they are parsed back
-        // only to be nested in the one object the scene parses once.
+        // `crates/plugin` builds the bridge as JSON already -- `{id: fill}`, the shape the HUD
+        // reads -- so it is parsed back only to be a value the scene can take apart.
         let hud: serde_json::Value = serde_json::from_str(&self.plugins.hud_json())
             .unwrap_or_else(|_| serde_json::json!({}));
-        let published: serde_json::Value = serde_json::from_str(&self.plugins.published_json())
-            .unwrap_or_else(|_| serde_json::json!({}));
-        gstring(serde_json::json!({ "hud": hud, "published": published }).to_string())
+        gstring(serde_json::json!({ "hud": hud }).to_string())
     }
 
     /// What one compiled mod's module reports about itself: the ABI it negotiated, the
@@ -441,6 +440,98 @@ impl ModHost {
             Some(json) => gstring(json),
             None => GString::from("null"),
         }
+    }
+
+    /// The world mods' state as one JSON object -- `{streams, data}` -- or the **empty string** when
+    /// there is nothing to send. This is `sceneWorldMods()` and `modWorldActive()` in one call, and
+    /// it is a *host's* member: a client mirrors a host's world-mod state and never builds one
+    /// (`APIv1.md` section 4.13).
+    ///
+    /// It is also the one place the two halves of a world mod meet. A JavaScript world mod's state
+    /// is the facade's (`__worldModsJson`: each registered stream's state and whatever each
+    /// extension's `publish` returned), and a **compiled** one's is this crate's (`crates/plugin`'s
+    /// `published_json`: each world module's opaque bytes, base64). The reference merges the same two
+    /// at the scene boundary -- `mods.js`'s `sceneWorldMods` folds `rustModPublished` in -- because
+    /// there its compiled mods are the JS driver's; here they are Rust's, so the merge is here.
+    ///
+    /// `""` rather than an empty object is `sceneModsJson`'s own contract (`goatsd`'s headless
+    /// host), and it is the useful one: a host publishing ten times a second asks one question -- is
+    /// there anything to say -- and a false answer costs no datagram at all.
+    #[func]
+    fn world_mods_json(&mut self) -> GString {
+        if let Err(error) = self.ensure_booted() {
+            eprintln!("[mods] world_mods_json: {error}");
+            return GString::new();
+        }
+        let facade = match self.call_goats("__worldModsJson", &[]) {
+            Ok(value) => value.as_string().unwrap_or_default().to_string(),
+            Err(error) => {
+                eprintln!("[mods] __worldModsJson: {error}");
+                String::new()
+            }
+        };
+        let compiled: serde_json::Value = serde_json::from_str(&self.plugins.published_json())
+            .unwrap_or_else(|_| serde_json::json!({}));
+        let nothing_compiled = compiled
+            .as_object()
+            .map(|map| map.is_empty())
+            .unwrap_or(true);
+        if facade.is_empty() && nothing_compiled {
+            return GString::new();
+        }
+        let mut state: serde_json::Value = if facade.is_empty() {
+            serde_json::json!({ "streams": {}, "data": {} })
+        } else {
+            serde_json::from_str(&facade)
+                .unwrap_or_else(|_| serde_json::json!({ "streams": {}, "data": {} }))
+        };
+        if let (Some(data), Some(compiled)) = (state.get_mut("data"), compiled.as_object()) {
+            for (id, value) in compiled {
+                data[id] = value.clone();
+            }
+        }
+        gstring(state.to_string())
+    }
+
+    /// Apply a host's world-mod state -- what the `mods` event carried. The facade adopts the
+    /// streams and hands each JavaScript extension its own published value, and every compiled world
+    /// mod's bytes go into its module through `goats_apply`.
+    ///
+    /// The same seam [`ModHost::world_mods_json`] reads, in the other direction, and the reason a
+    /// joiner does not have to *simulate* a world mod to agree with the host about it: a module that
+    /// never runs `goats_update` still moves, through `goats_apply` (`ABIv1.md` section 3.4) -- which
+    /// is why a compiled world mod is instantiated on a mirroring client at all.
+    #[func]
+    fn apply_world_mods(&mut self, json: GString) -> GString {
+        let text = json.to_string();
+        // The facade first: a JavaScript extension's `apply` is its own, and `crates/plugin` cannot
+        // reach it. A throw is the facade's to report (`applyWorldMods` names the mod).
+        let _ = self.call_goats("__applyWorldMods", &[JsValue::string(text.clone())]);
+        let state: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(state) => state,
+            Err(error) => return gstring(format!("error: {error}")),
+        };
+        let Some(data) = state.get("data").and_then(|data| data.as_object()) else {
+            return GString::from("ok");
+        };
+        for (id, value) in data {
+            let Some(encoded) = value.as_str() else {
+                continue;
+            };
+            let Some(bytes) = plugin::base64_decode(encoded) else {
+                eprintln!("[mods] {id}: the published state is not base64");
+                continue;
+            };
+            if let Err(error) = self.plugins.apply(id, &bytes) {
+                // An id no compiled mod owns is a JavaScript extension's, and the facade already had
+                // it -- so "unknown plugin" is not a failure worth a line, while a module that
+                // trapped adopting the state is.
+                if !error.starts_with("unknown plugin") {
+                    eprintln!("[mods] {id} apply failed: {error}");
+                }
+            }
+        }
+        GString::from("ok")
     }
 
     /// Fire the `"update"` hooks for one frame, with the step. It is the event both checked-in

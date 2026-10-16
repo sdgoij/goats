@@ -67,10 +67,6 @@ var report := ""
 ## section 3.4). The HUD draws a bar for the first fill it finds, so a build with no compiled client
 ## mod has an empty map and no bar -- never a built-in fallback a disabled mod left behind.
 var wasm_hud := {}
-## ...and what the compiled *world* mods published, `{id: base64}`: the bridge half of the mods
-## datagram (`ABIv1.md` section 3.3). `mods.js` folds the same map into `sceneWorldMods().data`;
-## here the wire is `NetBridge`'s, so the map is kept for it rather than sent from this file.
-var wasm_published := {}
 ## How many draws the mods have made through `goats.draw`. The surface counts them as it paints
 ## them, and this is the total -- the evidence a gate without a renderer can still check.
 var draws := 0
@@ -214,9 +210,7 @@ func _drive_wasm(dt: float, snapshot: Dictionary) -> void:
 		return
 	var report: Dictionary = parsed
 	var hud: Variant = report.get("hud", {})
-	var published: Variant = report.get("published", {})
 	wasm_hud = hud if hud is Dictionary else {}
-	wasm_published = published if published is Dictionary else {}
 
 ## Re-derive the world mods' streams from the session seed (`APIv1.md` section 4.13). It is
 ## `sceneUseSeed`'s last act in the reference client (`weather.js`), which is why it is an *event*
@@ -225,6 +219,27 @@ func _drive_wasm(dt: float, snapshot: Dictionary) -> void:
 func use_seed(seed: int) -> void:
 	if host != null:
 		host.call("use_seed", seed)
+
+## The world mods' state as one JSON object -- `{streams, data}` -- or **empty** when there is
+## nothing to send: no registered stream, no extension that publishes, no compiled module with
+## bytes. This is `sceneWorldMods()` as a *host* builds it, and the extension is what builds it
+## because half of the object is Rust's: the facade holds a JavaScript world mod's streams and its
+## `publish` results, while a compiled one's bytes live in its module (`crates/plugin`). The frame
+## asks for this where it publishes the world, and sends nothing when the answer is empty -- which
+## is what keeps a vanilla session from sending an empty datagram ten times a second.
+func world_mods_json() -> String:
+	if host == null:
+		return ""
+	return String(host.call("world_mods_json"))
+
+## Apply a host's world-mod state, from the `mods` event: the mods' streams are **adopted** rather
+## than re-derived, and every world mod is handed what the host published under its id -- a
+## JavaScript extension through its own `apply`, a compiled module through `goats_apply`. It is the
+## mirroring half of `world_mods_json`, and the reason a joiner's flock is the host's flock rather
+## than a second simulation of it (`APIv1.md` section 4.13).
+func apply_world_mods(json: String) -> void:
+	if host != null:
+		host.call("apply_world_mods", json)
 
 ## One frame's `update` event, with the step. Called by `frame` *after* the world is pushed and
 ## before the drawing hooks -- see there -- rather than by the scene, because the order is the whole

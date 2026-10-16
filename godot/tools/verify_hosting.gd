@@ -9,7 +9,7 @@
 # field makes `NetBridge::world` answer `error: ...` and the snapshot is a world nobody has, and
 # nothing about the game looks broken until a client is standing in the wrong place.
 #
-# So this gate does two things, both without a socket:
+# So this gate does three things, all without a socket:
 #
 #   1. **The shape**, field for field against the lists transcribed below from `net.js`
 #      (`sceneWorldBots`, `sceneWeatherState`, `sceneStreams`, `sceneEaten`, `netWorldCraters`,
@@ -17,10 +17,17 @@
 #      or missing one it does, fails -- which is the silent-drop bug.
 #   2. **The parse**: the same JSON is handed to the scene's own `NetBridge.world`, the method
 #      that *is* the schema check, and must answer `ok`.
+#   3. **The mods datagram** (`APIv1.md` section 4.13), the second half of the same subject: the
+#      object `ModHost::world_mods_json` builds for a host, its own parse, and -- after a few
+#      frames -- what *applying* one does to a mirroring scene. A world mod's state rides its own
+#      datagram because it may be bigger than the world's budget, and losing it costs a mod rather
+#      than everyone's world; the flock is the mod this gate watches.
 #
 # It runs the real scene (`scenes/herd.tscn`) for a few frames so the payload carries a herd that
 # has spawned and a clock that has moved, rather than an empty world at frame zero: a payload that
-# is only ever checked at boot would pass with the bots missing.
+# is only ever checked at boot would pass with the bots missing. The mods half then runs on to
+# `MODS_FRAME`, because an applied row is only visible once the mod has run under it.
+#
 extends SceneTree
 
 ## `proto::WorldState`'s fields -- the top level of the object, and every key `net.js`
@@ -39,6 +46,17 @@ const EATEN_KEYS := ["key", "left"]
 const CRATER_KEYS := ["x", "z", "r", "depth"]
 ## `proto::Spent` / `net.js` `netWorldSpent`.
 const SPENT_KEYS := ["key", "trap"]
+## `sceneWorldMods`'s own shape (`APIv1.md` section 4.13): every registered stream's state, and
+## `{extension id: what its `publish` returned}`. `proto::ModsState` is opaque -- a mod's state is
+## its own business -- so this object is the only schema there is, and it is `mods.js`'s.
+const MODS_KEYS := ["streams", "data"]
+## The repository's world mod, named rather than discovered: this gate has to write rows the
+## *flock's* `apply` accepts, and the row's shape is the mod's own.
+const BIRDS_ID := "com.github.sdgoij.goats.birds"
+## When the applied mod state is read: long enough for the mirrored flock to have eased to the rows
+## the host published. `birds`' `mirror` eases at `MIRROR_K` 7 per second, so a second is most of
+## the way and the check's tolerance does not have to be tight.
+const MODS_FRAME := 70
 
 ## Frames to let the scene run before reading the payload. The herd spawns in `_ready` and the
 ## clock starts at the scene's own hour, so a handful is enough the world is not frame zero.
@@ -47,6 +65,10 @@ const SETTLE_FRAMES := 8
 var _failures: Array[String] = []
 var _frames := 0
 var _main: Node
+## The stream the mods case changes before applying it, and the value it changes it to: a value
+## this end did not have is what makes *adopting* it a difference rather than a no-op.
+var _stream_key := ""
+var _stream_value := 0
 
 func _initialize() -> void:
 	if not ClassDB.class_exists("NetBridge"):
@@ -65,15 +87,21 @@ func _initialize() -> void:
 
 func _process(_delta: float) -> bool:
 	_frames += 1
-	if _frames < SETTLE_FRAMES:
+	if _frames == SETTLE_FRAMES:
+		_check()
+		# ...and the mods half, staged here and read at `MODS_FRAME`: a row the host published is
+		# only visible once the mod it belongs to has run under it.
+		_stage_mods()
 		return false
-	_check()
+	if _frames < MODS_FRAME:
+		return false
+	_check_mods()
 	# The scene's bridge is a real node with a runtime thread; `world` starts it. Close it before
 	# the process ends, the way every other gate does -- iroh tearing an endpoint down during
 	# teardown is a segfault.
 	_main.get("bridge").call("shutdown")
 	if _failures.is_empty():
-		print("OK: the scene's world payload is the wire's, and the wire's own parse takes it")
+		print("OK: the scene's world and mods payloads are the wire's, and applying a host's mods moves the flock")
 		quit(0)
 	else:
 		# `print`, not `printerr`: a non-zero `quit()` truncates stderr before it flushes.
@@ -169,6 +197,107 @@ func _check() -> void:
 	_expect(int(_main.get("_world_frame")) == after,
 		"_publish_world published twice inside one window")
 	_main.set("_hosting", false)
+
+	# --- the world mods, on their own datagram (`APIv1.md` section 4.13) --------------------------
+	#
+	# A world mod's state is *not* the world's: it rides a datagram of its own so that a mod
+	# publishing too much loses its own state rather than everyone's world. The `_publish_world`
+	# above has already queued one -- the two go out at the same rate -- so this holds the object
+	# rather than sending a second, and `NetBridge.mods` is the parse the wire does of it.
+	var mods: Object = _main.get("mods")
+	var contribution: String = String(mods.call("world_mods_json"))
+	print("mods payload: ", contribution.substr(0, 140))
+	if contribution.is_empty():
+		_failures.append("the repository's flock is a world mod, and the host published no mods")
+		return
+	var mods_payload: Variant = JSON.parse_string(contribution)
+	if not (mods_payload is Dictionary):
+		_failures.append("the mods payload is not an object")
+		return
+	_check_keys(mods_payload, MODS_KEYS, "the mods")
+	var mod_streams: Variant = (mods_payload as Dictionary).get("streams", null)
+	if not (mod_streams is Dictionary) or (mod_streams as Dictionary).is_empty():
+		_failures.append("the mods payload carries no stream, and the flock registered one")
+	var mod_data: Variant = (mods_payload as Dictionary).get("data", null)
+	if not (mod_data is Dictionary) or not (mod_data as Dictionary).has(BIRDS_ID):
+		_failures.append("the mods payload does not carry the flock's published rows: %s" % mod_data)
+	else:
+		var published_rows: Variant = (mod_data as Dictionary)[BIRDS_ID]
+		if not (published_rows is Array) or (published_rows as Array).is_empty():
+			_failures.append("the flock published no rows: %s" % published_rows)
+		else:
+			print("published rows: ", (published_rows as Array).size())
+	var mods_answer: String = String(bridge.call("mods", contribution))
+	print("mods intent -> ", mods_answer)
+	_expect(mods_answer == "ok", "the wire's own parse refused the mods payload: %s" % mods_answer)
+
+## Hand this scene a host's world-mod state, changed so that applying it is *visible*:
+##
+##   * one stream's state is moved by one, so adopting it is a value this end did not have rather
+##     than one it already had;
+##   * the flock's rows are rewritten to put every bird 40 m along +x from the player -- a distance a
+##     **mirroring** flock reaches only by easing toward them (`birds`' `mirror`, `MIRROR_K` 7, so a
+##     second is most of the way) and one a simulating flock would not be at.
+##
+## The scene is then told it is a *client*, through its own `welcome` event: `goats.net.localWorld()`
+## is what decides `simulate` from `mirror` in the flock, and off a host it is false. Applying a row
+## to a scene that is still simulating would be overwritten by the next `update` -- which is correct
+## behaviour and a case that proves nothing.
+func _stage_mods() -> void:
+	var mods: Object = _main.get("mods")
+	var payload: Variant = JSON.parse_string(String(mods.call("world_mods_json")))
+	if not (payload is Dictionary):
+		_failures.append("the mods payload is not an object")
+		return
+	var state: Dictionary = payload
+	var streams: Variant = state.get("streams", null)
+	if not (streams is Dictionary) or (streams as Dictionary).is_empty():
+		_failures.append("no world mod stream to adopt")
+		return
+	var table: Dictionary = streams
+	_stream_key = String(table.keys()[0])
+	_stream_value = (int(table[_stream_key]) + 1) & 0xFFFFFFFF
+	table[_stream_key] = _stream_value
+	var data: Variant = state.get("data", null)
+	if data is Dictionary:
+		var rows: Variant = (data as Dictionary).get(BIRDS_ID, null)
+		if rows is Array and not (rows as Array).is_empty():
+			var goat: Object = _main.get("goat")
+			var px: float = float(goat.get("px"))
+			var pz: float = float(goat.get("pz"))
+			var moved: Array = []
+			for _row: Variant in (rows as Array):
+				moved.append([px + 40.0, 0.5, pz, 0.0, 0])
+			(data as Dictionary)[BIRDS_ID] = moved
+		else:
+			_failures.append("the flock has no published rows to rewrite")
+	_main.call("_handle", JSON.stringify({"type": "welcome", "name": "gate"}))
+	mods.call("apply_world_mods", JSON.stringify(state))
+
+## What applying a host's mods did, a second later. The stream check is the cheap half -- it is the
+## value this gate wrote coming back out -- and the flock is the point: a *mod's* state moved a
+## mod's simulation, which is the whole reason the datagram exists.
+func _check_mods() -> void:
+	var mods: Object = _main.get("mods")
+	var payload: Variant = JSON.parse_string(String(mods.call("world_mods_json")))
+	if not (payload is Dictionary):
+		_failures.append("the mods payload stopped being an object late")
+		return
+	var streams: Variant = (payload as Dictionary).get("streams", null)
+	if streams is Dictionary:
+		_expect(int((streams as Dictionary).get(_stream_key, -1)) == _stream_value,
+			"the stream the host sent was not adopted: %s, not %d"
+			% [(streams as Dictionary).get(_stream_key), _stream_value])
+	var flock: Variant = JSON.parse_string(String(
+		_main.get("commands").call("run", "birds")).trim_prefix("ok "))
+	if not (flock is Dictionary):
+		_failures.append("the flock did not report its state after the apply")
+		return
+	print("flock after apply: ", flock)
+	_expect(not bool((flock as Dictionary).get("local", true)),
+		"the scene is still the world's authority, so a mirroring case proves nothing")
+	var near: float = float((flock as Dictionary).get("near", -1.0))
+	_expect(near > 20.0, "the flock did not mirror the rows that were applied: near is %s" % near)
 
 ## A dictionary must carry every key a `proto` struct has and no other, which is the silent-drop
 ## bug in one assertion: a field the wire does not know is ignored, and a field it needs is an

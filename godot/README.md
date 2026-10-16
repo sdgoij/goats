@@ -260,7 +260,7 @@ Thirty headless gates, all `SceneTree` scripts that exit non-zero on failure:
     --script res://tools/verify_menu.gd
 ```
 
-All twenty-nine pass against Godot 4.7.2 today. Two more need a live session and are run by
+All thirty pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -476,7 +476,9 @@ repository's mods does exactly that. `crates/godot` links `crates/plugin` -- the
 raylib client and `goatsd` drive -- so the module is decoded, instantiated against the capabilities
 its own import list asks for, and stepped from Rust, and `mods.gd`'s frame is what drives it. The
 two things a module produces are scene values: the HUD bar a `side: "client"` module reports (drawn
-by `hud.gd` as `belly (wasm)`) and the opaque bytes a `side: "world"` one published. `mod info
+by `hud.gd` as `belly (wasm)`) and the opaque bytes a `side: "world"` one published, which the host
+puts on the **mods datagram** beside the JavaScript world mods' streams and rows (the merge is
+`ModHost::world_mods_json`, its `data` folding in each compiled module's bytes). `mod info
 <id>` shows what the module made of itself -- its ABI, its imports, its frame count, its last log
 line -- and `verify_wasm_mod.gd` holds the whole path, including the refusal of a module built for
 another ABI.
@@ -519,8 +521,11 @@ throws costs only its own mod's rows and is named on the console, which is what 
 has to be shaped around (see `PORT.md` §9: a host call inside a `catch` trips Slag's environment
 stack, so the failure is recorded and said after the loop). A `side: "world"` mod also gets its
 own **seeded stream** (`goats.world.registerStream` / `goats.rng`, §4.13), derived from the session
-seed through the same `sceneUseSeed` moment the scene derives its own four at, so the flock a host
-simulates is the flock a joiner *computes* rather than one that travels. The **writes are not in
+seed through the same `sceneUseSeed` moment the scene derives its own four at. Its state then
+travels on the **mods datagram** -- a second datagram of the mods' own, so a greedy mod loses only
+its own state -- and a joiner *adopts* the streams and takes the rows each extension published
+through `world.extend`, so the flock a host simulates is the flock a joiner goes on computing rather
+than a second one. The **writes are not in
 yet** —
 `goats.world.setTime` and
 `setWeather` answer `false`, which is what the API documents for a client that does not own the
