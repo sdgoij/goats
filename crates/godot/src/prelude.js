@@ -1092,10 +1092,9 @@ if (typeof globalThis.goats === "undefined") {
              * it with nothing to register and nothing to hand back but `clear`. Both checked-in
              * examples read `depthAt` to decide whether the ground they are standing on is dry.
              *
-             * `pools` is the one member this client has not got: the connected regions are a flood
-             * fill M20f has not been ported for here, and the console's own `pools` verb says so.
-             * It *throws* rather than answering an empty list, because a mod that asked for the
-             * puddles and got none could not tell that from a dry field.
+             * `pools` is the field's connected regions (M20f), which *crosses* because it is a
+             * function of the water rather than a statement about it: the scene's own flood fill,
+             * with its own marks, asked on demand and never per frame.
              */
             water: {
                 state: function () {
@@ -1108,8 +1107,7 @@ if (typeof globalThis.goats === "undefined") {
                     return ask("water.depthAt", [Number(x), Number(z)]);
                 },
                 pools: function () {
-                    throw new Error("goats.water.pools: this client has not ported the water's " +
-                        "connected regions yet");
+                    return ask("water.pools", []);
                 },
                 setLevel: function (height) {
                     return ask("water.setLevel", [Number(height)]);

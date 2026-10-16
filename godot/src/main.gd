@@ -869,6 +869,10 @@ func _mod_call(name: String, args_json: String) -> String:
 		"water.clear":
 			water.force_off()
 			return _mod_ok(water.level())
+		"water.pools":
+			# The connected regions (M20f), as the *scene's* own flood fill -- a function of the field
+			# rather than a statement about it, so it crosses like `traps` and `terrainHeight`.
+			return _mod_ok(water.pools())
 		"water.enabled":
 			water.enabled = args.is_empty() or args[0] != false
 			water.update()

@@ -135,6 +135,9 @@ const PROBE_JS := """
             session: goats.net.inSession(), host: goats.net.isHost(),
             name: goats.net.name(), roster: goats.net.roster().length,
         };
+        // The water's connected regions (M20f), taken here so the gate can hold the *algorithm*
+        // against the field as well as the crossing against the scene.
+        out.pools = goats.water.pools();
 
         // The writes are a command of their own (`modwrite`, below), because they *change* the
         // world the readings above describe: a gate that wrote before it read would be comparing
@@ -418,6 +421,12 @@ func _check() -> void:
 	var reflect: Object = _main.get("water_reflect")
 
 	var point: Vector2 = _probe_point()
+	# The scene boots dry, and a dry field has no pools -- so the gate wets it by hand, through the
+	# console's own `flood` path (`Water.set_force`). Without this the flood fill would be held
+	# against an empty field and pass for the wrong reason.
+	var water: Object = _main.get("water")
+	water.call("set_force", 0.0)
+	water.call("update")
 	var evaluated: String = str(host.call("eval_js", PROBE_JS
 		.replace("GOATS_TERRAIN_X", "%f" % point.x)
 		.replace("GOATS_TERRAIN_Z", "%f" % point.y)))
@@ -458,6 +467,9 @@ func _check() -> void:
 	_check_assets(read)
 	_check_entities(read, _main.get("console"))
 	_check_streams(host, mods)
+	# Before the devices, which blast a crater: a crater makes a puddle, and the pools the probe
+	# read are the ones the field had when it asked.
+	_check_pools(read, _main.get("water"))
 	_check_devices(host)
 	# ...and the writes, **last**, because they change the world every reading above describes.
 	# The probe's `restart` needs something to restore, or "a full goat is still full" is a check
@@ -756,6 +768,54 @@ func _armed_point(devices: Object) -> Vector2:
 ## `traps` console verb prints, factored out so a mod and the console cannot drift -- and `blast`
 ## has to be the core's bang, which is a claim about the scene's own state rather than about a
 ## return value: the counter rises and the cell is armed nowhere afterwards.
+## The water's connected regions (`APIv1.md` section 4.17, `pools`), the *algorithm* as well as the
+## crossing. The crossing is that the mod's array is the scene's, field for field; the algorithm is
+## that the pools **partition the wet cells** -- the cells they claim are exactly the vertices the
+## field stands over -- which is the property a flood fill can get wrong while still handing back
+## plausible rows.
+func _check_pools(read: Dictionary, water: Object) -> void:
+	var pools: Variant = read.get("pools", null)
+	if not (pools is Array):
+		_failures.append("goats.water.pools did not answer with an array: %s" % pools)
+		return
+	var own: Array = water.call("pools")
+	if (pools as Array).size() != own.size():
+		_failures.append("goats.water.pools found %d pool(s), the scene's own derivation %d"
+			% [(pools as Array).size(), own.size()])
+	var wet: int = 0
+	for k in Water.N * Water.N:
+		if float(water.call("vertex_depth", k)) > 0.0:
+			wet += 1
+	var claimed: int = 0
+	for row: Variant in (pools as Array):
+		if not (row is Dictionary):
+			_failures.append("a pool row is not an object: %s" % row)
+			continue
+		for key: String in ["x", "z", "r", "cells", "deepest", "deepX", "deepZ"]:
+			if not (row as Dictionary).has(key):
+				_failures.append("a pool row is missing %s: %s" % [key, row])
+		claimed += int((row as Dictionary).get("cells", 0))
+	if claimed != wet:
+		_failures.append("the pools claim %d cell(s); the field stands over %d vertex(es)"
+			% [claimed, wet])
+	if wet <= 0 or (pools as Array).is_empty():
+		_failures.append("a wetted field produced no pools (%d wet, %d pool(s)) -- nothing was checked"
+			% [wet, (pools as Array).size()])
+	for i in (pools as Array).size():
+		# Field by field rather than by string: the crossing turns the scene's `cells` integer into
+		# a float, which is a JSON detail and not a disagreement about the pool.
+		var mine: Dictionary = pools[i]
+		var theirs: Dictionary = own[i]
+		if not _near(float(mine.get("x", 0.0)), float(theirs.get("x", 0.0))) \
+				or not _near(float(mine.get("z", 0.0)), float(theirs.get("z", 0.0))) \
+				or not _near(float(mine.get("r", 0.0)), float(theirs.get("r", 0.0))) \
+				or not _near(float(mine.get("cells", 0.0)), float(theirs.get("cells", 0.0))) \
+				or not _near(float(mine.get("deepest", 0.0)), float(theirs.get("deepest", 0.0))) \
+				or not _near(float(mine.get("deepX", 0.0)), float(theirs.get("deepX", 0.0))) \
+				or not _near(float(mine.get("deepZ", 0.0)), float(theirs.get("deepZ", 0.0))):
+			_failures.append("pool %d crossed as %s, and the scene's is %s" % [i, mine, theirs])
+	print("pools: ", (pools as Array).size(), " region(s), ", claimed, " of ", wet, " wet vertex(es)")
+
 func _check_devices(host: Object) -> void:
 	var devices: Object = _main.get("explosions")
 	var found: Vector2 = _armed_point(devices)

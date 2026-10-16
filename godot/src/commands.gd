@@ -31,7 +31,7 @@
 #   * **`mod`** -- the scene loads mods as of stage 1 (`mods.gd` + the extension's `ModHost`),
 #     so `mod list` and `mod key` are backed and a mod's own verb gets first refusal; `info`,
 #     `enable`, `disable` and `reload` need `mods.js`'s other half, which is stage 8.
-#   * **`pools`** -- the water's connected regions are M20f, not yet ported.
+#   * **`pools`** -- the water's connected regions (M20f), a flood fill over the water grid.
 #   * **`screenshot`** -- backed with a window, `error screenshot needs a window` under
 #     `--headless`, where there is no rasteriser to read back.
 #
@@ -301,8 +301,11 @@ func run(line: String) -> String:
 		"water":
 			return _water(parts)
 		"pools":
-			# The water's connected regions are M20f, not ported yet.
-			return "error pools unavailable"
+			# The connected regions are the *scene's* flood fill (M20f), so a `Commands` with no water
+			# behind it -- a gate's, or a build without the module -- says so rather than faulting.
+			if water == null:
+				return "error pools unavailable"
+			return "ok " + json_of(water.pools())
 		"flood":
 			return _flood(parts)
 		"perf":

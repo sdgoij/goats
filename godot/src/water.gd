@@ -160,6 +160,11 @@ var _force := NAN
 var _heights := PackedFloat64Array()
 var _anchor := Vector2(0.0, 0.0)
 var _ready := false
+## The pools' flood fill, allocated once and reused -- `water.js`'s `W_POOL`/`W_QUEUE`, and for the
+## same reason: `pools()` is on demand (a console verb and a mod's read, never the frame), so the
+## walk allocates nothing.
+var _pool_marks := PackedInt32Array()
+var _pool_queue := PackedInt32Array()
 ## The waves' own seconds, and *only* while there is water to draw -- `water.js`
 ## `waterDraw`: the clock advances where the surface does, so a phase that ran on through
 ## a dry spell would have a fresh pool already mid-cycle. It is deliberately not
@@ -301,6 +306,84 @@ func depth_at(x: float, z: float) -> float:
 	var top: float = d00 + (d10 - d00) * u
 	var bot: float = d01 + (d11 - d01) * u
 	return top + (bot - top) * v
+
+## The pools in the field, as *regions* (M20f): a flood fill over the water grid, four-neighbour
+## because two cells that only touch at a corner are two pools with a corner in common rather than
+## one. A pool is the centroid of its cells, the radius of the circle with their area, how many
+## cells it is, and where it is deepest -- the question a player asks of the water ("is that one
+## lake or two?"), answered from the table alone.
+##
+## `water.js`'s `sceneWaterPools`, including its rounding: this is a mod-facing member and a console
+## list, so the numbers are quantized the way they are there. The walk is over the grid twice at
+## worst and allocates nothing (`_pool_marks`/`_pool_queue`).
+func pools() -> Array:
+	if not _ready:
+		return []
+	var count: int = N * N
+	if _pool_marks.size() != count:
+		_pool_marks.resize(count)
+		_pool_queue.resize(count)
+	for k in count:
+		_pool_marks[k] = 0
+	var area: float = CELL * CELL
+	var x0: float = _anchor.x - HALF
+	var z0: float = _anchor.y - HALF
+	var found: Array = []
+	for start in count:
+		if _pool_marks[start] != 0 or _heights[start] >= _level:
+			continue
+		var id: int = found.size() + 1
+		var head: int = 0
+		var tail: int = 0
+		var cells: int = 0
+		var sum_i: int = 0
+		var sum_j: int = 0
+		var deepest: float = 0.0
+		var deep_i: int = 0
+		var deep_j: int = 0
+		_pool_marks[start] = id
+		_pool_queue[tail] = start
+		tail += 1
+		while head < tail:
+			var k: int = _pool_queue[head]
+			head += 1
+			var i: int = k % N
+			var j: int = (k - i) / N
+			var d: float = _level - _heights[k]
+			cells += 1
+			sum_i += i
+			sum_j += j
+			if d > deepest:
+				deepest = d
+				deep_i = i
+				deep_j = j
+			# Four-neighbour: a corner is two pools with a corner in common.
+			if i > 0 and _pool_marks[k - 1] == 0 and _heights[k - 1] < _level:
+				_pool_marks[k - 1] = id
+				_pool_queue[tail] = k - 1
+				tail += 1
+			if i < N - 1 and _pool_marks[k + 1] == 0 and _heights[k + 1] < _level:
+				_pool_marks[k + 1] = id
+				_pool_queue[tail] = k + 1
+				tail += 1
+			if j > 0 and _pool_marks[k - N] == 0 and _heights[k - N] < _level:
+				_pool_marks[k - N] = id
+				_pool_queue[tail] = k - N
+				tail += 1
+			if j < N - 1 and _pool_marks[k + N] == 0 and _heights[k + N] < _level:
+				_pool_marks[k + N] = id
+				_pool_queue[tail] = k + N
+				tail += 1
+		found.append({
+			"x": _round3(x0 + (float(sum_i) / float(cells)) * CELL),
+			"z": _round3(z0 + (float(sum_j) / float(cells)) * CELL),
+			"r": _round3(sqrt((float(cells) * area) / PI)),
+			"cells": cells,
+			"deepest": _round3(deepest),
+			"deepX": _round3(x0 + float(deep_i) * CELL),
+			"deepZ": _round3(z0 + float(deep_j) * CELL),
+		})
+	return found
 
 ## How much of the wading cap the goat is under: 0 out of water and 1 at `MAX_DEPTH`.
 ## It is a *wading* cap, so a deeper pool does not slow it further.

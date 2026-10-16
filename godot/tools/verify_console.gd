@@ -205,7 +205,7 @@ const LIVE := [
 	["perf", "exact", "error perf unavailable"],
 	# `host` is deliberately absent: it is backed, so running it here would bind a real session
 	# endpoint inside a partly-pure gate. `verify_net.gd` is where a session is started.
-	["pools", "exact", "error pools unavailable"],
+	["pools", "starts", "ok ["],
 	["lighting", "exact", "ok lighting off"],
 	["lighting", "exact", "ok lighting on"],
 	["who", "exact", "error not in a session"],
