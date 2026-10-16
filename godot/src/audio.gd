@@ -163,6 +163,10 @@ var on_mute := Callable()
 var _variants := {}
 var _beds := {}
 var _debris: Array[Dictionary] = []
+## The weather the beds were last scaled by, so `apply_settings` can re-scale them with no frame of
+## its own -- a settings screen is a menu, and a menu freezes the frame that would.
+var _rain := 0.0
+var _wind := 0.0
 var _thunder_cooldown := THUNDER_FIRST
 var _seed := SEED
 var _built := false
@@ -347,9 +351,11 @@ func bang(x: float, z: float, depth: int) -> bool:
 ## which is why they arrive rather than being read here.
 func update(delta: float, rain_amount: float, wind_sway: float) -> void:
 	build()
-	_set_bed("sfx.music", 1.0)
-	_set_bed("sfx.rain", rain_amount * RAIN_VOLUME)
-	_set_bed("sfx.wind", wind_sway * WIND_VOLUME)
+	# The weather is *kept* as well as applied: `apply_settings` re-scales the beds from it with no
+	# frame of its own, which is what a settings change needs (see there).
+	_rain = rain_amount
+	_wind = wind_sway
+	apply_settings()
 	_thunder_cooldown -= delta
 	if rain_amount > THUNDER_RAIN and _thunder_cooldown <= 0.0 \
 			and not _variants.get("sfx.thunder", []).is_empty():
@@ -382,7 +388,7 @@ func update(delta: float, rain_amount: float, wind_sway: float) -> void:
 ## below, and a peer's voice goes quiet at the mixer (`on_mute`, above).
 func set_muted(next: bool) -> void:
 	muted = next
-	_set_bed("sfx.music", 1.0)
+	apply_settings()
 	if on_mute.is_valid():
 		on_mute.call(muted)
 
@@ -428,6 +434,20 @@ func sfx_gain() -> float:
 ## The linear gain the beds are scaled by (`musicGain`).
 func music_gain() -> float:
 	return MUSIC_VOLUME * bgm / 100.0
+
+## Re-apply every bed's volume from the current gains and the last weather the frame handed in.
+## This is `audio.js`'s `applyAudioSettings`, which the scene's own slider calls on every drag.
+##
+## The *music* bed is the one a settings change has to push: it does not ride the weather, so
+## nothing else would re-set it before the next `update` -- and a settings screen is a *menu*, which
+## freezes the frame whose `update` that would be. The scene re-applies only that one because its
+## `updateAudio` runs *outside* `sceneFrame`'s pause gate, and so is already re-applying all three
+## every frame; here the frame is exactly what stopped, so all three are re-applied. The effects
+## read `sfx_gain()` at each play, so their volume is already the new one.
+func apply_settings() -> void:
+	_set_bed("sfx.music", 1.0)
+	_set_bed("sfx.rain", _rain * RAIN_VOLUME)
+	_set_bed("sfx.wind", _wind * WIND_VOLUME)
 
 ## Set a bed's volume from a *multiple of the music gain*, which is how the scene does it: the
 ## rain and wind beds are the track's own level scaled by the weather, and a mute is zero.

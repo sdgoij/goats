@@ -192,6 +192,7 @@ func _process(_delta: float) -> bool:
 	if _frames < 6:
 		return false
 	_check_effects()
+	_check_audio_sliders()
 	_check_shared()
 	_check_routed()
 	if _failures.is_empty():
@@ -364,6 +365,58 @@ static func _word_of(material: BaseMaterial3D) -> String:
 	if material == null:
 		return "?"
 	return "lit" if material.shading_mode == BaseMaterial3D.SHADING_MODE_PER_PIXEL else "unshaded"
+
+## The two audio sliders, which the `EFFECTS` list cannot reach on its own. `update` re-applies every
+## bed each frame, so a `bgm` write looks right the moment the world is *running* -- and the settings
+## screen is a *menu*, which freezes the very frame that would. So this opens the screen, clicks the
+## Music slider, and reads the bed's own decibels with the world still frozen: the state a player is
+## in when they drag it. The scene's slider pushes the change to the mixer as it moves
+## (`applyAudioSettings`), which is the half a witness over `Audio.bgm` is blind to.
+func _check_audio_sliders() -> void:
+	var menu: Menu = _main.get("menu")
+	var audio: Audio = _main.get("audio")
+	if menu == null or audio == null:
+		_failures.append("the scene did not build the menu and the sound")
+		return
+	# A headless root viewport comes up 64x64, so the settings panel is laid out off-screen and no
+	# click could land on it -- the same sizing `_check_routed` does.
+	_main.get_viewport().size = Vector2i(1280, 720)
+	var size: Vector2 = _main.get_viewport().get_visible_rect().size
+	menu.show_screen("settings")
+	var music: Dictionary = _find(menu.layout(size), "bgm")
+	var sfx: Dictionary = _find(menu.layout(size), "sfx")
+	if music.is_empty() or sfx.is_empty():
+		_failures.append("the settings screen has no audio slider")
+		return
+	var track: Rect2 = music["rect"]
+	var sfx_track: Rect2 = sfx["rect"]
+	# The left end is silence and the right end is full, and both are read *while the menu is up*.
+	# The ends are inset by a hair: `Rect2.has_point` is half-open, so the far edge is not on the
+	# slider at all -- a click exactly there would miss it and leave the value where it was.
+	menu._press(Vector2(track.position.x, track.get_center().y), size)
+	var quiet: float = _music_db(audio)
+	menu._press(Vector2(track.position.x + track.size.x - 0.5, track.get_center().y), size)
+	var loud: float = _music_db(audio)
+	menu._press(Vector2(sfx_track.position.x, sfx_track.get_center().y), size)
+	var sfx_at: int = int(audio.sfx)
+	menu.show_screen("hud")
+	print("audio sliders: music %.1f dB at bgm 0, %.1f dB at bgm 100, sfx %d (frozen frame)"
+		% [quiet, loud, sfx_at])
+	if quiet > -79.0:
+		_failures.append("the Music slider did not silence the music bed on a frozen frame"
+			+ " (it is at %.1f dB)" % quiet)
+	if loud <= quiet:
+		_failures.append("the Music slider did not raise the music bed again (%.1f -> %.1f dB)"
+			% [quiet, loud])
+	if sfx_at != 0:
+		_failures.append("the SFX slider did not reach the sound it scales (sfx %d)" % sfx_at)
+
+## The music bed's own level, in decibels (`Audio.state()["levels"]`). A bed's level is the one part
+## of the sound a *frame* decides rather than an event, so it is the thing a settings change has to
+## move.
+static func _music_db(audio: Audio) -> float:
+	var levels: Dictionary = audio.state()["levels"]
+	return float(levels.get("sfx.music", 0.0))
 
 ## The console's `setting` verb and the menu's screen are one writer: the same `Settings` object.
 func _check_shared() -> void:

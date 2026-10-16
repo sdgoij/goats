@@ -1952,6 +1952,10 @@ func _open_console() -> void:
 func _apply_settings() -> void:
 	audio.bgm = settings.bgm
 	audio.sfx = settings.sfx
+	# ...and push it into the mixer *now*, which is `applyAudioSettings`'s own job in the scene: the
+	# settings screen is a menu, so the frame whose `audio.update` would otherwise be the one to
+	# notice a new gain is frozen while the player is dragging the slider.
+	audio.apply_settings()
 
 	# Lighting: the four things the scene draws through its lit program.
 	terrain.set_lit(settings.light)

@@ -2049,6 +2049,15 @@ disagreements and fails if there are none.
   texture back square, so it cannot drift back (ROADMAP's M14f has the reference-side write-up). The
   argument from section 4 stands in both directions: an independent implementation is a second opinion,
   and a second opinion is worth having precisely when it disagrees.
+- **The frame is what a settings change reaches through, and a menu is where it stops.** `Audio`
+  re-applies every bed's volume each frame (`update`, the scene's `updateAudio`), so a `bgm` write
+  looked right whenever the world was running -- and the settings screen is a *menu*, which freezes
+  the frame that would. The two volume sliders therefore moved a number nothing could hear. The
+  scene's own answer is `applyAudioSettings`, which its slider calls on every drag; the port now has
+  the same push (`Audio.apply_settings`, from `_apply_settings`), and `verify_menu.gd` holds the
+  sliders against the *bed's decibels* with the screen open -- the half a witness over `Audio.bgm`
+  is blind to. Worth keeping: anything a setting has to *reach* must be pushed at the edit, because
+  the frame that would otherwise notice is the one the menu is holding.
 - **A second engine to maintain.** The raylib client and the Godot port share a
   protocol and a mod format but not a line of code. Every balance or protocol
   change now has two homes.
