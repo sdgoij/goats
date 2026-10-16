@@ -11,28 +11,30 @@
 # by nothing, which is exactly what the port had before this stage: every host check passed while
 # a player's game loaded no mods at all.
 #
-# Four things are held, and each is a failure the direct host check cannot see:
+# Five things are held, and each is a failure the direct host check cannot see:
 #
 #   1. **The scene owns a runtime**, read from the *live* scene rather than built here.
-##   2. **The table is truthful.** `birds` is a world mod whose entry reads the engine's `rl`, which
-##      this build has no copy of (`PORT.md` section 6), so it throws; the host must mark it
-##      `failed` with the error, and leave the four that loaded unmarked. A table that says five
-##      healthy mods is the lie `mods.js`'s `sceneModResult` exists to prevent.
+#   2. **The table is truthful**, which now means that *every* repository mod loads. `birds` used to
+#      be the worked example of a named failure -- its entry read the engine's `rl`, which this build
+#      has no copy of -- and the rework took that away, so a failed row is a regression here rather
+#      than the expected state. The failure *path* is not dropped with it: step 5 stages a mod whose
+#      entry throws and holds the host to naming it, because a table that called a broken mod fine
+#      is the lie `mods.js`'s `sceneModResult` exists to prevent.
 #   3. **The Mods screen draws it.** `menu.js`'s screen is a row per mod plus an Enable/Disable
 #      button, and its "no mods found" line when the list is empty -- so the layout is asserted,
 #      not the table: a screen fed a table it does not draw is a screen a player cannot read.
 #   4. **The vocabulary reaches the mods both ways**: a mod's `hello` verb answers through the
 #      console's own dispatch, and `mod list` / `mod key` answer from the host's table.
+#   5. **A mod that throws is named**, on a fixture this gate writes at run time rather than ships --
+#      see `_check_staged_failure`, which also records the one thing that surprises: the host is
+#      Rust and reads with `std::fs`, so `user://` has to be globalised before it is handed over.
 extends SceneTree
 
 ## The example mod's id and command, from `verify_mods.gd` -- the one mod in the repository whose
 ## entry both loads and registers a verb.
 const EXAMPLE_ID := "com.github.sdgoij.goats.hello"
-## The world mod in the repository: the one whose entry throws today, because it reads the engine's
-## `rl` (`mods/birds/mod.js:83`) -- the library the port deliberately has none of. Its first
-## `goats` members are built now (`goats.mod` at line 26 among them), so the failure is the
-## *engine's* and no longer the API's, which is the distinction worth keeping: the error names
-## `rl`, where it used to be a `TypeError` naming nothing.
+## The world mod in the repository. It is the one this gate used to expect to *fail*, because it read
+## the engine's `rl`; it is now API-only and loads, which is why the expected count below is zero.
 const WORLD_ID := "com.github.sdgoij.goats.birds"
 ## How many mods the repository's `mods/` holds. Named so a directory that grows fails loudly
 ## rather than silently changing what this gate checked.
@@ -106,13 +108,21 @@ func _check() -> void:
 		if String(meta.get("error", "")).is_empty():
 			_failures.append("%s is failed with no error to show" % meta.get("id"))
 	print("failed: ", failed, " of ", table.size())
-	if not _has_id(table, WORLD_ID, true):
-		_failures.append("%s should be listed as failed - its entry reads the engine's `rl`, which this build has no copy of" % WORLD_ID)
+	# Every one of the repository's own mods loads now, and that is worth asserting rather than
+	# merely tolerating. `birds` used to be the worked example of a *named* failure -- it read the
+	# engine's `rl`, which this build has no copy of -- and the rework took that away (`ROADMAP.md`
+	# M14d's sixth pin move), so a failed row here is now a regression in one of the checked-in
+	# mods rather than the expected state. The failure path itself is not dropped: step 6 stages a
+	# mod that throws and holds the host to naming it.
+	if failed != 0:
+		_failures.append("%d of the repository's mod(s) failed to load, and they all load" % failed)
+	if not _has_id(table, WORLD_ID, false):
+		_failures.append("%s should have loaded" % WORLD_ID)
 	if not _has_id(table, EXAMPLE_ID, false):
 		_failures.append("%s should have loaded" % EXAMPLE_ID)
 
-	# 3. The screen draws the list. The Mods panel is a row per mod plus a button each, and the
-	#    failed row's label names the failure -- which is what a player actually reads.
+	# 3. The screen draws the list. The Mods panel is a row per mod plus a button each -- which is
+	#    what a player actually reads -- and with every mod loading, no row says `FAILED`.
 	var menu: Object = _main.get("menu")
 	menu.call("show_screen", "mods")
 	var widgets: Array = menu.call("layout", Vector2(1280.0, 720.0))
@@ -133,8 +143,8 @@ func _check() -> void:
 	print("mods screen: ", labels, " label(s), ", buttons, " button(s)")
 	if saw_empty:
 		_failures.append("the Mods screen still draws \"no mods found\" with %d mod(s) loaded" % table.size())
-	if not saw_failed:
-		_failures.append("no Mods row names the failed mod")
+	if saw_failed:
+		_failures.append("a Mods row says FAILED with every mod loaded")
 	# One label and one button per mod, plus the note label, plus Back.
 	if labels != table.size() + 1 or buttons != table.size() + 1:
 		_failures.append("the Mods screen is %d label(s) and %d button(s) for %d mod(s)"
@@ -190,6 +200,59 @@ func _check() -> void:
 			said = true
 	if not said:
 		_failures.append("the load report never reached the console")
+
+	# 6. The failure path itself, on a mod the gate *stages*. Nothing in the repository fails any
+	#    more, so the property this gate exists to hold -- a mod that throws is **named** rather than
+	#    silently dropped, and the table the Mods screen draws carries the error -- would otherwise
+	#    go unchecked. It goes through the host's own `load_mods`, which is the same door `mods.gd`
+	#    uses at boot, and it is last because it replaces the loaded set.
+	_check_staged_failure(host)
+
+## Two files written at run time into `user://`, and the host asked to load the directory: one mod
+## whose entry throws on its first line. Staged rather than shipped because the repository's mods
+## must all load, so a checked-in broken fixture would have to be *excluded* from the directory the
+## game reads -- which is a worse lie than writing the two files here.
+func _check_staged_failure(host: Object) -> void:
+	var uri: String = "user://gates-broken/broken"
+	DirAccess.make_dir_recursive_absolute(uri)
+	# The *host* is Rust and reads the directory with `std::fs`, so it has to be handed a real path:
+	# `user://` is Godot's own scheme and means nothing on that side of the boundary. (The error is
+	# worth remembering -- it arrives as "cannot read the mods directory", not as a bad path.)
+	var dir: String = ProjectSettings.globalize_path("user://gates-broken")
+	var written: Array = [
+		["mod.json", JSON.stringify({
+			"id": "com.example.broken", "name": "Broken", "version": "1.0.0", "api": 1,
+			"side": "client", "description": "staged by the gate: an entry that throws",
+			"entry": "mod.js",
+		})],
+		["mod.js", "throw new Error(\"staged: this entry is meant to fail\");\n"],
+	]
+	for pair: Array in written:
+		var file: FileAccess = FileAccess.open(uri + "/" + String(pair[0]), FileAccess.WRITE)
+		if file == null:
+			_failures.append("could not stage a broken mod (%s)" % pair[0])
+			return
+		file.store_string(String(pair[1]))
+		file.close()
+	print("staged: ", str(host.call("load_mods", dir)).strip_edges().replace("\n", "; "))
+	print("staged: ", str(host.call("load_all")).strip_edges().replace("\n", "; "))
+	var staged: Variant = JSON.parse_string(str(host.call("mods_json")))
+	if not (staged is Array):
+		_failures.append("the host's table did not answer after staging")
+		return
+	var named := false
+	for meta: Dictionary in staged:
+		if String(meta.get("id", "")) != "com.example.broken":
+			continue
+		if not bool(meta.get("failed", false)):
+			_failures.append("a mod whose entry throws is not marked failed")
+		elif String(meta.get("error", "")).is_empty():
+			_failures.append("the failed mod carries no error to show")
+		else:
+			named = true
+			print("staged failure: ", meta.get("error"))
+	if not named:
+		_failures.append("no staged mod was named as failed")
 
 func _has_id(table: Array, id: String, failed: bool) -> bool:
 	for meta: Dictionary in table:

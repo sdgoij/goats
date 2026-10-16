@@ -783,6 +783,25 @@ func _mod_call(name: String, args_json: String) -> String:
 			if is_nan(bx) or is_nan(bz):
 				return _mod_err("explosions.blast needs two numbers")
 			return _mod_ok(explosions.mod_blast(String(args[2]), bx, bz))
+		"player.giveEnergy":
+			# The goat's two stats, given rather than read (`APIv1.md` section 4.5). A bird
+			# perched on its back is the caller these exist for, and the clamp is the API's own:
+			# `stats.max` either way, `0` at the bottom, and the new value answers.
+			if args.size() < 1:
+				return _mod_err("player.giveEnergy needs an amount")
+			var energy: float = float(args[0])
+			if is_nan(energy):
+				return _mod_err("player.giveEnergy needs a number")
+			goat.energy = clampf(goat.energy + energy, 0.0, PlayerGoat.STATS_MAX)
+			return _mod_ok(goat.energy)
+		"player.giveHealth":
+			if args.size() < 1:
+				return _mod_err("player.giveHealth needs an amount")
+			var health: float = float(args[0])
+			if is_nan(health):
+				return _mod_err("player.giveHealth needs a number")
+			goat.health = clampf(goat.health + health, 0.0, PlayerGoat.STATS_MAX)
+			return _mod_ok(goat.health)
 	return _mod_err("goats." + name + ": this client does not answer that member")
 
 ## A successful `_mod_call` answer.

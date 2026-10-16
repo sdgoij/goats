@@ -15,8 +15,10 @@
 #   2. **A cube becomes a box.** The record's position and size land on a `MeshInstance3D` whose
 #      mesh is the size the mod asked for -- two cubes in one frame are two sizes.
 #   3. **A model becomes the asset's glTF.** `goats.gfx.model(name)` hands over an opaque name,
-#      and `ModWorld` imports the bytes behind it with Godot's own loader (`mod:...:model.fatguy.glb`,
-#      the repository's own asset, which is a real import rather than a stub).
+#      and `ModWorld` imports what is behind it with Godot's own loader -- the game's own
+#      `goat_animated.glb` here, a real import rather than a stub. (It used to be the repository's
+#      `mods/fatguy` asset, which proved the *host-registered bytes* half of that path as well;
+#      see `PORT.md` section 9 for why the mods are now off here and what would restore it.)
 #   4. **A frame is a frame.** Children are reused and a frame that draws less hides the rest, so
 #      the tree is the last frame and not the union of every frame.
 #   5. **A name that resolves to nothing draws nothing.** `goats.gfx.model` answers `null`, and a
@@ -24,7 +26,7 @@
 extends SceneTree
 
 ## The `draw3d` hook the gate registers, through the host's own `eval_js`: one cube of a known
-## size in a known place, and a model from the repository's own `mods/fatguy` asset.
+## size in a known place, and a model from the game's own built-in slot.
 const PROBE_JS := """
 goats.on("draw3d", function (cam) {
     goats.gfx.draw.cube(1.0, 2.0, 3.0, 0.5, 0.25, 1.5, goats.draw.WHITE);
@@ -47,6 +49,13 @@ func _initialize() -> void:
 		print("FAIL: ModHost is not registered - the GDExtension did not load")
 		quit(1)
 		return
+	# The repository's mods off, and it is this gate's subject rather than a shortcut. Every
+	# assertion below is about what *a frame contains* -- two records, two nodes, and a frame that
+	# draws nothing leaving nothing standing -- and a `side: "world"` mod draws in `draw3d` every
+	# frame it is loaded. `birds` draws 24 records a frame now (it loads since its rework), so
+	# "what this hook drew" and "what the tree holds" are no longer the same question. The mods'
+	# own presence is `verify_scene_mods.gd`'s subject and the drawing surface is this one's.
+	OS.set_environment("GOATS_NO_MODS", "1")
 	var packed := load("res://scenes/herd.tscn") as PackedScene
 	if packed == null:
 		print("FAIL: could not load scenes/herd.tscn")
@@ -79,15 +88,14 @@ func _check() -> void:
 		_failures.append("the scene has no world node or no mod host")
 		return
 
-	# A real model asset, from the repository's own `mods/fatguy`. Taken by opaque name because
-	# that is what a mod addresses an asset with (`APIv1.md` section 0: no paths).
-	for name in host.call("asset_names"):
-		if String(name).contains("model."):
-			_model_name = String(name)
-			break
+	# The game's own model, by the logical name its built-in slot holds. It is taken by opaque name
+	# because that is what a mod addresses an asset with (`APIv1.md` section 0: no paths) -- and it is
+	# a *built-in* slot's value rather than a mod's declared one because the repository's mods are off
+	# here (see `_initialize`), which is also why this no longer reads `host.asset_names()`.
+	_model_name = str(Audio.built_in().get("model.goat", ""))
 	print("model asset: ", _model_name)
 	if _model_name.is_empty():
-		_failures.append("no model asset was found to draw")
+		_failures.append("the scene's own slot table has no model to draw")
 
 	# 1. The handful. `eval_js` runs outside `goats.begin`, so the hook lands on the idle state --
 	# which `__fireDraw3d` fires, exactly as the scene's own events reach it.

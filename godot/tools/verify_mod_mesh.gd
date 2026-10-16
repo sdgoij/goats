@@ -29,6 +29,12 @@
 ##      in the mod's own JavaScript, which is how it can work at all: the host is borrowed while a
 ##      mod runs (`PORT.md` section 9). What it must actually drop is the whole of what the handle
 ##      became -- the scene's cache, the node's mesh and the extension's arrays.
+##
+## **The repository's mods are off here**, set in `_initialize` before the scene exists. Every count
+## below is exact -- one draw, one node -- and a world mod draws in `draw3d` every frame it is
+## loaded: `birds` is 24 records a frame since its rework, which makes "what this hook drew" and
+## "what the tree holds" two different questions. `verify_scene_mods.gd` is where the repository's
+## own mods are the subject.
 #
 # **The sentinel.** GDScript has no `try`, so a runtime error inside a check aborts it and leaves
 # the failure it was about to record unrecorded. `_finished` is set at the very end of `_check`,
@@ -94,6 +100,9 @@ func _initialize() -> void:
 		print("FAIL: ModHost is not registered - the GDExtension did not load")
 		quit(1)
 		return
+	# The repository's mods off -- see the header. Nothing this gate needs lives in them: it builds
+	# its own mesh and its own texture, and draws one record a frame.
+	OS.set_environment("GOATS_NO_MODS", "1")
 	var packed := load("res://scenes/herd.tscn") as PackedScene
 	if packed == null:
 		print("FAIL: could not load scenes/herd.tscn")

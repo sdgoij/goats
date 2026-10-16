@@ -507,6 +507,81 @@ if (typeof globalThis.goats === "undefined") {
             return function () { return streamNext(key); };
         }
 
+        // --- the world extension ----------------------------------------------
+        //
+        // `goats.world.extend` (`APIv1.md` section 4.13): the seam a `side: "world"` mod adds
+        // simulated state through, and `publishRows`, the compact way to say it. The registry is
+        // the prelude's for the reason the entity offers are: what it holds is *a mod's own
+        // callbacks*, so nothing about it crosses to the host. What travels is the JSON a mod's
+        // `publish` returns, on the mods datagram beside the world's.
+        const modExts = {};   // extension id -> { id, publish, apply }
+
+        /** How many rows, and how many numbers a row, a mod may publish. */
+        const PUBLISH_ROWS_MAX = 64;
+        const PUBLISH_COLS_MAX = 8;
+        /** The size that earns a warning: half the datagram, which leaves no room for another mod's. */
+        const PUBLISH_WARN_BYTES = 600;
+
+        /** `goats.world.extend(id, handlers)`, namespaced by the *extension* id a mod chooses. */
+        function extendFor(id, extensionId, handlers) {
+            if (!isWorldMod(id)) {
+                throw new Error("goats.world.extend: only a side:\"world\" mod may do this");
+            }
+            if (handlers === null || typeof handlers !== "object") {
+                throw new Error("goats.world.extend: handlers are required");
+            }
+            modExts[String(extensionId)] = {
+                id: id,
+                publish: typeof handlers.publish === "function" ? handlers.publish : null,
+                apply: typeof handlers.apply === "function" ? handlers.apply : null,
+            };
+        }
+
+        /**
+         * `goats.world.publishRows(rows)`: rows of finite numbers, each rounded to three decimals,
+         * so a payload costs what its digits cost. The rounding is also what catches the value
+         * `JSON.stringify` would silently turn into `null` -- a `NaN` or an infinity is a mod's bug
+         * and is thrown *here*, where the log can name the mod, rather than arriving at every peer
+         * as a `null`. The limits are structural rather than the budget: the datagram is ~1200
+         * bytes and the transport refuses anything larger, so this is what stops a runaway loop
+         * building a megabyte before anybody notices.
+         */
+        function publishRowsFor(id, rows) {
+            if (!Array.isArray(rows)) throw new Error("publishRows: rows must be an array");
+            if (rows.length > PUBLISH_ROWS_MAX) {
+                throw new Error("publishRows: " + rows.length + " rows, at most " +
+                    PUBLISH_ROWS_MAX + " (a payload larger than the datagram is not sent)");
+            }
+            const out = [];
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                if (!Array.isArray(row)) {
+                    throw new Error("publishRows: row " + i + " is not an array");
+                }
+                if (row.length > PUBLISH_COLS_MAX) {
+                    throw new Error("publishRows: row " + i + " has " + row.length +
+                        " numbers, at most " + PUBLISH_COLS_MAX);
+                }
+                const rounded = [];
+                for (let j = 0; j < row.length; j++) {
+                    const value = row[j];
+                    if (typeof value !== "number" || !isFinite(value)) {
+                        throw new Error("publishRows: row " + i + ", column " + j + " is " + value +
+                            ", and every value must be a finite number");
+                    }
+                    rounded.push(Math.round(value * 1000) / 1000);
+                }
+                out.push(rounded);
+            }
+            const size = JSON.stringify(out).length;
+            if (size > PUBLISH_WARN_BYTES) {
+                console.log("mods: '" + id + "' publishes " + size + " bytes of rows; keep a " +
+                    "published table under " + PUBLISH_WARN_BYTES +
+                    " so it fits the datagram");
+            }
+            return out;
+        }
+
         /**
          * Re-derive every stream from the session seed, which is `sceneUseSeed`'s own last act
          * (`weather.js`): the same seed gives the same streams on every peer. Called once per
@@ -591,11 +666,18 @@ if (typeof globalThis.goats === "undefined") {
                     return ask("world.terrainHeight", [Number(x), Number(z)]);
                 },
             };
-            // A stream is a `side: "world"` mod's, so the member that registers one is only on the
-            // handle (`APIv1.md` section 4.13).
+            // A stream and an extension are a `side: "world"` mod's, so the two members that
+            // register them are only on the handle (`APIv1.md` section 4.13), and so is
+            // `publishRows` -- it is the shape of what those two send.
             if (id !== null) {
                 world.registerStream = function (name, seed) {
                     return registerStreamFor(id, name, seed);
+                };
+                world.extend = function (extensionId, handlers) {
+                    return extendFor(id, extensionId, handlers);
+                };
+                world.publishRows = function (rows) {
+                    return publishRowsFor(id, rows);
                 };
             }
             return world;
@@ -723,8 +805,16 @@ if (typeof globalThis.goats === "undefined") {
                 },
                 teleport: refuse("player.teleport"),
                 face: refuse("player.face"),
-                giveEnergy: refuse("player.giveEnergy"),
-                giveHealth: refuse("player.giveHealth"),
+                // The two the API lets a mod *give* rather than set (`APIv1.md` section 4.5): a
+                // bird perched on the goat's back is the caller they were added for, and the
+                // scene clamps and answers the new value. They cross, for the reason every write
+                // does -- a stat is the simulation's and this is not a value to push.
+                giveEnergy: function (amount) {
+                    return ask("player.giveEnergy", [Number(amount)]);
+                },
+                giveHealth: function (amount) {
+                    return ask("player.giveHealth", [Number(amount)]);
+                },
                 setMode: refuse("player.setMode"),
                 restart: refuse("player.restart"),
             },

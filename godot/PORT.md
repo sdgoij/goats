@@ -1846,6 +1846,21 @@ disagreements and fails if there are none.
   (`hash` instead of a cell coordinate), and its tell is the shape a tolerance would forgive: the
   divergence starts one character deep and one bit wide, then explodes -- which is how a "close
   enough" comparison would have turned a silent cross-peer desync into a green gate.
+- **A gate that counts what a frame *contains* stops being about its own subject the moment
+  another mod draws.** `verify_mod_gfx` and `verify_mod_mesh` assert exact record and node counts --
+  two draws, two nodes, and a frame that draws nothing leaving nothing standing -- which was true
+  only because the repository's mods were inert in them: `fatguy` builds its model in `update`,
+  which the port did not fire, and `birds` did not load at all. The rework fired nothing and fixed
+  nothing about that, but it made `birds` *load*, and a `side: "world"` mod draws in `draw3d` every
+  frame: **24 records a frame** (six birds, each a body, two wings and a shadow), after which
+  "what this hook drew" and "what the tree holds" are two
+  different questions. Both gates now run with `GOATS_NO_MODS` set, so their counts mean what they
+  say. **What that costs is recorded rather than hidden:** `verify_mod_gfx`'s model case used
+  `mods/fatguy`'s declared asset and now uses the game's own built-in `model.goat`, and with it goes
+  the only gate on the *host-registered bytes* half of the glTF path (`ModWorld._imported_scene`,
+  the `mod:...` name). The cheap way to restore it is a one-mod directory staged at run time --
+  `mods.gd`'s `load_mods` takes a directory and discovery walks its subdirectories -- which is the
+  shape `verify_scene_mods.gd`'s staged-failure case already uses.
 - **A host call inside a `catch` trips the embedded VM's environment stack, and mod isolation is
   exactly that shape.** Found while adding `goats.entities`, whose whole design is a query that calls
   *another mod's* callback and has to survive that callback throwing. Slag's `LeaveBlock`
