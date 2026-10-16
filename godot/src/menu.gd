@@ -191,16 +191,17 @@ func _draw() -> void:
 ## The click, on the widget under it. `menu.js`'s `rl.guiButton`/`guiToggle`/`guiComboBox` return
 ## their result here, one call at a time.
 func _gui_input(event: InputEvent) -> void:
+	var size: Vector2 = get_viewport_rect().size
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
 		if button.button_index != MOUSE_BUTTON_LEFT:
 			return
 		if button.pressed:
-			_press(button.position)
+			_press(button.position, size)
 		else:
 			_dragging = ""
 	elif event is InputEventMouseMotion and _dragging != "":
-		_slide(_dragging, (event as InputEventMouseMotion).position)
+		_slide(_dragging, (event as InputEventMouseMotion).position, size)
 
 ## Escape's walk (`menu.js` `sceneFrame`): from a sub-screen back to `main`, from `main` back to
 ## the game, and from the game to `main`. It is `static` and pure because it is a *rule* -- the
@@ -375,26 +376,45 @@ func _reflect_tier() -> int:
 func _herd_size() -> int:
 	return bots.count() if bots != null else 0
 
-## A click: a button acts, a toggle flips, a combo advances, a slider takes the position.
-func _press(at: Vector2) -> void:
-	for widget: Dictionary in layout(get_viewport_rect().size):
-		var rect: Rect2 = widget["rect"]
-		if not rect.has_point(at):
-			continue
+## The widget a click at `at` lands on, for a viewport of `size`: the topmost **interactive** one,
+## skipping the panel, the group boxes and the labels.
+##
+## That skip is the whole point, and its absence was a real bug: `guiPanel`, `guiGroupBox` and
+## `guiLabel` return nothing in the scene, so a click passes *through* them to whatever they cover
+## -- and the panel covers every control on every screen. The first version of `_press` returned on
+## the first widget whose rectangle held the point, which is the panel, so no button was ever
+## reached on any screen. It looked right, and a picture of a menu cannot click.
+##
+## It takes the size rather than reading the viewport so a gate can ask "what is under this point"
+## at any resolution with no window at all -- which is the case that would have caught the bug.
+func widget_at(at: Vector2, size: Vector2) -> Dictionary:
+	for widget: Dictionary in layout(size):
 		match String(widget["kind"]):
-			"button":
-				_act(String(widget["id"]))
-			"toggle":
-				_flip(String(widget["id"]))
-			"combo":
-				_cycle(widget)
-			"slider":
-				_dragging = String(widget["id"])
-				_slide(_dragging, at)
-		return
+			"button", "toggle", "combo", "slider":
+				if (widget["rect"] as Rect2).has_point(at):
+					return widget
+			_:
+				continue
+	return {}
 
-func _slide(id: String, at: Vector2) -> void:
-	for widget: Dictionary in layout(get_viewport_rect().size):
+## A click: a button acts, a toggle flips, a combo advances, a slider takes the position.
+func _press(at: Vector2, size: Vector2) -> void:
+	var widget: Dictionary = widget_at(at, size)
+	if widget.is_empty():
+		return
+	match String(widget["kind"]):
+		"button":
+			_act(String(widget["id"]))
+		"toggle":
+			_flip(String(widget["id"]))
+		"combo":
+			_cycle(widget)
+		"slider":
+			_dragging = String(widget["id"])
+			_slide(_dragging, at, size)
+
+func _slide(id: String, at: Vector2, size: Vector2) -> void:
+	for widget: Dictionary in layout(size):
 		if String(widget.get("id", "")) != id or String(widget["kind"]) != "slider":
 			continue
 		var rect: Rect2 = widget["rect"]

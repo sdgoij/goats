@@ -178,6 +178,8 @@ func _initialize() -> void:
 	_check_layout(oracle)
 	_check_keymap(_keymap_rows())
 	_check_walk()
+	_check_hits()
+	_check_clicks()
 
 	# The live half: the real scene, read a few frames later, for the reason `verify_console.gd`
 	# records (`SceneTree.root` is not inside the tree while `_initialize` runs).
@@ -191,6 +193,7 @@ func _process(_delta: float) -> bool:
 		return false
 	_check_effects()
 	_check_shared()
+	_check_routed()
 	if _failures.is_empty():
 		print("OK: the port's menu is the scene's -- four screens at four sizes, and every control "
 			+ "reaches what it names")
@@ -378,6 +381,56 @@ func _check_shared() -> void:
 		_failures.append("a setting written by the console did not reach the menu")
 	print("shared settings: the console and the menu hold one object")
 
+## The same click, pushed through the *viewport* rather than into `_press`: Godot's own GUI input
+## path has to find the menu, and the menu has to be the control it finds. `_check_clicks` proves
+## the logic answers a click; this proves the click arrives -- which is the half of the bug a
+## logical case cannot see, because a menu that is never handed an event and a menu that mishandles
+## one look identical from the inside.
+func _check_routed() -> void:
+	var menu: Menu = _main.get("menu")
+	if menu == null:
+		_failures.append("the scene did not build the menu")
+		return
+	var size: Vector2 = _main.get_viewport().get_visible_rect().size
+	# A headless run has no window, and its root viewport comes up 64x64 -- so every panel is laid
+	# out off-screen and no click can land on one. The routing is what this checks, so the viewport
+	# is given a real size first; the *scene's own* menu is what gets clicked, `CanvasLayer` parent
+	# and all, because that is the one difference a bare `Menu` in a `SubViewport` would not cover.
+	_main.get_viewport().size = Vector2i(1280, 720)
+	size = _main.get_viewport().get_visible_rect().size
+	menu.show_screen("main")
+	var widget: Dictionary = _find(menu.layout(size), "settings")
+	if widget.is_empty():
+		_failures.append("the scene's main screen has no settings button")
+		return
+	var at: Vector2 = (widget["rect"] as Rect2).get_center()
+	# A *motion* first: Godot's GUI picking sets `mouse_over` on movement, and a button event is
+	# routed to whatever `mouse_over` already holds. A click with no pointer at all is a click on
+	# nothing, which is a fact about Godot's input and not about this menu -- but it is also what a
+	# gate has to do to stand where a player stands, because a player has to point at a button
+	# before they can press it, and pointing is a motion event.
+	var motion := InputEventMouseMotion.new()
+	motion.position = at
+	_main.get_viewport().push_input(motion)
+	var event := InputEventMouseButton.new()
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = true
+	event.position = at
+	_main.get_viewport().push_input(event)
+	var landed: String = menu.screen
+	# The click acts on press, so the release is only tidiness; but a menu that had swallowed the
+	# press would still be on `main` here.
+	event = InputEventMouseButton.new()
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = false
+	event.position = at
+	_main.get_viewport().push_input(event)
+	menu.show_screen("hud")
+	print("routed click: the viewport delivered it to '", landed, "', pointer ", at)
+	if landed != "settings":
+		_failures.append("a click pushed through the viewport did not reach the menu"
+			+ " (it left the screen at '%s')" % landed)
+
 ## A `Menu` with no scene, at the settings the oracle was given: enough to lay every screen out.
 func _bare_menu() -> Menu:
 	var menu := Menu.new()
@@ -394,6 +447,147 @@ func _bare_menu() -> Menu:
 	menu.water_reflect.set_wish(float(SETTINGS_FOR_LAYOUT["reflect"]))
 	menu.scene_frames = int(SETTINGS_FOR_LAYOUT["frames"])
 	return menu
+
+## Every *interactive* widget on every screen is reachable at its own centre, and a panel or a
+## group box over it does not eat the click.
+##
+## This is the case that was missing when the menu first shipped, and its absence is what shipped a
+## menu nothing could click: `_press` returned on the first widget whose rectangle held the point,
+## which is the *panel*, and the panel covers every control on every screen. A layout case and a
+## settings case both passed. A hit test is neither: it is the only thing that says the control a
+## player sees is the control the click reaches.
+func _check_hits() -> void:
+	var menu := _bare_menu()
+	var size := Vector2(1280.0, 720.0)
+	var cases: int = 0
+	var mismatches: int = 0
+	var first: String = ""
+	for which: String in ["main", "settings", "keymap", "mods"]:
+		menu.show_screen(which)
+		for widget: Dictionary in menu.layout(size):
+			var kind: String = String(widget["kind"])
+			if kind != "button" and kind != "toggle" and kind != "combo" and kind != "slider":
+				continue
+			cases += 1
+			var centre: Vector2 = (widget["rect"] as Rect2).get_center()
+			var hit: Dictionary = menu.widget_at(centre, size)
+			var got: String = String(hit.get("id", ""))
+			if got != String(widget["id"]):
+				mismatches += 1
+				if first == "":
+					first = "%s/%s at its own centre hit '%s'" % [which, widget["id"], got]
+	menu.free()
+	print("hit tests: %d control(s), %d mismatch(es)" % [cases, mismatches])
+	if first != "":
+		print("  first: ", first)
+	if mismatches != 0:
+		_failures.append("a control is not where its own centre says it is: %d of %d"
+			% [mismatches, cases])
+
+## The clicks themselves: a button changes the screen, a toggle flips, a combo advances, a slider
+## takes the position it was clicked at -- and a click on the panel's background does *nothing*,
+## because `guiPanel` is not a control. The event translation is Godot's; `_press` is the whole of
+## the logic, so that is what a headless gate can drive.
+func _check_clicks() -> void:
+	var menu := _bare_menu()
+	var size := Vector2(1280.0, 720.0)
+	var fired: Array = []
+	menu.on_quit = func() -> void:
+		fired.append("quit")
+	menu.on_console = func() -> void:
+		fired.append("console")
+	var mismatches: int = 0
+	var first: String = ""
+
+	# The six buttons of the main screen, and the two that leave it.
+	menu.show_screen("main")
+	for id: String in ["settings", "mods", "keymap"]:
+		menu.show_screen("main")
+		_click(menu, size, id)
+		if menu.screen != id:
+			mismatches += 1
+			if first == "":
+				first = "'%s' left the screen at '%s'" % [id, menu.screen]
+		_click(menu, size, "back")
+		if menu.screen != "main":
+			mismatches += 1
+			if first == "":
+				first = "'back' from %s left the screen at '%s'" % [id, menu.screen]
+	menu.show_screen("main")
+	_click(menu, size, "continue")
+	if menu.screen != "hud":
+		mismatches += 1
+		if first == "":
+			first = ">continue< left the screen at '%s'" % menu.screen
+	menu.show_screen("main")
+	_click(menu, size, "console")
+	if menu.screen != "hud" or not fired.has("console"):
+		mismatches += 1
+		if first == "":
+			first = "'console' left the screen at '%s' and fired %s" % [menu.screen, fired]
+	menu.show_screen("main")
+	_click(menu, size, "quit")
+	if not fired.has("quit"):
+		mismatches += 1
+		if first == "":
+			first = "'quit' did not fire"
+
+	# A toggle flips, a combo advances, a slider takes the position.
+	menu.show_screen("settings")
+	var was_light: bool = menu.settings.light
+	_click(menu, size, "light")
+	if menu.settings.light == was_light:
+		mismatches += 1
+		if first == "":
+			first = "'light' did not flip"
+	var was_cloud: String = menu.settings.cloud
+	_click(menu, size, "cloud")
+	if menu.settings.cloud == was_cloud:
+		mismatches += 1
+		if first == "":
+			first = "'cloud' did not advance"
+	var was_wish: float = menu.water_reflect.wish
+	_click(menu, size, "reflect")
+	if menu.water_reflect.wish == was_wish:
+		mismatches += 1
+		if first == "":
+			first = "'reflect' did not advance"
+	var slider: Dictionary = _find(menu.layout(size), "bgm")
+	var rect: Rect2 = slider["rect"]
+	menu._press(Vector2(rect.position.x + rect.size.x * 0.5, rect.get_center().y), size)
+	if absf(menu.settings.bgm - 50.0) > 1.0:
+		mismatches += 1
+		if first == "":
+			first = "the mid-track click set bgm to %s" % menu.settings.bgm
+
+	# A click on the panel's own background is not a click on anything.
+	menu.show_screen("main")
+	var before: int = menu.settings.bgm
+	menu._press(Vector2(20.0, 20.0), size)
+	if menu.screen != "main" or menu.settings.bgm != before:
+		mismatches += 1
+		if first == "":
+			first = "a click on the dim changed something"
+
+	menu.free()
+	print("clicks: 12 check(s), %d mismatch(es)" % mismatches)
+	if first != "":
+		print("  first: ", first)
+	if mismatches != 0:
+		_failures.append("the controls do not answer a click: %d mismatch(es)" % mismatches)
+
+## Click the centre of a named control on the current screen.
+func _click(menu: Menu, size: Vector2, id: String) -> void:
+	var widget: Dictionary = _find(menu.layout(size), id)
+	if widget.is_empty():
+		return
+	menu._press((widget["rect"] as Rect2).get_center(), size)
+
+static func _find(widgets: Array, id: String) -> Dictionary:
+	for widget: Dictionary in widgets:
+		if String(widget.get("id", "")) == id:
+			return widget
+	return {}
 
 ## `menu.js`'s `KEYMAP_ROWS`, retyped here so a drift on either side is a failure and not a
 ## mirrored edit. It is the one table in this gate the oracle does not compute.

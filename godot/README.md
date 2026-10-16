@@ -190,8 +190,10 @@ Twenty-three headless gates, all `SceneTree` scripts that exit non-zero on failu
 
 # The menu: four screens at four viewport sizes against `menu.js`'s own layout arithmetic
 # (kind, word and rectangle for every panel, group, label, button, toggle, slider and combo),
-# the keymap table row for row, the Escape walk — and then every control run against the *live*
-# scene, asserted against the world rather than against the setting (M25).
+# the keymap table and the Escape walk, every interactive control hit at its own centre and
+# clicked, one real click pushed through the viewport to the scene's own menu — and then every
+# control run against the *live* scene, asserted against the world rather than against the
+# setting (M25).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_menu.gd
 ```

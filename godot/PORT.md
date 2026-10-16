@@ -441,12 +441,26 @@ layout: 288 line(s), 0 mismatch(es)
 keymap: 22 row(s), 0 mismatch(es)
 first button: 3 case(s), 0 mismatch(es)
 escape: 5 case(s), 0 mismatch(es)
+hit tests: 18 control(s), 0 mismatch(es)
+clicks: 12 check(s), 0 mismatch(es)
 settings effects: 14 check(s), 0 mismatch(es)
 shared settings: the console and the menu hold one object
+routed click: the viewport delivered it to 'settings', pointer (640.0, 292.0)
 OK: the port's menu is the scene's -- four screens at four sizes, and every control reaches what it names
 ```
 
-The last two lines are the part a layout cannot answer: **every control does something.** The
+The **hit tests** and the **clicks** are the lines that were missing when this first shipped, and
+their absence is what shipped a menu nothing could click: `_press` returned on the first widget
+whose rectangle held the point, which is the *panel*, and the panel covers every control on every
+screen -- so no button was ever reached. A layout case and a settings case both passed. The `hit
+tests` line asks every interactive control at its own centre and gets its own id back; `clicks`
+drives `_press` and checks that a button changes the screen, a toggle flips, a combo advances and a
+slider takes the position it was clicked at, and that a click on the dim does *nothing*; and the
+last line pushes a real `InputEventMouseButton` through the *viewport* to the scene's own menu, so
+Godot's GUI picking -- which has to find a `Control` under a `CanvasLayer` -- is covered too, and
+not only the logic.
+
+The last three lines are the part a layout cannot answer: **every control does something.** The
 settings became real in the same slice, because a settings screen with a control that writes a
 value nothing reads is worse than no screen: `core.js`'s `SETTINGS` is one `Settings` object the
 console's `setting` verb and the screen both hold, and its `apply` is the frame's -- the lit
@@ -1459,6 +1473,25 @@ disagreements and fails if there are none.
   which runs on both paths, and the lesson is that a pause is a claim about *state* and not about
   *drawing*: anything a frozen frame still has to show is not a step. A picture found it; the gate
   could not, because a headless run has nothing to draw.
+- **A hit test that returns on the first widget under the point is a menu nothing can click.**
+  `menu.js` builds each screen the way raygui does -- a `guiPanel` first, then the controls drawn
+  on it -- and the port's `_press` walked the same list and returned on the first widget whose
+  rectangle held the click. That widget is always the *panel*, whose `kind` no arm matched, so the
+  walk ended in a `return` with nothing done: every button, toggle, combo and slider on all four
+  screens was dead, and the panel still drew, the hover still highlighted (`_draw` skipped the
+  panel) and the settings cases still passed because they called the setters directly. Two
+  independent mistakes made it invisible: the *hit* was tested in a function the gate never called,
+  and the *routing* was never tested at all. What closes it is three cases at three levels --
+  `widget_at` for every interactive control at its own centre, `_press` for the actions themselves,
+  and one real `InputEventMouseButton` pushed through the viewport so Godot's own picking is in the
+  loop. The general shape: a control is only clickable if the thing that *finds* it skips what is
+  not a control, and a panel is not a control.
+- **The scene draws the HUD *or* a menu, never one over the other.** `sceneFrame` calls `drawHud`,
+  the touch controls and the damage pulse inside the `uiScreen === "hud"` branch and `drawUi` in the
+  `else`, so a menu screen is the dim over a world with no read-out on it -- and the port's first
+  attempt drew the HUD under the dim, which was a dimmed read-out the scene does not have. It is a
+  *rule* rather than a bug, and the only way to see it is to read the branch: neither a picture nor
+  a case would have said which of the two was intended.
 - **A second engine to maintain.** The raylib client and the Godot port share a
   protocol and a mod format but not a line of code. Every balance or protocol
   change now has two homes.
@@ -1559,8 +1592,10 @@ arithmetic against `console.js` and `ctl.js`, and then 72 lines of the vocabular
 *live* scene's own goat, meadow, water, devices, weather, herd and audio (`godot/tools/verify_console.gd`,
 M24; the panel itself read off `GOATS_CONSOLE=help` in a window); and holds the menu -- four screens
 at four viewport sizes against `menu.js`'s own layout arithmetic (288 widget lines of kind, word
-and rectangle), the keymap table, the Escape walk, and then fourteen settings checks asserted
-against the *live* world rather than against the setting (`godot/tools/verify_menu.gd`, M25; the
+and rectangle), the keymap table, the Escape walk, every interactive control hit at its own centre
+and clicked, one real click pushed through the viewport to the scene's own menu, and then fourteen
+settings checks asserted against the *live* world rather than against the setting
+(`godot/tools/verify_menu.gd`, M25; the
 panels read off `GOATS_UI=settings` and `GOATS_UI=keymap` in a window). Every one
 of them exits zero.
 The rest is read from the tree.*
