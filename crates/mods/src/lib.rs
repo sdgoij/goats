@@ -1736,14 +1736,14 @@ mod tests {
 
         assert_eq!(
             birds.hash,
-            0x5de4_fa3c_b5c0_77d0,
+            0x7767_5b54_1228_41b5,
             "the birds digest changed: {}@{} -- if that is intended, pin {} and write \
              the move up in the ROADMAP's M14d",
             birds.id,
             birds.version,
             pin(birds.hash)
         );
-        assert_eq!(pin(0x5de4_fa3c_b5c0_77d0), "0x5de4_fa3c_b5c0_77d0");
+        assert_eq!(pin(0x7767_5b54_1228_41b5), "0x7767_5b54_1228_41b5");
     }
 
     #[test]

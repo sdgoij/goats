@@ -182,7 +182,11 @@ function rng() {
 }
 
 function ensureModel() {
-    if (model >= 0) return;
+    // `!== null` and not `>= 0`: a handle is opaque, and `null >= 0` is *true* in JavaScript
+    // (`null` coerces to 0), so the numeric test this used to carry returned here for ever and the
+    // fat guy never loaded at all -- while his simulation ran perfectly, which is why only looking
+    // at the world showed it.
+    if (model !== null) return;
     const name = goats.assets.get(SLOT);
     if (name === undefined || name === null) {
         if (!warned) {
@@ -585,7 +589,7 @@ goats.on("update", function (dt) {
 });
 
 goats.on("draw3d", function () {
-    if (model < 0) return;
+    if (model === null) return;
     const dx = x + knockX;
     const dz = z + knockZ;
     // He faces local +Z. On his feet that is a Y rotation of the heading -- the wobble
@@ -609,8 +613,12 @@ goats.on("draw3d", function () {
     }
     const bob = flung ? 0 : Math.abs(Math.sin(stride * Math.PI)) * (BOB_BASE + speed * BOB_PER_SPEED);
     const hop = flung ? 0 : Math.sin(knock * Math.PI) * HOP;
+    // `yaw` above is in **degrees**, which is what the constants are written in and what the
+    // reference client's `drawModelEx` wanted; `goats.gfx.draw.mesh` takes **radians**
+    // (`APIv1.md` section 4.19), so it is converted once here rather than at four constants.
+    // Passing degrees straight through is what made him spin rather than face where he was going.
     goats.gfx.draw.mesh(model, dx, y + goats.world.terrainHeight(dx, dz) + bob + hop, dz,
-        axisX, axisY, axisZ, yaw, SCALE, goats.draw.WHITE);
+        axisX, axisY, axisZ, (yaw * Math.PI) / 180, SCALE, goats.draw.WHITE);
 });
 
 // ---- the console ----------------------------------------------------------

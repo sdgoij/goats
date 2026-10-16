@@ -614,14 +614,12 @@ func _process(delta: float) -> void:
 	# after `hud.show_for` because that is where this frame decided the HUD is the thing on screen
 	# (`sceneFrame` fires `modEmit("hud", ...)` inside the branch that draws the HUD).
 	#
-	# ...and the `update` event, which is `modFrameTick(dt)` and fires **every** frame -- the
-	# freezing is in the *argument*, not in a gate: a frozen world sends `dt = 0`, so a mod's own
-	# clock holds still while its handler still runs, which is what the reference does and what lets
-	# a mod notice a pause rather than only be skipped by it. Before `frame`, because the frame is
-	# what *says* the `blast` events an `update` produced (`mods.gd`'s `devices`).
-	mods.update(0.0 if frozen else delta)
+	# ...and the `update` event with the frame's step, which is `modFrameTick(dt)` -- fired **every**
+	# frame, with the freezing in the *argument* rather than in a gate: a frozen world sends `dt = 0`,
+	# so a mod's own clock holds still while its handler still runs. It rides `frame` rather than
+	# being called here because it has to run *after* the snapshot is pushed (`mods.gd`).
 	mods.frame(_hours, Vector2(get_viewport().get_visible_rect().size), not menu.is_open(), camera,
-		_mod_snapshot())
+		_mod_snapshot(), 0.0 if frozen else delta)
 	_boom_if_asked()
 
 	# The probe's own clock, which runs whether or not the world is frozen: it is counting the

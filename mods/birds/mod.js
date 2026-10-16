@@ -173,8 +173,8 @@ function hex2(v) { return HEX[clamp(ROUND(v), 0, 255)]; }
 const Q_TMP1 = { x: 0, y: 0, z: 0, w: 1 };
 const Q_TMP2 = { x: 0, y: 0, z: 0, w: 1 };
 const Q_BODY = { x: 0, y: 0, z: 0, w: 1 };
-const AA_BODY = { x: 0, y: 0, z: 0, deg: 0 };
-const AA_WING = { x: 0, y: 0, z: 0, deg: 0 };
+const AA_BODY = { x: 0, y: 0, z: 0, rad: 0 };
+const AA_WING = { x: 0, y: 0, z: 0, rad: 0 };
 const V_WING = { x: 0, y: 0, z: 0 };
 
 function qAxisInto(out, x, y, z, rad) {
@@ -215,19 +215,23 @@ function qRotInto(out, q, vx, vy, vz) {
 }
 
 function qAxisAngleInto(out, q) {
+    // **Radians**, which is what `goats.gfx.draw.mesh` takes (`APIv1.md` section 4.19) and what the
+    // reference client multiplies by `180 / PI` for raylib. It used to be degrees here -- the field
+    // was called `deg` and raylib's `DrawModelEx` wants those -- and the port drew every bird as a
+    // helicopter until this was found: a 57x angle is a rotor, not a wingbeat.
     const w = clamp(q.w, -1, 1);
     const s = SQRT(MAX(1e-12, 1 - w * w));
     if (s < 1e-6) {
         out.x = 0;
         out.y = 1;
         out.z = 0;
-        out.deg = 0;
+        out.rad = 0;
         return out;
     }
     out.x = q.x / s;
     out.y = q.y / s;
     out.z = q.z / s;
-    out.deg = (2 * ACOS(w) * 180) / PI;
+    out.rad = 2 * ACOS(w);
     return out;
 }
 
@@ -1065,14 +1069,14 @@ function drawFlock(cam) {
         const q = bodyQuatInto(Q_BODY, b);
         const ba = qAxisAngleInto(AA_BODY, q);
         const tint = goats.draw.color(200 + ((i * 17) % 56), 200 + ((i * 29) % 56), 200 + ((i * 11) % 56), 255);
-        goats.gfx.draw.mesh(bodyModel, b.x, b.y, b.z, ba.x, ba.y, ba.z, ba.deg, s, tint);
+        goats.gfx.draw.mesh(bodyModel, b.x, b.y, b.z, ba.x, ba.y, ba.z, ba.rad, s, tint);
         const f = flapFor(b);
         for (let side = -1; side <= 1; side += 2) {
             const wq = qMulInto(Q_TMP1, q, qAxisInto(Q_TMP2, 1, 0, 0, side > 0 ? -f : f));
             const wa = qAxisAngleInto(AA_WING, wq);
             const pv = qRotInto(V_WING, q, SHOULDER.x * s, SHOULDER.y * s, side * SHOULDER.z * s);
             goats.gfx.draw.mesh(side > 0 ? wingR : wingL,
-                b.x + pv.x, b.y + pv.y, b.z + pv.z, wa.x, wa.y, wa.z, wa.deg, s, tint);
+                b.x + pv.x, b.y + pv.y, b.z + pv.z, wa.x, wa.y, wa.z, wa.rad, s, tint);
         }
     }
 }

@@ -114,9 +114,23 @@ func _node(index: int, command: Dictionary) -> Node3D:
 			box.mesh = BoxMesh.new()
 			node = box
 		"mesh":
-			# A mod's own geometry: the `ArrayMesh` is the mod's, and it is built when the
-			# record is placed (`_place_mesh`), because the handle can change under a slot.
-			node = MeshInstance3D.new()
+			# A `mesh` record's handle is *any* handle (`APIv1.md` section 4.19), and a mod has two kinds:
+			# its own geometry (`goats.gfx.mesh`, an `ArrayMesh` the extension holds) or an asset
+			# (`goats.gfx.model` / `assets.get`, a glTF this scene imports). Both checked-in examples
+			# rely on it -- the flock's parts are meshes and the fat guy's body is a *model*, drawn
+			# through the same axis-angle call -- and asking only the mesh store is what left him
+			# invisible while his simulation ran. The kind carries which, so a slot that changes from
+			# one to the other is rebuilt rather than reused with the wrong node under it.
+			var oriented_handle: String = String(command.get("h", ""))
+			if _mesh_for(oriented_handle) != null:
+				kind = "mesh"
+				node = MeshInstance3D.new()
+			else:
+				kind = "model-mesh"
+				var packed: PackedScene = _model_scene(oriented_handle)
+				if packed == null:
+					return null
+				node = packed.instantiate() as Node3D
 		"model":
 			var handle: String = String(command.get("h", ""))
 			var packed: PackedScene = _model_scene(handle)
@@ -135,37 +149,47 @@ func _place(node: Node3D, command: Dictionary) -> void:
 	node.visible = true
 	node.position = Vector3(float(command.get("x", 0.0)), float(command.get("y", 0.0)),
 		float(command.get("z", 0.0)))
-	var kind: String = String(command.get("k", ""))
+	# The *node's* kind rather than the record's: a `mesh` record is one of two kinds of node
+	# (`_node`), and the orientation below is the same for both.
+	var kind: String = String(_meta(node, "mod_kind", ""))
 	if kind == "cube":
 		_place_cube(node as MeshInstance3D, command)
 		return
-	if kind == "mesh":
-		_place_mesh(node as MeshInstance3D, command)
+	if kind == "mesh" or kind == "model-mesh":
+		_place_oriented(node, command)
 		return
 	node.rotation = Vector3(0.0, float(command.get("yaw", 0.0)), 0.0)
 	var scale: float = float(command.get("scale", 1.0))
 	node.scale = Vector3(scale, scale, scale)
 	_apply_tint(node, _color(command.get("tint", null)))
 
-## A mod's own mesh (`goats.gfx.mesh`): the mod's geometry, its orientation and its material.
+## A `mesh` record's placement: a mod's own geometry *or* a model, oriented the same way.
 ##
 ## The orientation is an **axis and an angle** rather than a yaw -- `goats.gfx.draw.mesh`'s whole
-## point, because a tumbling thing is not a turning one -- so the basis is set outright instead
-## of through `rotation`, which has no third axis to give.
-func _place_mesh(instance: MeshInstance3D, command: Dictionary) -> void:
+## point, because a tumbling thing is not a turning one -- so the basis is set outright instead of
+## through `rotation`, which has no third axis to give. The angle is the record's own, which the
+## facade has already seen in the API's unit: **radians**.
+func _place_oriented(node: Node3D, command: Dictionary) -> void:
 	var handle: String = String(command.get("h", ""))
-	if String(_meta(instance, "mod_mesh", "")) != handle:
-		instance.mesh = _mesh_for(handle)
-		instance.set_meta("mod_mesh", handle)
+	if node is MeshInstance3D:
+		var mesh: MeshInstance3D = node
+		if String(_meta(mesh, "mod_mesh", "")) != handle:
+			mesh.mesh = _mesh_for(handle)
+			mesh.set_meta("mod_mesh", handle)
 	var scale: float = float(command.get("scale", 1.0))
 	var axis := Vector3(float(command.get("ax", 0.0)), float(command.get("ay", 1.0)),
 		float(command.get("az", 0.0)))
 	if axis.length_squared() < 1e-12:
 		# A degenerate axis is one the mod did not mean: the up axis is the yaw case.
 		axis = Vector3.UP
-	instance.basis = Basis(axis.normalized(), float(command.get("angle", 0.0))) \
+	node.basis = Basis(axis.normalized(), float(command.get("angle", 0.0))) \
 		.scaled(Vector3(scale, scale, scale))
-	_apply_mesh_material(instance, handle, _color(command.get("tint", null)))
+	# A mesh's material is the extension's (its per-vertex colours and its bound texture); an
+	# imported model carries its own, and only the tint is ours.
+	if node is MeshInstance3D:
+		_apply_mesh_material(node as MeshInstance3D, handle, _color(command.get("tint", null)))
+	else:
+		_apply_tint(node, _color(command.get("tint", null)))
 
 func _place_cube(box: MeshInstance3D, command: Dictionary) -> void:
 	# The size is the record's, so the mesh is this instance's own -- two cubes in one frame

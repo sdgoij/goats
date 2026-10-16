@@ -114,7 +114,7 @@ func _ready() -> void:
 ## file knows about the mods and not about the UI. `snapshot` is the same shape -- the frame builds
 ## it, because the frame owns the world, and this file only hands it on.
 func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
-		snapshot: Dictionary = {}) -> void:
+		snapshot: Dictionary = {}, dt: float = 0.0) -> void:
 	if host == null:
 		return
 	host.call("set_world_time", hours)
@@ -123,6 +123,15 @@ func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
 	# it -- pushes nothing, so the last real snapshot stands rather than being replaced by nothing.
 	if not snapshot.is_empty():
 		host.call("push_world", JSON.stringify(snapshot))
+	# ...and `update` **after** the push, which is the whole reason this is here rather than beside
+	# the other emits: the first `update` of a session used to run before any world had been pushed,
+	# so a handler that read a tuning leaf or a goat's position read *nothing* -- fatguy's
+	# `tuning.get("explosions.mine.trigger")` answered "unknown path" once, on the first frame, and
+	# the half-run frame it aborted left his `knock` a `NaN` for the rest of the session.
+	#
+	# The order is the reference's own (`modFrameTick`, then the drawing hooks): a handler that acts
+	# on the world runs before the frame that shows it.
+	host.call("emit_update", dt)
 	if hud:
 		host.call("emit_hud", screen.x, screen.y)
 	# The world pass. Godot has no "the 3D pass" to hook -- a node in the tree is how a thing is
@@ -161,9 +170,10 @@ func use_seed(seed: int) -> void:
 	if host != null:
 		host.call("use_seed", seed)
 
-## One frame's `update` event, with the step. The scene sends `dt = 0` while the world is frozen, so
-## this is *not* a gate: a frozen frame still reaches every handler, and a mod that keeps a clock of
-## its own holds still with it (`modFrameTick`).
+## One frame's `update` event, with the step. Called by `frame` *after* the world is pushed and
+## before the drawing hooks -- see there -- rather than by the scene, because the order is the whole
+## point. The scene sends `dt = 0` while the world is frozen, so this is not a gate: a frozen frame
+## still reaches every handler, and a mod that keeps a clock of its own holds still with it.
 func update(dt: float) -> void:
 	if host != null:
 		host.call("emit_update", dt)

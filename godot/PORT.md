@@ -1431,14 +1431,14 @@ Sizes are judgement, not measurement.
 | # | Stage | Done when | Size |
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
-| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`, including a mod's **own** geometry and images — `mesh`/`texture`/`bind`/`draw.mesh`, `verify_mod_mesh.gd`), and so are the **readable groups** (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`, §4.5–4.12, one per-frame snapshot + a callback for `terrainHeight`, held by `verify_mod_surface.gd`) with **`assets`** in among them (§4.11: the built-in half is `audio.gd`'s, the declared half is the host's, and the facade merges fills and joins the way the reference client does, so a name either half hands back resolves through `gfx.model`/`sfx.load`), and **`entities`** (§4.16: the registry a mod offers its own things into and any mod queries, which is the one group whose crossing is between two mods and not between a mod and the scene), and the **world mods' streams** (`rng`/`world.registerStream`, §4.13, derived from the session seed the way `sceneUseSeed` derives the scene's own); what remains of stage 8 is the *writes*, `modSetEnabled`, the world-mod datagram, `world.extend`'s transport, reload/watch and the wasm path — **and the events are in** (`update`, `shutdown`, `blast`, so the flock flies: `verify_scene_mods.gd` sends it into the air and holds the scene's own frames to it) | 2–3 |
+| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`, including a mod's **own** geometry and images — `mesh`/`texture`/`bind`/`draw.mesh`, `verify_mod_mesh.gd`), and so are the **readable groups** (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`, §4.5–4.12, one per-frame snapshot + a callback for `terrainHeight`, held by `verify_mod_surface.gd`) with **`assets`** in among them (§4.11: the built-in half is `audio.gd`'s, the declared half is the host's, and the facade merges fills and joins the way the reference client does, so a name either half hands back resolves through `gfx.model`/`sfx.load`), and **`entities`** (§4.16: the registry a mod offers its own things into and any mod queries, which is the one group whose crossing is between two mods and not between a mod and the scene), and the **world mods' streams** (`rng`/`world.registerStream`, §4.13, derived from the session seed the way `sceneUseSeed` derives the scene's own); what remains of stage 8 is the *writes*, `modSetEnabled`, the world-mod datagram, `world.extend`'s transport, reload/watch and the wasm path — **and the events are in** (`update`, `shutdown`, `blast`, so the flock flies: `verify_scene_mods.gd` sends it into the air and holds the scene's own frames to it) -- and that same gate now checks what the two examples **drew** (`_check_drawn`: the fat guy is in the world, and a `mesh` record's angle is radians) | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the mods and voice paths remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | **done**: the HUD is a `Control` drawing `drawHud` (M23), the console is in (M24: `console.gd` + `commands.gd` + `verify_console.gd` -- the shell, the sixty-odd verbs, chat, and six of the seven `GOATS_*` knobs as verbs), and the menu's four screens are in with the settings they drive (M25: `menu.gd` + `settings.gd` + `verify_menu.gd`); what is left is the `Mods` screen's *list*, which waits on the scene loading mods (stage 1) | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the console's `mute` and `setting bgm|sfx` are in (M24) and the menu's two sliders are in (M25), so what is left is *voice*, which is still the bridge's to carry | 2–3 |
-| 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: identity and logging, the readable groups, both drawing surfaces, a mod's own geometry and images, `gfx.unload`, a mod's own **sound**, the **asset slots**, the **entities** two mods see of each other, a world mod's **seeded stream**, the **devices** and **`goats.water`** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`, `verify_mod_audio.gd`), **the events are fired** (`update`/`shutdown`/`blast`), and the two examples have been **rewritten onto the API** — no `rl` in either, and every one of them loads; the writes, `entities`' unload path, the world-mod datagram (`world.extend`'s transport), reload and the wasm path remain |
+| 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: identity and logging, the readable groups, both drawing surfaces, a mod's own geometry and images, `gfx.unload`, a mod's own **sound**, the **asset slots**, the **entities** two mods see of each other, a world mod's **seeded stream**, the **devices** and **`goats.water`** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`, `verify_mod_audio.gd`), **the events are fired** (`update`/`shutdown`/`blast`), and the two examples have been **rewritten onto the API** — no `rl` in either, and every one of them loads, and *draws* right (the handle-kind and radians fixes, `_check_drawn`); the writes, `entities`' unload path, the world-mod datagram (`world.extend`'s transport), reload and the wasm path remain |
 | 9 | Platforms | desktop, Android, web export presets + CI | 2–4 |
 | 10 | Tests | golden-value checks per deterministic system; GUT/GdUnit for the core | 3–6 |
 
@@ -1875,6 +1875,45 @@ disagreements and fails if there are none.
   `entitiesNear` and both `__fire*` emitters, applied to the second pre-emptively because it is the
   same shape. `APIv1.md` §7's guarantee (the failure is named with its mod's id) is kept; only the
   *moment* moved. The underlying bug is Slag's and wants a minimal case against `ir.rs`.
+- **A mod that reads the world in `update` has to *see* a world, so the snapshot has to be pushed
+  first -- and the reference's own order is the reason.** The scene's frame is `modFrameTick(dt)`
+  and *then* the drawing hooks, and the port had `update` run **before** `push_world`, so the first
+  `update` of a session reached every handler with nothing pushed at all. `fatguy` read
+  `goats.tuning.get("explosions.mine.trigger")` there, the unknown path threw out of the middle of
+  his handler, and the half-run frame it aborted left his `knock` a `NaN` for the rest of the
+  session -- which is why a mod whose *simulation* ran perfectly the whole time never drew a thing.
+  The fix is to fire the event from inside `mods.gd`'s `frame`, after the push and before `hud` and
+  `draw3d`, which is both correct and the reference's order. The shape to keep: a snapshot the frame
+  *builds* cannot be read by an event the frame fires *before* it, and the tell is a first frame
+  that behaves differently from every later one.
+- **`null >= 0` is `true` in JavaScript, and a leftover numeric handle test never loads anything.**
+  `fatguy`'s `ensureModel` opened with `if (model >= 0) return;` -- correct when a handle was a
+  raylib integer, and now that a handle is opaque (`null` until it is loaded, §3.3) it returns for
+  ever, because `null` coerces to `0` and the guard reads as "already loaded" from the very first
+  call. His simulation ran, the devices tripped under him, and his body was never built. The API
+  work had already turned the last two `>= 0` tests in `birds` into `null` ones; this one survived
+  because it is in `fatguy` and no gate asked what a mod *drew* -- which is the next bullet's
+  subject, and `APIv1.md` §3.3's own reason for making a handle opaque.
+- **A `mesh` record's handle is *any* handle, and the flock and the fat guy are the two halves of
+  it.** `goats.gfx.draw.mesh` takes whatever `goats.gfx.mesh` built *or* whatever `goats.gfx.model`
+  loaded (`APIv1.md` §4.19), and `mod_world.gd`'s `_node` asked only its mesh store: the flock's
+  parts (arrays) resolved, and the fat guy's body (an imported glTF) came back `null`, so his slot
+  held an `ArrayMesh` of nothing. He was in the tree, his `draw3d` ran, and he could not be seen.
+  The fix is a `model-mesh` kind recorded on the **node** rather than read off the record, so the
+  placement orients either and a slot that changes kind is still rebuilt rather than reused. The
+  shape is the one the `entities` seam taught: an opaque handle has no type of its own, so "what
+  kind of thing is this?" is answered by whichever store is asked, and asking one store answers the
+  question for one kind.
+- **The axis-angle `goats.gfx.draw.mesh` takes is radians, and a mod written against the replaced
+  engine's unit is off by a factor of 57.** The reference client multiplies by `180 / Math.PI` only
+  to hand raylib the degrees its `DrawModelEx` wants; the API declares radians, and the rework left
+  the flock posing its birds in **degrees** -- so under the Godot host the whole bird was turned by
+  ~57x and spun like a rotor instead of beating its wings. `fatguy` had the mirror-image version
+  (`yaw` in degrees at the draw). The lesson is not the conversion but *where it belongs*: a mod
+  states its angle in the unit the API declares, and the abstraction earns its name only by never
+  showing the engine's quirk through it -- a leak here is invisible in every gate and obvious in one
+  picture, which is why `_check_drawn` bounds an angle at a full turn. (It is also the seventh
+  `birds` digest move, M14d: the entry changed, so a peer on the older flock cannot join.)
 - **A second engine to maintain.** The raylib client and the Godot port share a
   protocol and a mod format but not a line of code. Every balance or protocol
   change now has two homes.
@@ -1934,13 +1973,13 @@ audio and the mod surface, and new work last.
    `goats.gfx`, and a mod's **own** geometry and images -- `mesh`/`texture`/`bind`/`draw.mesh`)
    painted (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`,
    `verify_mod_audio.gd`). What is left is the half a mod *writes* and the rest of the surface: the
-   events, `modSetEnabled` and its session guard, the world-mod datagram (`world.extend`),
-   `explosions`/`water`/`publishRows`, reload/watch and the wasm path. **The
-   remaining groups, then
-   the events, then the rework**, because every engine capability either example read is now an API
-   member: with `explosions`/`water`/`extend` in and the hooks firing, `birds` and
-   `fatguy` can be rewritten against the API and no mod will know what `rl` is -- which is the
-   milestone this order has been walking towards.
+   otherwise. What is left is the half a mod *writes*, and it is a shorter list than it was: the
+   events are **in** (`update`, `shutdown`, `blast`), `explosions`/`water` are in, and both examples
+   have been **rewritten onto the API** and now draw right (`verify_scene_mods.gd`'s `_check_drawn`;
+   the flock's unit fix is the seventh `birds` digest move, M14d). What remains is `modSetEnabled`
+   and its session guard, the world-mod datagram -- `world.extend`'s transport, which is the last
+   multiplayer gap -- `publishRows`, `entities`' unload path, reload/watch and the wasm path. **No
+   mod knows what `rl` is**, which is the milestone this order has been walking towards.
 4. **M20g, and anything else the JavaScript does not have.** Last on purpose.
 
 Orders 1-3 are "the same game the JavaScript client is"; 4 is new work in both, and

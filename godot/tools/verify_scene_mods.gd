@@ -179,6 +179,9 @@ func _check() -> void:
 		_failures.append("`mod key` does not name the world mod's digest: '%s'" % key)
 	# 5. The events the examples live in, before the staged failure below replaces the loaded set.
 	_check_events(vocabulary)
+	# ...and what they *drew*, which is the half a headless run can still see and the half that was
+	# wrong when they were first rewritten onto the API.
+	_check_drawn(_main.get("mod_world"))
 
 	# The HUD hook, driven explicitly: the frame's own call depends on the node's `_process`, and
 	# a gate that relied on that would check the engine's scheduling rather than the mod.
@@ -242,6 +245,56 @@ func _check_events(vocabulary: Object) -> void:
 	if int(counts.get("fly", 0)) < 1:
 		_failures.append("no bird left takeoff after %d frames (%s), so the `update` event did not reach the flock"
 			% [_frames, counts])
+
+## The two examples, **drawn** -- two things a headless run can still see, and both were wrong in
+## the rework's first cut, in ways no other check here could catch because both leave the *simulation*
+## working perfectly.
+##
+##   * A `mesh` record's handle is **any** handle (`APIv1.md` section 4.19): the flock's parts are
+##     arrays it built, and the fat guy's body is a *model* it loaded. A client that asked only its
+##     own mesh store for both drew no fat guy at all -- while he went on tripping devices.
+##   * The axis-angle is **radians**. The flock handed its rotations over in degrees (raylib's unit,
+##     which is what the engine call it replaced wanted), so every bird span like a rotor and not one
+##     of them failed to fly.
+func _check_drawn(world: Object) -> void:
+	var fat := false
+	for child in world.get_children():
+		if not (child is Node3D):
+			continue
+		var node: Node3D = child
+		# `has_meta` first, then `str`: `get_meta` reports an error for a key that is absent even when
+		# it is handed a default, and `String(x)` is rejected outright for a `String` argument in
+		# Godot 4.7 -- both are `_meta` in `mod_world.gd`, and both were found the hard way.
+		if not node.has_meta("mod_kind") or str(node.get_meta("mod_kind")) != "model-mesh":
+			continue
+		if _meshes_under(node) > 0:
+			fat = true
+	# A rotation's canonical angle is at most a full turn, so a value past 2*PI is a unit error and
+	# not a bird -- degrees are 57x, and six flying birds make it certain rather than likely.
+	var worst := 0.0
+	var records: Array = world.get("commands")
+	for command: Dictionary in records:
+		if not str(command.get("h", "")).begins_with("mesh:"):
+			continue
+		worst = maxf(worst, absf(float(command.get("angle", 0.0))))
+	print("drawn: fat guy ", fat, "  flock records ", records.size(), "  largest angle ", worst)
+	if not fat:
+		_failures.append("the fat guy is not in the world: a `mesh` record with a model handle placed no meshes")
+	if worst > TAU + 1e-3:
+		_failures.append("a mesh record's angle is %s, and an angle is at most a full turn (%s) -- degrees rather than radians?"
+			% [worst, TAU])
+
+## How many `MeshInstance3D` nodes an instance carries, at any depth. An imported model is a tree.
+func _meshes_under(root: Node) -> int:
+	var count := 0
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		for child in node.get_children():
+			stack.append(child)
+		if node is MeshInstance3D:
+			count += 1
+	return count
 
 ## Two files written at run time into `user://`, and the host asked to load the directory: one mod
 ## whose entry throws on its first line. Staged rather than shipped because the repository's mods
