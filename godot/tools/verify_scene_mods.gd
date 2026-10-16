@@ -241,6 +241,78 @@ func _check() -> void:
 	#    go unchecked. It goes through the host's own `load_mods`, which is the same door `mods.gd`
 	#    uses at boot, and it is last because it replaces the loaded set.
 	_check_staged_failure(host)
+	_check_staged_reload(host)
+
+## `APIv1.md` section 2.5: a mod read again from disk and run again -- `mod reload`, and the file
+## watcher that does it on its own. Both need a mod whose *source* can change, so the gate stages
+## one in its own directory (which replaces the set the staged failure left) and edits it between
+## reloads. The entry answers with the version it was written with, which is what makes a re-read
+## visible, and it declares a `tuning.json` that is merged again on the reload -- the one thing
+## about a reload the *scene* owns rather than the host.
+func _check_staged_reload(host: Object) -> void:
+	var uri: String = "user://gates-hot/hot"
+	DirAccess.make_dir_recursive_absolute(uri)
+	var dir: String = ProjectSettings.globalize_path("user://gates-hot")
+	var source := "goats.command(\"hot\", function () { return \"ok hot \" + V; });\n"
+	var manifest: Dictionary = {
+		"id": "com.example.hot", "name": "Hot", "version": "1", "api": 1,
+		"side": "client", "entry": "mod.js", "tuning": "tuning.json",
+	}
+	if not _stage_file(uri + "/mod.json", JSON.stringify(manifest)):
+		return
+	# A `tuning.json` whose leaf is a whole number and nothing else touches, so the merge is visible
+	# without moving the world under the checks above.
+	if not _stage_file(uri + "/tuning.json", "{\"explosions\": {\"fx\": {\"debris\": {\"count\": 9}}}}"):
+		return
+	if not _stage_file(uri + "/mod.js", "const V = 1;\n" + source):
+		return
+	host.call("load_mods", dir)
+	host.call("load_all")
+	var mods: Object = _main.get("mods")
+	# The scene's `table` is what its own `reload_mod` reads the id out of, and only `mods.gd`'s
+	# boot path sets it -- so a host-side re-discovery has to hand it over.
+	mods.set("table", Mods.parse_table(host.call("mods_json")))
+	var first: String = str(host.call("run_command", "hot", "hot"))
+	# 1. `mod reload`, through the scene's own path: its guard, its table read and its tuning merge.
+	if not _stage_file(uri + "/mod.js", "const V = 2;\n" + source):
+		return
+	var reloaded: String = String(mods.call("reload_mod", "com.example.hot"))
+	var second: String = str(host.call("run_command", "hot", "hot"))
+	if not reloaded.begins_with("ok"):
+		_failures.append("mod reload answered: " + reloaded)
+	if first != "ok hot 1" or second != "ok hot 2":
+		_failures.append("mod reload did not re-read the source: %s then %s" % [first, second])
+	if Explosions.DEBRIS_COUNT != 9:
+		_failures.append("mod reload did not merge the declared tuning: debris count is %s"
+			% Explosions.DEBRIS_COUNT)
+	# 2. The watcher (`GOATS_WATCH`'s own path, minus the knob): `notify` delivers on its own thread,
+	#    and the host waits for the writes to settle, so this polls for as long as a save could take.
+	if not String(host.call("watch_mods")).begins_with("ok"):
+		_failures.append("watch_mods did not start")
+	if not _stage_file(uri + "/mod.js", "const V = 3;\n" + source):
+		return
+	var fired := false
+	for _i in range(30):
+		OS.delay_msec(100)
+		if not String(host.call("poll_watch")).is_empty():
+			fired = true
+			break
+	var third: String = str(host.call("run_command", "hot", "hot"))
+	if not fired:
+		_failures.append("a watched change did not reload its mod")
+	if third != "ok hot 3":
+		_failures.append("the watcher's reload did not take: " + third)
+	print("reload: ", first, " -> ", second, " -> ", third, "  (watch fired ", fired, ")")
+
+## Write one staged file, or record the failure and answer `false`.
+func _stage_file(path: String, text: String) -> bool:
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		_failures.append("could not stage " + path)
+		return false
+	file.store_string(text)
+	file.close()
+	return true
 
 ## The events the examples work through (`APIv1.md` section 6). `update` is the one both of them do
 ## everything in, and it is also the one a gate cannot prove by driving the runtime: `main.gd`'s

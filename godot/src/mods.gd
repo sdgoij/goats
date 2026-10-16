@@ -122,6 +122,10 @@ func _ready() -> void:
 	host.call("freeze")
 	for line in report.split("\n"):
 		_line(line)
+	# `GOATS_WATCH` (not empty): reload a mod when its files change on disk (`APIv1.md` section 2.5),
+	# the port's `--watch`. A development aid, so it is a knob rather than a verb.
+	if not OS.get_environment("GOATS_WATCH").is_empty():
+		_line("mod: " + String(host.call("watch_mods")))
 	table = parse_table(host.call("mods_json"))
 	# The scene's own entry point for `goats` calls, registered once the host exists. An invalid
 	# `Callable` -- a gate driving the runtime with no frame behind it -- is handed over as it is,
@@ -201,6 +205,17 @@ func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
 	# anything is listening, so a write nobody handles clears rather than piling up.
 	for change: Array in Tuning.take_changed():
 		emit_tuning(String(change[0]), change[1])
+	# ...and the mods whose files changed on disk, when a watcher is running (`GOATS_WATCH`): the host
+	# re-reads and re-runs each one and answers the ids, and the scene merges what each declared, so
+	# a `tuning.json` edit lands with the entry -- `mods.js`'s `sceneModTuning`, driven from here.
+	var watched: String = String(host.call("poll_watch"))
+	if not watched.is_empty():
+		table = parse_table(host.call("mods_json"))
+		for id in watched.split("\n"):
+			if String(id).is_empty():
+				continue
+			_line("mod: reloaded " + String(id))
+			_merge_one_tuning(String(id))
 	# ...and the **compiled** mods, after the world has moved and outside every JavaScript hook:
 	# the reference's own order (its loop runs the scene's frame, then the Rust plugin host).
 	_drive_wasm(dt, snapshot)
@@ -227,6 +242,39 @@ func set_enabled(id: String, enabled: bool) -> String:
 		return "error " + id + " is a world mod; leave the session first"
 	var reply: String = String(host.call("set_enabled", id, enabled))
 	table = parse_table(host.call("mods_json"))
+	return reply
+
+## One mod's declared `tuning.json`, merged and warned about (`APIv1.md` section 3.4):
+## `_merge_declared_tuning`'s body for a single id, which is what a reload and the watcher need.
+func _merge_one_tuning(id: String) -> void:
+	var meta: Variant = _meta(id)
+	if not (meta is Dictionary):
+		return
+	var declared: Variant = (meta as Dictionary).get("tuning", null)
+	if not (declared is Dictionary) or (declared as Dictionary).is_empty():
+		return
+	var answer: Dictionary = Tuning.merge(declared)
+	if answer.has("err"):
+		_line("mod: %s: %s" % [id, answer["err"]])
+
+## `mod reload <id>` (`APIv1.md` section 2.5): read the mod again from disk and run it again. It is
+## `set_enabled`'s own guard and the host's own re-read (the host tears the live instance down,
+## reads the source again and re-runs the entry) plus the one thing the scene owns: the mod's
+## declared `tuning.json` is merged again, so a tuning edit on disk lands with the entry -- and the
+## table, whose row may name a new version now.
+func reload_mod(id: String) -> String:
+	if host == null:
+		return "error the mod runtime is not loaded"
+	var meta: Variant = _meta(id)
+	if not (meta is Dictionary):
+		return "error unknown mod: " + id
+	var live: bool = in_session.call() if self.in_session.is_valid() else false
+	if live and String((meta as Dictionary).get("side", "")) == "world":
+		return "error " + id + " is a world mod; leave the session first"
+	var reply: String = String(host.call("reload_mod", id))
+	table = parse_table(host.call("mods_json"))
+	if reply.begins_with("ok"):
+		_merge_one_tuning(id)
 	return reply
 
 ## Flip a mod, reading which way from the table -- `menu.js`'s Enable/Disable button, whose label

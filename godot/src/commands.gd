@@ -668,7 +668,8 @@ func _host(parts: PackedStringArray) -> String:
 ##
 ## `enable` and `disable` are the other half (`modSetEnabled`, `mods.js`'s own): they go through
 ## `Mods.set_enabled`, which guards a world mod against a mid-session change and re-reads the table,
-## and the host does the teardown and the re-run. `reload` remains stage 8's.
+## and the host does the teardown and the re-run. `reload` is the same path (`Mods.reload_mod`),
+## which is what the host does for an enable of a mod that is already loaded.
 func _mod(parts: PackedStringArray) -> String:
 	if mods == null:
 		return "error mod unavailable"
@@ -701,7 +702,11 @@ func _mod(parts: PackedStringArray) -> String:
 		if parts.size() < 3:
 			return "error mod " + verb + " expects an id"
 		return mods.set_enabled(parts[2], verb == "enable")
-	return "error mod expects list|key|info|enable|disable"
+	if verb == "reload":
+		if parts.size() < 3:
+			return "error mod reload expects an id"
+		return mods.reload_mod(parts[2])
+	return "error mod expects list|info|key|enable|disable|reload"
 
 ## A compiled mod's own report, or `null`. The host answers the string `"null"` for a mod with no
 ## module rather than an empty reply, so the two answers parse the same way and there is one path.

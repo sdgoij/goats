@@ -18,10 +18,12 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use godot::prelude::*;
+use mods::watch::ModWatcher;
 use plugin::{PluginSet, Side as PluginSide};
 use slag::{Context, HostCallbacks, JsObject, JsValue};
 
@@ -158,6 +160,16 @@ struct ModHost {
     /// facade reaches it: a plugin's imports are served inside `crates/plugin`, not through
     /// Slag.
     plugins: PluginSet,
+    /// The directory `load_mods` was given. Kept so the file watcher can watch it: a change event
+    /// carries an *absolute* path, and a mod is found by the source that contains it.
+    mods_dir: Option<PathBuf>,
+    /// The file watcher, when the scene asked for one (`GOATS_WATCH`, the port's `--watch`).
+    /// Dropping it stops the watch.
+    watcher: Option<ModWatcher>,
+    /// Watched mods whose files changed recently, waiting for the writes to stop -- the same
+    /// coalescing the raylib client does, and for the same reason: an editor writes a file in
+    /// pieces, and a half-written entry must not be evaluated.
+    settling: HashMap<String, Instant>,
 }
 
 // SAFETY: a `Slag` context and its values are single-threaded, and every method
@@ -188,6 +200,9 @@ impl INode for ModHost {
             module: None,
             outcomes: HashMap::new(),
             plugins: PluginSet::new(),
+            mods_dir: None,
+            watcher: None,
+            settling: HashMap::new(),
         }
     }
 }
@@ -230,6 +245,120 @@ impl ModHost {
         }
     }
 
+    /// How long a watched mod's files must stop changing before it is reloaded (`APIv1.md` section
+    /// 2.5): one save is a burst of writes, and a half-written entry must not be evaluated. The raylib
+    /// client's own settle.
+    const WATCH_SETTLE: Duration = Duration::from_millis(250);
+
+    /// `mod reload <id>` (`APIv1.md` section 2.5): read the mod again from disk and run it again.
+    /// The same action as disabling and enabling it, which is the reference's own -- its
+    /// `modCommand` queues `reload` and its host does exactly this re-read.
+    #[func]
+    fn reload_mod(&mut self, id: GString) -> GString {
+        if let Err(error) = self.ensure_booted() {
+            return gstring(format!("error: {error}"));
+        }
+        let id = id.to_string();
+        let known = self
+            .module
+            .as_ref()
+            .and_then(|module| module.loader.as_ref())
+            .is_some_and(|loader| loader.get(&id).is_some());
+        if !known {
+            return gstring(format!("error unknown mod: {id}"));
+        }
+        match self.reload_one(&id) {
+            Ok(_) => gstring(format!("ok mod reload {id}")),
+            Err(error) => gstring(format!("error {id}: {error}")),
+        }
+    }
+
+    /// Start watching the mods directory for changes (`APIv1.md` section 2.5). The scene asks once,
+    /// when `GOATS_WATCH` is set, and then calls [`ModHost::poll_watch`] each frame. A *development*
+    /// aid: a world mod is part of the compatibility set fixed at join, so a server watches nothing.
+    #[func]
+    fn watch_mods(&mut self) -> GString {
+        let Some(dir) = self.mods_dir.clone() else {
+            return GString::from("error no mods directory to watch");
+        };
+        match ModWatcher::new(&dir) {
+            Ok(watcher) => {
+                self.watcher = Some(watcher);
+                gstring(format!("ok watching {}", dir.display()))
+            }
+            Err(error) => gstring(format!("error {error}")),
+        }
+    }
+
+    /// Reload the mods whose files changed on disk and have stopped changing, and answer the ids it
+    /// reloaded, one per line (`APIv1.md` section 2.5). Called once a frame; with no watcher it
+    /// costs one `Option` test.
+    #[func]
+    fn poll_watch(&mut self) -> GString {
+        let now: Instant = Instant::now();
+        let paths: Vec<PathBuf> = match self.watcher.as_ref() {
+            Some(watcher) => watcher.take_changed(),
+            None => return GString::new(),
+        };
+        // The loader owns the path-to-mod mapping, so the ids come from there: a change belongs to a
+        // mod when the mod's own source contains it.
+        let mut touched: Vec<String> = Vec::new();
+        if let Some(loader) = self
+            .module
+            .as_ref()
+            .and_then(|module| module.loader.as_ref())
+        {
+            for path in &paths {
+                touched.extend(loader.mods_touching(path));
+            }
+        }
+        for id in touched {
+            self.settling.insert(id, now);
+        }
+        let mut ready: Vec<String> = self
+            .settling
+            .iter()
+            .filter(|(_, at)| now.duration_since(**at) >= Self::WATCH_SETTLE)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ready.sort();
+        let mut report = String::new();
+        for id in ready {
+            self.settling.remove(&id);
+            match self.reload_one(&id) {
+                Ok(_) => report.push_str(&format!("{id}\n")),
+                Err(error) => eprintln!("[mods] {id} changed on disk but did not reload: {error}"),
+            }
+        }
+        gstring(report)
+    }
+
+    /// The one reload: tear the live instance down, re-read the source, run the entry again. A read
+    /// failure falls back to the cached manifest -- `set_enabled`'s own rule -- so an edit that
+    /// will not parse keeps the mod that is already running rather than dropping it.
+    fn reload_one(&mut self, id: &str) -> Result<String, String> {
+        // The live instance goes first: `goatsEnd` fires the mod's own `shutdown` hook and drops
+        // its hooks, its commands and its registrations, so a reload leaves nothing behind
+        // (`APIv1.md` section 2.5). An id that never began answers `error mod not loaded`, which is
+        // not a failure here.
+        let _ = self.call_goats("__end", &[JsValue::string(id.to_string())]);
+        if let Some(module) = self.module.as_mut()
+            && let Some(loader) = module.loader.as_mut()
+        {
+            if let Err(error) = loader.reload(id, mods::AssetMode::Keep) {
+                eprintln!("[mods] {error}");
+            }
+            loader.set_enabled(id, true);
+        }
+        self.outcomes.remove(id);
+        // The table before the entry runs, so a handler that asks `goats.mods()` reads the truth.
+        self.refresh_table();
+        let outcome = self.load_one(id);
+        self.record(id, &outcome);
+        self.refresh_table();
+        outcome
+    }
+
     /// Discover the mods in a directory without running any of them.
     ///
     /// This is `crates/mods` doing the work -- every manifest validated, ids
@@ -242,6 +371,7 @@ impl ModHost {
             return gstring(format!("error: {error}"));
         }
         let dir = dir.to_string();
+        self.mods_dir = Some(PathBuf::from(&dir));
         let loader = mods::Loader::discover(Path::new(&dir));
 
         let mut report = format!("{} mod(s) in {dir}", loader.mods().len());
@@ -386,6 +516,11 @@ impl ModHost {
             return gstring(format!("error unknown mod: {id}"));
         }
         if enabled {
+            // A re-read re-enters `goats.begin(id)`, and the *previous* instance has to go first:
+            // its `shutdown` hook fires, and its hooks, its commands and its registrations are
+            // dropped (`APIv1.md` section 2.5). So enabling a loaded mod is a *reload* rather than
+            // a second copy of it -- which is why `mod reload` is this same path.
+            let _ = self.call_goats("__end", &[JsValue::string(id.clone())]);
             // The reference clears a mod's failure before it re-runs, so a fixed mod reads clean
             // until it throws again -- and the fresh outcome is what `mods_json` will carry.
             self.outcomes.remove(&id);

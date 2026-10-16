@@ -474,12 +474,19 @@ same table, and `mod key` prints the world-mod digest a host's refusal names.
 
 **Mods are loaded from `mods/` at boot**, the directory the raylib client reads:
 `GOATS_MODS` if it is set, else `mods/` beside the project, else `mods/` beside the executable;
-`GOATS_NO_MODS` skips the search. Every entry is evaluated in its own `goats` handle, and one
+`GOATS_NO_MODS` skips the search; `GOATS_WATCH` starts the file watcher. Every entry is evaluated in its own `goats` handle, and one
 that throws costs its own row rather than the load -- of the repository's five, all five load: the
 examples no longer read `rl` at all, and the flock's last missing member (`goats.world.extend`) is
 in. A mod's `console.log` reaches the
 console and a mod's registered verb reaches the console first, so `hello world` answers the
 example's `hello`.
+
+**A mod is re-read from disk on a command or on its own** (`APIv1.md` §2.5). `mod reload <id>` --
+and an enable of a mod that is already loaded, which is the same action -- tears the live instance
+down (its `shutdown` hook, its hooks, its commands and its registrations), reads the manifest,
+entry, tuning and assets again, and runs it again; a `tuning.json` edit lands with it. `GOATS_WATCH`
+starts the file watcher, which reloads a mod about 250 ms after its files stop changing, so editing
+a mod's source re-runs it without a restart.
 
 **A mod turns off and on for the session** (`modSetEnabled`, `APIv1.md` §4.1). The Mods screen's
 Enable/Disable button and the console's `mod enable`/`mod disable` go through `Mods.set_enabled`,
