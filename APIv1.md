@@ -384,6 +384,11 @@ reported, not silently ignored).
 > directly runs only where raylib is the engine. Both surfaces are partial -- `goats.draw`
 > is the 2D half and `goats.gfx` the 3D one, and each names what its next additions are.
 >
+> **Added with the Godot port:** `goats.sfx` (§4.20), the API's sound surface. A mod used to
+> load and play its own audio through the engine's `rl` (`loadSound`/`playSound`); the API now
+> carries `load`/`play`, each client implements them, and the two are the last engine capability
+> either checked-in mod read.
+>
 > **Added with the Godot port's readable surface:** the groups a mod *reads* the live world
 > through (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`) are in on the
 > port's side, and so are **identity and logging** (§4.1: `api`, `game`, `mod`, `mods()`, `frozen()`,
@@ -1014,6 +1019,32 @@ the check.
 of the process rather than freeing it), the shadow-map `setModelTexture` slot, and a mod's own
 **sound** -- `loadSound`/`playSound` and its volume and pitch, which is the other half of the
 engine surface these members replace and the only one neither client exposes through the API yet.
+
+### 4.20 Sound
+
+```js
+const squawk = goats.sfx.load(goats.assets.all("sfx.squawk")[0]);
+if (squawk !== null) goats.sfx.play(squawk, 0.6, 1.1);   // volume 0..1, pitch a rate
+```
+
+| Member | Description |
+| --- | --- |
+| `goats.sfx.load(name)` | A sound from an opaque asset name -- usually one of `goats.assets.all(slot)` -- or `null` when the name resolves to nothing, or when this client cannot decode it. |
+| `goats.sfx.play(handle, volume, pitch)` | Sound it: `volume` in 0..1 (a number, or 1), `pitch` a rate multiplier (or 1). |
+
+**A mod's own audio, without the engine.** `load`/`play` are the API's answer to the
+engine's `loadSound`/`playSound`/`setSoundVolume`/`setSoundPitch`, so a mod that ships
+its own voice reads the API and not a library -- the last engine capability either
+checked-in mod used. The handle is opaque, as every handle here is: compare against
+`null` for failure and never do arithmetic on one. There is no `unload()`; a sound
+lives as long as the process, which is what the reference client does rather than free.
+
+**A sound is a thing to *do*, not a value to read.** Every other group is either pushed
+each frame (`player`, `world`, `bots`, …) or a *function* of the world (`terrainHeight`).
+This is neither -- there is nothing to read back -- so it takes the callback path, and a
+mod may `play` from any hook. **Attenuation is the caller's**: a mod that wants a distant
+squawk quieter computes the volume itself and passes the result, which is what `birds`
+already does.
 
 ## 5. Examples
 

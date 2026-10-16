@@ -1204,6 +1204,7 @@ function goatsBegin(id) {
         // cannot see.
         draw: goatsDraw,
         gfx: goatsGfx,
+        sfx: goatsSfx,
     };
     modInstances.set(id, handle);
     meta.enabled = true;
@@ -1411,6 +1412,34 @@ const goatsGfx = {
     },
 };
 
+// A mod's own sound (`APIv1.md` section 4.20): the API's answer to the engine's `loadSound`,
+// `playSound`, `setSoundVolume` and `setSoundPitch`, so a mod that squawks reads `goats.sfx`
+// and never the engine library. This client puts the volume and the pitch on the *sound*
+// before playing it, which is what raylib offers; the API asks for them per play, because that
+// is what a caller means and what a client whose player is per-play can give it.
+const goatsSfx = {
+    /** A sound from an asset name (`goats.assets.all(slot)`), or `null`. */
+    load: function (name) {
+        if (name === undefined || name === null) return null;
+        if (typeof rl.loadSound !== "function") return null;
+        const handle = rl.loadSound(String(name));
+        return typeof handle === "number" && handle >= 0 ? handle : null;
+    },
+
+    /** Play a sound at `volume` (0..1, or 1) and `pitch` (a rate multiplier, or 1). */
+    play: function (handle, volume, pitch) {
+        if (handle === undefined || handle === null) return;
+        if (typeof rl.playSound !== "function") return;
+        if (typeof rl.setSoundVolume === "function") {
+            rl.setSoundVolume(handle, volume === undefined ? 1 : volume);
+        }
+        if (typeof rl.setSoundPitch === "function") {
+            rl.setSoundPitch(handle, pitch === undefined ? 1 : pitch);
+        }
+        rl.playSound(handle);
+    },
+};
+
 // The global. The host wraps an entry with `goats.begin(id)`, so a mod's own
 // `goats` is the per-mod handle; this base object is for the console and the
 // host.
@@ -1441,6 +1470,7 @@ const goats = {
     entities: modEntitiesFor("-"),
     draw: goatsDraw,
     gfx: goatsGfx,
+    sfx: goatsSfx,
 };
 
 // ---- the `mod` console verb ----------------------------------------------

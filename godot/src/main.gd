@@ -184,6 +184,9 @@ var mod_hud := ModHud.new()
 ## ...and what it draws in the *world* goes here (`mod_world.gd`): `goats.gfx.draw`, a node per
 ## call, in the root rather than the UI layer because it is 3D (`APIv1.md` section 4.19).
 var mod_world := ModWorld.new()
+## ...and what it *sounds* goes here (`mod_audio.gd`): `goats.sfx`, a pool of players and the
+## decoders for the bytes a mod declared (`APIv1.md` section 4.20).
+var mod_audio := ModAudio.new()
 
 ## Whether the scene is in a session as a *client*. It is what the herd mirror hangs on, and
 ## its window is the wire's. A client simulates no world: the host owns the bots, the weather and
@@ -414,6 +417,7 @@ func _ready() -> void:
 	# world's own half is a `Node3D` in the root, because it is drawn in three dimensions.
 	$Ui.add_child(mod_hud)
 	add_child(mod_world)
+	add_child(mod_audio)
 	mods.console = console
 	mods.surface = mod_hud
 	# The scene's entry point for the API's functional members (`_mod_call`), handed over *before*
@@ -421,9 +425,13 @@ func _ready() -> void:
 	mods.scene_call = Callable(self, "_mod_call")
 	add_child(mods)
 	# After `add_child(mods)`, because the runtime builds its `ModHost` in `_ready` -- and the
-	# world node wants that host to turn an asset name into bytes.
+	# world node and the sound pool want that host to turn an asset name into bytes.
 	mod_world.host = mods.host
 	mods.world = mod_world
+	mod_audio.host = mods.host
+	# Decode the mods' declared sounds *here*, outside any hook: a `goats.sfx` call runs inside a
+	# mod's JavaScript, where the extension is borrowed and cannot be asked for bytes.
+	mod_audio.prepare()
 	menu.mods_list = Callable(mods, "mod_table")
 
 	# `GOATS_UI=<screen>`: open a menu screen at boot, for `GOATS_CONSOLE`'s reason -- the panels are
@@ -706,14 +714,18 @@ func _mod_bots() -> Array:
 	return out
 
 ## The scene's entry point for the API's *functional* members -- the ones a pushed snapshot cannot
-## answer, because they are asked rather than told (`APIv1.md` section 4.7's `terrainHeight`, and
-## the writes when they land). The extension routes a `goats` call here through `ModHost`'s
-## `__goatsCall`; the answer is a JSON object -- `{\"ok\": <value>}` or `{\"err\": \"<message>\"}`
-## -- which the facade turns into a returned value or a thrown error.
+## answer, because they are asked rather than told (`APIv1.md` section 4.7's `terrainHeight`,
+## section 4.20's `sfx`, and the writes when they land). The extension routes a `goats` call here
+## through `ModHost`'s `__goatsCall`; the answer is a JSON object -- `{\"ok\": <value>}` or
+## `{\"err\": \"<message>\"}` -- which the facade turns into a returned value or a thrown error.
 ##
 ## A member this client does not answer is an `err` rather than silence, so a mod that calls one
 ## fails loudly in its own hook and is isolated (`APIv1.md` section 7), which is the same refusal
 ## the write members give from the facade.
+##
+## **Nothing on this seam may call back into the extension.** It runs inside a mod's own JavaScript,
+## where `ModHost` is borrowed; the sound members are answered from what `ModAudio.prepare` built at
+## boot for exactly that reason (`PORT.md` section 9).
 func _mod_call(name: String, args_json: String) -> String:
 	var parsed: Variant = JSON.parse_string(args_json)
 	var args: Array = parsed if parsed is Array else []
@@ -728,6 +740,22 @@ func _mod_call(name: String, args_json: String) -> String:
 			if is_nan(x) or is_nan(z):
 				return _mod_err("world.terrainHeight needs two numbers")
 			return _mod_ok(Terrain.height_at(x, z))
+		"sfx.load":
+			# A mod's own sound (`APIv1.md` section 4.20). The *handle* is the opaque asset name
+			# itself: it is already a token with no path in it, which is what `gfx.model` hands
+			# back too, and the scene has nothing to add to it.
+			if args.size() < 1:
+				return _mod_err("sfx.load needs an asset name")
+			if mod_audio.stream(String(args[0])) == null:
+				return _mod_ok(null)
+			return _mod_ok(String(args[0]))
+		"sfx.play":
+			if args.size() < 1:
+				return _mod_err("sfx.play needs a sound")
+			mod_audio.play(String(args[0]),
+				float(args[1]) if args.size() > 1 else 1.0,
+				float(args[2]) if args.size() > 2 else 1.0)
+			return _mod_ok(null)
 	return _mod_err("goats." + name + ": this client does not answer that member")
 
 ## A successful `_mod_call` answer.

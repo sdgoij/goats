@@ -484,6 +484,32 @@ if (typeof globalThis.goats === "undefined") {
             },
 
             /**
+             * A mod's own sound (`APIv1.md` section 4.20): `load(name)` turns an opaque asset
+             * name -- usually one of `goats.assets.all(slot)` -- into a handle or `null`, and
+             * `play(handle, volume, pitch)` sounds it.
+             *
+             * Both members *cross*, which is the one thing about this group that differs from
+             * every other: a sound is not a value the core can push (there is nothing to read
+             * back) and it is not a frame's drawing either -- it is a thing to *do*, at the
+             * moment the mod asks. So it goes the way `terrainHeight` does, through the scene's
+             * own `Callable` seam, and each client puts the volume and the pitch where its
+             * engine wants them.
+             */
+            sfx: {
+                load: function (name) {
+                    if (name === undefined || name === null) return null;
+                    const handle = ask("sfx.load", [String(name)]);
+                    return handle === undefined || handle === null ? null : String(handle);
+                },
+                play: function (handle, volume, pitch) {
+                    if (handle === undefined || handle === null) return;
+                    ask("sfx.play", [String(handle),
+                        volume === undefined ? 1 : volume,
+                        pitch === undefined ? 1 : pitch]);
+                },
+            },
+
+            /**
              * The API's own drawing surface (`APIv1.md` section 4.18). A mod draws
              * through this and never through an engine library, so one mod draws on
              * every client: here each call is queued as a record and the frame's
