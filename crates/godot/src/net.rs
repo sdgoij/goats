@@ -30,6 +30,13 @@ use tokio::sync::mpsc;
 /// Events waiting for the frame loop to drain. Shared with the runtime thread.
 type Queue = Arc<Mutex<VecDeque<String>>>;
 
+/// Encoded voice frames waiting for the frame loop to decode, shared with the runtime
+/// thread beside the events. An Opus packet is not a line, so it rides a channel of its
+/// own rather than a JSON shape -- the same split `crates/goats/src/net.rs` makes with its
+/// `VoiceIn`. A frame is the speaker's canonical name (stamped by the relay), the sequence
+/// number and the payload.
+type VoiceQueue = Arc<Mutex<VecDeque<(String, u32, Vec<u8>)>>>;
+
 /// The server's world, as a host publishes it. The scene builds this as JSON -- the same object
 /// the `world` *event* carries, so the port has one shape for the world in both directions -- and
 /// it is parsed here because it *is* `proto`'s schema: a typed `WorldState` is what
@@ -86,6 +93,13 @@ enum Command {
         z: f32,
         by: Option<String>,
     },
+    /// A captured voice frame, queued by this node's audio half ([`crate::voice`]) rather
+    /// than by the scene. The scene never sends one: it carries the encoder's own sequence
+    /// number and an Opus payload the event queue has no business seeing.
+    Voice {
+        seq: u32,
+        payload: Vec<u8>,
+    },
     Close,
 }
 
@@ -109,6 +123,17 @@ impl Live {
         match self {
             Live::Host(host) => host.close().await,
             Live::Client(client) => client.close().await,
+        }
+    }
+
+    /// Says one captured voice frame. A client sends it up to the host to be re-tagged and
+    /// relayed; the host sends its own straight out -- `crates/goats/src/net.rs`'s own
+    /// `Live::publish_voice`, transcribed, because the rule is the protocol's rather than
+    /// the engine's.
+    async fn publish_voice(&self, seq: u32, payload: &[u8]) {
+        match self {
+            Live::Host(host) => host.publish_voice(seq, payload).await,
+            Live::Client(client) => client.publish_voice(seq, payload),
         }
     }
 
@@ -155,6 +180,10 @@ impl Live {
 /// `host` and `join` start a session, `say` and `pose` use it, `leave` ends
 /// it, and `poll_events` drains what came back. The session lives on its own
 /// thread, so none of these block a frame.
+///
+/// Voice's `#[func]`s hang on this class too (`crate::voice`): the codec's bytes go out and
+/// come back through the same session, so its Godot surface belongs on the node that owns the
+/// wire rather than on a second class.
 #[derive(GodotClass)]
 #[class(base=Node)]
 struct NetBridge {
@@ -164,6 +193,14 @@ struct NetBridge {
     /// The thread itself, kept so it can be joined rather than abandoned.
     thread: Option<thread::JoinHandle<()>>,
     queue: Queue,
+    /// Encoded voice frames the session delivered, written by the runtime thread and drained
+    /// by `pull_voice` on the frame thread.
+    voice_in: VoiceQueue,
+    /// The codec half (`crate::voice`): the speech gate, the Opus coder and the mix the scene
+    /// plays. It lives on this node rather than a second one because the *wire* is here -- a
+    /// captured frame goes out and a delivered one comes back through the same session, and
+    /// a separate Godot class would only have to reach back in through the scene to say so.
+    voice: crate::voice::Voice,
 }
 
 #[godot_api]
@@ -174,6 +211,8 @@ impl INode for NetBridge {
             commands: None,
             thread: None,
             queue: Queue::default(),
+            voice_in: VoiceQueue::default(),
+            voice: crate::voice::Voice::new(),
         }
     }
 
@@ -341,6 +380,60 @@ impl NetBridge {
         out
     }
 
+    /// Hand the codec a block of captured audio -- mono `samples` at `rate` Hz, read off the
+    /// scene's capture bus every frame -- and queue whatever speech it heard for the session.
+    /// Answers how many frames were encoded, which is usually none or one.
+    ///
+    /// This is the uplink, and the whole of it: the gate, the coder and the framing are
+    /// `crate::voice`'s, and the frame travels the channel a pose does (`Command::Voice`).
+    /// Silent with no session, exactly as a pose is.
+    #[func]
+    fn push_voice(&mut self, samples: PackedFloat32Array, rate: f64) -> i64 {
+        let frames = self.voice.feed(samples.as_slice(), rate as u32);
+        let count = frames.len() as i64;
+        for (seq, payload) in frames {
+            self.queue_command(Command::Voice { seq, payload });
+        }
+        count
+    }
+
+    /// The downlink, once a frame: decode everything the session delivered since the last
+    /// call and hand back up to `max` samples of the mix at the current gain, 48 kHz mono.
+    ///
+    /// The scene pushes them into its generator and asks for no more than it has room for, so
+    /// nothing is dropped in between. The decoding is `crate::voice`'s; the frames it decodes
+    /// were queued by the run loop (`queue_voice`).
+    #[func]
+    fn pull_voice(&mut self, max: i64) -> PackedFloat32Array {
+        for (from, seq, payload) in drain_voice(&self.voice_in) {
+            self.voice.receive(&from, seq, &payload);
+        }
+        let pcm = self.voice.drain(max.max(0) as usize);
+        let mut out = PackedFloat32Array::new();
+        for sample in pcm {
+            out.push(sample);
+        }
+        out
+    }
+
+    /// The scene's master mute, as a 0..1 gain on everything a peer sends (`audio.js`'s
+    /// `voice_gain` intent). It reaches the mix at once rather than at the next packet, which
+    /// is why the gain lives here and never goes on the wire.
+    #[func]
+    fn set_voice_gain(&mut self, gain: f64) {
+        self.voice.set_gain(gain as f32);
+    }
+
+    /// What the codec has done, for a gate or the HUD:
+    /// `{"sent":N,"decoded":N,"buffered":N,"gain":F}`.
+    #[func]
+    fn voice_state(&self) -> GString {
+        let (sent, decoded, buffered, gain) = self.voice.state();
+        crate::gstring(format!(
+            "{{\"sent\":{sent},\"decoded\":{decoded},\"buffered\":{buffered},\"gain\":{gain}}}"
+        ))
+    }
+
     /// End the session and wait for the runtime thread to finish.
     ///
     /// Called automatically when the node leaves the tree, so a script only needs
@@ -357,7 +450,7 @@ impl NetBridge {
     /// Make sure the runtime thread is up, then hand it the intent.
     fn queue_command(&mut self, command: Command) -> GString {
         if self.commands.is_none() {
-            match start_runtime(self.queue.clone()) {
+            match start_runtime(self.queue.clone(), self.voice_in.clone()) {
                 Ok((commands, thread)) => {
                     self.commands = Some(commands);
                     self.thread = Some(thread);
@@ -395,6 +488,7 @@ impl NetBridge {
 /// drives it.
 fn start_runtime(
     queue: Queue,
+    voice_in: VoiceQueue,
 ) -> Result<(mpsc::UnboundedSender<Command>, thread::JoinHandle<()>), String> {
     let (commands, receiver) = mpsc::unbounded_channel();
     let thread = thread::Builder::new()
@@ -414,7 +508,7 @@ fn start_runtime(
                     return;
                 }
             };
-            runtime.block_on(run(receiver, queue));
+            runtime.block_on(run(receiver, queue, voice_in));
         })
         .map_err(|error| format!("could not start the networking thread: {error}"))?;
     Ok((commands, thread))
@@ -422,7 +516,7 @@ fn start_runtime(
 
 /// The session loop. Mirrors `net.rs`: with a session up, wait on a command and
 /// an event at once; with none, wait on a command.
-async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue) {
+async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue, voice_in: VoiceQueue) {
     let mut live: Option<Live> = None;
     // What became of the last world publication. `Host::publish_world` asks to be reported on
     // only when the outcome *changes*, because a host publishes ten times a second and "the
@@ -444,9 +538,13 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue) {
             Some(session) => tokio::select! {
                 command = commands.recv() => Outcome::Command(command),
                 event = session.next_event() => match event {
-                    // Voice is the audio module's, not the scene's: Opus bytes
-                    // are not a line. It has no consumer here yet.
-                    Some(Net::Voice { .. }) => continue,
+                    // Voice is the codec half's, not the scene's: Opus bytes are not a line,
+                    // so they take the voice queue instead of the event queue, and
+                    // `pull_voice` decodes them on the frame thread.
+                    Some(Net::Voice { from, seq, payload }) => {
+                        queue_voice(&voice_in, (from, seq, payload));
+                        continue;
+                    }
                     Some(event) => {
                         push(&queue, event_json(event));
                         continue;
@@ -549,6 +647,13 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue) {
                     push(&queue, notice(error));
                 }
             }
+            // A captured voice frame. Silent while offline, like a pose: the codec speaks
+            // whenever it hears speech, whether or not a session is up.
+            Outcome::Command(Some(Command::Voice { seq, payload })) => {
+                if let Some(session) = live.as_ref() {
+                    session.publish_voice(seq, &payload).await;
+                }
+            }
             Outcome::Command(Some(command)) => {
                 if let Some(session) = live.take() {
                     session.close().await;
@@ -607,6 +712,7 @@ async fn start(command: Command, queue: &Queue) -> Option<Live> {
         | Command::World(_)
         | Command::Mods(_)
         | Command::Blast { .. }
+        | Command::Voice { .. }
         | Command::Close => None,
     }
 }
@@ -724,4 +830,22 @@ fn lock(queue: &Queue) -> MutexGuard<'_, VecDeque<String>> {
 
 fn push(queue: &Queue, line: String) {
     lock(queue).push_back(line);
+}
+
+/// Queue one delivered voice frame, surviving a poisoned lock as `push` does.
+fn queue_voice(queue: &VoiceQueue, frame: (String, u32, Vec<u8>)) {
+    queue
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push_back(frame);
+}
+
+/// Take every voice frame delivered since the last call, for the codec half to decode. The
+/// frame loop owns this drain (`pull_voice`), so it runs on the frame thread.
+fn drain_voice(queue: &VoiceQueue) -> Vec<(String, u32, Vec<u8>)> {
+    queue
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .drain(..)
+        .collect()
 }

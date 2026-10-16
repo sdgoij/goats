@@ -44,6 +44,7 @@ plan.
 | `src/celestial.gd` | The two bodies: `world.js`'s `celestialPlacement` as real sun and moon spheres, with the sun's additive glare |
 | `src/rain.gd` | The rain, drawn: `weather.js`'s `drawRain` streaks as a screen-space overlay under the HUD |
 | `src/audio.gd` | The sound: `audio.js`'s ten slots, the variety PRNG, the bang attenuation, the weather beds and the mute (M22) — and `built_in()`, the built-in half of the asset slot table (`APIv1.md` §4.11) the mod facade merges with what the mods declared |
+| `src/voice.gd` | Voice chat's device half (M13b): the microphone (`AudioStreamMicrophone` on a muted capture bus) and the ear (an `AudioStreamGenerator` at the wire's 48 kHz). The *codec* is the bridge's (`voice.rs`, over a shared `crates/voice`) |
 | `src/water.gd` | The water: `water.js`'s hydrostatic table over the terrain grid, and the drag and drain of wading in it |
 | `src/water_mesh.gd` | The water's surface as an `ArrayMesh`: the grid's ground, cut to the quads that can ever be wet |
 | `src/water.gdshader` | The surface, drawn: `WATER_VS`'s vertex lift, `WATER_FS`'s absorption, `WATER_FS`'s chop and `WATER_FS`'s wake, under Godot's own light and reflection |
@@ -55,7 +56,9 @@ plan.
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
 see Godot. It exposes `NetBridge` (the networking bridge over `session` and
 `proto`: `host`, `join`, `say`, `consume`, `pose`, `world`, `blast`, `leave`,
-`poll_events`, `shutdown`) and `ModHost`
+`poll_events`, `shutdown` — and voice, M13b: `push_voice`, `pull_voice`,
+`set_voice_gain` and `voice_state`, whose codec is a shared `crates/voice` and whose
+`voice.rs` resamples and frames what the scene's capture bus hands over) and `ModHost`
 (the embedded Slag engine plus the `goats` facade a mod sees: the API's drawing surfaces
 `goats.draw`/`goats.gfx`, the readable groups -- `player`, `camera`, `world`, `bots`,
 `settings`, `tuning`, `net` -- which it answers out of the world snapshot the scene pushes
@@ -85,7 +88,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Thirty-one headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Thirty-two headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -267,9 +270,16 @@ Thirty-one headless gates, all `SceneTree` scripts that exit non-zero on failure
 # setting (M25).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_menu.gd
+
+# Voice (M13b): a 440 Hz tone into one host's codec, Opus frames down a real iroh
+# session, and the *same* tone 11 520 samples later out the other -- then the master
+# mute, which silences the samples without silencing the decoding. A microphone cannot
+# be gated, so this is the codec and the wire rather than the two devices themselves.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_voice.gd
 ```
 
-All thirty-one pass against Godot 4.7.2 today. Two more need a live session and are run by
+All thirty-two pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -328,7 +338,9 @@ itself, the shore — because Godot's `ssr_enabled` does not reach a transparent
 The sound is `audio.js`'s ten slots (`audio.gd`, M22): a bleat is one of six samples at a random
 pitch, a bang falls off with the distance past its own radius and drops its grit a beat later,
 and the three beds swell with the weather — the one part of this port a picture cannot show, and
-so the one whose gate can hold only the rules rather than the result.
+so the one whose gate can hold only the rules rather than the result. Voice (`voice.gd`, M13b) sits
+on that shelf beside it: its codec is gated (`verify_voice.gd` carries a tone end to end), but the
+*microphone and the ear themselves* need a sound card, so no run here can hear them either.
 And the HUD is one `Control` drawing `drawHud` — the bars, the read-out, the action prompt, the
 weather and status lines and the damage pulse, at the scene's own pixel coordinates; and the
 **console** is a second one drawing `drawConsole` — a translucent panel over the top half, the

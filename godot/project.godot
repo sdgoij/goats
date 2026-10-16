@@ -25,6 +25,12 @@ scene={
 "gltf/embedded_image_handling": 3
 }
 
+[audio]
+
+; The microphone: `voice.gd` plays an `AudioStreamMicrophone` onto its capture bus, and without
+; this Godot never opens the input device (so the capture is silence rather than an error).
+driver/enable_input=true
+
 [rendering]
 
 anti_aliasing/quality/msaa_3d=2

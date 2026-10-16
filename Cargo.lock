@@ -1253,6 +1253,7 @@ dependencies = [
  "session",
  "slag",
  "tokio",
+ "voice",
 ]
 
 [[package]]

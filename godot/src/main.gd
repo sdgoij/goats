@@ -188,6 +188,10 @@ var mod_world := ModWorld.new()
 ## decoders for the bytes a mod declared (`APIv1.md` section 4.20).
 var mod_audio := ModAudio.new()
 
+## Voice chat's device half (M13b): the microphone and the ear (`voice.gd`). The *codec* is the
+## bridge's (`voice.rs`), so this node only moves samples between the two devices and the frame.
+var voice: Voice
+
 ## Whether the scene is in a session as a *client*. It is what the herd mirror hangs on, and
 ## its window is the wire's. A client simulates no world: the host owns the bots, the weather and
 ## the meadow, and this scene adopts the snapshot instead (`net.js` `netWorldLocal`).
@@ -379,6 +383,16 @@ func _ready() -> void:
 	var node := ClassDB.instantiate("NetBridge") as Node
 	add_child(node)
 	bridge = node
+
+	# Voice (M13b): the bridge carries the session, and this node is the two devices the codec
+	# is missing -- the microphone and the ear (`voice.gd`). Voice is the one module that needs
+	# the bridge at boot, which is why it is wired here rather than with the modules below.
+	voice = Voice.new()
+	add_child(voice)
+	voice.bridge = bridge
+	# The master mute is `audio.gd`'s and voice is where it lands: a `Callable` rather than a
+	# flag, because both the console's `mute` verb and the `M` key go through `set_muted`.
+	audio.on_mute = Callable(voice, "set_muted")
 
 	# The console (M24): built in code, added to the UI layer *after* the HUD so it draws over
 	# it, and pointed at the vocabulary. It is wired before the offline return below, so a
@@ -606,6 +620,9 @@ func _process(delta: float) -> void:
 		# The sound, once a frame and after the weather has settled: the beds ride the rain and
 		# the wind, the thunder rolls off the rain, and the grit a bang threw lands here.
 		audio.update(delta, float(_weather_now().get("rain_amount", 0.0)), _wind_sway)
+	# Voice, on *both* paths: a session's speech does not stop when the world does, which is why
+	# the raylib client pumps its mixer outside its own pause gate too.
+	voice.update()
 	# The sky and the light are applied on *both* paths: a menu freezes the world by `dt` and still
 	# draws it, so the sky's uniforms are a drawing question and not a step.
 	_apply_sky(camera.global_position)

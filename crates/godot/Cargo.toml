@@ -40,6 +40,12 @@ mods = { workspace = true }
 # section 7): the ALPN, the framed control messages, the packed datagrams and
 # the world-mod digest all come from here.
 session = { workspace = true }
+# The codec for voice chat (M13b): the Opus coder, the speech gate and the resampler,
+# engine-free and shared with `crates/goats`. This is what makes a voice frame the same
+# bytes on this host as on the raylib client (`crate::voice` is the Godot-side glue).
+# `libopus_sys`'s `bundled` feature compiles libopus from source, so there is no system
+# codec to install.
+voice = { workspace = true }
 # `serde`, for the one intent that is a *shape* rather than a scalar: the world a host
 # publishes. It is the same derive `crates/goats/src/net.rs` uses to parse the same JSON,
 # which is what keeps the two engines' world one object.

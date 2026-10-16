@@ -9,6 +9,10 @@
 //! * [`ModHost`] — the mod runtime: Slag, plus the `goats` facade a mod sees,
 //!   including the API's own drawing surface (`godot/PORT.md` section 6).
 //!
+//! Voice chat is the third, and it is not a node of its own: the codec half
+//! ([`voice::Voice`]) hangs its `#[func]`s on [`net::NetBridge`], because voice's
+//! bytes go out and come back through the same session the bridge already owns.
+//!
 //! Why these are Rust and not GDScript: iroh, the packed `proto` wire, the mod
 //! loader and the JavaScript engine are all Rust, and the port's claim to
 //! compatibility is that it links *these* rather than reimplementing them.
@@ -28,6 +32,7 @@ use plugin::{PluginSet, Side as PluginSide};
 use slag::{Context, HostCallbacks, JsObject, JsValue};
 
 mod net;
+mod voice;
 
 /// The JavaScript facade (`goats`, `rl`) evaluated once, before any mod runs.
 const PRELUDE: &str = include_str!("prelude.js");

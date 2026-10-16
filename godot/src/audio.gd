@@ -155,6 +155,11 @@ var goat: PlayerGoat
 ## devices rather than repeated, so retuning one retunes the other.
 var blast_radius := 3.2
 
+## Where the master mute is handed on: voice's mixer is Rust and lives on the bridge, so the only
+## lever this module has is the gain. `main.gd` points it at `voice.gd`'s `set_muted`, and it is a
+## `Callable` rather than a reference because this module does not know voice exists.
+var on_mute := Callable()
+
 var _variants := {}
 var _beds := {}
 var _debris: Array[Dictionary] = []
@@ -372,11 +377,14 @@ func update(delta: float, rain_amount: float, wind_sway: float) -> void:
 		player.pitch_scale = 0.9 + rnd() * 0.2
 		player.play()
 
-## The master mute (`setMuted`). The scene also tells the session its voice gain here; voice is
-## Rust and has no consumer in this port yet, so there is nothing to tell.
+## The master mute (`setMuted`). The scene also tells the session its voice gain here, which
+## `audio.js` does through `voiceGainChanged`: the sound this module owns goes quiet on the line
+## below, and a peer's voice goes quiet at the mixer (`on_mute`, above).
 func set_muted(next: bool) -> void:
 	muted = next
 	_set_bed("sfx.music", 1.0)
+	if on_mute.is_valid():
+		on_mute.call(muted)
 
 ## The scene's own read-out, for a probe or the HUD: what is loaded, what is playing and what is
 ## waiting. `levels` is what the beds are at, which is the only part of this that a picture of a
