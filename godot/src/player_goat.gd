@@ -581,26 +581,12 @@ func restart() -> void:
 	_fling_flight = 0.0
 	trip_stamp = 0
 
-## The HUD's lines, as `drawHud` decides them. The *drawing* is stage 6; this is the
-## words, which is the part that has rules.
-func status() -> String:
-	if mode == "dead":
-		return "dead - R to restart"
-	if mode == "sleep":
-		return "sleeping (Z to wake)"
-	if mode == "jump":
-		return "jumping"
-	if mode == "eat":
-		return "eating"
-	if mode == "run":
-		return "running"
-	if mode == "trot":
-		return "trotting"
-	if mode == "walk":
-		return "walking"
-	if exhausted:
-		return "exhausted"
-	return "standing"
+## The goat's own weather factor, which the HUD's `slowed` term is read from (`weather.js`
+## `updateWeatherEffects` reads `weatherSpeed`). It is this frame's, settled in `step`, and it
+## belongs to the goat because the belly takes the edge off the rain and nothing else knows the
+## belly.
+func weather_speed_now() -> float:
+	return _weather_speed_now
 
 ## Take a blast's impulse (M19c). The caller has already decided this goat is in
 ## range and scaled the impulse by the falloff; this is where the goat starts being

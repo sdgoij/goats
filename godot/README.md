@@ -18,7 +18,7 @@ plan.
 | `scenes/herd.tscn` | The main scene and the port's first world: a client that joins a session and mirrors the host's herd |
 | `src/main.gd` | The frame loop: it joins a session, drains the bridge each frame, reads the keyboard, drives the world's clock and weather, and (as a probe) reports whether the mirror converged |
 | `src/player_goat.gd` | The local goat: `goat.js`'s gait state machine, movement and stats — the goat you drive |
-| `src/hud.gd` | The state, health, energy and clock, as one `Label` until stage 6's `Control` tree |
+| `src/hud.gd` | The HUD, drawn: `goat.js`'s `drawHud` — the bars, the read-out, the action prompt, the weather and status lines and the damage pulse (M23) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
 | `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
@@ -156,6 +156,11 @@ Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_water_wake.gd
 
+# The HUD: `drawHud`'s state word over every move/mode/pause, the status line's composition, the
+# weather line's terms, a bar's fill and the damage pulse's two numbers -- against `goat.js`'s own.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_hud.gd
+
 # The audio: `audio.js`'s variety PRNG, its variant/copy rule, the bang attenuation and the
 # chain, and the two gains the menu will drive -- against `audio.js`'s own.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
@@ -173,7 +178,7 @@ Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
     --script res://tools/verify_water_reflect.gd
 ```
 
-All twenty pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty-one pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -233,8 +238,9 @@ The sound is `audio.js`'s ten slots (`audio.gd`, M22): a bleat is one of six sam
 pitch, a bang falls off with the distance past its own radius and drops its grit a beat later,
 and the three beds swell with the weather — the one part of this port a picture cannot show, and
 so the one whose gate can hold only the rules rather than the result.
-And the HUD is one `Label` rather than the scene's bars, action menu and console: the
-words are the scene's, the layout is stage 6.
+And the HUD is one `Control` drawing `drawHud` — the bars, the read-out, the action prompt, the
+weather and status lines and the damage pulse, at the scene's own pixel coordinates; what is left
+of the UI is the menu, the console and the settings screen, which are stage 6.
 
 **Seven** environment variables stage what there is no UI for yet: `GOATS_HOUR` pins the
 clock, `GOATS_CLOUD` the cloudiness and `GOATS_FLOOD` the water's level — the last of
@@ -323,6 +329,7 @@ C              the next weather state (offline only; for previewing the cycle)
 mouse drag     orbit the camera
 mouse wheel    zoom
 arrow keys     the camera, if you have no mouse
+P              freeze the world (the view keeps running)
 M              mute
 F11            fullscreen
 ```

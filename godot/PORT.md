@@ -357,6 +357,38 @@ because it is not raining and the wind bed is not because it is windy, and the b
 carry the two random pitches that keep a flock from sounding like one goat and a minefield from
 sounding like a button.
 
+**The HUD** (`verify_hud.gd`): M23, and the first half of stage 6. The port had drawn its HUD as a
+single `Label` whose *words* were the scene's and whose layout was not -- and three of the words
+themselves had drifted, which is the part worth the space: there was no `paused` case at all,
+`"walking"` stood where the scene says `"walking forward"` or `"walking backward"`, and an
+`"exhausted"` word existed that `drawHud` has never had (an exhausted goat is capped at a walk by
+a rule, so it reads as walking). The scene's HUD is *immediate mode* -- `rl.drawRectangle` and
+`rl.drawText` at pixel coordinates -- so the port's is a `Control` that draws rather than a tree of
+nested nodes: the geometry is part of the specification, and a rectangle at twelve from the right
+edge is easier to check against than a pile of anchors. Everything in it that is a *rule* is a
+static function, and this holds every one against `goat.js`:
+
+```
+oracle answered 54 word(s), 29 status line(s), 272 weather line(s), 9 fill(s), 8 pulse(s)
+state words: 54 case(s), 0 mismatch(es)
+status lines: 29 row(s), 0 mismatch(es)
+weather lines: 272 row(s), 0 mismatch(es)
+fills: 9 fraction(s), 0 mismatch(es)
+pulses: 8 value(s), 0 mismatch(es)
+OK: the port's HUD says what the scene says, word for word and pixel for pixel
+```
+
+The state word is asked over every combination of the frame's move axis, the goat's mode and the
+pause -- which is the only place "forward" and "backward" are told apart -- the status line over
+the four read-outs the settings screen will drive at both ends of their ranges, and the weather
+line over both sides of its two thresholds (`rain > 0.02` and `speed < 0.98`), which is where the
+`slowed N%` term the port was missing comes from. What is left is the *layout*, and that is
+`shot.png`'s job: a bar at twelve from the right edge with a one-pixel inset, a 132x34 prompt box
+in the corner, two lines at the bottom, and the damage pulse as four bands rather than a screenful
+of tint. The pulse came with it (`explosions.gd`'s `hurt_pulse`, which `hurtBy` sets and
+`drawDamagePulse` reads, and which had no port at all), and so did `P`: the world freezes, the view
+does not, which is `sceneFrame`'s own gate.
+
 **The ground itself** (`verify_terrain_mesh.gd`): the 48x48 grid the client builds
 through `makeModel`, as an `ArrayMesh` -- 2401 vertices and 4608 triangles, a
 normal from central differences, a per-vertex material colour from the scene's
@@ -818,7 +850,9 @@ a drawing one.
 What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the HUD as a `Control` tree, the menu and the console (stage 6 —
-there is a one-`Label` read-out and no way to paste a ticket *in game*); the mods state and the
+there is a one-`Control` HUD and no way to paste a ticket *in game* -- the menu, the console, chat,
+and the settings screen that drives `bgm`/`sfx`/`light`/`sky`/`clouds`, which the HUD reads out at
+their defaults until they exist); the mods state and the
 bangs and voice reaching GDScript (they are carried on the wire but the core does not consume
 them yet -- `NetBridge` has no `blast`/`voice`; a *bite* was in this list too, and M21 closed
 it both ways, and *audio* was in it until M22); the asset bytes reaching an engine shim (`rl.loadSound`
@@ -1004,10 +1038,10 @@ Sizes are judgement, not measurement.
 | 0 | Scaffold | model + extension gates green — **done** | — |
 | 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **discovery, manifests, ordering, assets and one entry done**; the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last); the mods, bang and voice paths, and a client that can *host*, remain | 3–4 |
-| 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD as a `Control` tree remains | 2–3 |
+| 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
-| 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
+| 6 | UI | menu, HUD, console, Mods screen as `Control` trees | **the HUD is in (M23: a `Control` drawing `drawHud`, with the pulse and `P`); the menu's four screens, the console and its verbs, chat, the settings screen and the keymap remain** | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the two menu sliders and the console's `mute`/`setting bgm|sfx` are stage 6, and *voice* is still the bridge's to carry | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
 | 9 | Platforms | desktop, Android, web export presets + CI | 2–4 |
@@ -1274,6 +1308,20 @@ disagreements and fails if there are none.
   the decibels in the one line that hands a number to a player. The shape to keep: when the
   engine's units differ from the scene's, the case belongs on the scene's side of the conversion,
   or it is testing the port's plumbing and calling it a rule.
+- **A row the oracle did not answer is a failure, not a skip.** The HUD gate's two numeric loops
+  parsed the wrong token count, so the oracle answered *nothing* -- and no case failed, because the
+  comparison was `absf(mine - NAN) > TOLERANCE` and every comparison against `NaN` is false. Nine
+  of nine fills "passed" vacuously, and the thing that caught it was printing the oracle's answer
+  count beside the case count: `9 fill(s)` next to `oracle answered 0 fill(s)`. This is the same
+  family as the chunking note in `verify_peers.gd` -- a *silent* oracle reads as agreement -- one
+  layer further down, where the silence is a parse rather than an evaluation.
+- **`set_anchors_preset` is not `set_anchors_and_offsets_preset`, and the difference is a HUD that
+  is not there.** A `Control` whose parent is a `CanvasLayer` gets its anchors set by the first and
+  keeps a size of nothing, so `width - 160 - 12` is negative and every corner of the HUD draws off
+  the left edge. Every *number* in the HUD was right, and no case could have caught it: the tell
+  was one fragment of a line -- the tail of `health 100   energy 100   belly 0%` -- sitting at the
+  very edge of a picture. The fix is the second call, and the reason to reach for the screen size
+  rather than the control's is the scene's own (`rl.getScreenWidth`), which is the viewport.
 - **An oracle written from the port proves nothing, and it is the easiest mistake
   here to make.** Every gate in this project checks a transcription against the
   JavaScript the scene runs, and every one of them had to be *written from
@@ -1340,11 +1388,12 @@ audio and the mod surface, and new work last.
    are still dropped, where a `consume` no longer is (`explosions.js`'s `applyRemoteBlast` and
    `netBlastReport` are the rules). `interop.sh pair` is the harness both want: two clients, one
    host, and a bang either can set off in front of the other.
-2. **The UI -- stage 6, and the largest block by far.** The HUD is one `Label` against a `drawHud`
-   with health and energy bars, an action prompt, a sleep cue, a status line and a damage pulse;
-   the menu has four screens; and the console is absent entirely, with it its sixty-odd verbs,
-   chat, the settings screen, the keymap and the Mods screen. This is also what retires the
-   `GOATS_*` environment variables, which exist for no other reason than a missing console.
+2. **The UI -- the menu, the console and the settings screen.** The HUD is in as of M23 (a
+   `Control` drawing `drawHud`, its words gated and its layout photographed); what is left is the
+   menu's four screens, the console with its sixty-odd verbs, chat, the settings screen and the
+   keymap. This is also what retires the `GOATS_*` environment variables, which exist for no other
+   reason than a missing console, and what drives the four read-outs the HUD already shows at
+   their defaults.
 3. **The mod surface -- stages 1 and 8.** One of `goats`' seventeen member groups is implemented
    and one of its eighteen events fires; of the repository's five mods, one runs and runs degraded.
    This is the largest block by any measure and it is what the port's own goal names first, which
@@ -1396,7 +1445,9 @@ tiers hands the mirrored pass, and the ground that pass draws on a layer of its 
 (`godot/tools/verify_water_reflect.gd`); and checks the sound -- the variety stream draw for draw,
 the variant and copy rule, the bang's reach and its chain, the two gains and the ten slots --
 against `audio.js`, with the one thing no headless run can answer read off a *window* instead:
-57 players loaded and five of them playing a few frames in (`godot/tools/verify_audio.gd`).
-Every one
+57 players loaded and five of them playing a few frames in (`godot/tools/verify_audio.gd`); and
+holds the HUD -- the state word over every move, mode and pause, the status and weather lines, a
+bar's fill and the pulse's two numbers -- against `goat.js`'s `drawHud`
+(`godot/tools/verify_hud.gd`, M23). Every one
 of them exits zero.
 The rest is read from the tree.*

@@ -91,6 +91,10 @@ var shake_energy := 0.0
 var shake_phase := 0.0
 var shake_dir := Vector2.ZERO
 
+## The HUD's red frame (`explosions.js` `hurtPulse`), as a fraction of a full-strength hit. The
+## strongest *unrecovered* hit wins, so a second bang cannot make a bruise look like a scratch.
+var hurt_pulse := 0.0
+
 ## The live effect bursts. Fixed pool, built once: nothing allocates on a bang.
 var _fire: Array = []
 var _smoke: Array = []
@@ -144,6 +148,11 @@ func use_seed(seed: int) -> void:
 		value = s
 	salt = value
 
+## The pulse's fade, in fractions a second, and the damage a full-strength flash is
+## (`TUNING.explosions.pulse`).
+const PULSE_DECAY := 2.4
+const PULSE_DAMAGE := 25.0
+
 ## One frame: the ground heals, the fuses run down, the effects age, the knock
 ## decays. Runs whether or not the devices are armed -- a crater that never healed
 ## would be a hole in the world left by a debug switch.
@@ -160,6 +169,9 @@ func update(delta: float) -> void:
 	if shake_energy > 0.0:
 		shake_phase += delta * SHAKE_SPEED
 		shake_energy = maxf(0.0, shake_energy - SHAKE_DECAY * delta)
+	# ...and the HUD's flash, fading at `pulse.decay` a second until it is gone.
+	if hurt_pulse > 0.0:
+		hurt_pulse = maxf(0.0, hurt_pulse - delta * PULSE_DECAY)
 	# Fuses last, so a bang that lands this frame can still chain.
 	var i: int = pending.size() - 1
 	while i >= 0:
@@ -421,6 +433,9 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int) -> void:
 		var took: float = BLAST_DAMAGE * falloff * falloff
 		# The floor is the promise that a mine cannot end *this* player's run.
 		goat.health = maxf(BLAST_HEALTH_FLOOR, goat.health - took)
+		# ...and the HUD's flash, scaled by what the blast actually took (`explosions.js`).
+		if took > 0.0:
+			hurt_by(took)
 		# Away from the blast, up, and scaled by the same falloff as the damage: the
 		# rim is a shove and the centre is a launch.
 		var u: Vector2 = fling_direction(dx, dz, d, seed)
@@ -503,6 +518,17 @@ func fling_direction(ox: float, oz: float, d: float, seed: float) -> Vector2:
 	var c: float = cos(turn)
 	var s: float = sin(turn)
 	return Vector2(ux * c - uz * s, ux * s + uz * c)
+
+## A hit of `damage` as a share of a full-strength flash, keeping the strongest unrecovered one
+## (`explosions.js` `hurtBy`). The HUD reads it back and draws the red frame.
+func hurt_by(damage: float) -> void:
+	var share: float = damage / PULSE_DAMAGE if PULSE_DAMAGE > 0.0 else 0.0
+	if share > hurt_pulse:
+		hurt_pulse = minf(share, 1.0)
+
+## How strong the flash still is, for the HUD. Zero when nothing has landed recently.
+func hurt() -> float:
+	return hurt_pulse
 
 ## The knock, which is the part the player does: the camera is pushed away from the
 ## bang and the push decays. It is outside the damage radius on purpose -- a bang

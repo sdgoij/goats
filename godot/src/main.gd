@@ -98,6 +98,9 @@ var _cam_yaw := 0.7
 var _cam_pitch := 0.42
 var _cam_dist := 5.2
 var _dragging := false
+## Whether the world is frozen (`goat.js`'s `paused`). `P` toggles it, the HUD says so, and the
+## *view* keeps running -- see `_process`.
+var _paused := false
 ## The one-shot presses since the last frame, filled by `_unhandled_input` and
 ## consumed by `_process`. The scene's `press()` reads the same four keys once per
 ## frame; Godot delivers the press as an event, so it is held here until then.
@@ -359,75 +362,104 @@ func _process(delta: float) -> void:
 	for line in bridge.call("poll_events"):
 		_handle(String(line))
 
-	# The ground, the fuses and the effects first, which is `sceneFrame`'s order: a
-	# crater ages, a fuse runs out and a bang lands *before* the goat moves, so a goat
-	# thrown this frame is thrown on the ground this frame.
-	explosions.update(delta)
-	# Walk onto something. The trigger is tested once per arrival rather than once per
-	# frame -- the stamp is a half-metre bucket, so a goat standing still is one
-	# compare -- and neither a sleeping goat nor a dead one is walking anywhere.
-	if goat.mode != "sleep" and goat.mode != "dead":
-		goat.trip_stamp = explosions.check_triggers(
-			goat.px, goat.pz, goat.airborne(), goat.trip_stamp)
-
-	# The goat: it is what the camera, the ground and the meadow are placed around,
-	# and it is the only thing in this scene that decides anything.
-	goat.step(delta, _controls(), _sky_light, _weather_now(), meadow, _eat_trap, _wading())
-	# The herd's own AI, in `sceneFrame`'s order and behind `sceneFrame`'s own gate: the
-	# devices, then the goat, then the bots, then the push-apart that keeps them from
-	# walking through each other. A client simulates none of it -- it mirrors the host's
-	# herd instead (`Herd`), which is why this is the same switch the meadow's countdown
-	# and the blast's herd damage read.
-	if not _joined:
-		bots.update(delta, _weather_now())
-		bots.resolve_collisions()
-	# The meadow is the host's in a session, so a client only mirrors it.
-	meadow.update(delta, _weather.is_empty())
+	# The frame's controls, taken once: `_controls` consumes the one-shot presses, and both the
+	# goat and the HUD want what it read.
+	var controls: Dictionary = _controls()
 	_orbit(delta)
-
-	# The ground rebuilds when its snapped anchor moves (`terrain.gd` /
-	# `terrainEnsure`) and when something has blown a hole in it, and the grass is
-	# recomputed every frame, because it sways and because the scene's meadow is a
-	# function of where the goat is.
-	if Craters.dirty:
-		Craters.dirty = false
-		terrain.refresh()
 	var here := Vector3(goat.px, 0.0, goat.pz)
-	terrain.follow(here.x, here.z)
-	# The water is the table over the grid, so it follows the grid: the scene rebuilds it
-	# wherever the terrain mesh is rebuilt (`waterRebuild`), and `rebuilds` is what says
-	# one happened. The grid is *read*, never written, so it must be taken again after a
-	# rebuild rather than held. The reflection needs nothing here: the pass is placed from the
-	# camera every frame (below), so a rebuilt ground is simply the next frame's ground.
-	if terrain.rebuilds != _terrain_builds:
-		_terrain_builds = terrain.rebuilds
-		water.rebuild(terrain.heights(), terrain.anchor())
-		water_surface.build(terrain.heights(), terrain.anchor())
 	var camera := $Camera3D as Camera3D
+
+	# `P` freezes the *world* and not the view: `sceneFrame`'s own gate wraps the simulation
+	# (`if (!paused || ctlStep > 0)`) while the camera, the mirror, the sway, the sky, the rain and
+	# the HUD are all outside it. What moves the world while it is frozen is the console's
+	# `step <n>`, and that is stage 6's.
+	if not _paused:
+		# The ground, the fuses and the effects first, which is `sceneFrame`'s order: a
+		# crater ages, a fuse runs out and a bang lands *before* the goat moves, so a goat
+		# thrown this frame is thrown on the ground this frame.
+		explosions.update(delta)
+		# Walk onto something. The trigger is tested once per arrival rather than once per
+		# frame -- the stamp is a half-metre bucket, so a goat standing still is one
+		# compare -- and neither a sleeping goat nor a dead one is walking anywhere.
+		if goat.mode != "sleep" and goat.mode != "dead":
+			goat.trip_stamp = explosions.check_triggers(
+				goat.px, goat.pz, goat.airborne(), goat.trip_stamp)
+
+		# The goat: it is what the camera, the ground and the meadow are placed around,
+		# and it is the only thing in this scene that decides anything.
+		goat.step(delta, controls, _sky_light, _weather_now(), meadow, _eat_trap, _wading())
+		# The herd's own AI, in `sceneFrame`'s order: the devices, then the goat, then the
+		# bots, then the push-apart that keeps them from walking through each other. A client
+		# simulates none of it -- it mirrors the host's herd instead (`Herd`).
+		if not _joined:
+			bots.update(delta, _weather_now())
+			bots.resolve_collisions()
+		# The meadow is the host's in a session, so a client only mirrors it.
+		meadow.update(delta, _weather.is_empty())
+
+		# The ground rebuilds when its snapped anchor moves (`terrain.gd` /
+		# `terrainEnsure`) and when something has blown a hole in it.
+		if Craters.dirty:
+			Craters.dirty = false
+			terrain.refresh()
+		terrain.follow(here.x, here.z)
+		# The water is the table over the grid, so it follows the grid: the scene rebuilds it
+		# wherever the terrain mesh is rebuilt (`waterRebuild`), and `rebuilds` is what says
+		# one happened. The grid is *read*, never written, so it must be taken again after a
+		# rebuild rather than held.
+		if terrain.rebuilds != _terrain_builds:
+			_terrain_builds = terrain.rebuilds
+			water.rebuild(terrain.heights(), terrain.anchor())
+			water_surface.build(terrain.heights(), terrain.anchor())
+
+	# The camera is placed whether or not the world moved, and before `_advance`, which reads it:
+	# the view follows a goat that is standing still as much as one that is walking.
 	_place_camera(camera)
 	# The reflection's pass (M20e): `renderWaterMirror` runs *before* the frame's own 3D pass, and
 	# so does this -- the camera it draws from is the world's own, mirrored through the water's
 	# plane, and the surface reads what it drew at its own screen position.
 	water_mirror.run(camera, water.level())
-	_advance(delta, camera.global_position)
-	# The sound, once a frame and after the weather has settled: the beds ride the rain and the
-	# wind, the thunder rolls off the rain, and the grit a bang threw lands here (`updateAudio`).
-	audio.update(delta, float(_weather_now().get("rain_amount", 0.0)), _wind_sway)
+	if not _paused:
+		_advance(delta, camera.global_position)
+		# The sound, once a frame and after the weather has settled: the beds ride the rain and
+		# the wind, the thunder rolls off the rain, and the grit a bang threw lands here.
+		audio.update(delta, float(_weather_now().get("rain_amount", 0.0)), _wind_sway)
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
 	water_splash.update()
-	# The two bodies and the rain, from the values `_advance` just settled: the sun and
-	# the moon ride the light's own line, and the rain is screen space over everything.
+	# The two bodies and the rain, from the values `_advance` just settled: the sun and the moon
+	# ride the light's own line, and the rain is screen space over everything.
 	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
 	rain.show_for(weather, _wind_x)
 	_publish_pose(delta)
-	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz), audio.word())
+	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz),
+		_hud_world(controls))
 	_boom_if_asked()
 
+	# The probe's own clock, which runs whether or not the world is frozen: it is counting the
+	# *snapshots* a host is sending, and a host does not pause this client.
 	if _settle >= 0.0:
 		_settle += delta
 		if _settle >= PROBE_SETTLE:
 			_settle = -99.0
 			_probe_report()
+
+## What the HUD needs that only the frame knows (`drawHud`'s own arguments). The herd is the
+## *local* one when there is no session and the mirrored one when there is, which is the same
+## switch `BOTS` is in the scene.
+func _hud_world(controls: Dictionary) -> Dictionary:
+	# `foodReady`: a tuft in reach, and a goat free to take it.
+	var food_ready: bool = not meadow.nearest(goat.px, goat.pz).is_empty() \
+		and goat.mode != "dead" and goat.mode != "sleep" \
+		and goat.mode != "jump" and goat.mode != "eat"
+	return {
+		"move": int(controls.get("move", 0)),
+		"paused": _paused,
+		"herd": bots.count() if not _joined else herd.count(),
+		"food_ready": food_ready,
+		"hurt": explosions.hurt(),
+		"fps": Engine.get_frames_per_second(),
+		"audio": audio.word(),
+	}
 
 ## This frame's controls, in the form `PlayerGoat.step` wants. `sceneFrame` reads
 ## its keys the same way and combines them the same way: a held axis, a gait chosen
@@ -541,6 +573,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				# `goat.js`'s `M`: the master mute. The menu's `bgm`/`sfx` sliders and the console's
 				# `mute` verb are stage 6; this is the key the scene has always bound.
 				audio.set_muted(not audio.muted)
+			KEY_P:
+				# `goat.js`'s `P`: freeze the world. The console's `step <n>` is what moves it while
+				# it is frozen, and that verb is stage 6's.
+				_paused = not _paused
 			KEY_C:
 				# `weather.js`'s `C`: jump to the next state now, for previewing the cycle.
 				# The scene gates it on `netWeatherLocal()` -- a client may not force the

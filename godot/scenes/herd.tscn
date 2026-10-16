@@ -73,5 +73,5 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 5)
 [node name="Rain" type="Control" parent="Ui"]
 script = ExtResource("9_rain")
 
-[node name="Hud" type="Label" parent="Ui"]
+[node name="Hud" type="Control" parent="Ui"]
 script = ExtResource("6_hud")
