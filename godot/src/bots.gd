@@ -210,7 +210,17 @@ func set_lit(on: bool) -> void:
 		coat.shading_mode = TerrainMesh.shading(on)
 
 ## Grow or shrink the herd to `count` (0..10). A bot that leaves takes its rig with it.
+##
+## A scene with no goat to ring has nothing to resize, and it is not a corner case: `main.gd`
+## wires the herd to its goat only where the world is this end's -- the session-less boot -- so a
+## *client* has an empty herd it never simulates. Its settings screen still offers "Herd size"
+## (the reference's own control), and a drag there would otherwise reach `_add`'s `goat.px` as a
+## null access. The reference agrees, incidentally: there `setHerdSize` on a client resizes the
+## flock it *mirrors* and the next snapshot puts it back, so the slider does not stick there
+## either -- which is why refusing here is the outcome and not a hole.
 func set_herd_size(count: int) -> void:
+	if goat == null:
+		return
 	var want: int = clampi(int(round(float(count))), 0, MAX_HERD)
 	while _bots.size() > want:
 		var leaving: Bot = _bots.pop_back()

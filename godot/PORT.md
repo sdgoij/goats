@@ -281,6 +281,36 @@ terrain mesh: 1 rebuild(s), anchored (0, 0)
 OK: the herd mirrors goatsd's bots, on Godot-drawn ground
 ```
 
+**What a snapshot does to the flock** (`verify_herd.gd`): the mirror's own contract, which the
+interop runs had been carrying alone. `netApplyWorld` hands the herd's length to `setHerdSize` and
+returns early for a `bots` that is not an array at all — so a *list* is adopted (three goats, two, or
+none) while a world that leaves the field out keeps what this end has, which is the half-built
+snapshot `goatsd` publishes while it loads. The port had that difference the wrong way round: its
+`world` arm waited for a snapshot that carried *bots* before it did anything with the herd, so an
+empty flock was one it ignored — and the flock that had been mirrored then stood where it was last
+told to stand, for as long as the session lasted. That is what a player reports as **"the host's
+herd is frozen"**, and a host is *allowed* to have no herd: its size is `TUNING.herd.count`, a
+setting the settings screen, the console and a mod all write (`bots.js`'s own
+`tuningWatch("herd.count", ...)`), which is the control the port's settings screen draws as
+**Herd size**. The gate drives the scene's own event arm with four worlds — three goats, two, none,
+and one that says nothing about the herd — and the third is the fix's witness: with the guard back,
+it reports
+
+```
+herd:    3 goat(s) for a world naming three goats
+herd:    2 goat(s) for a world that dropped a goat
+FAIL: a world whose herd is empty left the mirror holding 2 goat(s), not 0
+FAIL: the world clock counted 3 snapshots carrying a herd, not 4
+```
+
+Two smaller things came out of the same reading. `Bots.set_herd_size` on a *client* reached a herd
+that scene had never built — a client simulates none, and `main.gd` wires the herd to its goat only
+in the session-less boot — so a drag of that slider was a null access; the reference resizes the
+flock it *mirrors* there and the next snapshot puts it back, so refusing is the outcome and not a
+hole. And the settings screen's own read of it was `bots.count()`, a herd of zero on every client,
+where the frame already answers that question for the tuning tree and for a mod
+(`_tuning_herd_count`) — one answer for all three now.
+
 **The other players** (`verify_peers.gd`, `interop.sh pair`): M21. The port mirrored the host's
 *bots* from the beginning and never the host's *people* -- a `peer` event fell through
 `main.gd`'s dispatch unused -- so two clients in one session could not see each other and a

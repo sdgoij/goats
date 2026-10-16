@@ -92,7 +92,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Thirty-two headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Thirty-three headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -232,6 +232,14 @@ Thirty-two headless gates, all `SceneTree` scripts that exit non-zero on failure
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_bots.gd
 
+# The mirror: what a world snapshot does to the herd a *client* sees. A list is adopted and
+# its length is the flock's, a shorter one drops the goats the host no longer names, an
+# **empty** one is a herd of none (the host's size is a setting, so zero is a legitimate
+# world), and a world that leaves `bots` out keeps what this end has -- which is
+# `netApplyWorld`'s own early return, and the one place the two cases differ.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_herd.gd
+
 # The wake: 120 frames of rings and drops (eighteen of them dry), the two water tests
 # told apart where they disagree, and the grass a deep pool hides against `water.js` and
 # `weather.js`.
@@ -283,9 +291,11 @@ Thirty-two headless gates, all `SceneTree` scripts that exit non-zero on failure
     --script res://tools/verify_voice.gd
 ```
 
-All thirty-two pass against Godot 4.7.2 today. Two more need a live session and are run by
-`tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
-(two clients, `interop.sh pair`).
+All thirty-three pass against Godot 4.7.2 today. Four more need a live session and are run by
+`tools/interop.sh` instead: `verify_interop.gd` (join and refuse), `verify_peers_live.gd`
+(two clients, `interop.sh pair`), and the herd-death pair — `verify_herd_death.gd` (a client's own
+death and respawn against `goatsd`, `interop.sh death`) and `verify_herd_host.gd` (the same question
+with this scene *hosting*, `interop.sh hostdeath`).
 
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that
@@ -413,6 +423,16 @@ godot/tools/interop.sh herd
 # which is the only way to see a `peer` -- a peer frame is somebody else's goat, so
 # one client can never produce one (M21).
 godot/tools/interop.sh pair
+
+# The mirror through a client's *own* death: joins the shipping host, dies the way a player
+# dies, lies there, and asks whether the herd it mirrors moved across each window -- the
+# death and the respawn both.
+godot/tools/interop.sh death
+
+# ...and the same question with *this* scene hosting: the host probe prints its ticket, a
+# joiner is handed it, and both ends are read -- because a herd freezes on a client either
+# because the host stopped publishing or because it published a herd that stood still.
+godot/tools/interop.sh hostdeath
 
 # No server at all: the scene must boot and keep running, and its own herd with it.
 # Needs no goatsd.

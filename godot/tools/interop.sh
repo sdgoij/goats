@@ -6,10 +6,12 @@
 #   godot/tools/interop.sh refuse   # the same probe is refused by a host requiring the repo's world mods
 #   godot/tools/interop.sh herd     # the scene (presenting the repo's world mods) joins a host running them
 #   godot/tools/interop.sh pair     # ...and *two* clients see each other's goat
+#   godot/tools/interop.sh death    # ...and the mirrored herd is still moving after a client dies and respawns
+#   godot/tools/interop.sh hostdeath # ...the same, hosted by *this* scene rather than by `goatsd`
 #   godot/tools/interop.sh offline  # no server: the scene boots without a session
 #   godot/tools/interop.sh shot     # ...and a window renders it, with the herd in it
 #
-# All six are evidence. `join` proves the transport, the join handshake, the chat
+# All seven are evidence. `join` proves the transport, the join handshake, the chat
 # routing and the world datagrams work against the *shipping* binary, not just
 # between two Godot peers. `refuse` proves the world-mod digest comparison
 # (`APIv1.md` section 6.3) crosses two independent implementations -- the failure
@@ -26,6 +28,14 @@
 # evidence no gate can carry -- whether it *looks* like a world -- and it needs a
 # window, so it is the one mode that is run by hand on a machine with a GPU.
 #
+# `hostdeath` is `death` with the host changed: there is no `goatsd` in it at all,
+# and the ticket the joiner is given is the *scene's* own. That is the only way to
+# ask the question the report was about -- whether a **Godot host** keeps
+# publishing a herd that moves while a client dies -- because a `goatsd` session
+# can only ever show what this end mirrors. It runs two things
+# (`verify_herd_host.gd` hosting, `verify_herd_death.gd` joining and dying) and
+# reads both.
+#
 # Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server).
 set -eu
 
@@ -36,9 +46,9 @@ log=$root/target/interop-goatsd.log
 
 mode=${1:-join}
 case "$mode" in
-    join|refuse|herd|pair|offline|shot) ;;
+    join|refuse|herd|pair|death|hostdeath|offline|shot) ;;
     *)
-        echo "interop.sh: unknown mode '$mode' (want join, refuse, herd, offline or shot)" >&2
+        echo "interop.sh: unknown mode '$mode' (want join, refuse, herd, pair, death, hostdeath, offline or shot)" >&2
         exit 2
         ;;
 esac
@@ -93,6 +103,58 @@ if [ "$mode" = "offline" ]; then
     exit 0
 fi
 
+# `hostdeath` is the one mode whose host is the port itself, so there is no `goatsd`
+# to start and no server ticket to wait for: the ticket the joiner is given comes
+# out of the hosting probe. Both processes are read afterwards, because the report
+# is about a *client's* view of a *host's* herd, and either end failing is the bug.
+if [ "$mode" = "hostdeath" ]; then
+    host_log=$root/target/host-herd.log
+    join_log=$root/target/join-herd.log
+    : > "$host_log"
+    : > "$join_log"
+    "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        --script res://tools/verify_herd_host.gd > "$host_log" 2>&1 &
+    host_pid=$!
+
+    # The host probe prints its ticket raw on a line of its own, once it is up.
+    attempts=0
+    ticket=
+    while [ "$attempts" -lt 240 ]; do
+        ticket=$(sed -n 's/^ticket //p' "$host_log" | sed -n '1p')
+        if [ -n "$ticket" ]; then
+            break
+        fi
+        attempts=$((attempts + 1))
+        sleep 0.25
+    done
+    if [ -z "$ticket" ]; then
+        kill "$host_pid" 2>/dev/null || true
+        echo "interop.sh: the hosting probe never printed a ticket. Its output:" >&2
+        grep -vE "^$|Godot Engine|Initialize godot-rust" "$host_log" >&2
+        exit 1
+    fi
+    echo "interop.sh: this scene is hosting (${mode} mode)"
+
+    set +e
+    GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        --script res://tools/verify_herd_death.gd > "$join_log" 2>&1
+    join_status=$?
+    wait "$host_pid"
+    host_status=$?
+    set -e
+
+    # Both ends are read, not only the exit codes: which end stopped is the first
+    # thing worth knowing, and a host that stopped *publishing* looks identical to
+    # a client that stopped applying it from the outside.
+    grep -E "^(OK|FAIL|peer|before|after|motion|publishing)" "$host_log" || true
+    grep -E "^(OK|FAIL|herd|before|dead|after|motion)" "$join_log" || true
+    if [ "$host_status" -ne 0 ] || [ "$join_status" -ne 0 ]; then
+        exit 1
+    fi
+    echo "interop.sh: a Godot host's herd keeps moving through a client's death and respawn"
+    exit 0
+fi
+
 # Which world-mod set `goatsd` requires. `join` and `refuse` run a bare
 # `verify_interop.gd` probe with no `ModHost` behind it, so it presents *nothing*:
 # `join` gives it a host that requires nothing (`--no-mods`), and `refuse` a host
@@ -101,7 +163,7 @@ fi
 # (`mods.world_mod_refs`), so the host runs the same mods and the join is accepted.
 case "$mode" in
     join) mods_flag=--no-mods ;;
-    herd|pair|shot|refuse) mods_flag= ;;
+    herd|pair|shot|death|refuse) mods_flag= ;;
 esac
 
 server=${GOATSD_BIN:-$root/target/release/goatsd.exe}
@@ -174,6 +236,12 @@ elif [ "$mode" = "herd" ]; then
     # The real scene, with the probe switched on: it settles, reports and exits.
     GOATSD_TICKET="$ticket" GOATS_PROBE=1 \
         "$godot_bin" --headless --path "$(to_native "$godot_dir")"
+    status=$?
+elif [ "$mode" = "death" ]; then
+    # The real scene, and the probe that kills and respawns its own goat: what a client's *own*
+    # death has to leave alone is the herd it mirrors, which is the host's.
+    GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        --script res://tools/verify_herd_death.gd
     status=$?
 elif [ "$mode" = "shot" ]; then
     # The real scene, in a window, long enough for a populated world to arrive and

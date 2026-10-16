@@ -275,6 +275,8 @@ var _boom := false
 var _boom_frame := 0
 
 var _probe := false
+## How many world snapshots carrying a `bots` list this client has applied, empty ones included:
+## "the host has no herd" is a world a mirror has to act on, which is `_handle`'s own arm.
 var _worlds := 0
 ## How many *mods* datagrams this client has applied -- the world mods' own, beside the world's
 ## (`net.js` `netMaybePublishWorld` queues both). It is a probe's evidence rather than a rule: a
@@ -413,6 +415,9 @@ func _ready() -> void:
 	menu.settings = settings
 	menu.water_reflect = water_reflect
 	menu.bots = bots
+	# The slider's own read is the *frame's* answer, so a client's settings screen shows the flock
+	# it can see rather than the empty herd it never simulates (`_tuning_herd_count`'s split).
+	menu.herd_count = Callable(self, "_tuning_herd_count")
 	menu.on_console = Callable(self, "_open_console")
 	menu.on_quit = Callable(self, "cmd_quit")
 	commands.settings = settings
@@ -1593,19 +1598,33 @@ func _handle(line: String) -> void:
 			# rather than events, because a joiner has to see the world as it stands.
 			Craters.apply_wire(event.get("craters", null))
 			explosions.apply_spent(event.get("spent", null))
-			var bots_here: Variant = event.get("bots", [])
-			if bots_here is Array and bots_here.size() > 0:
-				_measure_motion(bots_here)
+			var bots_here: Variant = event.get("bots", null)
+			# The herd, on `netApplyWorld`'s own rule: a list is *adopted* -- and an **empty** one is a
+			# statement that the host has no herd, not a field that was left out. The two are
+			# different because the reference makes them different: it returns early for a `bots`
+			# that is not an array (the half-built world `goatsd` publishes while it loads its scene)
+			# and calls `setHerdSize(bots.length)` for one that is.
+			#
+			# A mirror that skipped the empty case would hold goats the host does not have, standing
+			# where they were left, for as long as the session lasts -- which is what a player
+			# reports as "the host's herd is frozen". It is also the one thing `Herd.apply` does not
+			# need: it has emptied itself on a list that lost a bot since it was written, so the
+			# guard here was the only thing keeping a shrinking herd from shrinking.
+			if bots_here is Array:
+				var listed: Array = bots_here
+				if listed.size() > 0:
+					_measure_motion(listed)
 				herd.apply(event)
 				_worlds += 1
-				_last_bots = bots_here.size()
+				_last_bots = listed.size()
 				# The settle clock is a *probe's*, and it arms only for one. It used to arm for
 				# anybody who received a herd, and the report at the far end of it `quit()`s --
 				# so every Godot client that joined a session with a herd in it quit eight
 				# seconds in. `interop.sh herd` sets `GOATS_PROBE`, which is why the gate never
 				# saw it; `interop.sh pair` runs two clients that are not probes, which is what
-				# found it.
-				if _probe and _settle < 0.0:
+				# found it. It arms on a herd that has goats in it, because the motion it reports
+				# is theirs.
+				if _probe and _settle < 0.0 and listed.size() > 0:
 					_settle = 0.0
 		"mods":
 			# The host's world mods, beside its world: the mods' streams and whatever each world mod

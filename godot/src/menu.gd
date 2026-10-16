@@ -139,6 +139,10 @@ var settings := Settings.new()
 var water_reflect: WaterReflect
 ## The herd the Gameplay slider sizes.
 var bots: Bots
+## What the herd-size slider *shows*, which is the frame's answer and not the local herd's: a
+## client owns no herd of its own (`main.gd` `_tuning_herd_count`). Invalid for a menu with no
+## frame behind it, and then the slider reads the herd it was handed.
+var herd_count: Callable = Callable()
 
 ## The `Mods` screen's list: a `Callable` answering `menu.js`'s `goats.mods()` shape, an array of
 ## `{id, name, version, side, enabled, loaded, failed, error}`. Empty for a menu with no runtime
@@ -376,7 +380,14 @@ func _reflect_tier() -> int:
 		return 0
 	return clampi(int(roundf(water_reflect.wish)), 0, REFLECT_LIST.size() - 1)
 
+## The herd size the Gameplay slider shows: the frame's own answer (`goats.tuning`'s read), because
+## a client owns no herd and the number it can mean there is the one the player can *see* -- the
+## flock it mirrors. Drawing `bots.count()` instead is a herd of zero on every client. `menu.js`
+## reads `TUNING.herd.count` and the console and a mod read the same value, so one answer for all
+## of them is the rule `settings.gd` keeps for every other control: two owners is how they drift.
 func _herd_size() -> int:
+	if herd_count.is_valid():
+		return int(herd_count.call())
 	return bots.count() if bots != null else 0
 
 ## The widget a click at `at` lands on, for a viewport of `size`: the topmost **interactive** one,
