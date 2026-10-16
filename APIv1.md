@@ -405,8 +405,8 @@ reported, not silently ignored).
 > writes (`override`/`add`) are pre-freeze in the reference client and are refused in the port with
 > every other write. `entities` is the only group whose crossing is between two *mods* rather than
 > between a mod and the scene, so a client implements both members locally and the host is not
-> involved at all; what the port cannot do yet is *drop* a mod's offers on unload, which is a
-> consequence of having no `modSetEnabled`/reload rather than a gap in the group. The extension is
+> involved at all, and a mod's offers are **dropped on unload** (`goatsEnd`, which `modSetEnabled`
+> drives), so a disable takes them with it. The extension is
 > handed **one JSON snapshot of the world per frame** and the
 > facade answers every group out of it, so none of these reads crosses the language boundary --
 > the design `PORT.md` §6 records. `world.terrainHeight` is the one read that is a *function*

@@ -681,6 +681,31 @@ if (typeof globalThis.goats === "undefined") {
         }
 
         /**
+         * Drop everything one mod registered *outside its own handle*: its streams, its world
+         * extensions and its offered entities. Its hooks and commands go with its `__mods` entry,
+         * which the caller deletes -- those are its `state`, and the state is the handle's.
+         *
+         * This is `mods.js`'s `modDropWorld` and `modDropEntities` together, and it is the half of
+         * `goatsEnd` that cannot be one `delete`: three registries are keyed by a name the *mod*
+         * chose rather than by its id, so each has to be walked. A mod's offers have to go for the
+         * reason its handlers do (`APIv1.md` section 4.16): nothing outside the mod may keep asking
+         * a body that has been unloaded where it is.
+         */
+        function dropRegistrations(id) {
+            for (const key in modStreams) {
+                if (key.indexOf(id + ":") === 0) delete modStreams[key];
+            }
+            for (const key in modExts) {
+                if (modExts[key] !== undefined && modExts[key].id === id) delete modExts[key];
+            }
+            for (const key in entityOffers) {
+                if (entityOffers[key] !== undefined && entityOffers[key].id === id) {
+                    delete entityOffers[key];
+                }
+            }
+        }
+
+        /**
          * The `world` group (`APIv1.md` section 4.7). Built rather than declared inline because one
          * of the two members that name a mod lives here: `registerStream` is the reference's
          * `modWorldFor(id)`, and it is *not* on the base object -- so a mod outside a `begin` gets
@@ -1314,6 +1339,37 @@ if (typeof globalThis.goats === "undefined") {
              */
             __applyWorldMods: function (json) {
                 applyWorldMods(parseJson(json, null));
+            },
+
+            /**
+             * Tear one mod's instance down -- `mods.js`'s `goatsEnd`, which its `sceneModEnd` calls
+             * for a disable or the first half of a reload. The mod's own `shutdown` hook runs first,
+             * because the reference fires it there and a mod that wants to say something as it goes
+             * must be heard; then everything it registered is dropped -- its `__mods` entry (its
+             * hooks and its commands) and, through `dropRegistrations`, its streams, its world
+             * extensions and its offered entities.
+             *
+             * `error mod not loaded` for an id with no instance is the reference's own answer, and
+             * the host treats it as a no-op rather than a failure. The failures are logged *after*
+             * the loop rather than inside the `catch`: a host call there trips this engine's
+             * environment stack (`entitiesNear` has the detail).
+             */
+            __end: function (id) {
+                const state = this.__mods[id];
+                if (state === undefined) return "error mod not loaded";
+                const list = state.hooks["shutdown"] || [];
+                const failed = [];
+                for (let j = 0; j < list.length; j++) {
+                    try {
+                        list[j]();
+                    } catch (error) {
+                        failed.push(id + ": shutdown handler failed: " + error);
+                    }
+                }
+                delete this.__mods[id];
+                dropRegistrations(id);
+                for (let i = 0; i < failed.length; i++) console.log(failed[i]);
+                return "ok";
             },
 
             /**

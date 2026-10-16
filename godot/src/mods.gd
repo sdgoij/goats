@@ -4,11 +4,10 @@
 # The split is `mods.js`'s, and it is the same split for the same reason. The *host* -- here the
 # GDExtension over `crates/mods` and `crates/plugin`, and the embedded engine -- discovers,
 # validates, orders, runs and drives; the *scene* owns the table the UI draws, the per-frame hooks
-# a mod registered, and the console's first refusal. What the port does not have yet is `mods.js`'s
-# other half: `modSetEnabled` and its session guard, the world-mod datagram, the tuning *merge* (a
+# a mod registered, the console's first refusal, and the one thing only it can know: whether there
+# is a session. What the port does not have yet of `mods.js`'s other half is the tuning *merge* (a
 # write), reload/watch and the asset-to-engine path. Those are stage 8 (`PORT.md` section 6, and
-# section 10's third item); this file is stage 1's, and it stops at "the scene is running the mods
-# and can see what happened".
+# section 10's third item); the enable/disable toggle (`set_enabled`, with its session guard) is in.
 #
 # The **readable surface** is this file's other job now (`APIv1.md` section 4.5-4.12): every frame
 # the scene hands the host one JSON snapshot of the live world -- the goat, the camera, the
@@ -56,9 +55,10 @@ var console: Console
 ## player can see which `mods/` was read -- the same question the raylib client's `[mods] scanning`
 ## line answers.
 var dir := ""
-## The metadata table the host handed over, parsed: one `{id, name, version, side, enabled, ...}`
-## per mod in load order, plus `failed`/`error` on the ones whose entry threw. This is
+## The metadata table the host handed over, parsed: one `{id, name, version, side, enabled, loaded,
+## ...}` per mod in load order, plus `failed`/`error` on the ones whose entry threw. This is
 ## `menu.js`'s `goats.mods()` shape, so the Mods screen is a reader of it and not a second table.
+## `set_enabled` refreshes it from the host after a toggle, which is why a field and not a read.
 var table: Array = []
 ## The host's one-line report of the whole load, for the console. Empty until `load_all` has run.
 var report := ""
@@ -81,6 +81,11 @@ var world: ModWorld
 ## is built in `_ready` and needs it at once. A `Callable` and not a reference to the frame, for
 ## the reason `PlayerGoat.bleat` is one: this file does not link against the world modules.
 var scene_call: Callable = Callable()
+## The frame's own `netInSession()`: true while this client is in a session, as host or joiner. A
+## `Callable` for the reason `scene_call` is one -- this file does not link against the net module --
+## and it is the guard `modSetEnabled` needs: a world mod's side is fixed at join, so changing one
+## mid-session would desync a joiner.
+var in_session: Callable = Callable()
 
 ## Instantiate the runtime and load whatever `mods/` holds. Discovery, every entry, and the table.
 ##
@@ -170,6 +175,41 @@ func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
 ## The table, as `menu.gd`'s Mods screen and the console's `mod list` want it.
 func mod_table() -> Array:
 	return table
+
+## Turn a mod on or off for this session (`APIv1.md` section 4.1; `mods.js`'s `modSetEnabled`).
+##
+## Two things are *this* file's rather than the host's. The **session guard** is the first: a world
+## mod may not change mid-session, and only the scene knows whether there is one (`in_session`).
+## The **table** is the second -- the host answers a fresh one and `table` is what the Mods screen
+## and `mod list` read. The id is checked before the guard, in the reference's order, so
+## `mod enable nope` is an unknown-mod error whether or not a session is up.
+func set_enabled(id: String, enabled: bool) -> String:
+	if host == null:
+		return "error the mod runtime is not loaded"
+	var meta: Variant = _meta(id)
+	if not (meta is Dictionary):
+		return "error unknown mod: " + id
+	var live: bool = in_session.call() if self.in_session.is_valid() else false
+	if live and String((meta as Dictionary).get("side", "")) == "world":
+		return "error " + id + " is a world mod; leave the session first"
+	var reply: String = String(host.call("set_enabled", id, enabled))
+	table = parse_table(host.call("mods_json"))
+	return reply
+
+## Flip a mod, reading which way from the table -- `menu.js`'s Enable/Disable button, whose label
+## follows `enabled` and whose callback is handed one argument.
+func toggle_mod(id: String) -> String:
+	var meta: Variant = _meta(id)
+	if not (meta is Dictionary):
+		return "error unknown mod: " + id
+	return set_enabled(id, not bool((meta as Dictionary).get("enabled", true)))
+
+## One row of the last table, by id, or `null`.
+func _meta(id: String) -> Variant:
+	for meta: Dictionary in table:
+		if String(meta.get("id", "")) == id:
+			return meta
+	return null
 
 ## The first compiled client mod's HUD bar fill (0..1), or `-1.0` when none is running.
 ##

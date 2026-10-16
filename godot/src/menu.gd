@@ -22,9 +22,11 @@
 #   * **a slider's track.** raygui's `guiSlider` has its own inner padding and its own idea of
 #     where the thumb is; the port maps a click's x across the control's own rect. The scene's
 #     *rule* -- the value is the position, clamped to the range -- is the same.
-#   * **the `Mods` screen's list.** It is drawn from a `Callable` the frame hands in, and the frame
-#     has no mods to hand it yet: the scene does not load mods at all (stage 1), so the screen
-#     shows `menu.js`'s own degradation, "no mods found". The moment stage 1 lands the list fills.
+#   * **the `Mods` screen's list and its button.** Both come from the runtime the frame hands in: the
+#     list from `Mods.mod_table` (`mods_list`) and the Enable/Disable button from `Mods.toggle_mod`
+#     (`mod_toggle`, wired by `main.gd`). So the screen is a reader of the runtime and not a second
+#     table. A `Menu` with neither -- a gate's, or a build without the extension -- draws
+#     `menu.js`'s own degradation, "no mods found", which is what `modsNote` is for.
 #
 # What the settings screen *does* is real, because M25 gave every control something to reach
 # (`settings.gd` and the frame's `apply`): the two gains, the lit/unlit materials, the shadow map,
@@ -139,7 +141,8 @@ var water_reflect: WaterReflect
 var bots: Bots
 
 ## The `Mods` screen's list: a `Callable` answering `menu.js`'s `goats.mods()` shape, an array of
-## `{id, name, version, side, enabled, failed, error}`. Empty until the scene loads mods.
+## `{id, name, version, side, enabled, loaded, failed, error}`. Empty for a menu with no runtime
+## behind it.
 var mods_list: Callable = Callable()
 ## What a mod's Enable/Disable button answers, or empty for a screen that only reads.
 var mod_toggle: Callable = Callable()
@@ -500,8 +503,8 @@ func _act(id: String) -> void:
 
 func _toggle_mod(mod_id: String) -> void:
 	if not mod_toggle.is_valid():
-		# No mod surface yet (stage 1): the screen says so in `modsNote`, which is exactly what
-		# that label is for.
+		# A `Menu` with no runtime behind it -- a gate's, or a build without the extension -- says so
+		# in `modsNote`, which is exactly what that label is for.
 		mods_note = "mod enable is unavailable"
 		return
 	var reply: String = String(mod_toggle.call(mod_id))

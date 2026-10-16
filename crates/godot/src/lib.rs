@@ -346,6 +346,72 @@ impl ModHost {
         gstring(report.trim_end())
     }
 
+    /// Turn one mod on or off for this session -- `APIv1.md` section 4.1's `modSetEnabled`,
+    /// between `mods.js`'s toggle and the host's `handle_mod_intent`.
+    ///
+    /// Off tears the instance down: the facade's `__end` fires the mod's own `shutdown` hook and
+    /// drops everything it registered (its hooks, its commands, its streams, its world extensions
+    /// and its offered entities -- `mods.js`'s `goatsEnd`), and a compiled module's instance goes
+    /// with it. On re-reads the mod from its source and evaluates it fresh, which is what the
+    /// reference's `reload_and_eval` does for an enable *and* a reload: an edit on disk takes
+    /// effect on the toggle, and a mod that failed its first run gets a clean second chance.
+    ///
+    /// The session guard is *not* here. A world mod's side is fixed when a host accepts a join, so
+    /// changing one mid-session would desync a joiner -- and only the scene knows whether there is
+    /// a session, so `Mods::set_enabled` refuses before this is reached ([`ModHost`] has no net).
+    #[func]
+    fn set_enabled(&mut self, id: GString, enabled: bool) -> GString {
+        if let Err(error) = self.ensure_booted() {
+            return gstring(format!("error: {error}"));
+        }
+        let id = id.to_string();
+        let known = self
+            .module
+            .as_ref()
+            .and_then(|module| module.loader.as_ref())
+            .is_some_and(|loader| loader.get(&id).is_some());
+        if !known {
+            return gstring(format!("error unknown mod: {id}"));
+        }
+        if enabled {
+            // The reference clears a mod's failure before it re-runs, so a fixed mod reads clean
+            // until it throws again -- and the fresh outcome is what `mods_json` will carry.
+            self.outcomes.remove(&id);
+            if let Some(module) = self.module.as_mut()
+                && let Some(loader) = module.loader.as_mut()
+            {
+                // A read failure falls back to the cached manifest, which is `reload`'s own rule;
+                // the flag is set on whichever manifest survived, so the toggle still takes.
+                if let Err(error) = loader.reload(&id, mods::AssetMode::Keep) {
+                    eprintln!("[mods] {error}");
+                }
+                loader.set_enabled(&id, true);
+            }
+            // The table before the entry runs, so `goats.mod` inside it already reads the new flag
+            // and a freshly re-enabled mod does not appear loaded until it has run.
+            self.refresh_table();
+            let outcome = self.load_one(&id);
+            self.record(&id, &outcome);
+            self.refresh_table();
+            match outcome {
+                Ok(_) => gstring(format!("ok mod enable {id}")),
+                Err(error) => gstring(format!("error {id}: {error}")),
+            }
+        } else {
+            // An id the facade never began answers `error mod not loaded`, which is not a failure
+            // worth a line: a disable that has nothing to tear down has still done its job.
+            let _ = self.call_goats("__end", &[JsValue::string(id.clone())]);
+            self.plugins.remove(&id);
+            if let Some(module) = self.module.as_mut()
+                && let Some(loader) = module.loader.as_mut()
+            {
+                loader.set_enabled(&id, false);
+            }
+            self.refresh_table();
+            gstring(format!("ok mod disable {id}"))
+        }
+    }
+
     /// Invoke a registered command, console-style. Returns the mod's reply, or
     /// an empty string when no such command is registered.
     #[func]
@@ -747,9 +813,10 @@ impl ModHost {
     }
 
     /// The metadata table with every entry's outcome merged in: `crates/mods`' own
-    /// `table_json` (no paths, ever) plus `failed`/`error` on a mod whose entry threw. This is
-    /// `mods.js`'s `sceneModResult` folded into `sceneMods`, and it is what
-    /// [`ModHost::refresh_table`] puts in the cell.
+    /// `table_json` (no paths, ever) plus `failed`/`error` on a mod whose entry threw and
+    /// `loaded`, which only the host that ran an entry can answer. This is `mods.js`'s
+    /// `sceneModResult` folded into `sceneMods`, and it is what [`ModHost::refresh_table`] puts in
+    /// the cell. `enabled` is the loader's own flag, from the manifest the toggle moves.
     fn merged_table(&self) -> serde_json::Value {
         let Some(loader) = self
             .module
@@ -762,8 +829,21 @@ impl ModHost {
             serde_json::from_str(&loader.table_json()).unwrap_or_else(|_| serde_json::json!([]));
         if let Some(rows) = table.as_array_mut() {
             for row in rows.iter_mut() {
-                let id = row.get("id").and_then(|id| id.as_str()).unwrap_or_default();
-                if let Some(Err(error)) = self.outcomes.get(id) {
+                let id = row
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let enabled = row
+                    .get("enabled")
+                    .and_then(|on| on.as_bool())
+                    .unwrap_or(true);
+                let outcome = self.outcomes.get(&id);
+                // `loaded` is the reference's `meta.loaded`: an enabled mod whose entry ran (or
+                // which had none to run). A mod that is off is never loaded, whatever its last run
+                // did -- the line `modSetEnabled`'s disable writes.
+                row["loaded"] = serde_json::json!(enabled && matches!(outcome, Some(Ok(()))));
+                if let Some(Err(error)) = outcome {
                     row["failed"] = serde_json::json!(true);
                     row["error"] = serde_json::json!(error);
                 }

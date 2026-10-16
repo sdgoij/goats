@@ -413,8 +413,8 @@ func _ready() -> void:
 	# The mod runtime (stage 1). Built *after* the console, because its load report is a console
 	# line, and before the offline return below, so a player with no ticket still has their mods --
 	# the same reason the console and the menu are. The Mods screen draws the host's table
-	# (`mods_list`), which is the half of stage 1 the UI can see; the enable/disable toggle is
-	# `modSetEnabled`, which needs the session intents and is stage 8's (`menu.gd` says so).
+	# (`mods_list`), and its Enable/Disable button is the runtime's own `modSetEnabled`
+	# (`mod_toggle`, below), which the scene is what gives a *session* to guard.
 	#
 	# `mod_hud` goes on the UI layer *before* the console and the menu, so it paints over the
 	# game's HUD and under the overlays -- which is where a mod's `hud` drawing belongs. The
@@ -427,6 +427,9 @@ func _ready() -> void:
 	# The scene's entry point for the API's functional members (`_mod_call`), handed over *before*
 	# the runtime enters the tree because it builds its host in `_ready` and registers this at once.
 	mods.scene_call = Callable(self, "_mod_call")
+	# ...and the session guard its toggle consults, for the same reason: a `Callable` rather than a
+	# flag, because a toggle can happen between two frames and a pushed value would be a frame stale.
+	mods.in_session = Callable(self, "_net_in_session")
 	add_child(mods)
 	# After `add_child(mods)`, because the runtime builds its `ModHost` in `_ready` -- and the
 	# world node and the sound pool want that host to turn an asset name into bytes.
@@ -438,6 +441,8 @@ func _ready() -> void:
 	# mod's JavaScript, where the extension is borrowed and cannot be asked for bytes.
 	mod_audio.prepare()
 	menu.mods_list = Callable(mods, "mod_table")
+	# The button's own callback: one argument, and it flips whatever the table says the mod is now.
+	menu.mod_toggle = Callable(mods, "toggle_mod")
 
 	# `GOATS_UI=<screen>`: open a menu screen at boot, for `GOATS_CONSOLE`'s reason -- the panels are
 	# the part of the UI only a picture can judge. It goes through the console's own `ui` verb so the
@@ -749,6 +754,12 @@ func _mod_bots() -> Array:
 ## extension's last use in this process, so it has to happen while the node tree is still here.
 func _exit_tree() -> void:
 	mods.shutdown()
+
+## Whether this client is in a session, as host or joiner -- `netInSession()`, the guard a world
+## mod's toggle consults (`Mods.in_session`). Read rather than pushed, because a toggle can happen
+## between two frames and a value pushed with the snapshot would be a frame stale.
+func _net_in_session() -> bool:
+	return _hosting or _joined
 
 func _mod_call(name: String, args_json: String) -> String:
 	var parsed: Variant = JSON.parse_string(args_json)

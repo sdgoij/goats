@@ -166,6 +166,11 @@ pub struct Manifest {
     pub source: ModSource,
     /// The compatibility hash (FNV-1a over id, version, entry and assets).
     pub hash: u64,
+    /// Whether the mod is on for this session (`APIv1.md` section 4.1). It is *runtime* state
+    /// rather than a property of the source: a freshly read manifest is enabled, and a toggle moves
+    /// the flag without touching disk -- which is why [`Loader::reload`] carries it across a
+    /// re-read instead of letting the parser's default clobber it.
+    pub enabled: bool,
 }
 
 impl Manifest {
@@ -219,7 +224,7 @@ impl Manifest {
             "api": self.api,
             "side": self.side.as_str(),
             "description": self.description,
-            "enabled": true,
+            "enabled": self.enabled,
             "hash": format!("{:016x}", self.hash),
             "assets": slot_map(self.asset_map()),
             "assetAdds": slot_map(self.asset_add_map()),
@@ -367,7 +372,11 @@ impl Loader {
                 message: format!("unknown mod '{id}'"),
             })?;
         let source = self.mods[index].source.clone();
-        let manifest = load_source(&source, mode)?;
+        // The enabled flag is *runtime* state, not the source's: a re-read replaces the manifest
+        // but not whether the player has the mod on. Without this a reload of a disabled mod would
+        // silently switch it back on.
+        let enabled = self.mods[index].enabled;
+        let mut manifest = load_source(&source, mode)?;
         if manifest.id != id {
             return Err(LoadError {
                 path: source.path().to_path_buf(),
@@ -377,8 +386,21 @@ impl Loader {
                 ),
             });
         }
+        manifest.enabled = enabled;
         self.mods[index] = manifest;
         Ok(())
+    }
+
+    /// Set a mod's enabled flag, for `modSetEnabled` (`APIv1.md` section 4.1). Returns `false` for
+    /// an id nothing owns, so the caller can tell a toggle from a typo.
+    pub fn set_enabled(&mut self, id: &str, enabled: bool) -> bool {
+        match self.mods.iter_mut().find(|manifest| manifest.id == id) {
+            Some(manifest) => {
+                manifest.enabled = enabled;
+                true
+            }
+            None => false,
+        }
     }
 
     /// The ids whose source contains `changed` -- a file the watcher reported.
@@ -604,6 +626,7 @@ fn load_source(source: &ModSource, mode: AssetMode) -> Result<Manifest, LoadErro
         load_after: raw.load_after,
         source: source.clone(),
         hash,
+        enabled: true,
     })
 }
 

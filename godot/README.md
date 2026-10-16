@@ -85,7 +85,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Thirty headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Thirty-one headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -104,6 +104,12 @@ Thirty headless gates, all `SceneTree` scripts that exit non-zero on failure:
 # the table the Mods screen draws, and a mod's own verb reaching the console (stage 1).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_scene_mods.gd
+
+# ...and a mod toggles off and on for the session: the Mods screen's own Enable/Disable, the
+# verb and the stream that follow the mod, and the session guard a world mod is refused by
+# (stage 8's `modSetEnabled`).
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_mod_toggle.gd
 
 # ...and a *compiled* mod -- one that ships a `.wasm` module and no JavaScript at all -- loads,
 # is driven by the scene's own frame, reports a HUD bar and a wrong-ABI module is refused by name
@@ -260,7 +266,7 @@ Thirty headless gates, all `SceneTree` scripts that exit non-zero on failure:
     --script res://tools/verify_menu.gd
 ```
 
-All thirty pass against Godot 4.7.2 today. Two more need a live session and are run by
+All thirty-one pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -458,9 +464,10 @@ world and takes the keyboard and the mouse, and every control on the two screens
 does something real — the audio gains, the lighting, the shadow map, the sky program, the cloud
 quality, the water's reflection, fullscreen and the herd's size. The `Mods` screen now lists
 what the runtime found (`mods.gd`, stage 1): a row per mod with its version and side, `FAILED`
-and the error on the ones whose entry threw, and an Enable/Disable button whose answer is
-`modSetEnabled` — which is stage 8, so it still says so. `mod list` and `mod key` in the
-console print the same table and the world-mod digest a host's refusal names.
+and the error on the ones whose entry threw, and an Enable/Disable button wired to the runtime's own
+`modSetEnabled` -- a toggle turns a mod off for the session, and a world mod is refused while a
+session is up. `mod list`, `mod key`, `mod enable` and `mod disable` in the console answer from the
+same table, and `mod key` prints the world-mod digest a host's refusal names.
 
 **Mods are loaded from `mods/` at boot**, the directory the raylib client reads:
 `GOATS_MODS` if it is set, else `mods/` beside the project, else `mods/` beside the executable;
@@ -470,6 +477,15 @@ examples no longer read `rl` at all, and the flock's last missing member (`goats
 in. A mod's `console.log` reaches the
 console and a mod's registered verb reaches the console first, so `hello world` answers the
 example's `hello`.
+
+**A mod turns off and on for the session** (`modSetEnabled`, `APIv1.md` §4.1). The Mods screen's
+Enable/Disable button and the console's `mod enable`/`mod disable` go through `Mods.set_enabled`,
+which tears the mod's instance down -- its `shutdown` hook first, then its hooks, its commands, its
+streams, its world extensions and its offered entities -- and re-reads and re-runs it on the way
+back: an edit on disk takes effect on the toggle and a mod that failed its first run gets a clean
+second chance. A *world* mod may not change mid-session, because the host fixed the compatibility
+set at join and changing one would desync a joiner; a client one toggles whenever a player likes.
+It is session-only, as the screen says: a restart restores the `mods/` directory.
 
 **A mod may also ship a `.wasm` module and no JavaScript** (`ABIv1.md`): the fifth of the
 repository's mods does exactly that. `crates/godot` links `crates/plugin` -- the same host the

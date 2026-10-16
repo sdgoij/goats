@@ -666,8 +666,9 @@ func _host(parts: PackedStringArray) -> String:
 ## reference's reply that is *not* here: the registered verbs live in the JavaScript facade, and the
 ## port has no reader for that registry yet.
 ##
-## `enable`, `disable` and `reload` are the other half: they queue session intents and re-point
-## asset slots, which is stage 8's `modSetEnabled`.
+## `enable` and `disable` are the other half (`modSetEnabled`, `mods.js`'s own): they go through
+## `Mods.set_enabled`, which guards a world mod against a mid-session change and re-reads the table,
+## and the host does the teardown and the re-run. `reload` remains stage 8's.
 func _mod(parts: PackedStringArray) -> String:
 	if mods == null:
 		return "error mod unavailable"
@@ -696,7 +697,11 @@ func _mod(parts: PackedStringArray) -> String:
 		var info: Dictionary = (row as Dictionary).duplicate()
 		info["wasm"] = _wasm_info(id)
 		return "ok " + json_of(info)
-	return "error mod expects list|key|info"
+	if verb == "enable" or verb == "disable":
+		if parts.size() < 3:
+			return "error mod " + verb + " expects an id"
+		return mods.set_enabled(parts[2], verb == "enable")
+	return "error mod expects list|key|info|enable|disable"
 
 ## A compiled mod's own report, or `null`. The host answers the string `"null"` for a mod with no
 ## module rather than an empty reply, so the two answers parse the same way and there is one path.
