@@ -196,6 +196,18 @@ var _ground_offset := 0.0
 var _measured := false
 ## One material per coat: `makeBotTextures`' mottle, shared by every bot wearing it.
 var _coats: Array[StandardMaterial3D] = []
+## Whether the coats are built lit (M25's `L` and the settings screen). A field for `TerrainMesh`'s
+## reason: the coats are built with the first herd, and a mode set before that has to survive into
+## them.
+var _lit := true
+
+## The coats through the lit material or the plain one -- `setModelShader`'s half of it. Each rig's
+## *other* surfaces are the glTF's, shared with the player's goat, which `PlayerGoat.set_lit`
+## flips; the coats are this module's own and are flipped here.
+func set_lit(on: bool) -> void:
+	_lit = on
+	for coat: StandardMaterial3D in _coats:
+		coat.shading_mode = TerrainMesh.shading(on)
 
 ## Grow or shrink the herd to `count` (0..10). A bot that leaves takes its rig with it.
 func set_herd_size(count: int) -> void:
@@ -952,6 +964,7 @@ func _build_coats() -> void:
 		material.albedo_texture = ImageTexture.create_from_image(image)
 		# Godot 4 replaced the `TextureRepeat` enum with a flag; the mottle tiles.
 		material.texture_repeat = true
+		material.shading_mode = TerrainMesh.shading(_lit)
 		_coats.append(material)
 
 ## The nearest edible tuft within `reach`, or an empty dictionary. A thin wrapper, because

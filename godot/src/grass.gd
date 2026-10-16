@@ -66,6 +66,12 @@ const CAPACITY := 4096
 const STRIDE := 7
 
 var _multimesh: MultiMesh
+## The tufts' material, kept so `set_lit` can reach it: the field's look is one `StandardMaterial3D`
+## on the box the instances share.
+var _material: StandardMaterial3D
+## Whether the tufts are drawn lit (M25's `L` and the settings screen). A field of the mode rather
+## than a read of `_material`, because `_ready` is not the only path that gets here.
+var _lit := true
 ## How many times the field has been rebuilt, which is what a gate reads.
 var rebuilds := 0
 ## The water this field is drawn through: a tuft under it is skipped (M20d). `main.gd`
@@ -84,11 +90,20 @@ func _ready() -> void:
 	material.vertex_color_use_as_albedo = true
 	material.roughness = 1.0
 	material.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	material.shading_mode = TerrainMesh.shading(_lit)
+	_material = material
 	box.material = material
 	_multimesh.mesh = box
 	_multimesh.instance_count = CAPACITY
 	multimesh = _multimesh
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+
+## The tufts through the lit material or the plain one: `L` and the settings screen's `Light`
+## (M25), which the scene reaches with `setTerrainShader`.
+func set_lit(on: bool) -> void:
+	_lit = on
+	if _material != null:
+		_material.shading_mode = TerrainMesh.shading(on)
 
 ## Rebuild the field around `centre` and push it to the `MultiMesh`.
 ##

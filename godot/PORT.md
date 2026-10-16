@@ -425,6 +425,47 @@ devices, weather, herd and audio: `weather rain`, `camera 90 20 6`, `flood -0.9`
 itself, and that is `shot.png`'s job -- `GOATS_CONSOLE=help` is a page of the console across the
 top of the frame, in `console.js`'s own five colours, with the input line and its caret below it.
 
+**The menu** (`verify_menu.gd`): M25, and the rest of stage 6. It is the console's opposite in the
+one way that matters -- a menu *is* a `uiScreen` value, so `sceneFrame` freezes the world by
+forcing `dt` to 0, and it takes the keyboard and the mouse while it is up. The scene builds its
+menus out of raygui at explicit pixel coordinates, so the **layout is the specification**, and
+this holds it as data: `Menu.layout(size)` answers a list of widgets for a screen at a viewport
+size, `_draw` paints that list and `_gui_input` hits it, and a JavaScript oracle transcribed from
+`menu.js` computes the same four screens at four sizes -- 288 widget lines of kind, word and
+rectangle. The keymap table, the `Play`/`Continue` word and Escape's walk (`hud -> main -> hud`, a
+sub-screen -> `main`) are held beside it.
+
+```
+oracle answered 288 widget line(s)
+layout: 288 line(s), 0 mismatch(es)
+keymap: 22 row(s), 0 mismatch(es)
+first button: 3 case(s), 0 mismatch(es)
+escape: 5 case(s), 0 mismatch(es)
+settings effects: 14 check(s), 0 mismatch(es)
+shared settings: the console and the menu hold one object
+OK: the port's menu is the scene's -- four screens at four sizes, and every control reaches what it names
+```
+
+The last two lines are the part a layout cannot answer: **every control does something.** The
+settings became real in the same slice, because a settings screen with a control that writes a
+value nothing reads is worse than no screen: `core.js`'s `SETTINGS` is one `Settings` object the
+console's `setting` verb and the screen both hold, and its `apply` is the frame's -- the lit
+materials and the unshaded ones (`TerrainMesh.shading` on the ground, the tufts, the goat's rig
+and the herd's coats), Godot's `sun.shadow_enabled`, the environment's sky program against a flat
+horizon colour, the cloud march's step count, the reflection tier, fullscreen and the herd's size.
+So the fourteen live checks assert against the **world** -- the terrain's material really is
+unshaded -- rather than against the settings object, which a broken `apply` would satisfy anyway.
+
+Two vocabularies are narrower than `ctl.js`'s on purpose, and both are the rule this port has kept
+since stage 5 (**a JavaScript fallback for a build without something Godot always has is not
+ported**): there is no `planar` shadow, because that mode is the scene's fallback for a build with
+no shadow map and Godot always has one, so the shadow words are `off|map` where the scene's are
+three; and the port boots windowed where the client boots full-screen, because its screenshot and
+interop harnesses are sized windows. The look of the chrome is a *lookalike* of raygui's default
+theme -- the port has no raygui -- and the keymap panel reproduces the scene's own geometry,
+overflow and all: 22 rows at 21 px from `y + 44` is 462 px in a 500-tall panel, so the last row
+sits six pixels past the panel's edge and `Back` is drawn over the two before it.
+
 **The ground itself** (`verify_terrain_mesh.gd`): the 48x48 grid the client builds
 through `makeModel`, as an `ArrayMesh` -- 2401 vertices and 4608 triangles, a
 normal from central differences, a per-vertex material colour from the scene's
@@ -885,10 +926,9 @@ a drawing one.
 
 What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
-rather than a gap); the menu's four screens and the settings screen
-that drives `bgm`/`sfx`/`light`/`sky`/`clouds` (the console is in as of M24 and reaches four of
-them -- `bgm`, `sfx`, `cloud` and `reflect` -- while `light`, `sky` and `shadow` answer
-`unavailable` until the settings screen exists); the mods state and the
+rather than a gap); the `Mods` screen's *list* -- the screen is in as of M25 and draws
+`menu.js`'s "no mods found" because the scene does not load mods yet, so it waits on stage 1; the
+mods state and the
 bangs and voice reaching GDScript (they are carried on the wire but the core does not consume
 them yet -- `NetBridge` has no `blast`/`voice`; a *bite* was in this list too, and M21 closed
 it both ways, and *audio* was in it until M22); the asset bytes reaching an engine shim (`rl.loadSound`
@@ -941,7 +981,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
 | Bots (collision, temperaments, fleece) | `game/bots.js` | **Done**: `bots.gd`, the herd's own state machine, collision and coats -- real rigs, not the `MultiMesh` sketched here |
 | Mines, craters, flipbook FX | `game/explosions.js` | **Done** apart from the flipbook art and the scorch: `explosions.gd` + `craters.gd` |
-| Menu, HUD, console | `game/menu.js`, `console.js` | **HUD done** (M23, a `Control` drawing `drawHud`) and **console done** (M24, the shell and the sixty-odd verbs); the menu's four screens remain |
+| Menu, HUD, console | `game/menu.js`, `console.js` | **done**: the HUD (M23), the console (M24) and the menu's four screens with their settings (M25) are all `Control`s that draw the scene's own geometry |
 | Touch surface | `game/touch.js` | `InputEventScreenTouch` |
 
 Two decisions were settled with the plan and are recorded where they belong:
@@ -1077,8 +1117,8 @@ Sizes are judgement, not measurement.
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
-| 6 | UI | menu, HUD, console, Mods screen as `Control` trees | **the HUD is in (M23: a `Control` drawing `drawHud`, with the pulse and `P`), and the console is in (M24: `console.gd` + `commands.gd` + `verify_console.gd` -- the shell, the sixty-odd verbs, chat, and six of the seven `GOATS_*` knobs as verbs); the menu's four screens, the settings screen and the keymap remain** | 2–3 |
-| 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the console's `mute` and `setting bgm|sfx` are in too (M24), so what is left is the menu's two sliders, and *voice* is still the bridge's to carry | 2–3 |
+| 6 | UI | menu, HUD, console, Mods screen as `Control` trees | **done**: the HUD is a `Control` drawing `drawHud` (M23), the console is in (M24: `console.gd` + `commands.gd` + `verify_console.gd` -- the shell, the sixty-odd verbs, chat, and six of the seven `GOATS_*` knobs as verbs), and the menu's four screens are in with the settings they drive (M25: `menu.gd` + `settings.gd` + `verify_menu.gd`); what is left is the `Mods` screen's *list*, which waits on the scene loading mods (stage 1) | 2–3 |
+| 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the console's `mute` and `setting bgm|sfx` are in (M24) and the menu's two sliders are in (M25), so what is left is *voice*, which is still the bridge's to carry | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
 | 9 | Platforms | desktop, Android, web export presets + CI | 2–4 |
 | 10 | Tests | golden-value checks per deterministic system; GUT/GdUnit for the core | 3–6 |
@@ -1409,6 +1449,16 @@ disagreements and fails if there are none.
   every frame the panel is up), so the port pumps the redraw from `_process` while open, which is
   what makes the retained version behave like the immediate one. A picture found it; no headless
   case could, because `--headless` has no rasteriser and does not call `_draw` at all.
+- **A freeze gate that wraps the *drawing* as well as the *stepping* blanks the screen.** The port
+  froze the world by skipping `_advance`, which is a *step* -- and the sky's uniforms and the sun's
+  colour were being pushed from inside it, because that was where the frame's own values were
+  freshest. Nobody saw it for two milestones: `P` freezes a world that has already been drawn, so
+  every frame before the pause had set the sky. The first time a menu opened on frame *zero* was
+  M25's `GOATS_UI` knob, and the panel hung over a black world. `sceneFrame`'s own `dt` gate wraps
+  only the world update -- the sky is drawn from `worldTime` outside it -- so the fix is `_apply_sky`,
+  which runs on both paths, and the lesson is that a pause is a claim about *state* and not about
+  *drawing*: anything a frozen frame still has to show is not a step. A picture found it; the gate
+  could not, because a headless run has nothing to draw.
 - **A second engine to maintain.** The raylib client and the Godot port share a
   protocol and a mod format but not a line of code. Every balance or protocol
   change now has two homes.
@@ -1440,14 +1490,15 @@ audio and the mod surface, and new work last.
    are still dropped, where a `consume` no longer is (`explosions.js`'s `applyRemoteBlast` and
    `netBlastReport` are the rules). `interop.sh pair` is the harness both want: two clients, one
    host, and a bang either can set off in front of the other.
-2. **The UI -- the menu and the settings screen.** The HUD is in as of M23 (a
-   `Control` drawing `drawHud`, its words gated and its layout photographed) and the console is in
-   as of M24: the shell, the sixty-odd verbs, chat, and `connect`/`leave`/`who`/`copy` for driving a
-   session by hand. That retires six of the seven `GOATS_*` staging knobs -- `time <h>`,
-   `setting cloud`, `weather <state>`, `camera <yaw> <pitch> <dist>`, `flood <h>` and
-   `setting reflect` are verbs now, and only `GOATS_BOOM` maps to none. What is left is the menu's
-   four screens, the settings screen (which is what `light`/`sky`/`shadow` are waiting on) and the
-   keymap.
+2. **The UI -- the `Mods` screen's list.** The HUD is in as of M23 (a `Control` drawing `drawHud`,
+   its words gated and its layout photographed), the console is in as of M24 (the shell, the
+   sixty-odd verbs, chat, `connect`/`leave`/`who`/`copy`), and the menu's four screens are in as of
+   M25 with a `Settings` object the console, the menu and the HUD all read -- so every control on
+   the settings screen really does what it names. Six of the seven `GOATS_*` staging knobs are
+   verbs now (`time <h>`, `setting cloud`, `weather <state>`, `camera <yaw> <pitch> <dist>`,
+   `flood <h>`, `setting reflect`) and only `GOATS_BOOM` maps to none. What is left of stage 6 is
+   the `Mods` screen's *list*: it draws `menu.js`'s "no mods found" because the scene does not load
+   mods yet, so it waits on stage 1 rather than on the UI.
 3. **The mod surface -- stages 1 and 8.** One of `goats`' seventeen member groups is implemented
    and one of its eighteen events fires; of the repository's five mods, one runs and runs degraded.
    This is the largest block by any measure and it is what the port's own goal names first, which
@@ -1506,6 +1557,10 @@ bar's fill and the pulse's two numbers -- against `goat.js`'s `drawHud`
 history and paste rules, the `help` page, `ctlArg`, `ctlRound`, `consoleWrap` and the panel's
 arithmetic against `console.js` and `ctl.js`, and then 72 lines of the vocabulary against the
 *live* scene's own goat, meadow, water, devices, weather, herd and audio (`godot/tools/verify_console.gd`,
-M24; the panel itself read off `GOATS_CONSOLE=help` in a window). Every one
+M24; the panel itself read off `GOATS_CONSOLE=help` in a window); and holds the menu -- four screens
+at four viewport sizes against `menu.js`'s own layout arithmetic (288 widget lines of kind, word
+and rectangle), the keymap table, the Escape walk, and then fourteen settings checks asserted
+against the *live* world rather than against the setting (`godot/tools/verify_menu.gd`, M25; the
+panels read off `GOATS_UI=settings` and `GOATS_UI=keymap` in a window). Every one
 of them exits zero.
 The rest is read from the tree.*

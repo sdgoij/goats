@@ -159,6 +159,23 @@ func ready_up() -> void:
 	_measure_ground_offset(node)
 	_pose("idle", 0.0)
 
+## The goat through the lit material or the plain one: `L` and the settings screen's `Light`
+## (M25), which the scene reaches with `setModelShader`.
+##
+## The rig's materials are the **glTF's**, and the importer puts them on the *mesh resource*
+## rather than on the node -- so every instantiated rig and every mirrored herd points at the same
+## ones, and this one walk flips the goat, the herd's bodies and the mirrors together. That is
+## what the scene's own per-model shader swap amounts to; only the bots' own coat materials are
+## separate, and `Bots.set_lit` is theirs.
+func set_lit(on: bool) -> void:
+	var mesh_instance: MeshInstance3D = _find_mesh(self)
+	if mesh_instance == null or mesh_instance.mesh == null:
+		return
+	for i in mesh_instance.mesh.get_surface_count():
+		var material: BaseMaterial3D = mesh_instance.mesh.surface_get_material(i) as BaseMaterial3D
+		if material != null:
+			material.shading_mode = TerrainMesh.shading(on)
+
 ## The bleat gains `goat.js` fires with: one per situation, at the call site in the source
 ## rather than in the audio module, because the gain is the *situation's* -- a goat falling
 ## asleep is quieter than one being thrown.

@@ -93,11 +93,14 @@ var bridge: Object
 var console: Console
 var commands := Commands.new()
 
-## Which screen the UI is showing (`menu.js`'s `uiScreen`): `"hud"` is the game, and the console
-## is only openable from it -- with a menu up, the menu owns the input. Only `hud` is drawn yet
-## (the menu is this stage's other half), but the value is the scene's and the console's `ui`
-## verb reads it.
-var ui_screen := "hud"
+## The menu (M25): `menu.js`'s four screens, drawn. It owns `uiScreen`, because which screen is up
+## *is* the menu's state -- `main.gd` asks it (`is_open`) for the freeze and the key gates, and the
+## console's `ui` verb sets it through here.
+var menu: Menu
+
+## `core.js`'s `SETTINGS`, shared with the menu's settings screen and the console's `setting` verb.
+## One object because two owners is how the console and the screen would drift apart.
+var settings := Settings.new()
 
 ## Frames left to run while the world is frozen (`ctl.js`'s `ctlStep`): the console's `step <n>`
 ## unsticks the pause gate for a fixed count and re-pauses when it reaches zero, which is what
@@ -227,6 +230,10 @@ var _weather := {}
 ##                            about *seeing* a thing rather than measuring it, and it exists
 ##                            because the console is the part of the UI no gate can photograph
 ##                            from the inside (M24).
+##   `GOATS_UI=<screen>`      open a menu screen at boot (`main`, `settings`, `mods`, `keymap`),
+##                            which is `GOATS_CONSOLE`'s knob for the menu's four panels (M25).
+##                            It goes through the console's own `ui` verb, so it cannot open a
+##                            screen the vocabulary would refuse.
 var _forced_hour := -1.0
 var _forced_cloud := -1.0
 var _boom := false
@@ -348,6 +355,28 @@ func _ready() -> void:
 	$Ui.add_child(console)
 	console.dispatch = Callable(commands, "run")
 	_build_commands()
+
+	# The menu (M25): also code-built, also added after the HUD, and *after* the console so a menu
+	# is the topmost thing on screen. It shares the one `Settings` with the console's `setting`
+	# verb, and reaches the frame for the two things only the frame can do -- opening the console
+	# and quitting. `mods_list` is empty for now: the scene does not load mods yet (stage 1), and
+	# the screen draws `menu.js`'s own "no mods found" for that.
+	settings.apply = Callable(self, "_apply_settings")
+	menu = Menu.new()
+	$Ui.add_child(menu)
+	menu.settings = settings
+	menu.water_reflect = water_reflect
+	menu.bots = bots
+	menu.on_console = Callable(self, "_open_console")
+	menu.on_quit = Callable(self, "cmd_quit")
+	commands.settings = settings
+
+	# `GOATS_UI=<screen>`: open a menu screen at boot, for `GOATS_CONSOLE`'s reason -- the panels are
+	# the part of the UI only a picture can judge. It goes through the console's own `ui` verb so the
+	# knob cannot open a screen the vocabulary would refuse.
+	var staged_ui: String = OS.get_environment("GOATS_UI")
+	if not staged_ui.is_empty():
+		commands.run("ui " + staged_ui)
 	# `GOATS_CONSOLE=<line>`: run a line at boot with the panel open, so a picture can show the
 	# console with something in it. The command runs through the same dispatch a typed one does,
 	# so a knob that works is a knob that proves the vocabulary is wired to the world.
@@ -428,7 +457,12 @@ func _process(delta: float) -> void:
 	# (`if (!paused || ctlStep > 0)`) while the camera, the mirror, the sway, the sky, the rain and
 	# the HUD are all outside it. What moves the world while it is frozen is the console's
 	# `step <n>`, which unsticks this one gate for a fixed count.
-	var frozen: bool = _paused and _step_frames <= 0
+	#
+	# A **menu** freezes the world too, and by the same means: `menu.js` sets `dt = 0` while a
+	# `uiScreen` is up, which is the whole pause -- input is gated separately. The console is the
+	# opposite case and deliberately so: it must not pause anything, because it has to stay usable
+	# while the game runs.
+	var frozen: bool = (menu.is_open() or _paused) and _step_frames <= 0
 	if not frozen:
 		# The ground, the fuses and the effects first, which is `sceneFrame`'s order: a
 		# crater ages, a fuse runs out and a bang lands *before* the goat moves, so a goat
@@ -476,10 +510,13 @@ func _process(delta: float) -> void:
 	# plane, and the surface reads what it drew at its own screen position.
 	water_mirror.run(camera, water.level())
 	if not frozen:
-		_advance(delta, camera.global_position)
+		_advance(delta)
 		# The sound, once a frame and after the weather has settled: the beds ride the rain and
 		# the wind, the thunder rolls off the rain, and the grit a bang threw lands here.
 		audio.update(delta, float(_weather_now().get("rain_amount", 0.0)), _wind_sway)
+	# The sky and the light are applied on *both* paths: a menu freezes the world by `dt` and still
+	# draws it, so the sky's uniforms are a drawing question and not a step.
+	_apply_sky(camera.global_position)
 	# `step <n>` counts down here and re-pauses at zero, which is `sceneFrame`'s own "a step
 	# always ends paused". It is after the world and not before it, so the frame a step buys is
 	# a whole one.
@@ -494,12 +531,18 @@ func _process(delta: float) -> void:
 	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
 	rain.show_for(weather, _wind_x)
 	_publish_pose(delta)
-	# The HUD's three setting read-outs are the console's now (M24): the shadow mode, the sky and
-	# the cloud level, kept where the verbs write them rather than at the fixed defaults M23
-	# shipped. The render is Godot's (see `commands.gd`'s header) and the *words* follow.
-	hud.light_word = Commands.lighting_word(commands.shadow)
-	hud.sky_word = Commands.sky_word_for(commands.sky)
-	hud.cloud_word = commands.cloud
+	# The HUD's three setting read-outs are `Settings`' now (M25): the console's `setting` verb and
+	# the menu's settings screen write the same object, and the HUD reads it back -- so the words
+	# and the things they describe cannot disagree.
+	menu.scene_frames = Engine.get_process_frames()
+	hud.light_word = Settings.lighting_word(settings.shadow)
+	hud.sky_word = Settings.sky_word_for(settings.sky)
+	hud.cloud_word = settings.cloud
+	# A menu *replaces* the HUD rather than covering it: `sceneFrame` draws `drawHud`, the touch
+	# controls and the damage pulse in the `uiScreen === "hud"` branch and `drawUi` in the `else`,
+	# so a menu screen is the dim over a world with no read-out on it at all. Drawing the HUD under
+	# the dim would be a dimmed read-out the scene does not have.
+	hud.visible = not menu.is_open()
 	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz),
 		_hud_world(controls))
 	_boom_if_asked()
@@ -539,7 +582,7 @@ func _hud_world(controls: Dictionary) -> Dictionary:
 ## control -- no axis, no gait, no press -- and the `wasd` in a line stay in the line. The
 ## `_held_*` virtual keys are blocked with the real ones, as `ctlKeyDown` blocks both.
 func _controls() -> Dictionary:
-	if console != null and console.open:
+	if (console != null and console.open) or (menu != null and menu.is_open()):
 		return {"move": 0, "turn": 0, "gait": "walk", "jump": false, "eat": false,
 			"sleep": false, "restart": false}
 	# The virtual keys first, then the real ones ORed on top -- `ctlKeyDown`'s own order.
@@ -590,7 +633,7 @@ func _controls() -> Dictionary:
 ## The console owns the arrow keys while it is open -- they move the caret and walk the
 ## history there -- so the camera does not also orbit on them.
 func _orbit(delta: float) -> void:
-	if console != null and console.open:
+	if (console != null and console.open) or (menu != null and menu.is_open()):
 		return
 	if Input.is_physical_key_pressed(KEY_LEFT):
 		_cam_yaw += 1.6 * delta
@@ -632,16 +675,28 @@ func _publish_pose(delta: float) -> void:
 	bridge.call("pose", goat.px, goat.pz, goat.yaw, goat.phase, goat.speed, goat.mode,
 		goat.py)
 
-## The mouse: drag to orbit, wheel to zoom, F11 for fullscreen, and the backquote that opens
-## the console. `sceneFrame`'s ratios, so the feel matches the thing being ported.
+## The mouse: drag to orbit, wheel to zoom, F11 for fullscreen, the backquote that opens the
+## console, and Escape for the menu. `sceneFrame`'s ratios, so the feel matches the thing being
+## ported.
 ##
-## The console takes the keyboard first, and takes *all* of it while it is open -- a pressed
-## key is its line, not the goat's. That is `consoleUpdate`'s "the frame loop gives the console
-## first refusal", plus `press`'s own gate on the gameplay keys, in one place because Godot
-## delivers an event to one handler rather than polling every key.
+## The console takes the keyboard first, and takes *all* of it while it is open -- a pressed key is
+## its line, not the goat's. That is `consoleUpdate`'s "the frame loop gives the console first
+## refusal", plus `press`'s own gate on the gameplay keys, in one place because Godot delivers an
+## event to one handler rather than polling every key. A **menu** takes everything while it is up,
+## which is `press`'s gate (`uiScreen === "hud"`) and `uiIsOpen`'s freeze, both: the only key a menu
+## answers is Escape, and Escape walks the screens.
 func _unhandled_input(event: InputEvent) -> void:
 	if console != null and console.open and event is InputEventKey:
 		console.handle_key(event as InputEventKey)
+		return
+	if menu != null and menu.is_open():
+		# A menu is a `uiScreen` value and it owns the input: `press()` is false for every gameplay
+		# key while one is up, and Escape is the one thing that gets through.
+		if event is InputEventKey:
+			var key := event as InputEventKey
+			if key.pressed and not key.echo and key.physical_keycode == KEY_ESCAPE:
+				_escape()
+				get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
@@ -662,8 +717,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		if key.physical_keycode == KEY_QUOTELEFT:
 			# Backquote toggles the console, but only from the HUD: with a menu up, the menu owns
 			# the input (`consoleUpdate`'s own gate).
-			if ui_screen == "hud":
+			if menu.screen == "hud":
 				console.toggle()
+			get_viewport().set_input_as_handled()
+			return
+		if key.physical_keycode == KEY_ESCAPE:
+			_escape()
 			get_viewport().set_input_as_handled()
 			return
 		match key.physical_keycode:
@@ -676,9 +735,31 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_R:
 				_restart_pressed = true
 			KEY_M:
-				# `goat.js`'s `M`: the master mute. The console's `mute` verb drives the same switch,
-				# and the menu's `bgm`/`sfx` sliders are this stage's other half.
+				# `goat.js`'s `M`: the master mute. The console's `mute` verb drives the same switch, and
+				# the menu's `bgm`/`sfx` sliders are this stage's other half.
 				audio.set_muted(not audio.muted)
+			KEY_L:
+				# `goat.js`'s `L`: the lit program or the plain one, which is the settings screen's
+				# `Light` toggle. The scene gates it on `litShader >= 0`; the port always has the
+				# materials, so it always acts.
+				settings.light = not settings.light
+				settings.push()
+			KEY_K:
+				# `goat.js`'s `K`: cycle shadows. The scene's order is map -> planar -> off and it
+				# *skips* planar when the build has no planar shader; the port has no planar shader at
+				# all, so its cycle is the two words it has (`settings.gd`'s header).
+				var at: int = maxi(0, Settings.index_of(Settings.SHADOW_NAMES, settings.shadow))
+				settings.shadow = Settings.SHADOW_NAMES[(at + 1) % Settings.SHADOW_NAMES.size()]
+				settings.push()
+			KEY_B:
+				# `goat.js`'s `B`: the sky shader on or off.
+				settings.sky = not settings.sky
+				settings.push()
+			KEY_J:
+				# `water.js`'s `J` (M20f): the whole water system's bisect, which is also the `water`
+				# console verb's `off`.
+				water.enabled = not water.enabled
+				water.update()
 			KEY_P:
 				# `goat.js`'s `P`: freeze the world. The console's `step <n>` is what moves it while
 				# it is frozen.
@@ -695,9 +776,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if full \
 					else DisplayServer.WINDOW_MODE_WINDOWED)
 
-## Move the world's clock and its weather on by a frame, then push both where they
-## belong: the sky at the camera. The grass is `_process`'s -- it follows the goat,
-## which the clock does not.
+## Escape: the menu's own walk, which is `Menu.next_screen` -- from a sub-screen back to `main`,
+## from `main` back to the game, and from the game to `main`.
+func _escape() -> void:
+	menu.show_screen(Menu.next_screen(menu.screen))
+
+## Move the world's clock, its weather and its water on by a frame. The grass is `_process`'s -- it
+## follows the goat, which the clock does not -- and the sky is `_apply_sky`'s, because a frozen
+## world still has a sky to draw and this function is behind the freeze gate.
 ##
 ## The clock is the one thing the wire decides. `weather.js` `applyWeatherState` sets
 ## `worldTime` from the snapshot and `sceneFrame` advances it only when
@@ -711,7 +797,7 @@ func _unhandled_input(event: InputEvent) -> void:
 ## joiner's grass leans at a fixed phase and only the strength of the wind changes.
 ## That reads as a frozen wind rather than as a faithful mirror, so the port runs the
 ## clock and lets the *values* come from the wire.
-func _advance(delta: float, camera: Vector3) -> void:
+func _advance(delta: float) -> void:
 	_sky_time += delta
 	_sway_time += delta
 	if _weather.is_empty():
@@ -764,9 +850,23 @@ func _advance(delta: float, camera: Vector3) -> void:
 	water_surface.set_ripples(water.ripple_uniform(0), water.ripple_uniform(1),
 		water.ripple_uniform(2))
 
+## Put the sky and the light where this frame's values say they are. It is separate from `_advance`
+## because a **frozen world still has a sky**: `sceneFrame` draws the sky from `worldTime` outside
+## its `dt` gate, so a menu -- which freezes by `dt` -- dims a *drawn* world rather than a black
+## one. With this inside `_advance`, a menu opened on the first frame never set a single sky
+## uniform and the panel hung over nothing; a picture found it, and no data could.
+##
+## The cloud drift's own clock (`_sky_time`) is `_advance`'s, so a frozen sky holds still -- which
+## is the freeze, and not this.
+func _apply_sky(camera: Vector3) -> void:
 	_sky_light = float(SkyDome.sample(_hours)["light"])
 	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,
 		_sky_light, _cloudiness, _wind_x, _wind_z, _sky_time)
+	# The sky program or the flat horizon across it (M25). `apply` sets the sun and the ambient
+	# either way -- those are the lighting, not the sky -- and this is the one line the setting
+	# changes; it is per-frame because the flat colour has to follow the clock and the clouds.
+	if not settings.sky:
+		_set_sky_background(false)
 
 ## This frame's weather, in the shape the goat and the HUD read it: the session's own
 ## snapshot in a session, and the local machine's values offline. It is the same
@@ -1051,10 +1151,10 @@ func cmd_step(steps: int) -> void:
 	_step_frames = steps
 
 func cmd_ui() -> String:
-	return ui_screen
+	return menu.screen
 
-func cmd_set_ui(screen: String) -> void:
-	ui_screen = screen
+func cmd_set_ui(screen_word: String) -> void:
+	menu.show_screen(screen_word)
 
 func cmd_quit() -> void:
 	bridge.call("shutdown")
@@ -1137,3 +1237,62 @@ func cmd_say(text: String) -> String:
 
 func cmd_ticket() -> String:
 	return _net_ticket
+
+## The main menu's `Console` button: close the menu and open the console, which is
+## `drawMainMenu`'s own two lines.
+func _open_console() -> void:
+	if not console.open:
+		console.toggle()
+
+## `applySettings`: every setting pushed where it belongs. The settings are the *values* and this
+## is what a value means -- which is why `settings.gd` hands the whole thing here rather than
+## knowing what `cloud high` costs.
+##
+## Five of the seven are the port's own switches (`PORT.md` section 5, decided): the lit materials
+## and the unshaded ones are `TerrainMesh.shading` on the ground, the tufts, the goat's rig and the
+## herd's coats; the shadow map is Godot's `sun.shadow_enabled`; and the sky program is the
+## environment's `sky_material`, with a flat horizon colour standing in for it when it is off.
+## The reflection tier is the water's own leaf, applied through the pass that draws it.
+func _apply_settings() -> void:
+	audio.bgm = settings.bgm
+	audio.sfx = settings.sfx
+
+	# Lighting: the four things the scene draws through its lit program.
+	terrain.set_lit(settings.light)
+	grass.set_lit(settings.light)
+	goat.set_lit(settings.light)
+	bots.set_lit(settings.light)
+
+	# Shadows: Godot's map or nothing. `planar` is not a word this port has (`settings.gd`).
+	sun.shadow_enabled = settings.shadow != "off"
+
+	# The sky: the raymarched program, or a flat horizon colour. `_advance` decides which on every
+	# frame from the same setting, so this only has to say it once here.
+	SkyDome.cloud_level = maxi(0, Settings.index_of(Settings.CLOUD_NAMES, settings.cloud))
+	_set_sky_background(settings.sky)
+
+	# Fullscreen, if the window is not already where the setting says.
+	var wanted: int = DisplayServer.WINDOW_MODE_FULLSCREEN if settings.fullscreen \
+		else DisplayServer.WINDOW_MODE_WINDOWED
+	if DisplayServer.window_get_mode() != wanted:
+		DisplayServer.window_set_mode(wanted)
+
+	# The water's reflection is the leaf's, and the pass is what draws it.
+	water_reflect.apply(water_surface, water_mirror)
+
+## The sky program on or off. Off, the environment draws a flat colour at the horizon -- which is
+## what `useSkyShader = false` falls back to in the scene, a gradient instead of the raymarched
+## slab -- and on, the material is back.
+func _set_sky_background(on: bool) -> void:
+	var environment: Environment = world_environment.environment
+	if on:
+		environment.sky.sky_material = _sky_material
+		environment.background_mode = Environment.BG_SKY
+		return
+	var curve: Dictionary = SkyDome.sample(_hours)
+	var horizon: Color = SkyDome.overcast(curve["bot"], SkyDome.OVERCAST_BOT, _cloudiness)
+	environment.sky.sky_material = null
+	environment.background_mode = Environment.BG_COLOR
+	# The environment's colours are linear here, which is the conversion `SkyDome.apply` makes for
+	# the *shader's* uniforms (`_linear`); the sky curve is display space.
+	environment.background_color = horizon.srgb_to_linear()

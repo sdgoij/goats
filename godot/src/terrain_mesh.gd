@@ -46,6 +46,10 @@ const MIRROR_SHADER := preload("res://src/terrain_mirror.gdshader")
 var _heights := PackedFloat64Array()
 var _mesh: ArrayMesh
 var _material: StandardMaterial3D
+## Whether the ground is drawn through the lit material or the unshaded one (`L` and the settings
+## screen, M25). It is a field rather than a read of `_material` because the material is built
+## lazily -- a mode set before the first build has to survive into it.
+var _lit := true
 ## The detail texture, made once and shared: `_material` and `mirror_material` both read it, so
 ## the ground and its reflection cannot drift apart.
 var _detail: ImageTexture
@@ -234,7 +238,20 @@ func _make_material() -> StandardMaterial3D:
 	# Ground is not shiny, and a specular highlight on a hillside reads as water.
 	material.roughness = 1.0
 	material.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	material.shading_mode = shading(_lit)
 	return material
+
+## The one line the scene's `setTerrainShader` amounts to here: the lit program or the plain one,
+## which in Godot is a material's shading mode. `L` and the settings screen both call this.
+func set_lit(on: bool) -> void:
+	_lit = on
+	if _material != null:
+		_material.shading_mode = shading(on)
+
+## A boolean as `BaseMaterial3D.ShadingMode`, so the three modules that flip a material and the
+## one that builds one agree on which side is which.
+static func shading(on: bool) -> int:
+	return BaseMaterial3D.SHADING_MODE_PER_PIXEL if on else BaseMaterial3D.SHADING_MODE_UNSHADED
 
 ## The ground's material as the **mirror** draws it (M20e): the same mesh, the same detail
 ## texture and the same look, with the two differences a camera under the terrain needs --

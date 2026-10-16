@@ -24,10 +24,6 @@
 # later stage. Those are gathered in one place at the bottom of this header so the next
 # stage can find them, and so a gate can assert the *list* rather than hope:
 #
-#   * **`lighting`, `shadows`, `sky`, `setting light|shadow|sky`** -- the port's lighting,
-#     shadows and sky are Godot's own materials and lights, not the scene's switchable lit
-#     and sky programs. They arrive with the settings screen, which is the same stage; the
-#     `cloud` setting *is* backed, because Godot's sky march has a step count to change.
 #   * **`tune`** -- the tuning tree is the mod surface's (stage 8), and the port has
 #     constants rather than a tree to walk.
 #   * **`perf`** -- the frame-cost benchmark measures the JavaScript host's own phases;
@@ -57,10 +53,6 @@ const HELP_GROUPS := [
 	["flow", "pause resume step quit"],
 ]
 
-## `CTL_SHADOWS` / `CTL_CLOUDS`, the word tables the `setting` and `shadows` verbs speak.
-const SHADOW_WORDS: Array[String] = ["off", "planar", "map"]
-const CLOUD_WORDS: Array[String] = ["low", "medium", "high"]
-
 ## The goat's stats ceiling, and the two camera clamps `ctl.js` reads from `TUNING`.
 const STATS_MAX := 100.0
 const CAM_PITCH_MIN := 0.08
@@ -84,16 +76,10 @@ var console: Console
 ## The frame, for the `cmd_*` knobs. `null` in a gate that only holds the pure dispatch.
 var scene: Node
 
-## `ctl.js`'s `SETTINGS`, as far as the port has them. `bgm`/`sfx` live on `audio.gd`
-## because that is what a change has to reach; `cloud` is `SkyDome`'s own step count. The
-## three the port cannot honour are recorded here all the same, so `settings` reports the
-## scene's shape -- and the verbs that would set them say they are unavailable rather than
-## writing a value nothing reads.
-var light := true
-var shadow := "map"
-var sky := true
-var cloud := "medium"
-var fullscreen := false
+## `ctl.js`'s `SETTINGS` (M25), shared with the menu's settings screen and the HUD's read-outs.
+## It defaults to a fresh object so a gate can build a bare `Commands` and still reach the verbs
+## that only read or write a setting; the frame hands in the one it and the menu both hold.
+var settings := Settings.new()
 
 ## The two pure helpers `sceneCommand` leans on, spelled as it spells them.
 ##
@@ -115,14 +101,10 @@ static func ctl_arg(parts: PackedStringArray, index: int) -> Variant:
 static func ctl_round(value: float) -> float:
 	return floor(value * 100.0 + 0.5) / 100.0
 
-## `ctlToggle`: `on`, `off`, or the current value flipped. The third argument is how a bare
-## `mute` and a bare `lighting` work.
+## `ctlToggle`, which is `Settings.toggle_word`'s own rule -- kept here as the name `ctl.js` uses
+## so the verbs read as they do in the source, delegating so the two cannot drift.
 static func ctl_toggle(current: bool, arg: String) -> bool:
-	if arg == "on":
-		return true
-	if arg == "off":
-		return false
-	return not current
+	return Settings.toggle_word(current, arg)
 
 ## A value as `JSON.stringify` would write it, minus the key sort -- the scene preserves
 ## insertion order and so does a Godot `Dictionary`, so the reply reads as `ctl.js`'s does.
@@ -154,20 +136,12 @@ static func weather_words() -> String:
 		names.append(String(name))
 	return "|".join(names)
 
-## `drawHud`'s `lightingText`: `lit + shadow map`, `lit + planar shadow` or `lit`, which is a
-## function of the shadow mode alone -- the scene reads it back off the same switch it just
-## used. The HUD's status line is where this lands.
-static func lighting_word(shadow: String) -> String:
-	if shadow == "map":
-		return "lit + shadow map"
-	if shadow == "planar":
-		return "lit + planar shadow"
-	return "lit"
+## `drawHud`'s `lightingText` and sky word are `Settings`' now (M25) -- the settings screen is the
+## other writer, and one function is what keeps the console and the menu agreeing. What `lighting`
+## and `sky` *do* here is the materials' `shading_mode` and the environment's background, which is
+## the frame's `apply` (`main.gd`).
 
-## `drawHud`'s sky word: `shader` while the sky program runs and `billboards` otherwise.
-static func sky_word_for(sky: bool) -> String:
-	return "shader" if sky else "billboards"
-
+## A value as `JSON.stringify` would write it, minus the key sort -- the scene preserves
 ## `sceneCommand(line)`: one line in, one line out.
 func run(line: String) -> String:
 	# `String(line).trim().split(/\s+/)`: the strip and the empty-token drop together are the
@@ -210,10 +184,10 @@ func run(line: String) -> String:
 			return _camera(parts)
 		"features":
 			return "ok " + json_of({
-				"lighting": light,
-				"shadows": shadow,
-				"sky": sky,
-				"cloud": cloud,
+				"lighting": settings.light,
+				"shadows": settings.shadow,
+				"sky": settings.sky,
+				"cloud": settings.cloud,
 				"fullscreen": _is_fullscreen(),
 				"muted": audio.muted,
 				"paused": bool(_call("cmd_paused")),
@@ -383,13 +357,29 @@ func run(line: String) -> String:
 			_call("cmd_step", [int(floor(float(count)))])
 			return "ok step " + str(int(floor(float(count))))
 		"lighting":
-			# The port's lighting is Godot's own materials and lights, not the scene's
-			# switchable lit program. It arrives with the settings screen.
-			return "error lighting unavailable"
+			# `L`'s verb: the lit materials and the unshaded ones (M25). The scene swaps a shader;
+			# Godot swaps a material's `shading_mode`, which is the same bisect in this engine.
+			var arg: String = parts[1] if parts.size() > 1 else ""
+			settings.light = ctl_toggle(settings.light, arg)
+			settings.push()
+			return "ok lighting " + ("on" if settings.light else "off")
 		"shadows":
-			return "error shadows unavailable"
+			var name: String = parts[1] if parts.size() > 1 else "off"
+			# The scene's own error, word for word: `planar` is a fallback for a build without a
+			# shadow map, and Godot always has one (see `settings.gd`'s header).
+			if name == "planar":
+				return "error planar shadow unavailable"
+			if Settings.index_of(Settings.SHADOW_NAMES, name) < 0:
+				return "error shadows expects " + "|".join(Settings.SHADOW_NAMES)
+			settings.shadow = name
+			settings.push()
+			return "ok shadows " + name
 		"sky":
-			return "error sky unavailable"
+			# `B`'s verb: the raymarched sky or a flat horizon across it.
+			var arg: String = parts[1] if parts.size() > 1 else ""
+			settings.sky = ctl_toggle(settings.sky, arg)
+			settings.push()
+			return "ok sky " + ("on" if settings.sky else "off")
 		"mute":
 			var arg: String = parts[1] if parts.size() > 1 else ""
 			audio.set_muted(ctl_toggle(audio.muted, arg))
@@ -511,24 +501,25 @@ func _camera(parts: PackedStringArray) -> String:
 	return "ok camera %s %s %s" % [num(ctl_round(out_yaw)), num(ctl_round(out_pitch)),
 		num(ctl_round(out_dist))]
 
-## `settings`: the read-outs the settings screen will drive, at the values the scene has.
+## `settings`: the read-outs the settings screen drives (M25), at the values the scene has. It is
+## `ctl.js`'s object literal, including `fullscreen` from `SETTINGS` rather than from the window
+## -- `features` reports the window, which is the scene's own split.
 func _settings() -> Dictionary:
 	return {
-		"bgm": int(audio.bgm),
-		"sfx": int(audio.sfx),
-		"light": light,
-		"shadow": shadow,
-		"sky": sky,
-		"cloud": cloud,
+		"bgm": int(settings.bgm),
+		"sfx": int(settings.sfx),
+		"light": settings.light,
+		"shadow": settings.shadow,
+		"sky": settings.sky,
+		"cloud": settings.cloud,
 		"reflect": WaterReflect.tier_word(water_reflect.tier()),
-		"fullscreen": _is_fullscreen(),
+		"fullscreen": settings.fullscreen,
 		"herd": bots.count() if bots != null else 0,
 	}
 
-## `setting <key> [value]`: the four keys the port can honour -- the two audio gains, the
-## water's reflection and the herd's size -- plus `cloud`, which is Godot's sky march's step
-## count. The three the port cannot honour (light, shadow, sky) say so rather than writing a
-## value nothing reads; the words are in the header.
+## `setting <key> [value]`: every key the settings screen has, and one `applySettings` at the end
+## -- which is the scene's own shape, and what makes `setting reflect` reach the surface rather
+## than only the leaf.
 func _setting(parts: PackedStringArray) -> String:
 	var key: String = parts[1] if parts.size() > 1 else ""
 	match key:
@@ -538,9 +529,22 @@ func _setting(parts: PackedStringArray) -> String:
 				return "error setting " + key + " expects a number"
 			var level: float = clampf(roundf(float(gain)), 0.0, 100.0)
 			if key == "bgm":
-				audio.bgm = level
+				settings.bgm = level
 			else:
-				audio.sfx = level
+				settings.sfx = level
+		"light", "sky":
+			var arg: String = parts[2] if parts.size() > 2 else ""
+			if arg != "on" and arg != "off" and arg != "toggle":
+				return "error setting " + key + " expects on|off|toggle"
+			if key == "light":
+				settings.light = Settings.toggle_word(settings.light, arg)
+			else:
+				settings.sky = Settings.toggle_word(settings.sky, arg)
+		"shadow":
+			var shadow_word: String = parts[2] if parts.size() > 2 else ""
+			if Settings.index_of(Settings.SHADOW_NAMES, shadow_word) < 0:
+				return "error setting shadow expects " + "|".join(Settings.SHADOW_NAMES)
+			settings.shadow = shadow_word
 		"reflect":
 			var reflect_word: String = parts[2] if parts.size() > 2 else ""
 			var tier: int = WaterReflect.word_tier(reflect_word)
@@ -555,20 +559,17 @@ func _setting(parts: PackedStringArray) -> String:
 				bots.set_herd_size(int(roundf(float(herd_size))))
 		"cloud":
 			var cloud_word: String = parts[2] if parts.size() > 2 else ""
-			var cloud_level: int = CLOUD_WORDS.find(cloud_word)
-			if cloud_level < 0:
-				return "error setting cloud expects low|medium|high"
-			cloud = cloud_word
-			SkyDome.cloud_level = cloud_level
-		"light", "shadow", "sky":
-			return "error setting " + key + " unavailable"
+			if Settings.index_of(Settings.CLOUD_NAMES, cloud_word) < 0:
+				return "error setting cloud expects " + "|".join(Settings.CLOUD_NAMES)
+			settings.cloud = cloud_word
 		_:
 			return "error unknown setting: " + key
+	# `applySettings()`, once, for whichever key moved.
+	settings.push()
 	return "ok setting " + key
 
-## `ui`: the screen the frame is showing. Only `hud` is a screen the port draws yet -- the
-## rest are the menu's, which is this same stage's other half -- so asking for one says so
-## rather than freezing the world behind a panel that is not there.
+## `ui`: which screen is showing. The menu draws four of them (M25) and `hud` is the game, so
+## this is the scene's own five words and every one of them lands somewhere.
 func _ui(parts: PackedStringArray) -> String:
 	if parts.size() == 1:
 		return "ok " + String(_call("cmd_ui"))
@@ -576,10 +577,8 @@ func _ui(parts: PackedStringArray) -> String:
 	if screen != "hud" and screen != "main" and screen != "settings" \
 			and screen != "keymap" and screen != "mods":
 		return "error ui expects hud|main|settings|keymap|mods"
-	if screen != "hud":
-		return "error ui " + screen + " is not drawn yet"
 	_call("cmd_set_ui", [screen])
-	return "ok ui hud"
+	return "ok ui " + screen
 
 ## `console`: open, close, toggle, submit a line, or report the shell's own state.
 func _console(parts: PackedStringArray) -> String:

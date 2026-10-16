@@ -21,6 +21,8 @@ plan.
 | `src/hud.gd` | The HUD, drawn: `goat.js`'s `drawHud` — the bars, the read-out, the action prompt, the weather and status lines and the damage pulse (M23) |
 | `src/console.gd` | The console, drawn: `console.js`'s ring, line, caret, history, wrap and panel — the overlay that is not a menu (M24) |
 | `src/commands.gd` | The command vocabulary: `ctl.js`'s `sceneCommand`, about sixty verbs, the same words the host's stdin channel drives (M24) |
+| `src/menu.gd` | The menu, drawn: `menu.js`'s four screens — main, settings, mods, keymap — as a layout a gate can hold, with the Escape walk (M25) |
+| `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
 | `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
@@ -72,7 +74,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Twenty-two headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Twenty-three headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -185,9 +187,16 @@ Twenty-two headless gates, all `SceneTree` scripts that exit non-zero on failure
 # against the *live* scene, verb by verb (M24).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_console.gd
+
+# The menu: four screens at four viewport sizes against `menu.js`'s own layout arithmetic
+# (kind, word and rectangle for every panel, group, label, button, toggle, slider and combo),
+# the keymap table row for row, the Escape walk — and then every control run against the *live*
+# scene, asserted against the world rather than against the setting (M25).
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_menu.gd
 ```
 
-All twenty-two pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty-three pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -252,10 +261,15 @@ weather and status lines and the damage pulse, at the scene's own pixel coordina
 **console** is a second one drawing `drawConsole` — a translucent panel over the top half, the
 scrollback's last visible rows in the scene's own five colours, then the line and its caret
 (M24). It is the overlay that is not a menu: it never touches the world, and `main.gd` keeps the
-keyboard out of the goat while it is up, so one player opening it pauses nobody. What is left of
-the UI is the menu's four screens, the settings screen and the keymap, which are this same stage.
+keyboard out of the goat while it is up, so one player opening it pauses nobody. And the **menu**
+is a third — `menu.js`'s four screens drawn at the scene's own arithmetic, with a `Settings`
+object the console, the menu and the HUD all share (M25). It is the opposite of the console in the
+one way that matters: a menu *is* a `uiScreen` value, so it freezes the world by `dt` while the
+console must not, and the scene draws the HUD *or* a menu rather than one over the other — the
+dimmed world behind a panel has no read-out on it at all. What is left of the UI is the `Mods`
+screen's list, which waits on the scene loading mods (stage 1).
 
-**Eight** environment variables stage what there is no console or menu for yet: `GOATS_HOUR` pins the
+**Nine** environment variables stage what there is no console or menu for yet: `GOATS_HOUR` pins the
 clock, `GOATS_CLOUD` the cloudiness and `GOATS_FLOOD` the water's level — the last of
 those is `water.js`'s own `flood <h>` console verb, and it is the only way to *see* a
 pool, because a downpour floods the hollows and nothing else, and with `GOATS_CAM` aimed
@@ -279,10 +293,11 @@ because the host owns the world.
 Six of those seven are now a *console verb* as well, which is what they were standing in for:
 `time <h>` for `GOATS_HOUR`, `setting cloud` for `GOATS_CLOUD`, `weather <state>` for
 `GOATS_WEATHER`, `camera <yaw> <pitch> <dist>` for `GOATS_CAM`, `flood <h>` for `GOATS_FLOOD`
-and `setting reflect` for `GOATS_REFLECT`. Only `GOATS_BOOM` maps to no verb. The eighth
-variable is the console's own: **`GOATS_CONSOLE=<line>`** runs a line at boot with the panel
-open, because a headless gate has no rasteriser and the panel is the one part of this port
-only a picture can judge. `GOATS_CONSOLE=help` is the page `shot.png` carries.
+and `setting reflect` for `GOATS_REFLECT`. Only `GOATS_BOOM` maps to no verb. The last two are
+about *looking*: **`GOATS_CONSOLE=<line>`** runs a console line at boot with the panel open, and
+**`GOATS_UI=<screen>`** opens one of the menu's four screens at boot, because a headless gate has
+no rasteriser and the panels are the one part of this port only a picture can judge.
+`GOATS_CONSOLE=help` and `GOATS_UI=settings` are what `shot.png` carries.
 
 ## Running against the shipping host
 
@@ -347,6 +362,9 @@ E              eat the grass in reach
 Z              sleep / wake
 R              restart, once dead
 C              the next weather state (offline only; for previewing the cycle)
+T (hold)       fast-forward the clock
+L              toggle lighting      K    cycle shadows
+B              the sky shader       J    the water
 mouse drag     orbit the camera
 mouse wheel    zoom
 arrow keys     the camera, if you have no mouse
@@ -354,6 +372,7 @@ P              freeze the world (the view keeps running)
 M              mute
 F11            fullscreen
 `              the console (type `help`)
+ESC            the main menu (`ESC` again resumes; from a sub-screen it goes back)
 ```
 
 It is the scene's own keyboard (`sceneFrame`), read with the same rates and the
@@ -368,6 +387,14 @@ rest all work while the world keeps running. It is an overlay and not a menu —
 it pauses anything — and it swallows the gameplay keys while it is up, so typing never moves
 the goat. In a session it is also the chat box: anything that is not a verb is a line said,
 and `connect <ticket>` / `leave` / `who` / `copy` are how a session is driven by hand.
+
+**Escape** opens the **menu**: `menu.js`'s four screens, `main` first and then `Settings`,
+`Mods`, `Keymap` and the `` ` ``-equivalent `Console` button, plus `Quit`. A menu freezes the
+world and takes the keyboard and the mouse, and every control on the two screens that matter
+does something real — the audio gains, the lighting, the shadow map, the sky program, the cloud
+quality, the water's reflection, fullscreen and the herd's size. The `Mods` screen is the one
+thing that reads empty today: the scene does not load mods yet (stage 1), so it shows
+`menu.js`'s own "no mods found" and its Enable buttons say so.
 
 To play with somebody, point it at a host:
 
