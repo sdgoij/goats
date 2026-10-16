@@ -104,13 +104,23 @@ func _initialize() -> void:
 	# 6. A pose crosses on the datagram channel, not a stream. Datagrams are
 	#    unreliable, so a small burst stands in for the stream a real client
 	#    sends about twenty times a second.
+	#
+	#    The yaw is deliberately past half a turn. The scene's `yaw` accumulates and nothing
+	#    wraps it, while the wire's `i16` at 1/10000 spans only ±3.2767 rad, so quantising an
+	#    unwrapped angle used to *clamp* it and pin a turned goat's heading on every other
+	#    client. A yaw is periodic, so what has to survive is the *heading*, not the number.
+	const YAW := 4.0
 	for i in 10:
-		_client.call("pose", 1.5, -2.0, 0.25, 0.5, 2.0, "trot", 0.0)
+		_client.call("pose", 1.5, -2.0, YAW, 0.5, 2.0, "trot", 0.0)
 		OS.delay_msec(20)
 	var peer: String = _wait(_host, ["\"type\":\"peer\"", CLIENT_NAME, "trot"], 30000)
 	print("host saw:       ", peer)
 	if peer.is_empty():
 		failures.append("the host did not see the client's goat")
+	else:
+		var got_yaw: float = float(JSON.parse_string(peer)["state"]["yaw"])
+		if absf(sin(got_yaw) - sin(YAW)) > 0.001 or absf(cos(got_yaw) - cos(YAW)) > 0.001:
+			failures.append("the yaw arrived as a different heading: %f, not %f" % [got_yaw, YAW])
 
 	# 7. The world. A host publishes it and a client adopts the snapshot instead of
 	#    simulating (`net.js` `netMaybePublishWorld`). The payload is `WorldState`'s own

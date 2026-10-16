@@ -69,8 +69,31 @@ fn metres(centimetres: i16) -> f32 {
     dequantize(i64::from(centimetres), PER_METRE)
 }
 
+/// The yaw the wire carries, in (-π, π].
+///
+/// The scene's yaw *accumulates* -- `goat.yaw += turn * turnRate * dt`, and nothing wraps it -- so
+/// a sender hands the wire any angle at all, while the grid above (`i16` at 1/10000) spans only
+/// ±3.2767 rad. Quantising an unwrapped angle therefore *clamped* it: a mirrored goat's heading
+/// pinned at ~187.7° once its owner had turned past half a turn, which is exactly "turning is not
+/// represented on the other client". A yaw is periodic, so the codec wraps it, and the receiver's
+/// own short-way-round easing handles the seam at ±π.
+fn wrap_turn(yaw: f32) -> f32 {
+    let turn = core::f32::consts::TAU;
+    let wrapped = yaw.rem_euclid(turn);
+    if wrapped >= core::f32::consts::PI {
+        wrapped - turn
+    } else {
+        wrapped
+    }
+}
+
 fn turns(yaw: f32) -> i16 {
-    quantize(yaw, PER_TURN, i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+    quantize(
+        wrap_turn(yaw),
+        PER_TURN,
+        i64::from(i16::MIN),
+        i64::from(i16::MAX),
+    ) as i16
 }
 
 fn yaw_of(units: i16) -> f32 {
@@ -441,6 +464,27 @@ mod tests {
         assert_eq!(phase_of(phase_steps(1.0)), 1.0);
         assert_eq!(seconds_of(quarter_seconds(42.5)), 42.5);
         assert_eq!(seconds_of(quarter_seconds(42.6)), 42.5);
+    }
+
+    #[test]
+    fn a_yaw_wraps_rather_than_clamping_at_half_a_turn() {
+        // The scene's yaw *accumulates* -- `goat.yaw += turn * turnRate * dt`, and nothing
+        // wraps it -- so a sender hands the wire any angle at all, while `i16` at 1/10000
+        // spans only ±3.2767 rad. Quantising without wrapping therefore clamped a mirrored
+        // goat's heading at ~187.7° once its owner had turned past half a turn: turning was
+        // simply not represented on the other client. A yaw is periodic, so the same heading
+        // must arrive -- not the ceiling of the grid.
+        for raw in [0.0_f32, 1.2345, 3.0, 3.5, 4.0, 7.0, -4.0, -10.0] {
+            let sent = yaw_of(turns(raw));
+            assert!(
+                (sent.sin() - raw.sin()).abs() < 0.001 && (sent.cos() - raw.cos()).abs() < 0.001,
+                "yaw {raw} arrives at {sent}, a different heading"
+            );
+        }
+        assert!(
+            (yaw_of(turns(4.0)) - (4.0 - std::f32::consts::TAU)).abs() <= TURN,
+            "a turn past half a turn is pinned at the grid's ceiling, not wrapped"
+        );
     }
 
     #[test]

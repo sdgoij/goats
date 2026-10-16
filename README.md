@@ -406,7 +406,10 @@ streams, one message per stream, as JSON: a frame is small and infrequent, and
 worth being able to read in a log. Goat snapshots, the server's world, the world
 mods' state and voice travel as unreliable binary datagrams, because those are
 what has a 1200-byte budget -- `proto`'s `wire` module is the packed, quantized
-form (a bot is 10 bytes there against 86 as JSON). The world mods have a datagram
+form (a bot is 10 bytes there against 86 as JSON), and a *yaw* is wrapped to
+(-π, π] on the way out rather than clamped at the grid's end: the goat's yaw
+accumulates as you steer and nothing else wraps it, so clamping pinned a remote
+goat's heading at half a turn. The world mods have a datagram
 of their own, so a big mod cannot push the world out. `net.js` turns a snapshot into
 a remote goat per peer and a
 mirrored herd, and eases toward the latest of each. Voice rides the same datagram
