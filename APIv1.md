@@ -384,10 +384,11 @@ reported, not silently ignored).
 > directly runs only where raylib is the engine. Both surfaces are partial -- `goats.draw`
 > is the 2D half and `goats.gfx` the 3D one, and each names what its next additions are.
 >
-> **Added with the Godot port:** `goats.sfx` (§4.20), the API's sound surface. A mod used to
-> load and play its own audio through the engine's `rl` (`loadSound`/`playSound`); the API now
-> carries `load`/`play`, each client implements them, and the two are the last engine capability
-> either checked-in mod read.
+> **Added with the Godot port:** `goats.sfx` (§4.20), the API's sound surface, and `goats.gfx.unload`
+> (§4.19). A mod used to load and play its own audio through the engine's `rl`
+> (`loadSound`/`playSound`) and to free its geometry with `unloadModel`; the API now carries
+> `sfx.load`/`sfx.play` and `gfx.unload`, each client implements them, and between them they are the
+> last of the engine surface either checked-in mod read.
 >
 > **Added with the Godot port's readable surface:** the groups a mod *reads* the live world
 > through (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`) are in on the
@@ -960,6 +961,7 @@ goats.on("draw3d", function (cam) {
 | `goats.gfx.mesh(vertices, indices, normals, colors, texcoords)` | A mesh built from flat arrays, or `null` when the input is not one. See below for the shape. |
 | `goats.gfx.texture(size, pixels)` | A `size` x `size` image from raw texels, or `null` when `pixels` is not `size * size` texels long. |
 | `goats.gfx.bind(mesh, texture)` | Draw that mesh in that image. |
+| `goats.gfx.unload(handle)` | Free a mesh a mod built. |
 | `goats.gfx.draw.model(handle, x, y, z, yaw, scale, tint)` | The model at `(x, y, z)`, turned `yaw` **radians** about +Y, scaled by `scale` (a number, or 1), tinted by `tint` (or white). |
 | `goats.gfx.draw.mesh(handle, x, y, z, ax, ay, az, angle, scale, tint)` | The same placement with the axis free: `angle` **radians** about `(ax, ay, az)`. `draw.model` is this with the axis fixed at +Y. |
 | `goats.gfx.draw.cube(x, y, z, w, h, d, color)` | A box `w` x `h` x `d` centred on `(x, y, z)`. |
@@ -1015,10 +1017,9 @@ dropped, the same as a 2D one.
 answers `null`, and a draw of `null` draws nothing -- so the `if` above is the whole of
 the check.
 
-**What is not here yet:** `unload()` (several implementations leave geometry alive for the life
-of the process rather than freeing it), the shadow-map `setModelTexture` slot, and a mod's own
-**sound** -- `loadSound`/`playSound` and its volume and pitch, which is the other half of the
-engine surface these members replace and the only one neither client exposes through the API yet.
+**What is not here yet:** the shadow-map `setModelTexture` slot. A mod's own **sound** used to be in
+this list and is its own group now (§4.20), which makes `unload`/`load`/`play` the last of the
+engine surface a mod might otherwise have read through `rl`.
 
 ### 4.20 Sound
 

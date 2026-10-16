@@ -47,14 +47,43 @@ var _instances: Array = []
 
 ## Take one frame's world records. Parsing here rather than in `_place` keeps the placement a
 ## plain loop, and a record that does not parse is dropped rather than failing the frame.
+##
+## An `unload` is **not a draw**: it frees what a handle became and is taken out of the frame, so
+## `commands` is the draws and `placed` is still what was placed (`goats.gfx.unload`).
 func adopt(records: PackedStringArray) -> void:
 	commands.clear()
 	for record in records:
 		var parsed: Variant = JSON.parse_string(String(record))
-		if parsed is Dictionary:
-			commands.append(parsed)
+		if not (parsed is Dictionary):
+			continue
+		var command: Dictionary = parsed
+		if String(command.get("k", "")) == "unload":
+			_release(String(command.get("h", "")))
+			continue
+		commands.append(parsed)
 	frames += 1
 	_rebuild()
+
+## Forget a handle a mod freed: the Godot resource this node built for it, any node still holding
+## it, and the arrays the host is keeping.
+##
+## The host call is safe *here* and nowhere else: `adopt` runs in the frame's own drain, outside
+## any mod's JavaScript, which is what a member reached through `_mod_call` cannot say for itself
+## (`PORT.md` section 9). Dropping the node's `mesh` as well as the cache entry is what actually
+## frees it -- an `ArrayMesh` a `MeshInstance3D` still points at is not freed by forgetting.
+func _release(handle: String) -> void:
+	if handle.is_empty():
+		return
+	_meshes.erase(handle)
+	_textures.erase(handle)
+	for instance in _instances:
+		var node := instance as MeshInstance3D
+		if node == null or String(_meta(node, "mod_mesh", "")) != handle:
+			continue
+		node.mesh = null
+		node.set_meta("mod_mesh", "")
+	if host != null:
+		host.call("forget", handle)
 
 ## Bring the tree in line with this frame's records: one node per record, in order.
 func _rebuild() -> void:
@@ -235,11 +264,16 @@ func _mesh_for(handle: String) -> ArrayMesh:
 		return _meshes[handle]
 	var built: ArrayMesh = null
 	if host != null and not handle.is_empty():
-		var parsed: Variant = JSON.parse_string(String(host.call("mesh_data", handle)))
-		if parsed is Dictionary:
-			built = _build_mesh(parsed)
-		else:
+		# An empty answer is "no such mesh" -- which is what a handle the mod freed arrives as,
+		# so it is read as one rather than handed to `JSON.parse_string`, which logs an error for
+		# an empty string.
+		var json: String = String(host.call("mesh_data", handle))
+		if json.is_empty():
 			print("mod: no mesh named ", handle)
+		else:
+			var parsed: Variant = JSON.parse_string(json)
+			if parsed is Dictionary:
+				built = _build_mesh(parsed)
 	_meshes[handle] = built
 	return built
 
@@ -309,9 +343,11 @@ func _texture_for(handle: String) -> Texture2D:
 		return _textures[handle]
 	var built: Texture2D = null
 	if host != null and not handle.is_empty():
-		var parsed: Variant = JSON.parse_string(String(host.call("texture_data", handle)))
-		if parsed is Dictionary:
-			built = _build_texture(parsed)
+		var json: String = String(host.call("texture_data", handle))
+		if not json.is_empty():
+			var parsed: Variant = JSON.parse_string(json)
+			if parsed is Dictionary:
+				built = _build_texture(parsed)
 	_textures[handle] = built
 	return built
 

@@ -1379,6 +1379,17 @@ const goatsGfx = {
         rl.setModelTexture(mesh, 0, texture);
     },
 
+    /**
+     * Free a mesh a mod built. Textures and sounds are not freed here, because the
+     * reference client has no `unloadTexture`/`unloadSound` in its scene's path and
+     * `birds` says so in a comment: they live as long as the process.
+     */
+    unload: function (handle) {
+        if (handle === undefined || handle === null) return;
+        if (typeof rl.unloadModel !== "function") return;
+        rl.unloadModel(handle);
+    },
+
     /** World-space drawing. Valid inside the `"draw3d"` hook and nowhere else. */
     draw: {
         /**

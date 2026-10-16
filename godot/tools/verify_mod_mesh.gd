@@ -23,8 +23,12 @@
 #      draw every generated shape inside-out, which is exactly the bug the heightfield had.
 #   5. **The placement is an axis-angle**, not a yaw: a tumbling thing is not a turning one, and
 #      a port that mapped the call onto `rotation.y` would look right for a bird standing still.
-#   6. **A malformed build answers `null`** -- the same answer a client with no renderer gives --
-#      so a mod's check is one `if` on every platform.
+##   6. **A malformed build answers `null`** -- the same answer a client with no renderer gives --
+##      so a mod's check is one `if` on every platform.
+##   7. **A freed handle is freed.** `goats.gfx.unload` is *queued* for the frame rather than done
+##      in the mod's own JavaScript, which is how it can work at all: the host is borrowed while a
+##      mod runs (`PORT.md` section 9). What it must actually drop is the whole of what the handle
+##      became -- the scene's cache, the node's mesh and the extension's arrays.
 #
 # **The sentinel.** GDScript has no `try`, so a runtime error inside a check aborts it and leaves
 # the failure it was about to record unrecorded. `_finished` is set at the very end of `_check`,
@@ -37,8 +41,16 @@ extends SceneTree
 ## the floor -- then reports what the calls answered.
 const PROBE_JS := """
 (function () {
-    goats.command("modmesh", function () {
+    goats.command("modmesh", function (parts) {
+        const verb = parts[1] === undefined ? "build" : parts[1];
         const out = {};
+        // The second verb: free what the first one built. The handle is the scene's own, kept on
+        // a global because a command is one call and the handle has to outlive it.
+        if (verb === "unload") {
+            goats.gfx.unload(globalThis.__modMesh);
+            out.unloaded = goats.gfx.mesh([0, 0, 0, 1, 0, 0, 0, 1, 0]) !== globalThis.__modMesh;
+            return JSON.stringify(out);
+        }
         out.mesh_null = goats.gfx.mesh([1, 2]) === null;
         out.texture_null = goats.gfx.texture(2, "short") === null;
         out.texture_odd = goats.gfx.texture(2.5, "") === null;
@@ -57,6 +69,7 @@ const PROBE_JS := """
         goats.gfx.bind(mesh, texture);
         out.bound = true;
         out.cached = goats.gfx.mesh([0, 0, 0, 1, 0, 0, 0, 1, 0]) !== mesh;
+        globalThis.__modMesh = mesh;
 
         out.draws = globalThis.__modMeshDraws || 0;
         goats.on("draw3d", function () {
@@ -140,7 +153,30 @@ func _check() -> void:
 		_failures.append("one draw was asked for and %d arrived" % commands.size())
 
 	_check_node()
+	_check_release(host)
 	_finished = true
+
+## 7. Freeing a handle frees what it became -- in the scene and in the extension both.
+func _check_release(host: Object) -> void:
+	if _world.get_child_count() < 1:
+		return
+	var handle: String = String((_world.get_child(0) as MeshInstance3D).get_meta("mod_mesh"))
+	if handle.is_empty():
+		return
+	var freed: Variant = JSON.parse_string(str(host.call("run_command", "modmesh", "modmesh unload")))
+	if not (freed is Dictionary) or (freed as Dictionary).get("unloaded") != true:
+		_failures.append("goats.gfx.unload did not answer: %s" % [freed])
+	# A frame, which is what a queued unload rides in on.
+	_main.get("mods").call("frame", 12.0, Vector2(1280.0, 720.0), true, _main.get_node("Camera3D"))
+	print("unload: ", handle, "  arrays left: ", str(host.call("mesh_data", handle)).length(),
+		"  cached: ", _world.get("_meshes").get(handle, null) != null,
+		"  mesh: ", (_world.get_child(0) as MeshInstance3D).mesh)
+	if not str(host.call("mesh_data", handle)).is_empty():
+		_failures.append("the extension still holds the arrays of a freed handle")
+	if _world.get("_meshes").get(handle, null) != null:
+		_failures.append("the scene still caches what a freed handle became")
+	if (_world.get_child(0) as MeshInstance3D).mesh != null:
+		_failures.append("a node still holds the mesh of a freed handle")
 
 ## 6. The two malformed builds, and that a second `mesh()` is its own handle.
 func _check_calls(answer: Dictionary) -> void:

@@ -434,6 +434,20 @@ impl ModHost {
         }
     }
 
+    /// Forget a handle a mod freed (`goats.gfx.unload`): its arrays, its pixels and any binding.
+    ///
+    /// The scene calls this from its own frame rather than the facade calling it directly, and
+    /// that is the whole design: a member reached from inside a mod's JavaScript runs while the
+    /// host is borrowed, so it could not ask for this (`PORT.md` section 9). A record queued for
+    /// the frame's drain can.
+    #[func]
+    fn forget(&mut self, handle: GString) {
+        let handle = handle.to_string();
+        self.meshes.borrow_mut().remove(handle.as_str());
+        self.textures.borrow_mut().remove(handle.as_str());
+        self.bindings.borrow_mut().remove(handle.as_str());
+    }
+
     /// Drain the lines the mods logged since the last call: a mod's
     /// `console.log`, which is what `goats.log` and a bare `console.log` both
     /// reach. A mod's *drawing* is [`ModHost::poll_draws`] instead.

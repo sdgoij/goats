@@ -634,6 +634,21 @@ if (typeof globalThis.goats === "undefined") {
                         __goatsBind(String(mesh), String(texture));
                     },
 
+                    /**
+                     * Free a mesh a mod built (`APIv1.md` section 4.19). It is **queued** rather
+                     * than done: what a handle became is the *scene's* (`mod_world.gd`), and a
+                     * record is how a frame tells it -- the same crossing a draw takes. The
+                     * handle is dead afterwards; a mod that draws it again draws nothing.
+                     *
+                     * Textures and sounds are not freed this way in the reference client, and
+                     * this member does not pretend otherwise -- a handle from `texture()` here is
+                     * released too, because this client can tell what it minted.
+                     */
+                    unload: function (handle) {
+                        if (handle === undefined || handle === null) return;
+                        call({ k: "unload", h: String(handle) });
+                    },
+
                     draw: {
                         model: function (handle, x, y, z, yaw, scale, tint) {
                             if (handle === undefined || handle === null) return;

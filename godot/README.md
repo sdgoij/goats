@@ -119,8 +119,8 @@ Twenty-nine headless gates, all `SceneTree` scripts that exit non-zero on failur
 
 # ...and a *mod* builds its own geometry: a mesh from flat arrays and an image from its own
 # pixels become an `ArrayMesh` and an `ImageTexture`, wound for this client's culling and
-# placed with an axis-angle rather than a yaw -- so a mod that generates its shapes reads
-# the API and not the engine's `rl` (stage 8).
+# placed with an axis-angle rather than a yaw, and `goats.gfx.unload` frees one -- so a mod
+# that generates its shapes reads the API and not the engine's `rl` (stage 8).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_mesh.gd
 
@@ -470,9 +470,9 @@ takes the flat vertex arrays the heightfield is built from, `goats.gfx.texture` 
 block of pixels, `goats.gfx.bind` draws one in the other, and `goats.gfx.draw.mesh` places it with
 an **axis and an angle** rather than a yaw — so a mod that generates its shapes reads the API and
 never the engine library. A mod's own **sound** is in too (`goats.sfx`): `load(name)` resolves an
-opaque asset name to a handle or `null` and `play(handle, volume, pitch)` sounds it, which is the
-last engine capability either example read — `birds` and `fatguy` are now `rl`-free in everything
-but `unload()`.
+opaque asset name to a handle or `null` and `play(handle, volume, pitch)` sounds it, and
+`goats.gfx.unload` frees a shared mesh — so between them `birds` and `fatguy` have **no engine
+capability left to read**, and the only thing between them and the API is the rework.
 
 **A mod reads the live world through the API's own accessors** (`APIv1.md` §4.5–4.12). The
 scene builds one snapshot of the world each frame — the goat, the camera, the weather and the
