@@ -108,10 +108,11 @@ Twenty-eight headless gates, all `SceneTree` scripts that exit non-zero on failu
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_gfx.gd
 
-# ...and a *mod* reads the live world back: every readable `goats` group -- the goat, the
-# camera, the weather and the wind, the herd, the settings, the session and the tuning tree
-# -- against the scene's own values, from inside a `hud` hook where a mod actually reads
-# them, with `terrainHeight` crossing the callback seam and every write refused (stage 8).
+# ...and a *mod* reads its own identity and the live world back: `goats.api`/`game`/`mod`,
+# the mod table, `log`/`warn`/`error`, and every world group -- the goat, the camera, the
+# weather and the wind, the herd, the settings, the session and the tuning tree -- against
+# the scene's own values, from inside a `hud` hook where a mod actually reads them, with
+# `terrainHeight` crossing the callback seam and every write refused (stage 8).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_surface.gd
 

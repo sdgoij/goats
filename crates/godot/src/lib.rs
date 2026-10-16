@@ -111,6 +111,10 @@ struct ModHost {
     /// binding rather than a field of the mesh's own JSON, because `bind` can be called after
     /// `mesh` and both are looked up by handle.
     bindings: Rc<RefCell<HashMap<String, String>>>,
+    /// The metadata table, as the scene builds it for the Mods screen -- with each mod's outcome
+    /// merged in. Kept in a cell as well as returned, because `goats.mods()` and `goats.mod`
+    /// (`APIv1.md` section 4.1) are capabilities, and a capability cannot borrow the host.
+    table: Rc<RefCell<String>>,
     /// The surface the last [`ModHost::emit_hud`] named, which `goats.draw.screen()`
     /// reads back. The *scene* owns the viewport, so this is only the value it
     /// handed in -- the same push-the-readable-values design `PORT.md` section 6
@@ -165,6 +169,7 @@ impl INode for ModHost {
             meshes: Rc::new(RefCell::new(HashMap::new())),
             textures: Rc::new(RefCell::new(HashMap::new())),
             bindings: Rc::new(RefCell::new(HashMap::new())),
+            table: Rc::new(RefCell::new(String::from("[]"))),
             screen: Rc::new(Cell::new((0.0, 0.0))),
             world_time: Rc::new(RefCell::new(0.0)),
             snapshot: Rc::new(RefCell::new(String::new())),
@@ -243,6 +248,9 @@ impl ModHost {
         // different mods at different versions, and a stale `failed` is worse than
         // none.
         self.outcomes.clear();
+        // ...and the identity a mod reads (`goats.mods()`, `goats.mod`) is the table, so it is
+        // put in the cell as soon as discovery has run rather than waiting for the scene to ask.
+        self.refresh_table();
         gstring(report)
     }
 
@@ -254,25 +262,9 @@ impl ModHost {
     /// Mods screen can name it instead of drawing a healthy row.
     #[func]
     fn mods_json(&mut self) -> GString {
-        let Some(loader) = self
-            .module
-            .as_ref()
-            .and_then(|module| module.loader.as_ref())
-        else {
-            return GString::from("[]");
-        };
-        let mut table: serde_json::Value =
-            serde_json::from_str(&loader.table_json()).unwrap_or_else(|_| serde_json::json!([]));
-        if let Some(rows) = table.as_array_mut() {
-            for row in rows.iter_mut() {
-                let id = row.get("id").and_then(|id| id.as_str()).unwrap_or_default();
-                if let Some(Err(error)) = self.outcomes.get(id) {
-                    row["failed"] = serde_json::json!(true);
-                    row["error"] = serde_json::json!(error);
-                }
-            }
-        }
-        gstring(table.to_string())
+        self.refresh_table();
+        let table = self.table.borrow().clone();
+        gstring(table)
     }
 
     /// The opaque names of every asset the loaded mods declared, sorted. These
@@ -302,6 +294,7 @@ impl ModHost {
         let id = id.to_string();
         let outcome = self.load_one(&id);
         self.record(&id, &outcome);
+        self.refresh_table();
         match outcome {
             Ok(report) => gstring(report),
             Err(error) => gstring(format!("error: {error}")),
@@ -326,6 +319,9 @@ impl ModHost {
         };
 
         let mut report = String::new();
+        // The table before any entry runs, so a mod that asks `goats.mods()` in its own `load`
+        // sees the set it is in -- and again at the end, with the outcomes folded in.
+        self.refresh_table();
         for id in ids {
             let outcome = self.load_one(&id);
             self.record(&id, &outcome);
@@ -335,6 +331,7 @@ impl ModHost {
             }
             report.push('\n');
         }
+        self.refresh_table();
         gstring(report.trim_end())
     }
 
@@ -526,6 +523,40 @@ impl ModHost {
         self.outcomes.insert(id.to_string(), outcome);
     }
 
+    /// The metadata table with every entry's outcome merged in: `crates/mods`' own
+    /// `table_json` (no paths, ever) plus `failed`/`error` on a mod whose entry threw. This is
+    /// `mods.js`'s `sceneModResult` folded into `sceneMods`, and it is what
+    /// [`ModHost::refresh_table`] puts in the cell.
+    fn merged_table(&self) -> serde_json::Value {
+        let Some(loader) = self
+            .module
+            .as_ref()
+            .and_then(|module| module.loader.as_ref())
+        else {
+            return serde_json::json!([]);
+        };
+        let mut table: serde_json::Value =
+            serde_json::from_str(&loader.table_json()).unwrap_or_else(|_| serde_json::json!([]));
+        if let Some(rows) = table.as_array_mut() {
+            for row in rows.iter_mut() {
+                let id = row.get("id").and_then(|id| id.as_str()).unwrap_or_default();
+                if let Some(Err(error)) = self.outcomes.get(id) {
+                    row["failed"] = serde_json::json!(true);
+                    row["error"] = serde_json::json!(error);
+                }
+            }
+        }
+        table
+    }
+
+    /// Keep the cell `goats.mods()` and `goats.mod` read in step with the table. Called where
+    /// the table can have changed: after discovery, before an entry runs (so a mod can see the
+    /// set it is in) and again once its outcome is known.
+    fn refresh_table(&mut self) {
+        let json = self.merged_table().to_string();
+        *self.table.borrow_mut() = json;
+    }
+
     /// Build the engine and the facade if they are not up yet.
     fn ensure_booted(&mut self) -> Result<(), String> {
         if self.module.is_none() {
@@ -540,11 +571,21 @@ impl ModHost {
     fn build(&self) -> Result<Mod, String> {
         let mut context = Context::new().map_err(|e| e.to_string())?;
 
-        // A mod's `console.log` reaches the host, not the terminal.
+        // A mod's `console.log` reaches the host, not the terminal -- and so do its warnings and
+        // its errors, each carrying the word it was said with, because `goats.warn` is not the
+        // same thing to a player reading the console as `goats.log`.
         let lines = self.lines.clone();
+        let warned = self.lines.clone();
+        let failed = self.lines.clone();
         context.set_host_callbacks(HostCallbacks {
             console_log: Some(Box::new(move |text: &str| {
                 lines.borrow_mut().push(format!("log {text}"));
+            })),
+            console_warn: Some(Box::new(move |text: &str| {
+                warned.borrow_mut().push(format!("warn {text}"));
+            })),
+            console_error: Some(Box::new(move |text: &str| {
+                failed.borrow_mut().push(format!("error {text}"));
             })),
             ..HostCallbacks::default()
         });
@@ -755,6 +796,66 @@ impl ModHost {
                         .unwrap_or_default();
                     bindings.borrow_mut().insert(mesh, texture);
                     Ok(JsValue::boolean(true))
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+
+        // A mod's identity (`APIv1.md` section 4.1): the API major and the game's version, once
+        // -- they cannot change -- and the mod table, which can. The table is read out of the
+        // shared cell rather than the loader because a capability cannot borrow the host, which
+        // is the same reason `assets` is an `Rc`.
+        context
+            .register_fn(
+                "__goatsIdentity",
+                0,
+                Box::new(|_call| {
+                    Ok(JsValue::string(
+                        serde_json::json!({
+                            "api": mods::MOD_API,
+                            "game": env!("CARGO_PKG_VERSION"),
+                        })
+                        .to_string(),
+                    ))
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        let table = self.table.clone();
+        context
+            .register_fn(
+                "__goatsMods",
+                0,
+                Box::new(move |_call| Ok(JsValue::string(table.borrow().clone()))),
+            )
+            .map_err(|e| e.to_string())?;
+        let table = self.table.clone();
+        context
+            .register_fn(
+                "__goatsModInfo",
+                1,
+                Box::new(move |call| {
+                    let id = call
+                        .arg(0)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    let rows: serde_json::Value = serde_json::from_str(&table.borrow())
+                        .unwrap_or_else(|_| serde_json::json!([]));
+                    let row = rows.as_array().and_then(|rows| {
+                        rows.iter().find(|row| {
+                            row.get("id").and_then(|value| value.as_str()) == Some(id.as_str())
+                        })
+                    });
+                    // `goats.mod` is `{id, name, version, side}` and nothing else: a mod's own
+                    // identity, which is what `mods.js`'s `modInfo` answers too.
+                    let info = match row {
+                        Some(row) => serde_json::json!({
+                            "id": row.get("id"),
+                            "name": row.get("name"),
+                            "version": row.get("version"),
+                            "side": row.get("side"),
+                        }),
+                        None => serde_json::Value::Null,
+                    };
+                    Ok(JsValue::string(info.to_string()))
                 }),
             )
             .map_err(|e| e.to_string())?;

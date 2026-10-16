@@ -14,10 +14,10 @@
 # Four things are held, and each is a failure the direct host check cannot see:
 #
 #   1. **The scene owns a runtime**, read from the *live* scene rather than built here.
-#   2. **The table is truthful.** `birds` is a world mod whose entry calls a surface member the
-#      port has not built (`goats.mod`), so it throws; the host must mark it `failed` with the
-#      error, and leave the four that loaded unmarked. A table that says five healthy mods is the
-#      lie `mods.js`'s `sceneModResult` exists to prevent.
+##   2. **The table is truthful.** `birds` is a world mod whose entry reads the engine's `rl`, which
+##      this build has no copy of (`PORT.md` section 6), so it throws; the host must mark it
+##      `failed` with the error, and leave the four that loaded unmarked. A table that says five
+##      healthy mods is the lie `mods.js`'s `sceneModResult` exists to prevent.
 #   3. **The Mods screen draws it.** `menu.js`'s screen is a row per mod plus an Enable/Disable
 #      button, and its "no mods found" line when the list is empty -- so the layout is asserted,
 #      not the table: a screen fed a table it does not draw is a screen a player cannot read.
@@ -28,8 +28,11 @@ extends SceneTree
 ## The example mod's id and command, from `verify_mods.gd` -- the one mod in the repository whose
 ## entry both loads and registers a verb.
 const EXAMPLE_ID := "com.github.sdgoij.goats.hello"
-## The world mod in the repository: the one whose entry throws today, because it reads `goats.mod`
-## (`mods/birds/mod.js:26`) and the port's `goats` handle has no `mod` member yet (stage 8).
+## The world mod in the repository: the one whose entry throws today, because it reads the engine's
+## `rl` (`mods/birds/mod.js:83`) -- the library the port deliberately has none of. Its first
+## `goats` members are built now (`goats.mod` at line 26 among them), so the failure is the
+## *engine's* and no longer the API's, which is the distinction worth keeping: the error names
+## `rl`, where it used to be a `TypeError` naming nothing.
 const WORLD_ID := "com.github.sdgoij.goats.birds"
 ## How many mods the repository's `mods/` holds. Named so a directory that grows fails loudly
 ## rather than silently changing what this gate checked.
@@ -104,7 +107,7 @@ func _check() -> void:
 			_failures.append("%s is failed with no error to show" % meta.get("id"))
 	print("failed: ", failed, " of ", table.size())
 	if not _has_id(table, WORLD_ID, true):
-		_failures.append("%s should be listed as failed - its entry reads a surface member the port has not built" % WORLD_ID)
+		_failures.append("%s should be listed as failed - its entry reads the engine's `rl`, which this build has no copy of" % WORLD_ID)
 	if not _has_id(table, EXAMPLE_ID, false):
 		_failures.append("%s should have loaded" % EXAMPLE_ID)
 

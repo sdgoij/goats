@@ -386,7 +386,8 @@ reported, not silently ignored).
 >
 > **Added with the Godot port's readable surface:** the groups a mod *reads* the live world
 > through (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`) are in on the
-> port's side. The extension is handed **one JSON snapshot of the world per frame** and the
+> port's side, and so are **identity and logging** (§4.1: `api`, `game`, `mod`, `mods()`, `frozen()`,
+> `log`/`warn`/`error`). The extension is handed **one JSON snapshot of the world per frame** and the
 > facade answers every group out of it, so none of these reads crosses the language boundary --
 > the design `PORT.md` §6 records. `world.terrainHeight` is the one read that is a *function*
 > rather than a value, and it (and the writes, when they land) goes the other way through a

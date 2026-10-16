@@ -180,9 +180,9 @@ static func parse_table(json: Variant) -> Array:
 		return parsed
 	return []
 
-## Route one logged line. `log ` is the host's own marker for `console.log`, not part of what the
-## mod said, so it comes off. A mod's *draws* do not come through here at all: they are records
-## (`ModHost::poll_draws`) and the surface paints them.
+## Route one logged line. The host marks the level (`log `/`warn `/`error `) so a player can tell
+## the three apart, and only `log`'s marker comes off: a warning and an error keep their own word in
+## front of the mod's text, because `goats.warn` is not the same thing to a reader as `goats.log`.
 func _drain(line: String) -> void:
 	_line(line.substr(4) if line.begins_with("log ") else line)
 

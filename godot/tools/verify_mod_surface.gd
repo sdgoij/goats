@@ -1,5 +1,6 @@
-# The readable-surface gate: the `goats` groups a *mod* reads the live world through
-# (`APIv1.md` section 4.5-4.12), against the scene's own values.
+# The readable-surface gate: the `goats` groups a *mod* reads the live world through -- its own
+# identity and logging (`APIv1.md` section 4.1) and the world (`sections 4.5-4.12`) -- against the
+# scene's own values.
 #
 #   Godot --headless --path godot --script res://tools/verify_mod_surface.gd
 #
@@ -15,8 +16,12 @@
 # HUD and the wire take theirs from. A snapshot that drifted from the world would be a mod reading
 # a second, wrong world -- which no amount of "the call arrived" would catch.
 #
-# Six things, and the order is the order of the ways they can be faked:
+# Seven things, and the order is the order of the ways they can be faked:
 #
+#   0. **Every mod knows who it is and can speak.** `goats.api`, `goats.game`, `goats.mods()`,
+#      a handle's own `goats.mod` -- held against the *scene's* table, which is the one the Mods
+#      screen draws -- and `goats.log`/`warn`/`error`, whose lines must reach the console with
+#      their level still on them.
 #   1. **Every group answers**, from inside a mod's own hook (`hud`), which is where a mod reads
 #      it -- not from a probe that could be reading the host directly.
 #   2. **The values are the scene's.** Each group is held against its module: the goat's health and
@@ -119,6 +124,19 @@ const PROBE_JS := """
         catch (error) { out.setting = "threw"; }
         try { goats.bots.get(0).zoomies(3); out.zoomies = "answered"; }
         catch (error) { out.zoomies = "threw"; }
+
+        // The identity a mod reads before it reads anything else (APIv1.md section 4.1), and the
+        // three ways it can say something.
+        out.api = goats.api;
+        out.game = goats.game;
+        out.frozen = goats.frozen();
+        const table = goats.mods();
+        out.mods = table.length;
+        const started = goats.begin(table.length > 0 ? table[0].id : "nobody");
+        out.mod_id = started.mod === null ? "null" : started.mod.id;
+        out.mod_side = started.mod === null ? "null" : started.mod.side;
+        goats.log("surface: hello from the probe");
+        goats.warn("surface: a warning");
         return JSON.stringify(out);
     });
 })();
@@ -220,7 +238,53 @@ func _check() -> void:
 	_check_tuning(read, bots, reflect)
 	_check_calls(read)
 	_check_writes(read)
+	# A second frame, so anything the probe *said* is drained into the console before the identity
+	# check reads it: the first frame ran before the probe answered, and a log line lands in the
+	# host's queue when it is said and not when the frame is drawn.
+	mods.call("frame", _main.call("cmd_hours"), Vector2(1280.0, 720.0), true,
+		_main.get_node("Camera3D"), snapshot)
+	_check_identity(read, mods, _main.get("console"))
 	_finished = true
+
+## The identity and logging members (`APIv1.md` section 4.1): the API major, the game's version,
+## the table, a mod's own row, and the three ways to say something -- each held against the
+## *scene's* table, which is the one the Mods screen draws.
+func _check_identity(read: Dictionary, mods: Object, console: Object) -> void:
+	if int(read.get("api", -1)) != 1:
+		_failures.append("goats.api is %s, and the API major is 1" % read.get("api"))
+	if str(read.get("game", "")).is_empty():
+		_failures.append("goats.game is empty")
+	if read.get("frozen") != false:
+		_failures.append("goats.frozen() is %s and nothing has frozen" % read.get("frozen"))
+	var table: Array = mods.call("mod_table")
+	if int(read.get("mods", -1)) != table.size():
+		_failures.append("goats.mods() is %s row(s), the scene's table is %d"
+			% [read.get("mods"), table.size()])
+	if not table.is_empty():
+		var first: Dictionary = table[0]
+		if str(read.get("mod_id")) != str(first.get("id")):
+			_failures.append("a mod's goats.mod.id is %s, the table says %s"
+				% [read.get("mod_id"), first.get("id")])
+		if str(read.get("mod_side")) != str(first.get("side")):
+			_failures.append("a mod's goats.mod.side is %s, the table says %s"
+				% [read.get("mod_side"), first.get("side")])
+	# The level is carried, so a warning and a log line are told apart on the console.
+	var said := false
+	var warned := false
+	if console != null:
+		for line: Dictionary in console.get("lines"):
+			var text: String = String(line.get("text", ""))
+			if text.contains("surface: hello from the probe"):
+				said = true
+			if text.contains("warn surface: a warning"):
+				warned = true
+	if not said:
+		_failures.append("goats.log did not reach the console")
+	if not warned:
+		_failures.append("goats.warn did not reach the console with its level")
+	print("identity: api ", read.get("api"), "  game ", read.get("game"), "  mods ",
+		read.get("mods"), "  mod ", read.get("mod_id"), "/", read.get("mod_side"),
+		"  frozen ", read.get("frozen"))
 
 ## 1. The same read from inside a `hud` hook -- the frame the scene pushed, which is where a mod
 ## actually reads it. A surface that only answers a probe is not a surface a mod has.

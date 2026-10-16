@@ -207,11 +207,77 @@ if (typeof globalThis.goats === "undefined") {
             return flat(value, stride);
         }
 
+        /** A capability's JSON answer, or `fallback` when it is not one. */
+        function parseJson(text, fallback) {
+            if (typeof text !== "string" || text === "") return fallback;
+            try {
+                return JSON.parse(text);
+            } catch (error) {
+                return fallback;
+            }
+        }
+
+        /**
+         * Say something the way `goats.log`/`warn`/`error` say it: the arguments joined with a
+         * space, and the level carried to whatever `console` the embedder wired.
+         */
+        function logAt(level, args) {
+            const line = Array.prototype.join.call(args, " ");
+            if (level === "warn" && typeof console.warn === "function") console.warn(line);
+            else if (level === "error" && typeof console.error === "function") console.error(line);
+            else console.log(line);
+        }
+
+        // The API major and the game's version (`APIv1.md` section 4.1). Read once, because they
+        // are constants -- the host answers them from its own crate, so a prelude copy could not
+        // drift from the contract the loader enforces.
+        const IDENTITY = parseJson(__goatsIdentity(), { api: 1, game: "0.0.0" });
+
         return {
             /** id -> { id, commands, hooks }, in registration order. */
             __mods: {},
             /** The state `command`/`on` write to outside a `begin` scope. */
             __state: idle,
+
+            /**
+             * The API major and the game's version. Both are the *host's* (`APIv1.md` section
+             * 4.1): a mod comparing `goats.api` against the major it was written for is asking
+             * the thing that would have refused it at load.
+             */
+            api: IDENTITY.api,
+            game: IDENTITY.game,
+            /** This mod's info (`{id, name, version, side}`), set on the per-mod handle by
+             * `begin`; `null` outside a mod's scope, which is what the reference client has. */
+            mod: null,
+            /**
+             * The loaded mod table (`APIv1.md` section 4.1), as the Mods screen draws it -- the
+             * host's own, so a mod reading it reads the same rows a player does.
+             */
+            mods: function () {
+                return parseJson(__goatsMods(), []);
+            },
+            /**
+             * Whether registration has closed. It never has in this client -- there is no
+             * `goats.freeze()` to call -- so a mod that guards a late registration on it is told
+             * the truth rather than a guess.
+             */
+            frozen: function () {
+                return false;
+            },
+
+            /**
+             * Say something on the console. The level is carried, because a warning is not the
+             * same thing to a player as a log line.
+             */
+            log: function () {
+                logAt("log", arguments);
+            },
+            warn: function () {
+                logAt("warn", arguments);
+            },
+            error: function () {
+                logAt("error", arguments);
+            },
 
             /**
              * The per-mod handle. The loader calls this with the mod's id and
@@ -224,6 +290,9 @@ if (typeof globalThis.goats === "undefined") {
                 // only the state is the mod's own.
                 const handle = Object.create(this);
                 handle.__state = state;
+                // Its own identity, which is the one member a handle does not inherit: a mod
+                // asking `goats.mod` is asking who *it* is (`APIv1.md` section 4.1).
+                handle.mod = parseJson(__goatsModInfo(id), null);
                 return handle;
             },
 
