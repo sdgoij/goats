@@ -989,6 +989,55 @@ same shape as `verify_console.gd`'s blank panel. The seed's four streams are wir
 adopts the host's four off each snapshot (`use_stream`), so a stream a client still draws from
 continues where the host is rather than replaying from zero.
 
+**The mods the scene runs** (`verify_scene_mods.gd`): stage 1, and the one thing the port could not do
+about mods at all. `crates/mods` and the embedded engine were in from the start (`verify_mods.gd`
+proves discovery, manifests, ordering, assets, the example's entry, its command and its HUD hook),
+but nothing in the *scene* called them: a player's game loaded no mods, so the Mods screen drew
+`menu.js`'s "no mods found" and no mod's console verb existed. `mods.gd` is the scene's half -- the
+`ModHost` node, the directory, the per-frame push (`set_world_time`, `emit_hud`) and the two seams
+`main.gd` wires (`commands.mods`, `menu.mods_list`) -- and it is built after the console and before
+the offline return, so a player with no ticket still has their mods.
+
+The load is **isolated** and the table is **truthful**. `crates/mods` validates a manifest before
+anything runs, so only the host that *ran* an entry can say it threw; `ModHost::mods_json` therefore
+merges `failed`/`error` into the loader's table, which is `mods.js`'s `sceneModResult` folded into
+`sceneMods`. Of the repository's five mods, four load and `birds` fails -- it reads `goats.mod`,
+which the port's handle has not got -- and the Mods screen says so rather than drawing five healthy
+rows.
+
+```
+table: 5 row(s)
+  com.example.jitprobe v0.1.0 [client]
+  com.github.sdgoij.goats.birds v1.0.0 [world]  FAILED: TypeError: Cannot read properties of null
+  com.github.sdgoij.goats.fatguy v1.0.0 [client]
+  com.github.sdgoij.goats.hello v1.0.0 [client]
+  com.github.sdgoij.goats.wasm v1.0.0 [client]
+failed: 1 of 5
+mods screen: 6 label(s), 6 button(s)
+hud hook draws: 6
+OK: the scene runs the mods, names the one that threw, and draws them
+```
+
+The gate holds four things, each one the direct host check cannot see: that the *scene* owns a
+runtime (read from the live scene, because "loaded by nothing" is exactly what the port had); that
+the table names the failure and leaves the four that loaded unmarked; that the **Mods screen draws
+the list** (a label and a button per mod, the failed row saying `FAILED`, and `menu.js`'s "no mods
+found" gone); and that the vocabulary reaches the mods both ways -- the example's own `hello` verb
+answers through the console's dispatch, and `mod list` / `mod key` answer from the host's table.
+
+Two things the slice decided and did not hide. **A mod's draw is counted, not painted**: the `rl`
+shim's first member queues `drawText` as a line, and rendering it is the shim proper (stage 8), so
+the HUD hook runs and its draws are the gate's evidence rather than pixels. And **`hud` fires only
+while the HUD is up**, which is `sceneFrame`'s own gate -- `modEmit("hud", ...)` is inside the
+`uiScreen === "hud"` branch -- so a menu silences a mod's HUD hook exactly as it silences the game's.
+
+The hook is also *isolated* now, in `prelude.js`: one that throws is caught and named on the mod's
+own line rather than taking the frame with it, which is the guarantee `PORT.md` section 4 states
+("a mod cannot affect the frame except by the work it is asked to do") and `APIv1.md` section 7's
+isolation. What stage 1 leaves is stage 8: sixteen of the `goats` surface's seventeen member groups,
+seventeen of its eighteen events, `modSetEnabled` and its session guard, the world-mod datagram, the
+tuning merge, reload/watch, the asset-to-engine path and the wasm path.
+
 What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the `Mods` screen's *list* -- the screen is in as of M25 and draws
@@ -1089,10 +1138,14 @@ The options, unchanged from the original assessment, are why:
 
 **What "embed Slag" means here.** `crates/godot` owns a `Context`, the mod loader
 loads and validates manifests, and each JS mod's entry is evaluated inside a
-per-mod `goats` handle — the same split as today, with the engine's embedding API
+per-mod `goats` handle -- the same split as today, with the engine's embedding API
 (`create_object`, `create_function`, `register_fn`, the re-entrant
 `FunctionCall::call`/`eval`) building the surface. The wasm path is
-`crates/plugin` driving `slag::wasm`, unchanged.
+`crates/plugin` driving `slag::wasm`, unchanged. **This half is in as of stage 1**: the loader,
+the ordering, the assets and the `goats`/`rl` facade all run, the scene drives them (`mods.gd`),
+and what is thin is the *surface* rather than the embedding -- `goats.world.time` and
+`rl.color`/`rl.drawText` are the members built, so a mod that reads more than that throws and is
+isolated (see section 3).
 
 **The one hard problem: the `goats` surface is now a cross-language bridge.**
 Today the surface is JS-to-JS: a mod calls `goats.world.terrainHeight(x, z)` and
@@ -1179,7 +1232,7 @@ Sizes are judgement, not measurement.
 | # | Stage | Done when | Size |
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
-| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **discovery, manifests, ordering, assets and one entry done**; the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain | 2–3 |
+| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain (stage 8) | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the mods and voice paths remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
@@ -1510,6 +1563,15 @@ disagreements and fails if there are none.
   absent* rather than what a branch does: a justification of the form "the other case does not
   exist yet" is a note about the port's gaps rather than about the scene, and it wants re-reading
   the day the gap closes.
+- **A loader's table cannot describe a run.** `crates/mods` validates a manifest before anything
+  executes, so the metadata table it builds is honest about *files* and says nothing about what
+  happened when an entry evaluated -- which is why it carried `enabled: true` for a mod whose entry
+  threw on its first line. The failure existed the whole time, in the string `load_all` returned;
+  nothing read it, and nothing a player could see disagreed with the table. The fix is not a check
+  but a *source*: the module that ran the entry is the only one that can report the outcome, so
+  `ModHost::mods_json` merges it into the loader's table (stage 1). It is the same shape as the
+  `_publish_pose` note above and as `verify_console.gd`'s blank panel -- a value true where it is
+  produced and absent where it is read -- and the tell is a return value nothing consumes.
 - **A method that shares a name with a *global* function binds to the global, and a fully
   qualified call to it hides that.** The console's `wrap` -- `consoleWrap`'s transcription -- is
   also `@GlobalScope.wrap(value, min, max)`, so the unqualified `wrap(...)` inside `_draw`
@@ -1602,11 +1664,14 @@ audio and the mod surface, and new work last.
    `flood <h>`, `setting reflect`) and only `GOATS_BOOM` maps to none. What is left of stage 6 is
    the `Mods` screen's *list*: it draws `menu.js`'s "no mods found" because the scene does not load
    mods yet, so it waits on stage 1 rather than on the UI.
-3. **The mod surface -- stages 1 and 8.** One of `goats`' seventeen member groups is implemented
-   and one of its eighteen events fires; of the repository's five mods, one runs and runs degraded.
-   This is the largest block by any measure and it is what the port's own goal names first, which
-   is why it is worth doing carefully rather than early: the facade, the scene driver, the tuning
-   merge, the asset path and the wasm ABI are one piece of work or none of it.
+3. **The mod surface -- stage 8.** The host is in and the scene drives it (stage 1): the loader, the
+   isolation, the table, the Mods screen's list and a mod's console verb. What is left is the
+   *surface*: sixteen of `goats`' seventeen member groups, seventeen of its eighteen events,
+   `modSetEnabled` and its session guard, the world-mod datagram, the tuning merge, reload/watch,
+   the asset-to-engine path and the wasm path. This is the largest block by any measure and it is
+   what the port's own goal names first, so it is worth doing carefully rather than early: the
+   facade, the scene driver, the tuning merge, the asset path and the wasm ABI are one piece of
+   work or none of it.
 4. **M20g, and anything else the JavaScript does not have.** Last on purpose.
 
 Orders 1-3 are "the same game the JavaScript client is"; 4 is new work in both, and
@@ -1672,6 +1737,8 @@ payload field for field against `proto`'s structs and then takes it through `Net
 method that *is* the schema check (`godot/tools/verify_hosting.gd`, M26); and runs a host, a client
 and a third player through a published world and both directions of a bang over real iroh
 endpoints, requiring the relayed bang to reach the third player and **not** the reporter who
-already felt it (`godot/tools/verify_net.gd`, M26). Every one
+already felt it (`godot/tools/verify_net.gd`, M26); and runs the *scene's* mod runtime -- the host's
+table with the one mod whose entry threw named in it, the Mods screen's row-per-mod layout, and a
+mod's own verb answered through the console (`godot/tools/verify_scene_mods.gd`, stage 1). Every one
 of them exits zero.
 The rest is read from the tree.*

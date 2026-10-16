@@ -88,6 +88,14 @@ struct ModHost {
     world_time: Rc<RefCell<f64>>,
     /// Built on first use so a node can be created before the engine is wanted.
     module: Option<Mod>,
+    /// What became of each mod's entry, by id: `Ok(())` once it evaluated (or
+    /// had no entry to run), `Err(text)` when it threw. The *loader* cannot know
+    /// this -- a manifest is validated before anything runs -- so only the host
+    /// that ran the entry can say it, which is why [`ModHost::mods_json`] merges
+    /// it into the table rather than leaving every row `enabled: true`. It is
+    /// `crates/goats/src/game/mods.js`'s `sceneModResult`, with the result folded
+    /// into `sceneMods`' table instead of a second call from the scene.
+    outcomes: HashMap<String, Result<(), String>>,
 }
 
 // SAFETY: a `Slag` context and its values are single-threaded, and every method
@@ -105,6 +113,7 @@ impl INode for ModHost {
             lines: LineQueue::default(),
             world_time: Rc::new(RefCell::new(0.0)),
             module: None,
+            outcomes: HashMap::new(),
         }
     }
 }
@@ -172,22 +181,40 @@ impl ModHost {
 
         let module = self.module.as_mut().expect("booted above");
         module.loader = Some(loader);
+        // A fresh discovery invalidates every previous outcome: the ids may be
+        // different mods at different versions, and a stale `failed` is worse than
+        // none.
+        self.outcomes.clear();
         gstring(report)
     }
 
     /// The metadata table the core would hand the scene: id, name, version,
     /// side, digest, asset slots and tuning, in load order. This is
-    /// `crates/mods`' own `table_json`, verbatim -- no paths, ever.
+    /// `crates/mods`' own `table_json`, verbatim -- no paths, ever -- with one
+    /// thing added: a mod whose entry *threw* carries `failed: true` and the
+    /// error, which is what `mods.js`'s `sceneModResult` tells the scene so the
+    /// Mods screen can name it instead of drawing a healthy row.
     #[func]
     fn mods_json(&mut self) -> GString {
-        match self
+        let Some(loader) = self
             .module
             .as_ref()
             .and_then(|module| module.loader.as_ref())
-        {
-            Some(loader) => gstring(loader.table_json()),
-            None => GString::from("[]"),
+        else {
+            return GString::from("[]");
+        };
+        let mut table: serde_json::Value =
+            serde_json::from_str(&loader.table_json()).unwrap_or_else(|_| serde_json::json!([]));
+        if let Some(rows) = table.as_array_mut() {
+            for row in rows.iter_mut() {
+                let id = row.get("id").and_then(|id| id.as_str()).unwrap_or_default();
+                if let Some(Err(error)) = self.outcomes.get(id) {
+                    row["failed"] = serde_json::json!(true);
+                    row["error"] = serde_json::json!(error);
+                }
+            }
         }
+        gstring(table.to_string())
     }
 
     /// The opaque names of every asset the loaded mods declared, sorted. These
@@ -211,7 +238,10 @@ impl ModHost {
     /// Run one mod's entry by id, in its own `goats.begin(id)` scope.
     #[func]
     fn load_mod(&mut self, id: GString) -> GString {
-        match self.load_one(&id.to_string()) {
+        let id = id.to_string();
+        let outcome = self.load_one(&id);
+        self.record(&id, &outcome);
+        match outcome {
             Ok(report) => gstring(report),
             Err(error) => gstring(format!("error: {error}")),
         }
@@ -236,7 +266,9 @@ impl ModHost {
 
         let mut report = String::new();
         for id in ids {
-            match self.load_one(&id) {
+            let outcome = self.load_one(&id);
+            self.record(&id, &outcome);
+            match outcome {
                 Ok(line) => report.push_str(&line),
                 Err(error) => report.push_str(&format!("{id}: {error}")),
             }
@@ -292,6 +324,14 @@ impl ModHost {
 }
 
 impl ModHost {
+    /// Record what happened to one mod's entry, for [`ModHost::mods_json`] to
+    /// read back. A `Result<String, String>` is `load_one`'s answer -- the line to
+    /// report, or the error -- and only which half it is survives here.
+    fn record(&mut self, id: &str, outcome: &Result<String, String>) {
+        let outcome = outcome.as_ref().map(|_| ()).map_err(|error| error.clone());
+        self.outcomes.insert(id.to_string(), outcome);
+    }
+
     /// Build the engine and the facade if they are not up yet.
     fn ensure_booted(&mut self) -> Result<(), String> {
         if self.module.is_none() {

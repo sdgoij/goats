@@ -100,7 +100,18 @@ if (typeof globalThis.goats === "undefined") {
                 for (let i = 0; i < states.length; i++) {
                     const list = states[i].hooks["hud"] || [];
                     for (let j = 0; j < list.length; j++) {
-                        list[j](arg);
+                        // A hook is a mod's own code, and one that throws must not take
+                        // the frame with it: the guarantee `PORT.md` section 4 states is
+                        // that a mod cannot affect the frame except by the work it is
+                        // asked to do, and a `TypeError` out of a handler is the frame
+                        // breaking on a mod's account. `APIv1.md` section 7's isolation,
+                        // and the same shape `mods.js`'s `modEmit` uses: the failure is
+                        // named on the mod's own line rather than swallowed.
+                        try {
+                            list[j](arg);
+                        } catch (error) {
+                            console.log("hud hook failed: " + error);
+                        }
                     }
                 }
             },

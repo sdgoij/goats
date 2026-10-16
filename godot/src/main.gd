@@ -167,6 +167,10 @@ var water_reflect := WaterReflect.new()
 ## this scene's world (`water_mirror.gd`).
 var water_mirror := WaterMirror.new()
 
+## The mod runtime (stage 1): the extension's `ModHost`, the `mods/` directory it reads, and the
+## table the Mods screen draws (`mods.gd`). It is a node because a mod draws through the frame.
+var mods := Mods.new()
+
 ## A bite's device test, built once and handed to the goat every frame: `food.js`
 ## `startEat` asks whether the tuft it just ate was trapped, and `explosions.gd` is what
 ## answers. It is a `Callable` and not the node because `PlayerGoat` does not link
@@ -245,6 +249,11 @@ var _weather := {}
 ##                            which is `GOATS_CONSOLE`'s knob for the menu's four panels (M25).
 ##                            It goes through the console's own `ui` verb, so it cannot open a
 ##                            screen the vocabulary would refuse.
+##   `GOATS_MODS=<dir>`       read mods from this directory instead of the search `mods.gd`
+##                            does (`GOATS_MODS`, then `mods/` beside the project, then beside
+##                            the executable). `GOATS_NO_MODS` skips the search entirely -- the
+##                            raylib client's `--mods`/`--no-mods`, spelled as the environment
+##                            variables it already uses for the same two things.
 var _forced_hour := -1.0
 var _forced_cloud := -1.0
 var _boom := false
@@ -375,8 +384,7 @@ func _ready() -> void:
 	# The menu (M25): also code-built, also added after the HUD, and *after* the console so a menu
 	# is the topmost thing on screen. It shares the one `Settings` with the console's `setting`
 	# verb, and reaches the frame for the two things only the frame can do -- opening the console
-	# and quitting. `mods_list` is empty for now: the scene does not load mods yet (stage 1), and
-	# the screen draws `menu.js`'s own "no mods found" for that.
+	# and quitting. Its `mods_list` is the mod runtime's table, wired below.
 	settings.apply = Callable(self, "_apply_settings")
 	menu = Menu.new()
 	$Ui.add_child(menu)
@@ -386,6 +394,15 @@ func _ready() -> void:
 	menu.on_console = Callable(self, "_open_console")
 	menu.on_quit = Callable(self, "cmd_quit")
 	commands.settings = settings
+
+	# The mod runtime (stage 1). Built *after* the console, because its load report is a console
+	# line, and before the offline return below, so a player with no ticket still has their mods --
+	# the same reason the console and the menu are. The Mods screen draws the host's table
+	# (`mods_list`), which is the half of stage 1 the UI can see; the enable/disable toggle is
+	# `modSetEnabled`, which needs the session intents and is stage 8's (`menu.gd` says so).
+	mods.console = console
+	add_child(mods)
+	menu.mods_list = Callable(mods, "mod_table")
 
 	# `GOATS_UI=<screen>`: open a menu screen at boot, for `GOATS_CONSOLE`'s reason -- the panels are
 	# the part of the UI only a picture can judge. It goes through the console's own `ui` verb so the
@@ -562,6 +579,10 @@ func _process(delta: float) -> void:
 	hud.visible = not menu.is_open()
 	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz),
 		_hud_world(controls))
+	# The mods' own frame: the clock a mod reads, and its `hud` hook while the HUD is up. It is
+	# after `hud.show_for` because that is where this frame decided the HUD is the thing on screen
+	# (`sceneFrame` fires `modEmit("hud", ...)` inside the branch that draws the HUD).
+	mods.frame(_hours, Vector2(get_viewport().get_visible_rect().size), not menu.is_open())
 	_boom_if_asked()
 
 	# The probe's own clock, which runs whether or not the world is frozen: it is counting the
@@ -1220,6 +1241,7 @@ func _build_commands() -> void:
 	commands.bots = bots
 	commands.herd = herd
 	commands.console = console
+	commands.mods = mods
 	commands.scene = self
 
 func cmd_hours() -> float:

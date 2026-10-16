@@ -23,6 +23,7 @@ plan.
 | `src/commands.gd` | The command vocabulary: `ctl.js`'s `sceneCommand`, about sixty verbs, the same words the host's stdin channel drives (M24) |
 | `src/menu.gd` | The menu, drawn: `menu.js`'s four screens — main, settings, mods, keymap — as a layout a gate can hold, with the Escape walk (M25) |
 | `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
+| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws and the first refusal a mod's console verb gets (stage 1) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
 | `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
@@ -49,11 +50,12 @@ plan.
 
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
 see Godot. It exposes `NetBridge` (the networking bridge over `session` and
-`proto`: `host`, `join`, `say`, `pose`, `leave`, `poll_events`, `shutdown`) and
-`ModHost`
+`proto`: `host`, `join`, `say`, `consume`, `pose`, `world`, `blast`, `leave`,
+`poll_events`, `shutdown`) and `ModHost`
 (the embedded Slag engine plus the `goats`/`rl` facade a mod sees; the facade is
 `crates/godot/src/prelude.js`, and the loader it drives is the `crates/mods`
-crate). It is a workspace member rather than a project of its own so it inherits
+crate; `mods.gd` in the scene is its only client). It is a workspace member rather
+than a project of its own so it inherits
 `workspace = true` dependencies and shares the root `Cargo.lock`, which is what
 lets it link the client's `session`/`proto`/`plugin` crates unchanged.
 
@@ -74,7 +76,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Twenty-four headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Twenty-five headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -88,6 +90,11 @@ Twenty-four headless gates, all `SceneTree` scripts that exit non-zero on failur
 # The embedded engine runs the repository's mods and calls back into the host.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mods.gd
+
+# ...and the *scene* runs them: the runtime `main.gd` wires, the failures the host names in
+# the table the Mods screen draws, and a mod's own verb reaching the console (stage 1).
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_scene_mods.gd
 
 # Two Godot peers meet over iroh: host, join, roster, chat, goat snapshots -- and then a
 # third joins, so the world a host publishes, a client's adopted snapshot and both
@@ -207,7 +214,7 @@ Twenty-four headless gates, all `SceneTree` scripts that exit non-zero on failur
     --script res://tools/verify_menu.gd
 ```
 
-All twenty-four pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty-five pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -403,9 +410,20 @@ and `connect <ticket>` / `leave` / `who` / `copy` are how a session is driven by
 `Mods`, `Keymap` and the `` ` ``-equivalent `Console` button, plus `Quit`. A menu freezes the
 world and takes the keyboard and the mouse, and every control on the two screens that matter
 does something real — the audio gains, the lighting, the shadow map, the sky program, the cloud
-quality, the water's reflection, fullscreen and the herd's size. The `Mods` screen is the one
-thing that reads empty today: the scene does not load mods yet (stage 1), so it shows
-`menu.js`'s own "no mods found" and its Enable buttons say so.
+quality, the water's reflection, fullscreen and the herd's size. The `Mods` screen now lists
+what the runtime found (`mods.gd`, stage 1): a row per mod with its version and side, `FAILED`
+and the error on the ones whose entry threw, and an Enable/Disable button whose answer is
+`modSetEnabled` — which is stage 8, so it still says so. `mod list` and `mod key` in the
+console print the same table and the world-mod digest a host's refusal names.
+
+**Mods are loaded from `mods/` at boot**, the directory the raylib client reads:
+`GOATS_MODS` if it is set, else `mods/` beside the project, else `mods/` beside the executable;
+`GOATS_NO_MODS` skips the search. Every entry is evaluated in its own `goats` handle, and one
+that throws costs its own row rather than the load — of the repository's five, four load and
+`birds` fails, because it reads a surface member the port has not built yet (`goats.mod`). A
+mod's `console.log` reaches the console and a mod's registered verb reaches the console first,
+so `hello world` answers the example's `hello`. What a mod *draws* through `rl` is counted, not
+painted: rendering it is the drawing shim proper, which is stage 8.
 
 To play with somebody, point it at a host:
 

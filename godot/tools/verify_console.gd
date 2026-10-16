@@ -195,10 +195,16 @@ const LIVE := [
 	["help", "starts", "ok help - commands by topic"],
 	["nope", "exact", "error unknown command: nope"],
 	["tune water.reflection", "exact", "error tune unavailable"],
-	["mod", "exact", "error mod unavailable"],
+	# `mod` is backed as of stage 1 (`mods.gd`): the live scene has a table, so the two readable
+	# halves answer from it. The pure table above still says `unavailable`, because a `Commands`
+	# with no modules has no table to print.
+	["mod", "starts", "ok ["],
+	["mod list", "starts", "ok ["],
+	["mod key", "starts", "ok ["],
+	["mod bogus", "exact", "error mod expects list|key"],
 	["perf", "exact", "error perf unavailable"],
 	# `host` is deliberately absent: it is backed, so running it here would bind a real session
-	# endpoint inside a pure-vocabulary gate. `verify_net.gd` is where a session is started.
+	# endpoint inside a partly-pure gate. `verify_net.gd` is where a session is started.
 	["pools", "exact", "error pools unavailable"],
 	["lighting", "exact", "ok lighting off"],
 	["lighting", "exact", "ok lighting on"],

@@ -28,7 +28,9 @@
 #     constants rather than a tree to walk.
 #   * **`perf`** -- the frame-cost benchmark measures the JavaScript host's own phases;
 #     there is no Godot harness behind it yet.
-#   * **`mod`** -- the mod surface is stage 1/8; one of seventeen member groups is in.
+#   * **`mod`** -- the scene loads mods as of stage 1 (`mods.gd` + the extension's `ModHost`),
+#     so `mod list` and `mod key` are backed and a mod's own verb gets first refusal; `info`,
+#     `enable`, `disable` and `reload` need `mods.js`'s other half, which is stage 8.
 #   * **`pools`** -- the water's connected regions are M20f, not yet ported.
 #   * **`screenshot`** -- backed with a window, `error screenshot needs a window` under
 #     `--headless`, where there is no rasteriser to read back.
@@ -69,6 +71,9 @@ var audio: Audio
 var weather: Weather
 var bots: Bots
 var herd: Herd
+## The mod runtime: the table `mod list` prints, the world digests `mod key` reads, and the
+## first refusal a mod's own console verb gets. `null` in a gate that holds only the pure rules.
+var mods: Mods
 ## The shell the `console` verb drives: it opens, closes, toggles and submits through it.
 var console: Console
 ## The frame, for the `cmd_*` knobs. `null` in a gate that only holds the pure dispatch.
@@ -384,8 +389,7 @@ func run(line: String) -> String:
 
 		# ---- mods --------------------------------------------------------
 		"mod":
-			# The mod surface is stages 1 and 8: one of seventeen member groups is in.
-			return "error mod unavailable"
+			return _mod(parts)
 
 		# ---- host --------------------------------------------------------
 		"screenshot":
@@ -398,10 +402,17 @@ func run(line: String) -> String:
 			return "ok quit"
 
 		_:
-			# A mod's registered command would get first refusal here (stage 8). What is left
-			# is the console's chat: in a session, anything that is not a command is something
-			# to say -- which is what makes the console a chat box. Offline it stays an error,
-			# so a typo is still caught rather than broadcast.
+			# A mod's registered verb gets first refusal, which is `mods.js`'s own order: a mod
+			# extends the vocabulary, so a word it claims is not chat. `run_command` answers `""`
+			# for a word nobody claims -- an empty reply is also how a command says "nothing to
+			# print", so the two are told apart by whether a mod is there at all.
+			if mods != null:
+				var reply: String = mods.run_command(command, line.strip_edges())
+				if reply != "":
+					return reply
+			# What is left is the console's chat: in a session, anything that is not a command is
+			# something to say -- which is what makes the console a chat box. Offline it stays an
+			# error, so a typo is still caught rather than broadcast.
 			if _in_session():
 				return _say(line.strip_edges())
 			return "error unknown command: " + command
@@ -644,6 +655,30 @@ func _host(parts: PackedStringArray) -> String:
 	var name: String = parts[1] if parts.size() > 1 else ""
 	_call("cmd_host", [name])
 	return "ok host"
+
+## `mod [list|key]`: the metadata table the host found, and the world-mod digest key a join
+## handshake compares (`ctl.js`'s `modCommand`).
+##
+## `info`, `enable`, `disable` and `reload` are the other half of `mods.js`: `info` wants a mod's
+## own command list, and the toggles queue session intents and re-point asset slots. Those are
+## stage 8, so the two readable halves are what is here -- and `key` is the one a player actually
+## needs, because it is the string a host's refusal names.
+func _mod(parts: PackedStringArray) -> String:
+	if mods == null:
+		return "error mod unavailable"
+	var verb: String = parts[1] if parts.size() > 1 else "list"
+	if verb == "" or verb == "list":
+		return "ok " + json_of(mods.mod_table())
+	if verb == "key":
+		var world: Array = []
+		for meta: Dictionary in mods.mod_table():
+			if String(meta.get("side", "")) != "world":
+				continue
+			world.append("%s@%s#%s" % [String(meta.get("id", "")), String(meta.get("version", "")),
+				String(meta.get("hash", ""))])
+		world.sort()
+		return "ok " + json_of(world)
+	return "error mod expects list|key"
 
 ## `copy [text]`: with no argument, the ticket -- the one thing long enough that it should
 ## never have to be typed. The clipboard is Godot's own, and `console.gd` says whether it
