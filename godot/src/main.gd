@@ -994,6 +994,16 @@ func _mod_call(name: String, args_json: String) -> String:
 				return _mod_err("bots.setCount needs a count")
 			bots.set_herd_size(int(round(float(args[0]))))
 			return _mod_ok(bots.count())
+		"bots.register":
+			# The pool's own append (`APIv1.md` section 4.4), and the one registry that lands on a
+			# *table* rather than on a live value: the facade has already defaulted the spec and
+			# resolved the name, so what arrives is the record `Bots.SPEC` holds, and the answer is
+			# how many archetypes the herd has now. Nothing is rebuilt -- a herd spawned from here on
+			# rings the new entry and one already standing keeps its own spec, which is
+			# `botAdd`'s own behaviour.
+			if args.is_empty() or not (args[0] is Dictionary):
+				return _mod_err("bots.register needs a spec")
+			return _mod_ok(bots.register(args[0]))
 		"bots.zoomies":
 			if args.size() < 2 or not _is_number(args[0]) or not _is_number(args[1]):
 				return _mod_err("bots.get(i).zoomies needs seconds")

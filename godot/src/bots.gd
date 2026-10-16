@@ -331,6 +331,28 @@ func use_seed(seed: int) -> void:
 		value = state
 	_rng = value
 
+## Add an archetype to the herd's pool, which is `mods.js` `modBotRegister`'s own
+## `TUNING.herd.spec.push` -- the registry `goats.bots.register` (`APIv1.md` section 4.4). The
+## facade has defaulted every field and resolved the name before this is called, so this is the
+## append and the answer, which is the pool's new length.
+##
+## A pool entry is what `spec_of` reads by index, so a herd built after this is spawned from it and
+## a herd already standing keeps the spec it was spawned with -- the reference's own behaviour,
+## since `botSpec` is read once in `botAdd`. The *fleece* is the one thing a late entry cannot
+## have: `_build_coats` makes one texture per pool entry when the herd is built, so a coat
+## registered afterwards is recycled from that list (`_add`'s `index % _coats.size()`), exactly as
+## the reference's `BOT_TEX[i % BOT_TEX.length]` recycles them.
+func register(spec: Dictionary) -> int:
+	var coat: Variant = spec.get("coat", null)
+	SPEC.append({
+		"coat": coat if (coat is Array) else [200, 190, 180],
+		"scale": float(spec.get("scale", 1.0)),
+		"bold": float(spec.get("bold", 1.0)),
+		"lazy": float(spec.get("lazy", 0.5)),
+		"name": String(spec.get("name", "")),
+	})
+	return SPEC.size()
+
 ## The temperament and coat for bot `index`. Only six fleeces are hand-authored, so past
 ## the sixth the coats recycle with a bigger body -- enough variety up to the settings' ten
 ## goats.

@@ -931,6 +931,113 @@ if (typeof globalThis.goats === "undefined") {
             return world;
         }
 
+        /**
+         * The herd (`APIv1.md` section 4.8), built per mod for the one member that *registers*
+         * something: `bots.register` extends the herd's own pool of archetypes, which is the
+         * reference's `modBotRegister`, and a mod outside a `begin` gets the group without it --
+         * so asking for it there is the same `TypeError` it is there.
+         *
+         * The four shared members are read from the frame's own snapshot and their writes cross to
+         * the live herd: the reference's own shape, where a client's write lands and the next
+         * snapshot overwrites it.
+         */
+        function botsFor(id) {
+            const bots = {
+                count: function () {
+                    return botEntries().length;
+                },
+                setCount: function (n) {
+                    return ask("bots.setCount", [Number(n)]);
+                },
+                list: function () {
+                    const entries = botEntries();
+                    const n = entries.length;
+                    for (let i = 0; i < n; i++) BOT_LIST[i] = fillBot(i, entries[i]);
+                    BOT_LIST.length = n;
+                    return BOT_LIST;
+                },
+                get: function (index) {
+                    const entries = botEntries();
+                    if (typeof index !== "number" || index < 0 || index >= entries.length) {
+                        return null;
+                    }
+                    return fillBot(index, entries[index]);
+                },
+            };
+            if (id !== null) {
+                /**
+                 * Add an archetype to the herd's pool (`APIv1.md` section 4.4). `spec.name`,
+                 * `coat`, `scale`, `bold` and `lazy`, each defaulted the reference's own way, and
+                 * the answer is the pool's new length, so a mod can tell the write was taken. The
+                 * coat is *colours* rather than a texture: this build makes one fleece per pool
+                 * entry when the herd is built and recycles them past the end of the list
+                 * (`Bots._build_coats`, `_add`), which is the reference's own `BOT_TEX[i % n]` --
+                 * so a coat registered afterwards is the right *numbers* and a recycled fleece.
+                 */
+                bots.register = function (key, spec) {
+                    if (!registrationAllowed(id)) {
+                        throw new Error("goats.bots.register: registration is closed");
+                    }
+                    if (spec === null || typeof spec !== "object") {
+                        throw new Error("goats.bots.register: a spec is required");
+                    }
+                    const coat = Array.isArray(spec.coat) && spec.coat.length === 3
+                        ? [Number(spec.coat[0]), Number(spec.coat[1]), Number(spec.coat[2])]
+                        : [200, 190, 180];
+                    const name = typeof spec.name === "string" && spec.name !== "" ? spec.name
+                        : typeof key === "string" && key !== "" ? key : id;
+                    return ask("bots.register", [{
+                        coat: coat,
+                        scale: typeof spec.scale === "number" ? Number(spec.scale) : 1,
+                        bold: typeof spec.bold === "number" ? Number(spec.bold) : 1,
+                        lazy: typeof spec.lazy === "number" ? Number(spec.lazy) : 0.5,
+                        name: name,
+                    }]);
+                };
+            }
+            return bots;
+        }
+
+        /**
+         * The clip registry (`APIv1.md` section 4.4), which is *only* a registry: the group has a
+         * `register` and nothing else, so a mod outside a `begin` finds the member missing rather
+         * than a second copy of the rule. The reference's `modClipRegister` is three rules -- only
+         * the three gaits, no `asset`, and a stride/duty write into the tuning tree -- and the
+         * write goes where every tuning write goes, which is why the goat and the herd both obey
+         * it the moment it lands.
+         */
+        function clipsFor(id) {
+            const clips = {};
+            if (id !== null) {
+                clips.register = function (role, options) {
+                    if (!registrationAllowed(id)) {
+                        throw new Error("goats.clips.register: registration is closed");
+                    }
+                    if (role !== "walk" && role !== "trot" && role !== "run") {
+                        throw new Error("goats.clips.register: only walk, trot and run have a gait");
+                    }
+                    if (options !== null && typeof options === "object"
+                            && options.asset !== undefined) {
+                        throw new Error("goats.clips.register: an asset clip is not supported; "
+                            + "point the model.goat slot at it");
+                    }
+                    if (options !== null && typeof options === "object"
+                            && options.gait !== undefined) {
+                        if (options.gait.stride !== undefined) {
+                            ask("tuning.set", ["gait." + role + ".stride",
+                                Number(options.gait.stride)]);
+                        }
+                        if (options.gait.duty !== undefined) {
+                            ask("tuning.set", ["gait." + role + ".duty",
+                                Number(options.gait.duty)]);
+                        }
+                    }
+                    return true;
+                };
+            }
+            return clips;
+        }
+
         // The API major and the game's version (`APIv1.md` section 4.1). Read once, because they
         // are constants -- the host answers them from its own crate, so a prelude copy could not
         // drift from the contract the loader enforces.
@@ -1023,6 +1130,12 @@ if (typeof globalThis.goats === "undefined") {
                 // inventing a base one that would answer for nobody.
                 handle.rng = function (name) { return rngFor(id, name); };
                 handle.world = worldFor(id);
+                // ...and its own herd and clip registries: `bots.register` extends the herd's
+                // archetype pool and `clips.register` retunes a gait, and both are the reference's
+                // per-`begin` members (`APIv1.md` section 4.4). The base object therefore has the
+                // herd's reads and writes and neither registry.
+                handle.bots = botsFor(id);
+                handle.clips = clipsFor(id);
                 // ...and its own devices group, for the one member whose *owner* matters: `armed`
                 // records the request under this mod's id (`APIv1.md` section 4.15).
                 handle.explosions = explosionsFor(id);
@@ -1128,34 +1241,12 @@ if (typeof globalThis.goats === "undefined") {
                 },
             },
 
-            /**
-             * The herd (`APIv1.md` section 4.8). On a client the herd is the host's and these
-             * mirror the last snapshot; offline the scene simulates it. Either way the writes
-             * cross to the live bots -- the reference's own shape, where a client's write lands
-             * and the next snapshot overwrites it.
-             */
-            bots: {
-                count: function () {
-                    return botEntries().length;
-                },
-                setCount: function (n) {
-                    return ask("bots.setCount", [Number(n)]);
-                },
-                list: function () {
-                    const entries = botEntries();
-                    const n = entries.length;
-                    for (let i = 0; i < n; i++) BOT_LIST[i] = fillBot(i, entries[i]);
-                    BOT_LIST.length = n;
-                    return BOT_LIST;
-                },
-                get: function (index) {
-                    const entries = botEntries();
-                    if (typeof index !== "number" || index < 0 || index >= entries.length) {
-                        return null;
-                    }
-                    return fillBot(index, entries[index]);
-                },
-            },
+            // The herd (`APIv1.md` section 4.8): the group a mod outside a `begin` sees, which is
+            // every read and write and no registry (`botsFor`, `begin`).
+            bots: botsFor(null),
+            // ...and the clip registry, which outside a `begin` is the empty group the reference's
+            // own base object has.
+            clips: clipsFor(null),
 
             /**
              * The settings the menu and the console both edit (`APIv1.md` section 4.9),

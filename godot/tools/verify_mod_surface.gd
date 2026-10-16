@@ -17,7 +17,7 @@
 # HUD and the wire take theirs from. A snapshot that drifted from the world would be a mod reading
 # a second, wrong world -- which no amount of "the call arrived" would catch.
 #
-# Eleven things, and the order is the order of the ways they can be faked:
+# Twelve things, and the order is the order of the ways they can be faked:
 #
 #   0. **Every mod knows who it is and can speak.** `goats.api`, `goats.game`, `goats.mods()`,
 #      a handle's own `goats.mod` -- held against the *scene's* table, which is the one the Mods
@@ -67,6 +67,11 @@
 #      the gate *finds* rather than guesses; and `blast` is held against the scene's own counters --
 #      the blast count rises, the device is spent so the cell is armed nowhere afterwards -- because
 #      "through the core's own path" is the whole of the member's contract.
+#  11. **The content registries write where the game keeps its content** (`bots.register` and
+#      `clips.register`, section 4.4), which is the one thing about them easy to fake: the herd's
+#      archetype pool is the *scene's* `Bots.SPEC` and the gait is the *scene's* `PlayerGoat.GAIT`,
+#      derived run speed and all -- and both are refused once the entry window has moved on. Held
+#      the way a mod reaches them, through a handle from `begin` (`_check_registries`).
 #
 # **The sentinel.** GDScript has no `try`, so a runtime error inside a check aborts that function
 # and leaves the failure it was about to record unrecorded -- a gate that would print `OK` having
@@ -301,6 +306,40 @@ const PROBE_JS := """
         return JSON.stringify(out);
     });
 
+    // The content registries (`APIv1.md` section 4.4): `goats.bots.register` extends the herd's
+    // archetype pool and `goats.clips.register` retunes a gait through the tuning tree. Both are
+    // the reference's per-`begin` members, so the probe reaches them the way a mod does -- through
+    // a handle from `begin`, which is what opens the entry window the scene closed after every
+    // entry ran. (`modstreams` above is the same door, for `world.registerStream`.)
+    goats.command("modregisters", function () {
+        const out = {};
+        const reg = goats.begin("com.example.registries");
+        // One of each: an empty spec, whose every field is defaulted, and a spec of the mod's own.
+        out.plain_len = reg.bots.register("com.example.plain", {});
+        out.giant_len = reg.bots.register("com.example.giant", {
+            name: "giant", coat: [180, 150, 120], scale: 2.0, bold: 0.8, lazy: 0.6,
+        });
+        // A spec is required, and the reference refuses anything that is not an object.
+        try { reg.bots.register("com.example.bad", "nope"); out.bad = "answered"; }
+        catch (error) { out.bad = String(error); }
+        // The clip registry: a gait retune answers `true` and lands on the tuning tree; an `asset`
+        // and a role that is not a gait are refused, each with the reference's own message.
+        out.clip = reg.clips.register("run", { gait: { stride: 0.55, duty: 0.34 } });
+        try { reg.clips.register("walk", { asset: "x" }); out.clip_asset = "answered"; }
+        catch (error) { out.clip_asset = String(error); }
+        try { reg.clips.register("flung", {}); out.clip_role = "answered"; }
+        catch (error) { out.clip_role = String(error); }
+        // ...and once the window has moved to the *next* entry -- `begin` again, exactly as the
+        // loader does between two mods -- the first mod's registries are closed, which is the
+        // freeze the scene applied after every entry ran.
+        goats.begin("com.example.elsewhere");
+        try { reg.bots.register("com.example.late", {}); out.bots_closed = "answered"; }
+        catch (error) { out.bots_closed = String(error); }
+        try { reg.clips.register("run", { gait: { stride: 0.5, duty: 0.34 } }); out.clips_closed = "answered"; }
+        catch (error) { out.clips_closed = String(error); }
+        return JSON.stringify(out);
+    });
+
     // The devices (`APIv1.md` section 4.15). The coordinates come from the command line rather than
     // from the source, because the field is derived from the seed and the gate has to pick a point
     // that actually holds a device.
@@ -515,6 +554,10 @@ func _check() -> void:
 	# read are the ones the field had when it asked.
 	_check_pools(read, _main.get("water"))
 	_check_devices(host)
+	# ...and the two content registries (`APIv1.md` section 4.4), before the writes: like the devices
+	# they *change* the scene -- the herd's own pool and the run gait's table -- so they are held the
+	# moment they have run, against `Bots.SPEC` and `PlayerGoat.GAIT`.
+	_check_registries(host, goat)
 	# ...and the writes, **last**, because they change the world every reading above describes.
 	# The probe's `restart` needs something to restore, or "a full goat is still full" is a check
 	# that cannot fail -- these are the scene's own fields, set the way the console's own
@@ -932,6 +975,105 @@ func _check_devices(host: Object) -> void:
 			% (devices.get("blast_events") as Array).size())
 	print("devices: ", answer.get("mines"), " mine(s)  ", answer.get("traps"), " trap(s)  blast ",
 		answer.get("blast"), "  blasts ", devices.get("blasts"))
+
+## 4. The content registries (`APIv1.md` section 4.4): `goats.bots.register` extends the herd's own
+## archetype pool and `goats.clips.register` retunes a gait through the tuning tree. Both are the
+## reference's per-`begin` members, so the probe reaches them the way a mod does -- through a handle
+## from `begin`, which is what opens the entry window the scene closed after every entry ran (the
+## same door `modstreams` uses for `world.registerStream`). What is held is the *scene's* own pool
+## (`Bots.SPEC`, a `static var`) and the *scene's* own gait table (`PlayerGoat.GAIT`), so a registry
+## that answered without writing through would show: a mod's answer alone is a claim about the pool,
+## and only the pool can keep it.
+func _check_registries(host: Object, goat: Object) -> void:
+	var spec_before: int = Bots.SPEC.size()
+	var run_before: float = float(goat.call("run_speed"))
+	var answer: Dictionary = _mod_command(host, "modregisters", "modregisters")
+	if answer.is_empty():
+		_failures.append("the registries probe did not answer with a table")
+		return
+
+	# 1. `bots.register` extends the pool and answers its new length. The pool is read *before* the
+	#    command, so a herd the scene already grew would still hold.
+	if Bots.SPEC.size() != spec_before + 2:
+		_failures.append("bots.register left the pool at %d entries, not %d"
+			% [Bots.SPEC.size(), spec_before + 2])
+	else:
+		# 2. The empty spec is defaulted the reference's way -- coat, scale, bold, lazy and the key.
+		_check_spec(Bots.SPEC[spec_before], [200, 190, 180], 1.0, 1.0, 0.5,
+			"com.example.plain", "the defaulted spec")
+		# 1. ...and the mod's own spec is kept field for field, its name and all.
+		_check_spec(Bots.SPEC[spec_before + 1], [180, 150, 120], 2.0, 0.8, 0.6,
+			"giant", "the registered spec")
+	if int(answer.get("plain_len", -1)) != spec_before + 1:
+		_failures.append("bots.register answered %s for the first entry, not the pool's new length %d"
+			% [answer.get("plain_len"), spec_before + 1])
+	if int(answer.get("giant_len", -1)) != spec_before + 2:
+		_failures.append("bots.register answered %s for the second entry, not the pool's new length %d"
+			% [answer.get("giant_len"), spec_before + 2])
+
+	# 3. A spec that is not an object throws, with the reference's own message.
+	if not str(answer.get("bad")).contains("goats.bots.register: a spec is required"):
+		_failures.append("bots.register on a non-object spec answered %s" % answer.get("bad"))
+
+	# 4. `clips.register` retunes a gait, and the retune goes through the tuning tree: the gait table
+	#    *and* the speed derived from it move, which is the whole of "through the tree".
+	if answer.get("clip") != true:
+		_failures.append("clips.register(\"run\", ...) answered %s" % answer.get("clip"))
+	var gait: Variant = PlayerGoat.GAIT.get("run")
+	if not (gait is Dictionary) or (gait as Dictionary).size() != 2 \
+			or not _near(float((gait as Dictionary).get("stride", NAN)), 0.55) \
+			or not _near(float((gait as Dictionary).get("duty", NAN)), 0.34):
+		_failures.append("clips.register left PlayerGoat.GAIT[\"run\"] at %s, not {stride 0.55, duty 0.34}"
+			% gait)
+	# ...and the *derived* speed -- the scene's own arithmetic over the retuned gait and the run
+	# clip's length. A table a mod wrote and a speed that did not follow would pass the check above
+	# and fail here, which is why the derivation is asked at all.
+	var run_len: float = float(goat.call("clip_length", "run"))
+	if run_len <= 0.0:
+		_failures.append("the goat has no run clip, so the retune cannot be held against the derived speed")
+	else:
+		var want_run: float = 0.55 / (0.34 * run_len)
+		if not _near(float(goat.call("run_speed")), want_run):
+			_failures.append("the retuned run gait derives %.9f m/s, and run_speed() answers %.9f"
+				% [want_run, goat.call("run_speed")])
+	if _near(float(goat.call("run_speed")), run_before):
+		_failures.append("the run speed is unchanged at %s after the retune" % run_before)
+
+	# 5. The two refusals: an `asset` clip and a role that is not a gait.
+	if not str(answer.get("clip_asset")).contains("an asset clip is not supported"):
+		_failures.append("clips.register on an asset clip answered %s" % answer.get("clip_asset"))
+	if not str(answer.get("clip_role")).contains("only walk, trot and run have a gait"):
+		_failures.append("clips.register on a non-gait role answered %s" % answer.get("clip_role"))
+
+	# 6. ...and both registries are closed once the entry window has moved on, which is the freeze
+	#    the scene applied after every entry ran.
+	for member: String in ["bots_closed", "clips_closed"]:
+		if not str(answer.get(member)).contains("registration is closed"):
+			_failures.append("a registry outside the entry window (%s) answered %s"
+				% [member, answer.get(member)])
+	print("registries: pool ", spec_before, "->", Bots.SPEC.size(), "  run gait ",
+		PlayerGoat.GAIT["run"], "  run speed ", run_before, "->", goat.call("run_speed"))
+
+## One herd pool entry (`Bots.SPEC`), field for field -- coat, scale, bold, lazy and name. Compared
+## memberwise rather than whole so a drift names *which* field moved, and a stray key shows as a
+## wrong name or a wrong coat rather than passing.
+func _check_spec(entry: Variant, coat: Array, scale: float, bold: float, lazy: float,
+		name: String, what: String) -> void:
+	if not (entry is Dictionary):
+		_failures.append("%s is not a pool entry: %s" % [what, entry])
+		return
+	var spec: Dictionary = entry
+	var got: Variant = spec.get("coat")
+	if not (got is Array) or (got as Array).size() != 3 \
+			or int((got as Array)[0]) != int(coat[0]) \
+			or int((got as Array)[1]) != int(coat[1]) \
+			or int((got as Array)[2]) != int(coat[2]):
+		_failures.append("%s's coat is %s, not %s" % [what, got, coat])
+	for pair: Array in [["scale", scale], ["bold", bold], ["lazy", lazy]]:
+		if not _near(float(spec.get(pair[0], NAN)), float(pair[1])):
+			_failures.append("%s's %s is %s, not %s" % [what, pair[0], spec.get(pair[0]), pair[1]])
+	if str(spec.get("name", "")) != name:
+		_failures.append("%s's name is %s, not %s" % [what, spec.get("name"), name])
 
 ## The identity and logging members (`APIv1.md` section 4.1): the API major, the game's version,
 ## the table, a mod's own row, and the three ways to say something -- each held against the
