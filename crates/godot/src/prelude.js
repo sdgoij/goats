@@ -337,6 +337,107 @@ if (typeof globalThis.goats === "undefined") {
             };
         }
 
+        // --- the entities one mod offers another -------------------------------
+        //
+        // `goats.entities` (`APIv1.md` section 4.16) is the one seam that lets two *mods* collide
+        // with each other -- the flock and the fatguy's run are the pair it exists for -- and it is
+        // done here for the reason `assets` is done here: the offers belong to mods, so the registry
+        // that holds them has to live where the mods do. The query is the interesting half: it calls
+        // one mod's callback from another mod's code, which is a crossing this prelude can make
+        // without asking the host for anything, and it is deliberately *not* a scene-level entity
+        // system -- a row is `[x, y, z, r]`, a position and a radius, and nothing here knows what a
+        // bird is.
+        const entityOffers = {};   // "<mod id>:<name>" -> { id, fn }, in offer order
+
+        /** Every offered entity within `range` of `(x, z)` in the ground plane. */
+        function entitiesNear(x, z, range) {
+            const found = [];
+            const r2 = range * range;
+            const failed = [];
+            for (const key in entityOffers) {
+                const offer = entityOffers[key];
+                const outcome = offeredRows(offer);
+                if (outcome.bad !== undefined) {
+                    failed.push(outcome.bad);
+                    continue;
+                }
+                const rows = outcome.rows;
+                if (!Array.isArray(rows)) continue;
+                for (let i = 0; i < rows.length; i++) {
+                    const row = rows[i];
+                    // Rows are validated rather than trusted: one that is not four finite numbers is
+                    // skipped, not thrown at an asker who did not write it.
+                    if (!Array.isArray(row) || row.length < 4) continue;
+                    const ex = Number(row[0]);
+                    const ey = Number(row[1]);
+                    const ez = Number(row[2]);
+                    const er = Number(row[3]);
+                    if (!isFinite(ex) || !isFinite(ey) || !isFinite(ez) || !isFinite(er)) continue;
+                    const dx = ex - x;
+                    const dz = ez - z;
+                    const d2 = dx * dx + dz * dz;
+                    if (d2 > r2) continue;
+                    found.push({ from: key, x: ex, y: ey, z: ez, r: er, d: Math.sqrt(d2) });
+                }
+            }
+            // The failures are said *here* rather than inside the `catch` above, and that is a rule
+            // about this engine rather than a preference: Slag's `LeaveBlock` (`slag/crates/runtime/
+            // src/ir.rs`) pops a scope environment the exception never pushed when a *host* call
+            // (`console.log`, which re-enters Rust) happens inside a `catch` that caught a throw from
+            // a nested call -- `SyntaxError: Environment stack underflow`, and the query's answer is
+            // lost with it. Recording during and saying afterwards keeps the guarantee the `catch` is
+            // for (`APIv1.md` section 7: the failure is named with its mod's id) without the host
+            // call that trips it. `__fireHud`/`__fireDraw3d` should be read with this in mind.
+            for (let i = 0; i < failed.length; i++) console.log(failed[i]);
+            return found;
+        }
+
+        /**
+         * A mod's offered rows, or `bad`: its message when the callback threw. It exists so the
+         * `catch` above it holds nothing but the record -- see the note in `entitiesNear`.
+         */
+        function offeredRows(offer) {
+            try {
+                // The callback runs on *every* query, because what it offers moves; a mod that
+                // caches its rows collides with where things were.
+                return { rows: offer.fn() };
+            } catch (error) {
+                return { bad: "mods: '" + offer.id + "' entities.offer threw: " + String(error) };
+            }
+        }
+
+        /**
+         * The `entities` group for one mod, or for nobody (`goats.entities` outside a `begin`).
+         * `offer` names the entities *this* mod simulates, so the name has to be namespaced to it --
+         * which is why the group is per mod and not one shared object -- while `near` is the same for
+         * every caller, because what is near a point does not depend on who asks.
+         *
+         * A mod's offers go when its handlers do in the reference client, from its unload path
+         * (`goatsEnd`). This client has no unload yet -- no `modSetEnabled` and no reload -- so that
+         * drop arrives with them rather than being half-built here.
+         */
+        function entitiesFor(id) {
+            return {
+                offer: function (name, fn) {
+                    if (typeof fn !== "function") {
+                        throw new Error(
+                            "goats.entities.offer: a callback returning rows is required");
+                    }
+                    // A second offer under one name replaces the first, and keeps its place.
+                    entityOffers[id + ":" + String(name)] = { id: id, fn: fn };
+                },
+                near: function (x, z, range) {
+                    const fx = Number(x);
+                    const fz = Number(z);
+                    const fr = Number(range);
+                    if (!isFinite(fx) || !isFinite(fz) || !isFinite(fr) || fr < 0) {
+                        throw new Error("goats.entities.near: x, z and a range are required");
+                    }
+                    return entitiesNear(fx, fz, fr);
+                },
+            };
+        }
+
         // The API major and the game's version (`APIv1.md` section 4.1). Read once, because they
         // are constants -- the host answers them from its own crate, so a prelude copy could not
         // drift from the contract the loader enforces.
@@ -405,6 +506,9 @@ if (typeof globalThis.goats === "undefined") {
                 // ...and its own asset slots, for `get`'s reason: a mod's `get(slot)` prefers the
                 // asset *it* declared for that slot (`APIv1.md` section 4.11).
                 handle.assets = assetsFor(id);
+                // ...and its own entity offers, for the same reason once more: `offer` names them
+                // after the mod that made them (`APIv1.md` section 4.16).
+                handle.entities = entitiesFor(id);
                 return handle;
             },
 
@@ -560,6 +664,18 @@ if (typeof globalThis.goats === "undefined") {
              * refused here with all the rest.
              */
             assets: assetsFor(null),
+
+            /**
+             * The entities one mod offers another (`APIv1.md` section 4.16): `offer(name, fn)` says
+             * where this mod's own things are and how wide, and `near(x, z, range)` finds every
+             * offered one, from *any* mod, in the ground plane. Unlike the groups above it reads no
+             * snapshot, and unlike `assets` it involves no host table: an offer is a mod's own live
+             * callback, and a query calls it, so both members are this prelude's and neither crosses.
+             *
+             * The id here is the reference client's own "nobody" (`-`), because an offer made
+             * outside a `begin` is *visible* in `from` and has to name what it is.
+             */
+            entities: entitiesFor("-"),
 
             /**
              * The game's constants (`APIv1.md` section 4.10), read as a tree of dotted
@@ -836,6 +952,7 @@ if (typeof globalThis.goats === "undefined") {
             __fireHud: function (width, height) {
                 const arg = { width: width, height: height };
                 const states = this.__states();
+                const failed = [];
                 for (let i = 0; i < states.length; i++) {
                     const list = states[i].hooks["hud"] || [];
                     for (let j = 0; j < list.length; j++) {
@@ -846,13 +963,19 @@ if (typeof globalThis.goats === "undefined") {
                         // breaking on a mod's account. `APIv1.md` section 7's isolation,
                         // and the same shape `mods.js`'s `modEmit` uses: the failure is
                         // named on the mod's own line rather than swallowed.
+                        //
+                        // The failure is *recorded* here and said below, which is not a
+                        // preference: a host call inside a `catch` that caught a throw from a
+                        // nested call trips this engine's environment stack (`entitiesNear` has
+                        // the detail), and the frame would die of the isolation itself.
                         try {
                             list[j](arg);
                         } catch (error) {
-                            console.log("hud hook failed: " + error);
+                            failed.push(states[i].id + ": hud hook failed: " + String(error));
                         }
                     }
                 }
+                for (let i = 0; i < failed.length; i++) console.log(failed[i]);
             },
             /**
              * Fire every `"draw3d"` hook for one frame, with the camera. The same
@@ -869,16 +992,18 @@ if (typeof globalThis.goats === "undefined") {
                     fov: fov,
                 };
                 const states = this.__states();
+                const failed = [];
                 for (let i = 0; i < states.length; i++) {
                     const list = states[i].hooks["draw3d"] || [];
                     for (let j = 0; j < list.length; j++) {
                         try {
                             list[j](camera);
                         } catch (error) {
-                            console.log("draw3d hook failed: " + error);
+                            failed.push(states[i].id + ": draw3d hook failed: " + String(error));
                         }
                     }
                 }
+                for (let i = 0; i < failed.length; i++) console.log(failed[i]);
             },
         };
     })();

@@ -1,6 +1,7 @@
 # The readable-surface gate: the `goats` groups a *mod* reads the live world through -- its own
-# identity and logging (`APIv1.md` section 4.1) and the world (`sections 4.5-4.12`) -- against the
-# scene's own values.
+# identity and logging (`APIv1.md` section 4.1), the world (`sections 4.5-4.12`), the asset slots
+# (4.11) and the seam that lets one mod see another's entities (4.16) -- against the scene's own
+# values.
 #
 #   Godot --headless --path godot --script res://tools/verify_mod_surface.gd
 #
@@ -16,7 +17,7 @@
 # HUD and the wire take theirs from. A snapshot that drifted from the world would be a mod reading
 # a second, wrong world -- which no amount of "the call arrived" would catch.
 #
-# Seven things, and the order is the order of the ways they can be faked:
+# Nine things, and the order is the order of the ways they can be faked:
 #
 #   0. **Every mod knows who it is and can speak.** `goats.api`, `goats.game`, `goats.mods()`,
 #      a handle's own `goats.mod` -- held against the *scene's* table, which is the one the Mods
@@ -38,6 +39,14 @@
 #   6. **A write is refused, clearly.** The clock and the weather are the API's documented *safe*
 #      pair and answer `false`; every other write is a thrown error naming the member, which the
 #      mod's own hook isolation logs rather than swallowing (`APIv1.md` section 7).
+#   7. **The asset slots have both of their owners** (`assets`, section 4.11). This is the one group
+#      two things supply -- the built-in half is the scene's own table and the declared half is the
+#      mods' -- so what is held is that both are visible, that a built-in slot's name really loads
+#      through `gfx.model`, that a join **appends** rather than displacing, and that `get` answers
+#      with what the slot holds, which is the reference client's own shape and not a tidier one.
+#   8. **Two mods can see each other** (`entities`, section 4.16), which is the only group whose
+#      subject is another mod: an offer is namespaced to the mod that made it, a *different* mod's
+#      `near` finds it, and a callback that throws costs its own mod's rows and nobody else's.
 #
 # **The sentinel.** GDScript has no `try`, so a runtime error inside a check aborts that function
 # and leaves the failure it was about to record unrecorded -- a gate that would print `OK` having
@@ -183,6 +192,44 @@ const PROBE_JS := """
         } catch (error) {
             out.asset_write = "threw";
         }
+
+        // The entities one mod offers another (`APIv1.md` section 4.16). Two handles, because the
+        // seam is exactly the one that lets two *mods* see each other -- offering and asking from
+        // one mod would prove the registry and not the crossing.
+        const owner = goats.begin("com.example.owner");
+        const asker = goats.begin("com.example.asker");
+        owner.entities.offer("blob", function () { return [[1, 0.5, 0, 0.5], [9, 9, 9, 1]]; });
+        owner.entities.offer("junk", function () { return [[0, 0, 0, 9]]; });
+        // A second offer under one name replaces the first, rather than joining it -- which is what
+        // the count below holds: the displaced row was inside the range too, so a *join* would have
+        // answered three.
+        owner.entities.offer("junk", function () { return [[0, 0, 0, 0.25]]; });
+        const near = asker.entities.near(0, 0, 2);
+        out.entity_near = near.length;
+        out.entity_from = near.length > 0 ? near[0].from : null;
+        out.entity_row = near.length > 0
+            ? [near[0].x, near[0].y, near[0].z, near[0].r, near[0].d] : null;
+        // The range is the ground plane's, so the far one is dropped and the near one kept.
+        out.entity_far = asker.entities.near(0, 0, 0.1).length;
+        // A callback that throws costs *its own* mod's entities for that query and nobody
+        // else's, and a row that is not four finite numbers is skipped rather than thrown.
+        owner.entities.offer("boom", function () { throw new Error("nope"); });
+        owner.entities.offer("junkrows", function () {
+            return [[1, 2, 3], ["a", "b", "c", "d"], [0, 0, 0, 0.5], null];
+        });
+        out.entity_threw = asker.entities.near(0, 0, 2).length;
+        try {
+            owner.entities.offer("bad", "not a function");
+            out.entity_offer_check = "accepted";
+        } catch (error) {
+            out.entity_offer_check = "threw";
+        }
+        try {
+            asker.entities.near(0, 0, -1);
+            out.entity_range_check = "accepted";
+        } catch (error) {
+            out.entity_range_check = "threw";
+        }
         return JSON.stringify(out);
     });
 })();
@@ -294,6 +341,7 @@ func _check() -> void:
 		_main.get_node("Camera3D"), snapshot)
 	_check_identity(read, mods, _main.get("console"))
 	_check_assets(read)
+	_check_entities(read, _main.get("console"))
 	_finished = true
 
 ## The asset slots (`APIv1.md` section 4.11), the one group that is a *merge* of two owners: the
@@ -361,6 +409,56 @@ func _check_assets(read: Dictionary) -> void:
 		_failures.append("goats.assets.override did not throw: %s" % read.get("asset_write"))
 	print("assets: ", read.get("asset_slots"), " slot(s)  model.goat -> ", read.get("asset_goat"),
 		"  bleat ", bleats.size(), "  squawk ", read.get("asset_squawk"))
+
+## The entities one mod offers another (`APIv1.md` section 4.16), held as the seam it is: a *second*
+## mod's `near` finds the first mod's offer, under the name the offer was namespaced to. This is the
+## only group whose subject is another mod, so the shape matters as much as the numbers -- a
+## registry that answered from the asker's own offers would pass a weaker gate and fail the one
+## thing the seam exists for (the flock the fatguy's run has to collide with).
+func _check_entities(read: Dictionary, console: Object) -> void:
+	if int(read.get("entity_near", -1)) != 2:
+		_failures.append("goats.entities.near found %s of the two offered rows in range (and a third would mean a re-offer joined rather than replaced)"
+			% read.get("entity_near"))
+	if str(read.get("entity_from", "")) != "com.example.owner:blob":
+		_failures.append("an offered entity's `from` is %s, and a name is namespaced to the mod that offered it"
+			% read.get("entity_from"))
+	var row: Array = read.get("entity_row", [])
+	var wanted: Array = [1.0, 0.5, 0.0, 0.5, 1.0]
+	if row.size() != wanted.size():
+		_failures.append("an offered entity came back as %s, and a row is x, y, z, r and the distance"
+			% row)
+	else:
+		for i: int in range(wanted.size()):
+			if absf(float(row[i]) - float(wanted[i])) > 1e-6:
+				_failures.append("an offered row's field %d is %s, and the offered row says %s"
+					% [i, row[i], wanted[i]])
+	# `range` is the ground plane's, so the row a metre away is outside a tenth of one.
+	if int(read.get("entity_far", -1)) != 1:
+		_failures.append("goats.entities.near(0, 0, 0.1) found %s, and only the row at the point is inside it"
+			% read.get("entity_far"))
+	# Three good rows survive a throwing offer and a malformed one, which is the isolation.
+	if int(read.get("entity_threw", -1)) != 3:
+		_failures.append("a throwing or malformed offer cost another mod its rows: near answered %s of three"
+			% read.get("entity_threw"))
+	if str(read.get("entity_offer_check")) != "threw":
+		_failures.append("goats.entities.offer accepted a non-callback: %s"
+			% read.get("entity_offer_check"))
+	if str(read.get("entity_range_check")) != "threw":
+		_failures.append("goats.entities.near accepted a negative range: %s"
+			% read.get("entity_range_check"))
+	# ...and the mod it could not ask is *named*, which is the whole of the isolation: the asker got
+	# everybody else's rows, and the console says whose callback threw.
+	var named := false
+	if console != null:
+		for line: Dictionary in console.get("lines"):
+			var text: String = String(line.get("text", ""))
+			if text.contains("entities.offer threw") and text.contains("com.example.owner"):
+				named = true
+	if not named:
+		_failures.append("a throwing offer was not named on the console")
+	print("entities: ", read.get("entity_near"), " in range from ", read.get("entity_from"),
+		"  at a point ", read.get("entity_far"), "  past a throw ", read.get("entity_threw"),
+		"  named ", named)
 
 ## The identity and logging members (`APIv1.md` section 4.1): the API major, the game's version,
 ## the table, a mod's own row, and the three ways to say something -- each held against the

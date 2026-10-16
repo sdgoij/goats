@@ -24,7 +24,7 @@ plan.
 | `src/menu.gd` | The menu, drawn: `menu.js`'s four screens — main, settings, mods, keymap — as a layout a gate can hold, with the Escape walk (M25) |
 | `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
 | `src/tuning.gd` | The tuning tree `goats.tuning.get` reads (`APIv1.md` §4.10), gathered leaf by leaf from the module that owns each constant — a subset, and an absent path throws |
-| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, and the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`) (stages 1 and 8) |
+| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, and the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`, and the built-in half of `goats.assets`) (stages 1 and 8) |
 | `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
 | `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader and a mod's **own** mesh built from its arrays into an `ArrayMesh` (stage 1, 8) |
 | `src/mod_audio.gd` | The mods' sound: `goats.sfx` (`APIv1.md` §4.20) — every sound the loaded mods declared decoded at boot, played through a pool of players, and a *built-in* slot's own name loaded from `res://` on demand (stage 8) |
@@ -59,9 +59,9 @@ see Godot. It exposes `NetBridge` (the networking bridge over `session` and
 (the embedded Slag engine plus the `goats` facade a mod sees: the API's drawing surfaces
 `goats.draw`/`goats.gfx`, the readable groups -- `player`, `camera`, `world`, `bots`,
 `settings`, `tuning`, `net` -- which it answers out of the world snapshot the scene pushes
-every frame, and `goats.assets`/`goats.sfx`, whose two halves it merges: the built-in slots
-out of that same snapshot and the declared ones out of the mod table (`push_world`,
-`set_scene_call`). The facade is
+every frame, and `goats.assets`/`goats.sfx`/`goats.entities`, whose halves it resolves: the built-in
+asset slots out of that same snapshot, the declared ones out of the mod table, and an entity offer
+out of another mod's own callback (`push_world`, `set_scene_call`). The facade is
 `crates/godot/src/prelude.js`, and the loader it drives is the `crates/mods`
 crate; `mods.gd` in the scene is its only client). It is a workspace member rather
 than a project of its own so it inherits
@@ -116,7 +116,8 @@ Twenty-nine headless gates, all `SceneTree` scripts that exit non-zero on failur
 # weather and the wind, the herd, the settings, the session and the tuning tree -- against
 # the scene's own values, from inside a `hud` hook where a mod actually reads them, with
 # `terrainHeight` crossing the callback seam, every write refused, and the **asset slots**
-# answering for the game's own files as well as the mods' (stage 8).
+# and the **entities** one mod offers another -- both halves of the first, and the second from
+# a *different* mod's handle (stage 8).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_surface.gd
 
@@ -491,7 +492,14 @@ derives it from the table it plays from, so the game's own files are named in on
 reference client does, fills replacing and joins appending. `get`/`all` answer for a built-in
 name exactly as for a mod's, so the name they hand back resolves through `goats.gfx.model` and
 `goats.sfx.load`: a mod can ask the game for its own model or its own bleats without knowing a
-path. The **writes are not in yet** — `goats.world.setTime` and
+path. And **one mod can see another's things** (`goats.entities`, §4.16): a mod `offer`s the
+entities it simulates as `[x, y, z, r]` rows from a live callback, any mod `near(x, z, range)`s
+another's, and the two are the whole of it — no scene-level entity system, and nothing on the wire,
+because what travels is what a mod chooses to publish through `world.extend`. A callback that
+throws costs only its own mod's rows and is named on the console, which is what the port's `catch`
+has to be shaped around (see `PORT.md` §9: a host call inside a `catch` trips Slag's environment
+stack, so the failure is recorded and said after the loop). The **writes are not in yet** —
+`goats.world.setTime` and
 `setWeather` answer `false`, which is what the API documents for a client that does not own the
 world, and every other write throws an error naming the member, so a mod that tries one fails
 loudly in its own hook rather than doing nothing quietly. The `tuning` tree is a subset of the

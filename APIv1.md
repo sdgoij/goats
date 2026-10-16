@@ -393,15 +393,19 @@ reported, not silently ignored).
 > **Added with the Godot port's readable surface:** the groups a mod *reads* the live world
 > through (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`) are in on the
 > port's side, and so are **identity and logging** (§4.1: `api`, `game`, `mod`, `mods()`, `frozen()`,
-> `log`/`warn`/`error`) and the **asset slots** (§4.11: `slots`, `get`, `all`). `assets` is the one
-> group with two owners -- the built-in slots are the client's own table and the declared ones are
-> the host's, in the mod table -- so a client implements the merge itself, in load order, with fills
-> replacing and joins appending, and a name either half hands back resolves through `gfx.model` and
-> `sfx.load`. The port's `assets`, `gfx.model` and `sfx.load` therefore all answer for the game's own
-> files, which is what makes the API's own example -- `goats.gfx.model(goats.assets.get("model.goat"))`
-> -- work without a mod knowing a path. The two writes (`override`/`add`) are pre-freeze in the
-> reference client and are refused in the port with every other write. The extension is handed
-> **one JSON snapshot of the world per frame** and the
+> `log`/`warn`/`error`) and the **asset slots** and **entities** (§4.11's `slots`/`get`/`all`, §4.16's
+> `offer`/`near`). `assets` is the one group with two owners -- the built-in slots are the client's
+> own table and the declared ones are the host's, in the mod table -- so a client implements the
+> merge itself, in load order, with fills replacing and joins appending, and a name either half hands
+> back resolves through `gfx.model` and `sfx.load`. The port's `assets`, `gfx.model` and `sfx.load`
+> therefore all answer for the game's own files, which is what makes the API's own example --
+> `goats.gfx.model(goats.assets.get("model.goat"))` -- work without a mod knowing a path. The two
+> writes (`override`/`add`) are pre-freeze in the reference client and are refused in the port with
+> every other write. `entities` is the only group whose crossing is between two *mods* rather than
+> between a mod and the scene, so a client implements both members locally and the host is not
+> involved at all; what the port cannot do yet is *drop* a mod's offers on unload, which is a
+> consequence of having no `modSetEnabled`/reload rather than a gap in the group. The extension is
+> handed **one JSON snapshot of the world per frame** and the
 > facade answers every group out of it, so none of these reads crosses the language boundary --
 > the design `PORT.md` §6 records. `world.terrainHeight` is the one read that is a *function*
 > rather than a value, and it (and the writes, when they land) goes the other way through a
