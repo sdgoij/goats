@@ -938,14 +938,66 @@ host's goats on the model's own material, so a client's herd is seven goats of o
 a coat there needs the host's spec table on the wire, which is a protocol change and not
 a drawing one.
 
+**The session's other half** (`verify_net.gd`, `verify_hosting.gd`, `interop.sh herd|pair`): M26,
+and the client that can *host*. The port could join and only join: `NetBridge::host` existed and
+no GDScript called it. A session now carries two flags rather than one -- `_joined` for the client
+and `_hosting` for the host -- because the host keeps simulating the world a client must not, and
+it is the one side that *publishes* it (`net.js` `netWorldLocal` / `netMaybePublishWorld`). The
+console's `host` verb is the way in, and the world goes out every `NET_WORLD_EVERY` frames.
+
+The world is **one object in both directions**: `_world_payload` builds the same JSON the `world`
+*event* carries, and `NetBridge::world` parses it as `WorldIntent`, which is `proto::WorldState`.
+That is deliberate -- a renamed or dropped field is an `error: ...` the scene can act on rather
+than a snapshot that silently goes missing, which is what a world nobody receives actually is.
+`verify_hosting.gd` is the gate for the *builder*, the one thing `verify_net.gd` (which hand-writes
+its snapshot) cannot reach: it runs the real scene, takes `_world_payload`, holds every key against
+the lists transcribed from `proto` and from `net.js`'s six `scene*`/`netWorld*` functions, and then
+hands the same JSON to `NetBridge.world` and requires `ok` -- with no socket at all.
+
+```
+bots: 7 row(s), the scene simulates 7
+world intent -> ok
+OK: the scene's world payload is the wire's, and the wire's own parse takes it
+```
+
+The **bang** (M19e) is the other half, and it is an *event* rather than state: the process that
+simulates the goat that tripped a device fires it locally and reports it; the host spends the
+device and relays it to everyone *but* the reporter, who has already felt it; and every other
+client draws it and applies it to the goats *it* simulates -- so a peer's mine flings your goat
+here, not on the host. `explosions.gd`'s `blast` grew the device key and a `net_fired` seam,
+`apply_remote_blast` and `scene_blast_report` joined it, and `NetBridge` gained a `blast` intent
+whose meaning is the session's to decide: a client's own bang becomes a `report_blast` -- its
+coordinates are dropped, because the host owns the layout and says where the key is -- and a host's
+becomes the broadcast. `verify_net.gd` now runs **three** peers, so the relay has somebody to reach
+who is not the reporter:
+
+```
+client world:   {"bots":[{"gait":"trot","index":0,"phase":0.250980406999588,"py":0,"variant":3,"x":1.5,"yaw":0.75,"z":-2.5},...
+client bang:    {"by":"bob","key":33566722,"kind":"mine","type":"blast","x":6.0,"z":7.0}
+host report:    {"by":"alice","key":33566722,"kind":"trap","type":"blast_report"}
+carol heard:    {"by":"alice","key":33566722,"kind":"trap","type":"blast","x":8.0,"z":9.0}
+OK: three Godot peers meet over the session crate's own wire, world and bangs included
+```
+
+One thing M26 found by reading `net.js` rather than the port: **a host publishes its own goat.**
+`_publish_pose` had been gated on `_joined` -- "only a *client* does this: a host's own goat is
+already local to its own scene" -- which is true of the host's scene and false of the clients',
+and `netMaybePublish` gates on `netInSession`, not on the mode. Nothing in the port could reach
+that line while it could not host, so the comment had been a lie the missing feature hid -- the
+same shape as `verify_console.gd`'s blank panel. The seed's four streams are wired the same way:
+`sceneUseSeed`'s weather, bots, food and audio draws, plus the trap salt as the fifth; and a joiner
+adopts the host's four off each snapshot (`use_stream`), so a stream a client still draws from
+continues where the host is rather than replaying from zero.
+
 What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the `Mods` screen's *list* -- the screen is in as of M25 and draws
 `menu.js`'s "no mods found" because the scene does not load mods yet, so it waits on stage 1; the
-mods state and the
-bangs and voice reaching GDScript (they are carried on the wire but the core does not consume
-them yet -- `NetBridge` has no `blast`/`voice`; a *bite* was in this list too, and M21 closed
-it both ways, and *audio* was in it until M22); the asset bytes reaching an engine shim (`rl.loadSound`
+mods state and
+*voice* reaching GDScript (both are carried on the wire but the core does not consume them yet --
+`NetBridge` has no `voice`; a *bite* was in this list too, and M21 closed it both ways, *audio*
+until M22, and the **bangs** until M26, which gave the bridge its `blast` and the scene its
+`apply_remote_blast`); the asset bytes reaching an engine shim (`rl.loadSound`
 and friends) rather than a map; the tuning merge, reload and the file watcher; the wasm
 path through `crates/plugin`; and the other 16 `goats` member groups. Those are sections
 6 and 7.
@@ -1091,12 +1143,13 @@ it is met by linking the crates rather than reimplementing them.
 | Mod sync | fetch-ALPN request/reply, verified against the announced identity | `crates/pull` |
 
 The bridge is `net::NetBridge` in `crates/godot`, and it is built: `host`,
-`join`, `say`, `pose`, `leave` and `poll_events`, tokio on its own thread exactly
-as `crates/goats/src/net.rs` does, and a queue of JSON event lines in place of
+`join`, `say`, `consume`, `pose`, `world`, `blast`, `leave` and `poll_events`, tokio on its own
+thread exactly as `crates/goats/src/net.rs` does, and a queue of JSON event lines in place of
 the signal stream. `event_json` carries the client's vocabulary field for field,
 including the world snapshot — bots, weather, streams, meadow, craters and spent
-— which is the one a joiner has to mirror. What GDScript does **not** yet consume
-is the mods state, bites, bangs and voice; those are carried on the wire but have
+— which is the one a joiner has to mirror, and both directions of a bang (M19e).
+What GDScript does **not** yet consume
+is the mods state and voice; those are carried on the wire but have
 no reader in the core yet, which is stage 3's business rather than this crate's.
 
 Verified so far by `verify_net.gd` (two Godot peers) and by `interop.sh`
@@ -1127,7 +1180,7 @@ Sizes are judgement, not measurement.
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
 | 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **discovery, manifests, ordering, assets and one entry done**; the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain | 2–3 |
-| 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last); the mods, bang and voice paths, and a client that can *host*, remain | 3–4 |
+| 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the mods and voice paths remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
@@ -1447,6 +1500,16 @@ disagreements and fails if there are none.
   frame**. The tell is a helper that reads a field, mutates it, and is read from again;
   the port's habit of binding a value to a local at the top of a function is what made
   that easy to write and hard to see.
+- **A comment can be a lie that the missing feature hides.** `_publish_pose` carried "only a
+  *client* does this: a host's own goat is already local to its own scene" from the day the port
+  could join, and it was true -- because the port could not *host*, so nothing in it could reach
+  the difference. `net.js`'s `netMaybePublish` gates on `netInSession`, not on the mode, so a host
+  publishes its goat too; the sentence asserted the *opposite* of the rule and sat above a working
+  line for two milestones (M26). This is the same family as `verify_console.gd`'s blank panel -- a
+  claim with no way to be contradicted. The tell is a comment that explains why a *branch is
+  absent* rather than what a branch does: a justification of the form "the other case does not
+  exist yet" is a note about the port's gaps rather than about the scene, and it wants re-reading
+  the day the gap closes.
 - **A method that shares a name with a *global* function binds to the global, and a fully
   qualified call to it hides that.** The console's `wrap` -- `consoleWrap`'s transcription -- is
   also `@GlobalScope.wrap(value, min, max)`, so the unqualified `wrap(...)` inside `_draw`
@@ -1501,14 +1564,16 @@ disagreements and fails if there are none.
 
 ## 10. Next steps
 
-Both spikes have landed, and the interop check passes in four modes: a Godot
+Both spikes have landed, and the interop check passes in five modes: a Godot
 client joins the shipping `goatsd`, chats, receives its world, and is refused by
 digest when it presents the wrong mods (section 3); two of them face each other and mirror
-each other's goat (`interop.sh pair`). And the scene is a *game*: a goat
+each other's goat (`interop.sh pair`); and the scene boots, runs and keeps its
+own herd with **no server at all** (`interop.sh offline`). And the scene is a *game*: a goat
 you drive, on a heightfield, in a meadow it can eat, among mines it can set off,
 under the scene's own sky, with a weather that runs itself, with **a herd of its own
 when there is no host and a host's herd mirrored when there is**, with **the other
-players' goats mirrored too**, and your goat published back.
+players' goats mirrored too**, with **a session of its own to host** (M26), and your goat
+published back.
 
 **The order below changed when the goal was stated plainly: every feature the JavaScript client
 has, before anything it does not.** M20g is *not* in the JavaScript client -- the `ROADMAP` calls
@@ -1516,13 +1581,18 @@ it the next planned step there as well -- so it is no longer first, and what is 
 the other way round: the multiplayer gaps the JS client has closed, then the UI it has, then the
 audio and the mod surface, and new work last.
 
-1. **The rest of the multiplayer surface.** Two paths remain where the JavaScript client has
-   something this one does not, and both are the shape M21's peers had -- a wire path with no
-   consumer. A client cannot **host**: `NetBridge::host` exists and GDScript never calls it,
-   because `main.gd` joins and only joins. And a relayed **bang** and a peer's **blast report**
-   are still dropped, where a `consume` no longer is (`explosions.js`'s `applyRemoteBlast` and
-   `netBlastReport` are the rules). `interop.sh pair` is the harness both want: two clients, one
-   host, and a bang either can set off in front of the other.
+1. **The last of the multiplayer surface: voice.** The client can **host** and both directions of a
+   **bang** are in as of M26 (`verify_hosting.gd` holds the world payload the scene builds, and
+   `verify_net.gd` runs three peers through a published world and a relayed bang), so what is left
+   here is the one path with no Godot consumer at all. `crates/goats/src/audio.rs` is the whole of
+   the shipped client's side -- cpal capture, a speech gate, Opus, a mix queue, a raylib stream --
+   and the wire already carries it as opaque bytes (`proto::VoiceFrame`, `session::Event::Voice`).
+   Godot has both ends but not the middle: `AudioStreamMicrophone` plus an `AudioEffectCapture` for
+   capture, an `AudioStreamGenerator` for playback, and **an Opus encoder/decoder**, which is why
+   this is a slice of its own rather than a wire path like M26's. The workspace already links
+   `libopus_sys` with `bundled`, so the codec can come through the extension (`crates/godot`) the
+   way the mod host does -- which keeps the bytes compatible with a raylib peer rather than merely
+   intelligible to another Godot one.
 2. **The UI -- the `Mods` screen's list.** The HUD is in as of M23 (a `Control` drawing `drawHud`,
    its words gated and its layout photographed), the console is in as of M24 (the shell, the
    sixty-odd verbs, chat, `connect`/`leave`/`who`/`copy`), and the menu's four screens are in as of
@@ -1543,7 +1613,8 @@ Orders 1-3 are "the same game the JavaScript client is"; 4 is new work in both, 
 section 8's stage table is the same plan in sizes rather than in order. **The sound was 3 until
 M22**, which took it out of the list entirely: `audio.gd` is the ten slots, the variety PRNG, the
 bang's reach and the weather beds, and the two things left of stage 7 are the menu's sliders
-(stage 6) and *voice*, which is the bridge's to carry rather than the scene's to make.
+(stage 6) and *voice*, which needs the extension's codec and Godot's own capture and playback
+rather than the scene's drawing.
 
 ---
 
@@ -1596,6 +1667,11 @@ and rectangle), the keymap table, the Escape walk, every interactive control hit
 and clicked, one real click pushed through the viewport to the scene's own menu, and then fourteen
 settings checks asserted against the *live* world rather than against the setting
 (`godot/tools/verify_menu.gd`, M25; the
-panels read off `GOATS_UI=settings` and `GOATS_UI=keymap` in a window). Every one
+panels read off `GOATS_UI=settings` and `GOATS_UI=keymap` in a window); holds the scene's own world
+payload field for field against `proto`'s structs and then takes it through `NetBridge.world`, the
+method that *is* the schema check (`godot/tools/verify_hosting.gd`, M26); and runs a host, a client
+and a third player through a published world and both directions of a bang over real iroh
+endpoints, requiring the relayed bang to reach the third player and **not** the reporter who
+already felt it (`godot/tools/verify_net.gd`, M26). Every one
 of them exits zero.
 The rest is read from the tree.*

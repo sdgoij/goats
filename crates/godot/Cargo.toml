@@ -40,6 +40,10 @@ mods = { workspace = true }
 # section 7): the ALPN, the framed control messages, the packed datagrams and
 # the world-mod digest all come from here.
 session = { workspace = true }
+# `serde`, for the one intent that is a *shape* rather than a scalar: the world a host
+# publishes. It is the same derive `crates/goats/src/net.rs` uses to parse the same JSON,
+# which is what keeps the two engines' world one object.
+serde = { workspace = true }
 serde_json = { workspace = true }
 # The runtime the session lives on. It gets a thread of its own
 # (`godot/native`'s sibling concern: a frame loop must never await).

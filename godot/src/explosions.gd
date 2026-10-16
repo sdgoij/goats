@@ -122,6 +122,7 @@ var bots: Bots
 ## know one happened and the scene that decides what that sounds like.
 var trigger_sound: Callable = Callable()
 var bang_sound: Callable = Callable()
+var net_fired: Callable = Callable()
 
 func _ready() -> void:
 	_build_fx()
@@ -147,6 +148,18 @@ func use_seed(seed: int) -> void:
 			s = 1
 		value = s
 	salt = value
+
+## The devices that have gone off, as the wire carries them (`net.js` `netWorldSpent`): the mines
+## first, then the trapped tufts, each as its packed cell key and which kind it was. Where a
+## device *moved to* is deliberately absent -- the destination is derived from the key that fired,
+## so a client that has the key has the whole field.
+func wire_spent() -> Array:
+	var out: Array = []
+	for key_value in spent:
+		out.append({"key": key_value, "trap": false})
+	for key_value in trap_spent:
+		out.append({"key": key_value, "trap": true})
+	return out
 
 ## The pulse's fade, in fractions a second, and the damage a full-strength flash is
 ## (`TUNING.explosions.pulse`).
@@ -182,7 +195,7 @@ func update(delta: float) -> void:
 			continue
 		pending.remove_at(i)
 		blast(String(fuse["kind"]), float(fuse["x"]), float(fuse["z"]),
-			float(fuse["seed"]), int(fuse["depth"]))
+			float(fuse["seed"]), int(fuse["depth"]), int(fuse["key"]))
 		i -= 1
 
 ## Where the camera is knocked to, in metres. `sceneFrame` moves the camera *and*
@@ -418,7 +431,12 @@ func trip_trap_at(cx: int, cz: int, x: float, z: float) -> bool:
 ## `healthFloor` promise that a mine cannot end *this* player's run; the herd takes the
 ## same curve *without* that floor, which is what makes a minefield a thing the herd
 ## remembers; and the light, the effects and the knock are this process's alone.
-func blast(kind: String, x: float, z: float, seed: float, depth: int) -> void:
+##
+## `key` is the device that made it, and only a bang a *device* made has one (M19e): a chained
+## bang is another device going off and reports itself when its own fuse ends, while a staged
+## bang (`GOATS_BOOM`), the `blast` a remote device arrives through and a bang a mod asked for
+## pass none and are never handed back out. `-1` is "no key", which no packed cell key can be.
+func blast(kind: String, x: float, z: float, seed: float, depth: int, key: int = -1) -> void:
 	blasts += 1
 	Craters.add(x, z, seed)
 	var dx: float = 0.0
@@ -471,6 +489,11 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int) -> void:
 		bang_sound.call(x, z, depth)
 	if depth < CHAIN_DEPTH:
 		chain_from(x, z, depth + 1)
+	# And told to the others, by the process that fired it -- the reporter does not wait for the
+	# host to fire it back (`explosions.js` `netBlastFired`). A staged or remote bang has no key
+	# and nothing to report.
+	if key >= 0 and net_fired.is_valid():
+		net_fired.call(kind, key, x, z)
 
 ## The devices a bang sets off in turn, along the same chain rule the scene uses:
 ## `chain` seconds before a neighbour goes, and `chainDepth` bounds the cascade so a
@@ -570,16 +593,33 @@ func apply_spent(entries: Variant) -> void:
 		elif mine_armed(cell.x, cell.y):
 			spend("mine", cell.x, cell.y)
 
-## Every device that has gone off, as the wire carries it. The port does not send --
-## `NetBridge` has no blast report yet -- but a probe reads it, and it is the shape the
-## snapshot's `spent` list takes.
-func spent_wire() -> Array:
-	var out: Array = []
-	for key: int in spent:
-		out.append({"key": key})
-	for key: int in trap_spent:
-		out.append({"key": key, "trap": true})
-	return out
+## A bang somebody else's process fired (M19e): ours to see and ours to feel, but not ours to
+## fire again. The device leaves the field from the key alone, and the bang is the same `blast`
+## with the same seed -- it is derived from the key, so a chained crater is the same size here as
+## there. The chain stops at this depth: the devices a chain sets off are the origin's to report,
+## and each of them fires exactly once (`explosions.js` `applyRemoteBlast`).
+##
+## The key is spent first, so a device that arrives twice -- a repeated relay, or one this
+## process already fired itself -- costs nothing the second time (`spend` is idempotent).
+func apply_remote_blast(kind: String, key: int, x: float, z: float) -> void:
+	var cell: Vector2i = Meadow.cell_of(key)
+	spend(kind, cell.x, cell.y)
+	blast(kind, x, z, Terrain.value_hash(key * 0.0001), CHAIN_DEPTH)
+
+## A client's device went off (M19e), on the host: spend the device -- the neighbours must not
+## trip it -- and apply the bang here, because the ground is everyone's and this host's own next
+## crater list is the state every client adopts (`sceneBlastReport`).
+##
+## The return is the *answer*, not an input: where the device actually was, from this scene's own
+## layout. Empty when the cell holds no device here -- a key that is not a device in this field --
+## and then nothing is relayed. The console seam turns an answer into the relay (`main.gd`).
+func scene_blast_report(kind: String, key: int) -> Dictionary:
+	var cell: Vector2i = Meadow.cell_of(key)
+	var at: Dictionary = device_at(kind, cell.x, cell.y)
+	if at.is_empty():
+		return {}
+	apply_remote_blast(kind, key, float(at["x"]), float(at["z"]))
+	return {"x": float(at["x"]), "z": float(at["z"])}
 
 # ---- the look ---------------------------------------------------------------
 

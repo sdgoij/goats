@@ -153,7 +153,10 @@ static func describe() -> Array:
 			crater["age"]])
 	return lines
 
-## `explosions.js` `sceneCraters`: the live craters as the wire carries them.
+## `explosions.js` `sceneCraters`: the live craters as the wire carries them -- the four fields
+## `proto::Crater` has, and no more. The age and the heal clock are deliberately absent: a client
+## mirrors the *ground* rather than the hole's clock, so the depth it is told is the live one and
+## the seconds it has left are the host's business (see `apply_wire`).
 static func wire() -> Array:
 	var out: Array = []
 	for crater: Dictionary in list:
@@ -162,8 +165,6 @@ static func wire() -> Array:
 			"z": crater["z"],
 			"r": crater["r"],
 			"depth": crater["dip"],
-			"age": crater["age"],
-			"heal": crater["heal"],
 		})
 	return out
 

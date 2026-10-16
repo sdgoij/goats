@@ -1247,6 +1247,7 @@ version = "0.1.0"
 dependencies = [
  "godot",
  "mods",
+ "serde",
  "serde_json",
  "session",
  "slag",

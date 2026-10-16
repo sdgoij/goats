@@ -203,6 +203,31 @@ func wire() -> Array:
 		out.append({"key": key_value, "left": eaten[key_value]})
 	return out
 
+## Take the meadow's stream from the session seed (`weather.js` `sceneUseSeed` draws the weather
+## first, the bots second and the **food** third, which is `foodRngState`). Only a *host* owns the
+## meadow -- a client mirrors the host's countdown -- so this matters to a host and to nothing
+## else; it is here so a host's regrowth matches the scene's rather than happening to.
+func use_seed(seed: int) -> void:
+	var state: int = _i32(seed)
+	if state == 0:
+		state = 1
+	var value: int = 1
+	for draw in 3:
+		state = _ushr(state ^ _i32(state << 13), 0)
+		state = _ushr(state ^ _ushr(state, 17), 0)
+		state = _ushr(state ^ _i32(state << 5), 0)
+		if state == 0:
+			state = 1
+		value = state
+	_rng = value
+
+## The meadow's stream as the wire carries it, and the way a host adopts the session's.
+func stream() -> int:
+	return _rng
+
+func use_stream(value: int) -> void:
+	_rng = value & 0xFFFFFFFF
+
 ## Once per frame: let eaten tufts grow back. Skipped in a session, where the host's
 ## countdown is the only one that exists (`updateFood`).
 func update(delta: float, local: bool) -> void:

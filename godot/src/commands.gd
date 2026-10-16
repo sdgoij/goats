@@ -29,8 +29,6 @@
 #   * **`perf`** -- the frame-cost benchmark measures the JavaScript host's own phases;
 #     there is no Godot harness behind it yet.
 #   * **`mod`** -- the mod surface is stage 1/8; one of seventeen member groups is in.
-#   * **`host`** -- a Godot client can join a session but not *host* one yet (the order-1
-#     multiplayer gap). `connect`, `leave`, `who`, `net`, `say` and `msg` are backed.
 #   * **`pools`** -- the water's connected regions are M20f, not yet ported.
 #   * **`screenshot`** -- backed with a window, `error screenshot needs a window` under
 #     `--headless`, where there is no rasteriser to read back.
@@ -215,8 +213,7 @@ func run(line: String) -> String:
 
 		# ---- net ---------------------------------------------------------
 		"host":
-			# A Godot client joins but cannot host yet -- the order-1 multiplayer gap.
-			return "error host unavailable"
+			return _host(parts)
 		"connect", "join":
 			return _connect(parts)
 		"leave", "disconnect":
@@ -633,6 +630,20 @@ func _leave() -> String:
 		return "error not in a session"
 	_call("cmd_leave")
 	return "ok leave"
+
+## `host [name]`: serve a session, and be the side that owns the world (`ctl.js`'s `netHost`).
+## The name is optional and only a request: the server answers with the canonical one on the
+## `hosting` event. The ticket to hand out arrives on the `ticket` event, and `copy` takes it.
+##
+## The reply is this verb's own rather than the `cmd_*` call's, the way `_leave`'s is: the two
+## refusals (`already in a session`) are the `_in_session` guard above, so there is nothing left
+## for the call to report.
+func _host(parts: PackedStringArray) -> String:
+	if _in_session():
+		return "error already in a session (leave first)"
+	var name: String = parts[1] if parts.size() > 1 else ""
+	_call("cmd_host", [name])
+	return "ok host"
 
 ## `copy [text]`: with no argument, the ticket -- the one thing long enough that it should
 ## never have to be typed. The clipboard is Godot's own, and `console.gd` says whether it

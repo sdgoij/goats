@@ -165,6 +165,31 @@ func rnd() -> float:
 	_seed = (_seed ^ ((_seed << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF
 	return float(_seed) / WORD
 
+## Take the variety stream from the session seed (`weather.js` `sceneUseSeed` draws the weather,
+## the bots and the food first, so this is the **fourth** -- `audioSeed`). It is here so two players
+## in a session hear the same bleat picked for the same event rather than each picking their own.
+func use_seed(seed: int) -> void:
+	var state: int = seed & 0xFFFFFFFF
+	if state == 0:
+		state = 1
+	var value: int = 1
+	for draw in 4:
+		state = (state ^ ((state << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF
+		state = (state ^ (state >> 17)) & 0xFFFFFFFF
+		state = (state ^ ((state << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF
+		if state == 0:
+			state = 1
+		value = state
+	_seed = value
+
+## The variety stream as the wire carries it. `_seed` is already the unsigned word, which is the
+## unit `proto::Streams::audio` is typed in.
+func stream() -> int:
+	return _seed
+
+func use_stream(value: int) -> void:
+	_seed = value & 0xFFFFFFFF
+
 ## `blastAttenuation` as a pure rule, from the offset to the bang and the bang's own radius:
 ## full volume anywhere inside the blast, half at twenty-odd metres, tending to silence rather
 ## than reaching it.

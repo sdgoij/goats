@@ -123,8 +123,11 @@ const TABLE := [
 	["perf on", "error perf unavailable"],
 	["mod", "error mod unavailable"],
 	["mod list", "error mod unavailable"],
-	["host", "error host unavailable"],
-	["host bob", "error host unavailable"],
+	# `host` is backed now, and its `cmd_*` call is swallowed by the null scene -- so it answers
+	# its own fixed line here, like `camera reset` does. The *live* table does not run it: a host
+	# binds a real endpoint, which is the net gate's business rather than the vocabulary's.
+	["host", "ok host"],
+	["host bob", "ok host"],
 	["pools", "error pools unavailable"],
 	["lighting", "ok lighting off"],
 	["shadows map", "ok shadows map"],
@@ -194,7 +197,8 @@ const LIVE := [
 	["tune water.reflection", "exact", "error tune unavailable"],
 	["mod", "exact", "error mod unavailable"],
 	["perf", "exact", "error perf unavailable"],
-	["host", "exact", "error host unavailable"],
+	# `host` is deliberately absent: it is backed, so running it here would bind a real session
+	# endpoint inside a pure-vocabulary gate. `verify_net.gd` is where a session is started.
 	["pools", "exact", "error pools unavailable"],
 	["lighting", "exact", "ok lighting off"],
 	["lighting", "exact", "ok lighting on"],

@@ -254,6 +254,57 @@ func report() -> Array:
 		})
 	return out
 
+## The herd as the *wire* sees it: `net.js` `sceneWorldBots`, one entry per bot in index order.
+## `index` picks the coat and scale from the shared table, so only what moves is sent, and the
+## height is in **centimetres** because that is the unit `BotState::py` is typed in -- this is the
+## only place the two units meet, so it is the only conversion there is.
+##
+## It is a host's to call: a client simulates no bots, which is why nothing else reaches this.
+func wire() -> Array:
+	var out: Array = []
+	for i in _bots.size():
+		var bot: Bot = _bots[i]
+		var role: String = bot_role(bot)
+		var variant: Variant = bot.variants.get(role, null)
+		out.append({
+			"index": i,
+			"x": net_round3(bot.x),
+			"z": net_round3(bot.z),
+			"yaw": net_round3(bot.yaw),
+			"phase": net_round3(net_bot_phase(bot)),
+			"gait": bot.mode,
+			"variant": 0 if variant == null else int(variant),
+			"py": int(roundf(bot.py * 100.0)),
+		})
+	return out
+
+## `net.js` `netBotPhase`: the fraction through a one-shot clip, because a viewer poses one from
+## the fraction and does not have the bot's private clocks. A looping gait sends its own phase.
+func net_bot_phase(bot: Bot) -> float:
+	match bot.mode:
+		"flung":
+			return fling_progress(bot)
+		"dead":
+			return minf(bot.death_time / bot.death_dur, 1.0)
+		"jump":
+			return minf(bot.jump_time / bot.jump_dur, 1.0)
+		"eat":
+			return minf(bot.eat_time / bot.eat_dur, 1.0)
+	return bot.phase
+
+## `net.js` `netRound3`: `Math.round(v * 1000) / 1000`, half toward +infinity, which is what the
+## wire's own numbers are rounded with.
+static func net_round3(value: float) -> float:
+	return floor(value * 1000.0 + 0.5) / 1000.0
+
+## The herd's stream as the wire carries it, and the way a host adopts the session's (see
+## `weather.gd`'s pair: the convention is one per module). `_rng` is held unsigned.
+func stream() -> int:
+	return _rng
+
+func use_stream(value: int) -> void:
+	_rng = value & 0xFFFFFFFF
+
 ## Take the herd's stream from the session seed. `weather.js` `sceneUseSeed` draws the
 ## weather first and the bots second, so this is the *second* draw -- the same shape
 ## `explosions.gd` uses for the fifth (`trapSalt`), and only reachable in a session the

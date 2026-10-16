@@ -74,7 +74,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Twenty-three headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Twenty-four headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -89,10 +89,19 @@ Twenty-three headless gates, all `SceneTree` scripts that exit non-zero on failu
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mods.gd
 
-# Two Godot peers meet over iroh: host, join, roster, chat, goat snapshots.
-# This one brings up real endpoints, so it takes ~20-30 s.
+# Two Godot peers meet over iroh: host, join, roster, chat, goat snapshots -- and then a
+# third joins, so the world a host publishes, a client's adopted snapshot and both
+# directions of a bang (M19e) are all held against the shipping crates. This one brings
+# up real endpoints, so it takes ~20-30 s.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_net.gd
+
+# The *scene's* world payload -- `_world_payload`, which is `net.js`'s six
+# `scene*`/`netWorld*` functions in one place -- field for field against `proto`'s
+# structs, and then through `NetBridge.world`, the method that is the schema check.
+# No socket: this is the half `verify_net.gd` cannot reach.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_hosting.gd
 
 # The heightfield against the JavaScript one (it has to agree with the host).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
@@ -198,7 +207,7 @@ Twenty-three headless gates, all `SceneTree` scripts that exit non-zero on failu
     --script res://tools/verify_menu.gd
 ```
 
-All twenty-three pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty-four pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 

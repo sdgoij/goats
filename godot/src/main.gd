@@ -173,13 +173,24 @@ var water_mirror := WaterMirror.new()
 ## against the devices -- the same reason the meadow's own search takes a filter.
 var _eat_trap := Callable()
 
-## Whether the scene is in a session as a *client*. It is what the pose publishing
-## hangs on, and its window is the wire's.
+## Whether the scene is in a session as a *client*. It is what the herd mirror hangs on, and
+## its window is the wire's. A client simulates no world: the host owns the bots, the weather and
+## the meadow, and this scene adopts the snapshot instead (`net.js` `netWorldLocal`).
 var _joined := false
+## Whether the scene is in a session as the *host*. It is separate from `_joined` for the reason
+## the scene keeps them separate: a host keeps simulating the world a client must not (the bots,
+## the weather, the meadow), and it is the only side that *publishes* it. It is also what a host
+## publishes its own goat through -- the goat is local to this scene but not to the clients'.
+var _hosting := false
 ## How often this scene publishes its goat -- `NET_POSE_RATE`, about twenty a
 ## second: the datagrams are unreliable by design and a lost one does not matter.
 const POSE_INTERVAL := 0.05
 var _pose_timer := 0.0
+## How often a host publishes the world, in frames -- `net.js` `NET_WORLD_EVERY`, about ten a
+## second. A frame count rather than a clock because the scene's is (`sceneFrames`), and `_world_frame`
+## starts a whole interval in the past so the first publication after `hosting` is prompt.
+const WORLD_EVERY := 6
+var _world_frame := -WORLD_EVERY
 
 ## The sky material and the world's clock, wind and weather, all of which `_advance`
 ## refreshes once a frame. `_hours` starts where the scene's own `worldTime` does.
@@ -280,6 +291,11 @@ func _ready() -> void:
 	goat.bleat = Callable(audio, "bleat")
 	explosions.trigger_sound = Callable(audio, "trigger")
 	explosions.bang_sound = Callable(audio, "bang")
+	# ...and the bang itself, which a *client* also owes the session: a device fires in exactly one
+	# place, and the process that simulates the goat that tripped it reports it (`explosions.js`
+	# `netBlastFired`). A callback and not a `main.gd` poll, for the reason `trap` is one -- the
+	# devices know which key went off and this file does not.
+	explosions.net_fired = Callable(self, "_report_blast")
 	# The water's field is the terrain *grid's*, so it is built where the grid is: once
 	# here -- a child's `_ready` runs before its parent's, so the terrain has built --
 	# and again whenever the grid is rebuilt (below).
@@ -531,6 +547,7 @@ func _process(delta: float) -> void:
 	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
 	rain.show_for(weather, _wind_x)
 	_publish_pose(delta)
+	_publish_world()
 	# The HUD's three setting read-outs are `Settings`' now (M25): the console's `setting` verb and
 	# the menu's settings screen write the same object, and the HUD reads it back -- so the words
 	# and the things they describe cannot disagree.
@@ -660,13 +677,16 @@ func _place_camera(camera: Camera3D) -> void:
 
 ## Publish this goat to the session, about twenty times a second -- which is the rate
 ## `NetBridge::pose` documents, because the datagrams are unreliable by design and a
-## lost one does not matter. Only a *client* does this: a host's own goat is already
-## local to its own scene.
+## lost one does not matter.
+##
+## A *host* publishes too (`net.js` `netMaybePublish` gates on `netInSession`, not on the mode):
+## its own goat is local to its scene, but not to the clients', so it is the one goat a client
+## cannot derive for itself.
 ##
 ## The gait name is the goat's mode, which is the vocabulary the wire's `Gait` enum
 ## and the scene's own `net.js` both use.
 func _publish_pose(delta: float) -> void:
-	if not _joined:
+	if not _joined and not _hosting:
 		return
 	_pose_timer += delta
 	if _pose_timer < POSE_INTERVAL:
@@ -674,6 +694,53 @@ func _publish_pose(delta: float) -> void:
 	_pose_timer = 0.0
 	bridge.call("pose", goat.px, goat.pz, goat.yaw, goat.phase, goat.speed, goat.mode,
 		goat.py)
+
+## Publish the server's world, about ten times a second -- `net.js` `netMaybePublishWorld`, which
+## is a *host's* alone: a client simulates no world and mirrors one instead. It is the whole of
+## what a host owns and a client cannot derive: the bots, the sky, the four PRNG streams (so a
+## stream a client still draws from continues where the host is), the meadow's eaten cells, the
+## ground's craters and the devices that have gone off.
+##
+## It is one JSON object, and the *same* object the `world` event carries, so the port has one
+## shape for a world in both directions and `NetBridge`'s own parse is the only schema.
+func _publish_world() -> void:
+	if not _hosting:
+		return
+	var frame: int = Engine.get_process_frames()
+	if frame - _world_frame < WORLD_EVERY:
+		return
+	_world_frame = frame
+	var answer: String = String(bridge.call("world", JSON.stringify(_world_payload())))
+	# A payload `proto` cannot read is the one failure a scene can act on -- and otherwise
+	# invisible, because a dropped snapshot is a world nobody has. It is a bug in `_world_payload`
+	# rather than in the session, so it is said out loud rather than folded into a notice.
+	if answer != "ok":
+		console.net_line("net: world refused: " + answer)
+		print("world refused: ", answer)
+
+## The world a host publishes, as the one object both directions of the wire share.
+##
+## Split from the throttled sender above so a gate can read it with no session and no networking --
+## the shape is the part that can be silently wrong, since `NetBridge::world` answers an unreadable
+## payload with `error: ...` and a dropped snapshot is a world nobody has.
+##
+## Every field is `net.js`'s own: `sceneWorldBots`'s bots, `sceneWeatherState`'s sky,
+## `sceneStreams`'s four PRNG states, `sceneEaten`'s meadow, `netWorldCraters`'s ground and
+## `netWorldSpent`'s devices.
+func _world_payload() -> Dictionary:
+	return {
+		"bots": bots.wire(),
+		"weather": weather.values(_wind_x, _wind_z, _wind_sway, _hours),
+		"streams": {
+			"weather": weather.stream(),
+			"bots": bots.stream(),
+			"food": meadow.stream(),
+			"audio": audio.stream(),
+		},
+		"eaten": meadow.wire(),
+		"craters": Craters.wire(),
+		"spent": explosions.wire_spent(),
+	}
 
 ## The mouse: drag to orbit, wheel to zoom, F11 for fullscreen, the backquote that opens the
 ## console, and Escape for the menu. `sceneFrame`'s ratios, so the feel matches the thing being
@@ -924,22 +991,31 @@ func _handle(line: String) -> void:
 		return
 	match String(event.get("type", "")):
 		"session":
-			# The seed the world is built from, sent once before anything else. The
-			# device field is *derived* from it, so this is what puts this scene's mines
-			# where the host's are without a word about where they are -- and the weather
-			# stream too, which a host runs from this same seed (`sceneUseSeed`).
+			# The seed the world is built from, sent once before anything else. The device
+			# field is *derived* from it, so this is what puts this scene's mines where the
+			# host's are without a word about where they are -- and the four streams too, which
+			# a host runs from this same seed (`sceneUseSeed`).
 			var seed: int = int(event.get("seed", 0))
 			explosions.use_seed(seed)
 			weather.use_seed(seed)
-			# The herd's stream is `sceneUseSeed`'s *second* draw (`bots.gd`), which only
-			# matters to a scene that hosts a session -- this one joins, and a joiner's
-			# herd is a mirror. It is wired anyway so the three seams stay one story.
+			# The herd's stream is `sceneUseSeed`'s *second* draw, the meadow's the *third* and
+			# the variety stream's the *fourth* (`bots.gd`, `meadow.gd`, `audio.gd`). All four
+			# matter to a host; a joiner takes the streams the host sends in each world snapshot
+			# instead (`use_stream`), so its own draws are overwritten as soon as a world lands.
 			bots.use_seed(seed)
+			meadow.use_seed(seed)
+			audio.use_seed(seed)
 			console.net_line("net: world seed " + str(seed))
 		"hosting":
-			# A host's own event, which this scene cannot produce yet -- but the console
-			# still has the line, so the day `host` lands it reads right.
+			# This scene is the server. A host keeps simulating the world (`not _joined` in
+			# `_process`) and is the one side that *publishes* it, so the flag is what both
+			# `_publish_world` and the pose's own gate read. The frames are set a whole interval
+			# back, which is `net.js`'s own two lines on this event: publish promptly now that a
+			# session exists rather than waiting for the next throttle window.
+			_hosting = true
 			_net_name = String(event.get("name", ""))
+			_world_frame = -WORLD_EVERY
+			_pose_timer = POSE_INTERVAL
 			console.net_line("net: hosting as " + _net_name)
 		"ticket":
 			_net_ticket = String(event.get("ticket", ""))
@@ -951,6 +1027,7 @@ func _handle(line: String) -> void:
 			# arrives, a join that was refused is a scene that is still alone.
 			_net_name = String(event.get("name", _net_name))
 			_joined = true
+			_pose_timer = POSE_INTERVAL
 			print("welcome: ", event.get("name"))
 			console.net_line("net: joined as " + _net_name)
 		"joined":
@@ -967,6 +1044,7 @@ func _handle(line: String) -> void:
 				+ ("you" if from == _net_name else from) + ": " + String(event.get("text", "")))
 		"disconnected":
 			_joined = false
+			_hosting = false
 			_roster = []
 			console.net_line("net: disconnected")
 		"world":
@@ -1017,6 +1095,23 @@ func _handle(line: String) -> void:
 			# A *client's* bite, arriving at the host: record it in this meadow, and the next
 			# world snapshot carries it back to everyone -- including the goat that bit.
 			meadow.consume_key(int(event.get("key", 0)))
+		"blast":
+			# A bang the host relayed (M19e), or a host's own goat's. Ours to see and ours to
+			# feel, but not ours to fire again: the fire, the hole and the *goats this end
+			# simulates* -- a peer's mine flings this player's goat, here, and not on the host.
+			explosions.apply_remote_blast(String(event.get("kind", "mine")),
+				int(event.get("key", 0)), float(event.get("x", 0.0)), float(event.get("z", 0.0)))
+		"blast_report":
+			# A client's device went off (M19e), on the host: spend it and dig it here, then hand
+			# the relay back with the reporter named -- the host leaves them out, because they
+			# have already felt this one. An empty answer is a key that is no device here, and
+			# then nothing is relayed at all.
+			var kind: String = String(event.get("kind", "mine"))
+			var key: int = int(event.get("key", 0))
+			var at: Dictionary = explosions.scene_blast_report(kind, key)
+			if not at.is_empty():
+				bridge.call("blast", kind, key, float(at["x"]), float(at["z"]),
+					String(event.get("by", "")))
 		_:
 			console.net_line("net: unknown event " + line)
 
@@ -1027,6 +1122,19 @@ func _report_bite(cx: int, cz: int) -> void:
 	if not _joined:
 		return
 	bridge.call("consume", Meadow.key(cx, cz))
+
+## Tell the session about a device this process's goat or herd just set off (`net.js`
+## `netBlastFired`). Both halves owe it, and `NetBridge` decides what it means from there: a
+## client's is a report -- its `x`/`z` are dropped and the host derives where the key is -- and a
+## host's is the broadcast every client draws and feels. Silent with no session: the bang is
+## already local and there is nobody to tell.
+##
+## The coordinates are this process's own, which matters only on the host (a client's report
+## carries none on the wire, whatever is passed here).
+func _report_blast(kind: String, key: int, x: float, z: float) -> void:
+	if not _joined and not _hosting:
+		return
+	bridge.call("blast", kind, key, x, z, "")
 
 func _probe_report() -> void:
 	var failures: Array[String] = []
@@ -1197,23 +1305,36 @@ func cmd_set_turn(dir: String) -> void:
 	_held_turn = dir if dir == "left" or dir == "right" else "stop"
 
 ## Whether the frame is a *client*, which is `_joined`: it is what the console's `bots` verb
-## and `netStatus` read.
+## and the herd's mirror switch read.
 func cmd_is_client() -> bool:
 	return _joined
 
-## `netStatus()`: the mode, this player's name, the ticket, and the roster.
+## `netStatus()`: the mode, this player's name, the ticket, and the roster. The mode is three-valued
+## (`net.js`'s `netMode`): a host keeps simulating the world a client mirrors, so the two cannot be
+## one flag -- and it is what the console's `_in_session` reads to know either side is a session.
 func cmd_net_status() -> Dictionary:
 	return {
-		"mode": "client" if _joined else "off",
+		"mode": "host" if _hosting else ("client" if _joined else "off"),
 		"name": _net_name,
 		"ticket": _net_ticket,
 		"roster": _roster,
 	}
 
+## `host [name]`: serve a session, and be the side that owns the world (`net.js` `netHost`). The
+## scene boots into a solo world and only serves when it is asked to, so this is the console's way
+## in. The name is a request: the `hosting` event carries the canonical one, which may differ.
+func cmd_host(name: String) -> String:
+	if _joined or _hosting:
+		return "error already in a session (leave first)"
+	bridge.call("host", name)
+	_hosting = true
+	_net_name = name
+	return "ok host"
+
 ## `connect`: join the session a ticket names. The scene joins on startup from
 ## `GOATSD_TICKET`; this is the console's own way in, and the one the prompt's answer lands in.
 func cmd_join(ticket: String, name: String) -> String:
-	if _joined:
+	if _joined or _hosting:
 		return "error already in a session (leave first)"
 	var asked: String = name if name != "" else "godot"
 	bridge.call("join", ticket, asked)
@@ -1223,10 +1344,11 @@ func cmd_join(ticket: String, name: String) -> String:
 	return "ok connect"
 
 func cmd_leave() -> String:
-	if not _joined:
+	if not _joined and not _hosting:
 		return "error not in a session"
 	bridge.call("leave")
 	_joined = false
+	_hosting = false
 	_net_ticket = ""
 	_roster = []
 	return "ok leave"

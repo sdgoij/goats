@@ -89,6 +89,16 @@ func use_seed(seed: int) -> void:
 	if rng == 0:
 		rng = 1
 
+## The weather stream as the wire carries it (`sceneStreams().weather`), and the way a joiner
+## adopts the server's -- the *state* it is in now, not the seed it started from -- so a stream a
+## client still draws from continues where the host is instead of replaying from zero. `rng` is
+## held unsigned, which is the unit `proto::Streams::weather` is typed in.
+func stream() -> int:
+	return rng
+
+func use_stream(value: int) -> void:
+	rng = value & 0xFFFFFFFF
+
 ## One frame of the state machine: run the hold down, draw the next state when it
 ## expires, and ease this frame's cloudiness and rain toward that state's own.
 func update(delta: float) -> void:

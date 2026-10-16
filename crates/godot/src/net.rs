@@ -22,22 +22,63 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 use godot::prelude::*;
+use serde::Deserialize;
 use serde_json::json;
-use session::{Client, Event as Net, Gait, Host, PeerState};
+use session::{BlastKind, Client, Event as Net, Gait, Host, PeerState, WorldState};
 use tokio::sync::mpsc;
 
 /// Events waiting for the frame loop to drain. Shared with the runtime thread.
 type Queue = Arc<Mutex<VecDeque<String>>>;
 
+/// The server's world, as a host publishes it. The scene builds this as JSON -- the same object
+/// the `world` *event* carries, so the port has one shape for the world in both directions -- and
+/// it is parsed here because it *is* `proto`'s schema: a typed `WorldState` is what
+/// `Host::publish_world` takes, and a scene that sends a field the wire does not have should get
+/// an error it can read rather than a snapshot that silently drops it.
+#[derive(Debug, Deserialize)]
+struct WorldIntent {
+    bots: Vec<session::BotState>,
+    weather: session::WeatherState,
+    streams: session::Streams,
+    eaten: Vec<session::EatenCell>,
+    /// The ground and the devices that have gone off (M19e). `None` is the wire's own "keep the
+    /// list you have" and an empty list is a statement -- flat ground, nothing spent -- which is
+    /// why a host sends the lists it has rather than omitting them.
+    #[serde(default)]
+    craters: Option<Vec<session::Crater>>,
+    #[serde(default)]
+    spent: Option<Vec<session::Spent>>,
+}
+
 /// One intent, from a GDScript call. The raylib client parses these out of JSON
 /// lines because its scene is the other side of the bridge; here the call *is*
 /// the parse, so the enum is built directly.
 enum Command {
-    Host { name: String },
-    Join { ticket: String, name: String },
-    Say { text: String },
-    Consume { key: i64 },
+    Host {
+        name: String,
+    },
+    Join {
+        ticket: String,
+        name: String,
+    },
+    Say {
+        text: String,
+    },
+    Consume {
+        key: i64,
+    },
     Pose(PeerState),
+    World(WorldIntent),
+    /// A device went off (M19e). An absent `by` is this process's own goat or herd, which is
+    /// the only thing a scene ever queues; a `by` names the reporter, and only a host produces
+    /// one -- it is relaying a client's bang (`blast_report`) and leaves that player out.
+    Blast {
+        kind: String,
+        key: i64,
+        x: f32,
+        z: f32,
+        by: Option<String>,
+    },
     Close,
 }
 
@@ -61,6 +102,43 @@ impl Live {
         match self {
             Live::Host(host) => host.close().await,
             Live::Client(client) => client.close().await,
+        }
+    }
+
+    /// A device went off (M19e): this process's own goat or herd, or -- on the host, when `by`
+    /// names somebody else -- a bang a client reported. It is `crates/goats/src/net.rs`'s same
+    /// four cases, transcribed, because the rule is the protocol rather than the engine.
+    ///
+    /// Only a host relays, and a reported bang is not fired again here: the reporter fired it,
+    /// this process fires *its* copy of it (the ground, the herd -- which the scene has already
+    /// done), and `except` is what keeps the bang from landing twice on the one goat that has
+    /// already felt it.
+    async fn blast(
+        &self,
+        kind: BlastKind,
+        key: i64,
+        x: f32,
+        z: f32,
+        by: Option<&str>,
+    ) -> Option<String> {
+        match (self, by) {
+            (Live::Host(host), Some(reporter)) => {
+                host.blast(kind, key, x, z, reporter, Some(reporter)).await;
+                None
+            }
+            (Live::Host(host), None) => {
+                host.blast(kind, key, x, z, host.name(), None).await;
+                None
+            }
+            // A client's own bang: report it and let the host say where the device is.
+            // `x`/`z` stay behind for exactly that reason.
+            (Live::Client(client), None) => client
+                .report_blast(kind, key)
+                .await
+                .err()
+                .map(|error| error.to_string()),
+            // A client never relays, and nothing that is not its own bang reaches it.
+            (Live::Client(_), Some(_)) => None,
         }
     }
 }
@@ -182,6 +260,43 @@ impl NetBridge {
         }))
     }
 
+    /// Publish the server's world. The scene queues this only while it is *hosting*, and it
+    /// carries the JSON the `world` event carries, so the two directions of a world are one
+    /// shape: `sceneWorldBots`'s bots, `sceneWeatherState`'s sky, `sceneStreams`'s four PRNG
+    /// states, the meadow's eaten cells, the ground's craters and the devices that have gone off.
+    ///
+    /// Returns `ok`, or `error: ...` for a payload `proto` cannot read -- the one failure a
+    /// scene can act on, and otherwise invisible: a dropped snapshot is a world nobody has.
+    #[func]
+    fn world(&mut self, json: GString) -> GString {
+        match serde_json::from_str::<WorldIntent>(&json.to_string()) {
+            Ok(intent) => self.queue_command(Command::World(intent)),
+            Err(error) => GString::from(format!("error: {error}").as_str()),
+        }
+    }
+
+    /// Report a device that went off (M19e): `kind` is `mine` or `trap`, `key` the cell it was
+    /// in, and `x`/`z` where *this* process derived it. An empty `by` is this player's own goat
+    /// or herd -- the common case, and the only thing a scene queues. A `by` names the reporter,
+    /// and only a host sends one: it is relaying a client's report (see `blast_report`).
+    ///
+    /// The two session halves do different things with it, and neither is this crate's decision:
+    /// a client's own bang is a *report* (`Client::report_blast`), so its `x`/`z` are dropped and
+    /// the host derives where the key actually is; a host's is a broadcast with its own
+    /// coordinates. Like a pose, it is silent with no session -- offline there is already a hole
+    /// in the ground and nobody to tell.
+    #[func]
+    fn blast(&mut self, kind: GString, key: i64, x: f64, z: f64, by: GString) -> GString {
+        let by = by.to_string();
+        self.queue_command(Command::Blast {
+            kind: kind.to_string(),
+            key,
+            x: x as f32,
+            z: z as f32,
+            by: if by.is_empty() { None } else { Some(by) },
+        })
+    }
+
     /// End the session. The other end sees a `left`, in due course.
     #[func]
     fn leave(&mut self) -> GString {
@@ -282,6 +397,10 @@ fn start_runtime(
 /// an event at once; with none, wait on a command.
 async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue) {
     let mut live: Option<Live> = None;
+    // What became of the last world publication. `Host::publish_world` asks to be reported on
+    // only when the outcome *changes*, because a host publishes ten times a second and "the
+    // snapshot is too big" is one fact rather than ten a second.
+    let mut last_world: Option<session::WorldOutcome> = None;
     loop {
         enum Outcome {
             Command(Option<Command>),
@@ -343,6 +462,48 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue) {
                     push(&queue, notice(error.to_string()));
                 }
             }
+            // The world a host owns. A client that queues one is dropped in silence -- the
+            // scene never does, and a notice would be noise -- and the outcome is reported only
+            // when it changes, which is `publish_world`'s own contract.
+            Outcome::Command(Some(Command::World(intent))) => {
+                if let Some(Live::Host(host)) = live.as_ref() {
+                    let state = WorldState {
+                        bots: intent.bots,
+                        weather: intent.weather,
+                        streams: intent.streams,
+                        // A host always has a meadow, and an empty list is a statement rather
+                        // than an absence: `None` would tell every client to keep the meadow it
+                        // has, which for a joiner is the one it generated itself.
+                        eaten: Some(intent.eaten),
+                        craters: intent.craters,
+                        spent: intent.spent,
+                    };
+                    let outcome = host.publish_world(&state).await;
+                    if last_world != Some(outcome) {
+                        if let Some(report) = outcome.describe() {
+                            push(&queue, notice(report));
+                        }
+                        last_world = Some(outcome);
+                    }
+                }
+            }
+            // A device that went off (M19e). Silent while offline, where the bang is already
+            // local and there is nobody to tell -- the same rule a pose follows.
+            Outcome::Command(Some(Command::Blast {
+                kind,
+                key,
+                x,
+                z,
+                by,
+            })) => {
+                if let Some(session) = live.as_ref()
+                    && let Some(error) = session
+                        .blast(parse_blast_kind(&kind), key, x, z, by.as_deref())
+                        .await
+                {
+                    push(&queue, notice(error));
+                }
+            }
             Outcome::Command(Some(command)) => {
                 if let Some(session) = live.take() {
                     session.close().await;
@@ -395,7 +556,12 @@ async fn start(command: Command, queue: &Queue) -> Option<Live> {
             }
         },
         // Handled in `run`, which has the live session in hand.
-        Command::Say { .. } | Command::Consume { .. } | Command::Pose(_) | Command::Close => None,
+        Command::Say { .. }
+        | Command::Consume { .. }
+        | Command::Pose(_)
+        | Command::World(_)
+        | Command::Blast { .. }
+        | Command::Close => None,
     }
 }
 
@@ -478,6 +644,16 @@ fn notice(text: String) -> String {
 
 fn error_event(text: &str) -> String {
     json!({"type": "error", "text": text}).to_string()
+}
+
+/// The scene spells a device's kind with a string -- `BlastKind`'s own serialisation, so the two
+/// agree by construction -- and anything else reads as a mine rather than being an error, the way
+/// an unknown gait reads as idle.
+fn parse_blast_kind(name: &str) -> BlastKind {
+    match name {
+        "trap" => BlastKind::Trap,
+        _ => BlastKind::Mine,
+    }
 }
 
 fn parse_gait(name: &str) -> Gait {
