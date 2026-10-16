@@ -52,6 +52,9 @@
 #      mods' -- so what is held is that both are visible, that a built-in slot's name really loads
 #      through `gfx.model`, that a join **appends** rather than displacing, and that `get` answers
 #      with what the slot holds, which is the reference client's own shape and not a tidier one.
+#      The two code-side writes (`override`/`add`) are held too, both ways: refused outside a mod's
+#      entry, and landing inside one -- which is why the gate stages a mod with an entry of its own
+#      (`_check_staged_assets`), the way `verify_scene_mods` stages a broken one.
 #   8. **Two mods can see each other** (`entities`, section 4.16), which is the only group whose
 #      subject is another mod: an offer is namespaced to the mod that made it, a *different* mod's
 #      `near` finds it, and a callback that throws costs its own mod's rows and nobody else's.
@@ -378,9 +381,13 @@ const PROBE_JS := """
         out.tune_type = "answered";
         try { goats.tuning.set("camera.dist", "wide"); }
         catch (error) { out.tune_type = "threw"; }
-        // The one family still refused: a pre-freeze asset write.
+        // The asset writes (`APIv1.md` section 4.11) are in but *gated*: legal only while a mod's own
+        // entry runs, and this is a command rather than an entry, so both are refused here -- with
+        // the reference's own message. The success path is an entry (`_check_staged_assets`, below).
         try { goats.assets.override("sfx.music", "mod:com.example:sfx.music.mp3"); out.asset_write = "answered"; }
         catch (error) { out.asset_write = "threw"; }
+        try { goats.assets.add("sfx.bleat", "mod:com.example:bleat.wav"); out.asset_add = "answered"; }
+        catch (error) { out.asset_add = "threw"; }
         return JSON.stringify(out);
     });
 
@@ -528,6 +535,9 @@ func _check() -> void:
 		_main.get_node("Camera3D"), _main.call("_mod_snapshot"))
 	var events: Variant = JSON.parse_string(str(host.call("run_command", "modtuning", "modtuning")))
 	_check_tuning_event(events)
+	# ...and the entry-gated asset writes, which need a mod *entry* to run in: the gate stages one, so
+	# this is last -- it replaces the loaded set.
+	_check_staged_assets(host)
 	_finished = true
 
 ## The asset slots (`APIv1.md` section 4.11), the one group that is a *merge* of two owners: the
@@ -1292,9 +1302,13 @@ func _check_writes(read: Dictionary, main: Node) -> void:
 			or bool(main.get("water").get("enabled")):
 		_failures.append("tuning.set(\"water.enabled\", 0) did not switch the water off")
 
-	# The one family that is still refused.
-	if str(read.get("asset_write")) != "threw":
-		_failures.append("a refused write (asset_write) did not throw: %s" % read.get("asset_write"))
+	# The asset writes are in but *gated* (`APIv1.md` section 4.11): legal only while a mod's own
+	# entry runs, and this probe is a command, so both are refused. (The success path is an entry,
+	# held by `_check_staged_assets`.)
+	for member: String in ["asset_write", "asset_add"]:
+		if str(read.get(member)) != "threw":
+			_failures.append("a write outside an entry (%s) did not throw: %s"
+				% [member, read.get(member)])
 
 	# ...and the two local-only writes answer `false` for a *client*, which is the API's "could not
 	# take effect" rather than a refusal (`APIv1.md` section 4.7). The flag is the scene's own
@@ -1310,7 +1324,82 @@ func _check_writes(read: Dictionary, main: Node) -> void:
 		_failures.append("a client's setTime moved the clock anyway: %s" % main.call("cmd_hours"))
 	main.set("_joined", false)
 	print("writes: player/camera/settings/world/net/bots/tuning took, the two local-only ones " +
-		"answer false for a client, and the asset write is still refused")
+		"answer false for a client, and the asset writes are refused outside an entry")
+
+## The two code-side slot writes (`APIv1.md` section 4.11) are legal only while a mod's *own entry*
+## runs -- this client's stand-in for "before the freeze" -- so the success path needs an entry, and
+## the repository's mods make neither call. The gate stages one: a mod whose entry overrides a slot,
+## joins another, tries to join a single-file one, then registers a verb that reports what it
+## answered and re-tries both from *outside* the window. Staged rather than shipped for
+## `verify_scene_mods`' own reason (every checked-in mod must load), and last, because it replaces
+## the loaded set.
+func _check_staged_assets(host: Object) -> void:
+	var uri: String = "user://gates-assets/assets"
+	DirAccess.make_dir_recursive_absolute(uri)
+	# The host is Rust and reads with `std::fs`, so it needs a real path: `user://` means nothing to
+	# it (`verify_scene_mods` has the same note for the same reason).
+	var dir: String = ProjectSettings.globalize_path("user://gates-assets")
+	var source := """
+const out = {};
+out.before = goats.assets.all(\"sfx.bleat\").length;
+try { out.override = goats.assets.override(\"model.goat\", \"mod:com.example.assets:goat.glb\"); }
+catch (error) { out.override = String(error); }
+try { out.added = goats.assets.add(\"sfx.bleat\", \"mod:com.example.assets:bleat.wav\"); }
+catch (error) { out.added = String(error); }
+out.after = goats.assets.all(\"sfx.bleat\").length;
+try { out.single = goats.assets.add(\"sfx.music\", \"mod:com.example.assets:track.ogg\"); }
+catch (error) { out.single = String(error); }
+out.slot = goats.assets.get(\"model.goat\");
+globalThis.__stagedAssets = out;
+goats.command("stagedassets", function () {
+    const seen = Object.assign({}, globalThis.__stagedAssets);
+    // ...and the same two writes from *outside* the entry are refused.
+    try { goats.assets.override("model.goat", "x"); seen.after_window = "answered"; }
+    catch (error) { seen.after_window = String(error); }
+    seen.kept = goats.assets.get("model.goat");
+    return JSON.stringify(seen);
+});
+"""
+	var written: Array = [
+		["mod.json", JSON.stringify({
+			"id": "com.example.assets", "name": "Assets", "version": "1.0.0", "api": 1,
+			"side": "client", "entry": "mod.js",
+		})],
+		["mod.js", source],
+	]
+	for pair: Array in written:
+		var file: FileAccess = FileAccess.open(uri + "/" + String(pair[0]), FileAccess.WRITE)
+		if file == null:
+			_failures.append("could not stage the asset mod (%s)" % pair[0])
+			return
+		file.store_string(String(pair[1]))
+		file.close()
+	host.call("load_mods", dir)
+	host.call("load_all")
+	var raw: String = str(host.call("run_command", "stagedassets", "stagedassets"))
+	var seen: Variant = JSON.parse_string(raw)
+	if not (seen is Dictionary):
+		_failures.append("the staged asset probe did not answer with a table: " + raw)
+		return
+	var read: Dictionary = seen
+	if read.get("override") != true:
+		_failures.append("assets.override inside an entry answered %s" % read.get("override"))
+	if read.get("added") != true:
+		_failures.append("assets.add inside an entry answered %s" % read.get("added"))
+	if str(read.get("slot")) != "mod:com.example.assets:goat.glb":
+		_failures.append("an entry's override did not reach the slot: %s" % read.get("slot"))
+	if int(read.get("after", 0)) != int(read.get("before", -1)) + 1:
+		_failures.append("an entry's add did not join the bleat list: %s -> %s"
+			% [read.get("before"), read.get("after")])
+	if not str(read.get("single")).contains("no list to join"):
+		_failures.append("assets.add on a single-file slot answered %s" % read.get("single"))
+	if not str(read.get("after_window")).contains("registration is closed"):
+		_failures.append("assets.override outside an entry answered %s" % read.get("after_window"))
+	if str(read.get("kept")) != "mod:com.example.assets:goat.glb":
+		_failures.append("an entry's override did not survive its window: %s" % read.get("kept"))
+	print("staged assets: override ", read.get("override"), "  add ", read.get("added"),
+		"  bleats ", read.get("before"), "->", read.get("after"), "  outside ",
+		read.get("after_window"))
 
 ## 6b. The `"tuning"` event (`APIv1.md` section 4.2): `(path, value)`, once per changed leaf, said by
 ##     the frame that follows the write. The probe's writes are the changes, so the listener's list

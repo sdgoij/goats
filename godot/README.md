@@ -130,6 +130,7 @@ Thirty-one headless gates, all `SceneTree` scripts that exit non-zero on failure
 # `terrainHeight` crossing the callback seam; the **writes** land on the scene's own fields,
 # the tuning tree among them (a clamp, an int, a nested leaf, a merge, a leaf the scene owns,
 # and the `tuning` event that follows); the **asset slots**
+# (both halves, and the two code-side writes staged in an entry of their own)
 # and the **entities** one mod offers another -- both halves of the first, and the second from
 # a *different* mod's handle -- and a world mod's **streams** against the reference's own
 # derivation (stage 8).
@@ -557,9 +558,9 @@ the module that owns it, a write is validated against the value it replaces (`tu
 numbers, the leaf's clamps and integer-ness, an array stays an array) and written back to that
 module, a mod's `tuning.json` merges before its entry runs, and every change is said as the `tuning`
 event by the frame that follows it. The tree is a subset of the API's, and a path this build has not
-got throws. One family is still not there, and it throws an error naming the member rather than
-doing nothing quietly: `assets.override`/`add` (a *pre-freeze* pair, and this client has no freeze to
-precede).
+got throws. The two slot writes (`assets.override`/`add`) are in too, gated the way the reference
+client gates them: legal only while a mod's *own entry* runs, and refused anywhere else with its own
+`registration is closed` (`APIv1.md` §4.11).
 
 To play with somebody, point it at a host:
 

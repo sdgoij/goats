@@ -78,18 +78,6 @@ if (typeof globalThis.goats === "undefined") {
             return value !== null && typeof value === "object" ? value : {};
         }
 
-        // A write the port has not got. `APIv1.md` section 7's isolation logs it with the mod's id
-        // and the frame goes on, which is a failure a mod author can see instead of a member that
-        // quietly did nothing. One family is still here: `assets.override`/`add` are *pre-freeze*
-        // writes and this client has no freeze to precede, so they are refused. The readable half of
-        // the same member (if any) still works.
-        function refuse(member) {
-            return function () {
-                throw new Error("goats." + member + ": this client has no write path to " +
-                    "the scene for that member yet");
-            };
-        }
-
         /**
          * A member that is a *question* rather than a value: `terrainHeight`, the devices, a sound,
          * and now every write. The scene's own `Callable` answers, through the same `(name, args)`
@@ -258,6 +246,96 @@ if (typeof globalThis.goats === "undefined") {
             return Array.isArray(value) ? value : [value];
         }
 
+        // --- what a mod asked a slot for *from code* ----------------------------
+        //
+        // The host's table carries what a **manifest** declared; this carries what an **entry** did
+        // (`goats.assets.override`/`add`, `APIv1.md` section 4.11). The two merge the same way --
+        // fills replace, joins append, in load order -- and the code half is kept per mod rather
+        // than applied once, because a slot here is resolved when it is read rather than baked at
+        // load (`modApplyAssets`'s rebuild, done lazily).
+        const assetFills = {};   // id -> { slot: name }
+        const assetJoins = {};   // id -> { slot: [names] }
+        // The mod whose entry is executing, if any. Both writes are legal only in that window
+        // (`mods.js`'s `modOpenFor`) -- this client's stand-in for "before the freeze", and the same
+        // effective rule: a mod declares its assets while it loads and never again.
+        let openFor = null;
+
+        /** A row's fills: the manifest's, then any `override` the entry made, with the code last. */
+        function fillsOf(row) {
+            const out = {};
+            if (row === null || typeof row !== "object") return out;
+            if (row.assets !== null && typeof row.assets === "object") {
+                for (const slot in row.assets) out[slot] = row.assets[slot];
+            }
+            const over = assetFills[row.id];
+            if (over !== undefined) {
+                for (const slot in over) out[slot] = over[slot];
+            }
+            return out;
+        }
+
+        /** A row's joins: the manifest's, then any `add` the entry made, likewise. */
+        function joinsOf(row) {
+            const out = {};
+            if (row === null || typeof row !== "object") return out;
+            if (row.assetAdds !== null && typeof row.assetAdds === "object") {
+                for (const slot in row.assetAdds) out[slot] = row.assetAdds[slot];
+            }
+            const added = assetJoins[row.id];
+            if (added !== undefined) {
+                for (const slot in added) out[slot] = added[slot];
+            }
+            return out;
+        }
+
+        /**
+         * `goats.assets.override(slot, name)`: point a slot at one of this mod's assets, replacing
+         * what it held. Legal only while the mod's *own entry* runs -- `modRegistrationAllowed`'s
+         * rule with the freeze taken out -- and recorded so every later read of the slot sees it.
+         */
+        function assetOverride(id, slot, name) {
+            if (id === null || openFor !== id) {
+                throw new Error("goats.assets.override: registration is closed");
+            }
+            if (typeof slot !== "string" || slot === "") {
+                throw new Error("goats.assets.override: a slot is required");
+            }
+            if (name === undefined) {
+                throw new Error("goats.assets.override: an asset name is required");
+            }
+            const fills = assetFills[id] === undefined ? (assetFills[id] = {}) : assetFills[id];
+            fills[slot] = name;
+            return true;
+        }
+
+        /**
+         * `goats.assets.add(slot, name)`: join one more asset to a slot's list instead of replacing
+         * it -- the code half of a manifest's `assetAdds`. A slot that holds a *single* file has no
+         * list to join, which is `modSlotJoin`'s own refusal rather than a bug here.
+         */
+        function assetAdd(id, slot, name) {
+            if (id === null || openFor !== id) {
+                throw new Error("goats.assets.add: registration is closed");
+            }
+            if (typeof slot !== "string" || slot === "") {
+                throw new Error("goats.assets.add: a slot is required");
+            }
+            if (name === undefined) {
+                throw new Error("goats.assets.add: an asset name is required");
+            }
+            const current = slotTable()[slot];
+            if (current !== undefined && !Array.isArray(current)) {
+                throw new Error("goats.assets.add: " + slot +
+                    " holds a single file, so there is no list to join");
+            }
+            const joins = assetJoins[id] === undefined ? (assetJoins[id] = {}) : assetJoins[id];
+            const have = joins[slot];
+            if (have === undefined) joins[slot] = [name];
+            else if (Array.isArray(have)) have.push(name);
+            else joins[slot] = [have, name];
+            return true;
+        }
+
         /** The whole slot table: the built-ins, then every enabled mod's fills and joins. */
         function slotTable() {
             const table = {};
@@ -273,9 +351,9 @@ if (typeof globalThis.goats === "undefined") {
                 // is *not* `asList`ed here and a join is: the reference assigns the declared value
                 // straight into its table (`modApplyAssets`) and only ever appends through
                 // `modSlotJoin`, which refuses a slot that holds a single file.
-                const fills = row.assets === undefined ? {} : row.assets;
+                const fills = fillsOf(row);
                 for (const slot in fills) table[slot] = fills[slot];
-                const joins = row.assetAdds === undefined ? {} : row.assetAdds;
+                const joins = joinsOf(row);
                 for (const slot in joins) {
                     if (table[slot] === undefined) table[slot] = [];
                     table[slot] = asList(table[slot]).concat(asList(joins[slot]));
@@ -324,7 +402,7 @@ if (typeof globalThis.goats === "undefined") {
             const mods = parseJson(__goatsMods(), []);
             for (let i = 0; i < mods.length; i++) {
                 if (mods[i] !== null && typeof mods[i] === "object" && mods[i].id === id) {
-                    const fills = mods[i].assets === undefined ? {} : mods[i].assets;
+                    const fills = fillsOf(mods[i]);
                     for (const slot in fills) mine[slot] = fills[slot];
                 }
             }
@@ -341,8 +419,10 @@ if (typeof globalThis.goats === "undefined") {
                     if (mine[slot] !== undefined) return asList(mine[slot]).slice();
                     return asList(slotTable()[slot]);
                 },
-                override: refuse("assets.override"),
-                add: refuse("assets.add"),
+                // The two writes (`APIv1.md` section 4.11): legal only while *this* mod's entry
+                // runs, and they never touch another mod's declaration.
+                override: function (slot, name) { return assetOverride(id, slot, name); },
+                add: function (slot, name) { return assetAdd(id, slot, name); },
             };
         }
 
@@ -893,6 +973,10 @@ if (typeof globalThis.goats === "undefined") {
             begin: function (id) {
                 const state = this.__mods[id] ||
                     (this.__mods[id] = { id: id, commands: {}, hooks: {} });
+                // The entry window opens here, and the host closes it when the entry's evaluation
+                // returns (`__entryDone`): `assets.override`/`add` are legal only inside it
+                // (`APIv1.md` section 4.11).
+                openFor = id;
                 // Inherits the surface, so `handle.command` is this function;
                 // only the state is the mod's own.
                 const handle = Object.create(this);
@@ -1067,8 +1151,8 @@ if (typeof globalThis.goats === "undefined") {
              * The asset slots (`APIv1.md` section 4.11): the game's own files and everything the
              * loaded mods declared, resolved together. `get`/`all` prefer *this mod's* own
              * declaration for a slot, which is why the group is per mod; `slots()` is every slot
-             * either half knows. The two writes are pre-freeze in the reference client and are
-             * refused here with all the rest.
+             * either half knows. The two writes are legal only while a mod's own entry runs, so
+             * this base copy (outside any mod) refuses them.
              */
             assets: assetsFor(null),
 
@@ -1441,6 +1525,16 @@ if (typeof globalThis.goats === "undefined") {
              * the loop rather than inside the `catch`: a host call there trips this engine's
              * environment stack (`entitiesNear` has the detail).
              */
+            /**
+             * Close a mod's entry window (`APIv1.md` section 4.11). The host calls this when the
+             * entry's evaluation returns -- whatever it did -- so `assets.override`/`add` are legal
+             * only while a mod's own entry runs: `mods.js`'s `modOpenFor` rule, kept without the
+             * freeze this client has no use for.
+             */
+            __entryDone: function (id) {
+                if (openFor === id) openFor = null;
+            },
+
             __end: function (id) {
                 const state = this.__mods[id];
                 if (state === undefined) return "error mod not loaded";

@@ -1261,7 +1261,18 @@ impl ModHost {
 
         let mut note = match loader.get(id).and_then(|manifest| manifest.entry_js()) {
             Some(js) => {
-                module.context.eval(&js).map_err(|e| e.to_string())?;
+                // Mapped to an owned error first, so the module's borrow ends before the facade is
+                // called -- `eval`'s value would otherwise hold it.
+                let outcome: Result<(), String> = module
+                    .context
+                    .eval(&js)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                // The entry's window closes whatever it did. `assets.override`/`add` are legal only
+                // while a mod's own entry runs (`APIv1.md` section 4.11), and this is where the
+                // facade learns the entry is over -- `mods.js`'s `sceneModResult`, in one line.
+                let _ = self.call_goats("__entryDone", &[JsValue::string(id.to_string())]);
+                outcome?;
                 format!("loaded {id} ({asset_count} asset(s))")
             }
             // A mod with no entry and no module is data only, which is a success: the manifest,

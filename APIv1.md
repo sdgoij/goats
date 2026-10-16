@@ -402,8 +402,10 @@ reported, not silently ignored).
 > back resolves through `gfx.model` and `sfx.load`. The port's `assets`, `gfx.model` and `sfx.load`
 > therefore all answer for the game's own files, which is what makes the API's own example --
 > `goats.gfx.model(goats.assets.get("model.goat"))` -- work without a mod knowing a path. The two
-> writes (`override`/`add`) are pre-freeze in the reference client and are refused in the port with
-> every other write. `entities` is the only group whose crossing is between two *mods* rather than
+> writes (`override`/`add`) are pre-freeze in the reference client; the port takes the *effective*
+> half of that rule -- legal only while a mod's own **entry** runs, and refused anywhere else with the
+> reference's own `registration is closed` -- which is where a client with no `goats.freeze()` can
+> put it. `entities` is the only group whose crossing is between two *mods* rather than
 > between a mod and the scene, so a client implements both members locally and the host is not
 > involved at all, and a mod's offers are **dropped on unload** (`goatsEnd`, which `modSetEnabled`
 > drives), so a disable takes them with it. The extension is
@@ -422,9 +424,8 @@ reported, not silently ignored).
 > as the `"tuning"` event (§4.2) by the frame that follows it, for the reason the `"blast"` event
 > is the frame's: the write runs inside a mod's own JavaScript. The tree is a **subset**: it gathers
 > the port's own constants, and a path it has not got throws the same "unknown path" a typo does, so
-> a leaf the port never ported is never answered with a wrong number. One family is still *thrown*
-> rather than answered -- `assets.override`/`add`, a pre-freeze pair with no freeze to precede here --
-> so a mod that tries one is named in its own hook rather than silently doing nothing.
+> a leaf the port never ported is never answered with a wrong number. Every member now answers:
+> `assets.override`/`add` are in, gated to a mod's own entry (above).
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
