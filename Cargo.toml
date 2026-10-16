@@ -9,7 +9,7 @@ resolver = "3"
 # member here rather than a workspace of its own so it inherits the
 # `workspace = true` dependencies above and shares this one `Cargo.lock` -- which
 # is what lets it link `session`/`proto`/`plugin` unchanged. See `godot/PORT.md`.
-members = ["crates/goats", "crates/android", "crates/godot", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/server", "crates/session"]
+members = ["crates/goats", "crates/android", "crates/godot", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/server", "crates/session", "crates/voice"]
 # `cargo run` and a bare `cargo build` mean the client, so the README's
 # `cargo run --release` keeps working. Use `--workspace` to build or test all.
 default-members = ["crates/goats"]
@@ -25,6 +25,7 @@ scene = { path = "crates/scene" }
 proto = { path = "crates/proto" }
 plugin = { path = "crates/plugin" }
 pull = { path = "crates/pull" }
+voice = { path = "crates/voice" }
 
 # The engine. Flip between the published revision and a local checkout here.
 slag = { git = "https://github.com/sdgoij/slag" }

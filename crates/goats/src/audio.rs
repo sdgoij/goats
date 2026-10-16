@@ -14,6 +14,12 @@
 //! onsets intact. That is how most voice chat works, with a proper VAD library
 //! (WebRTC, Silero) as the fancier variant; the gate here has no dependency and
 //! is easy to tune.
+//!
+//! Everything but the two *devices* has since moved to the `voice` crate (M13b):
+//! the codec, the gate and the resampler name no sound card, so the Godot host
+//! runs them too and a raylib peer and a Godot peer carry the same codec. This
+//! module keeps what names a device -- `cpal`'s capture stream and raylib's
+//! playback stream -- plus the mix, which is the queue they meet in.\n
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -23,36 +29,14 @@ use std::thread;
 use std::time::Duration;
 
 use crate::net::{Net, VoiceIn, VoiceSender};
-
-/// Opus works at 48 kHz and the wire carries 20 ms frames, so a frame is 960
-/// samples. The playback stream, the detector and the pre-roll are all sized
-/// from these two.
-const SAMPLE_RATE: u32 = 48_000;
-const FRAME_SAMPLES: usize = 960;
-
-/// Comfortable for voice, and it keeps the full-mesh uplink small.
-const BITRATE: i32 = 24_000;
-
-/// The largest packet the wire will accept; mirrors `proto::MAX_VOICE_BYTES`.
-const MAX_PACKET_BYTES: usize = 512;
+use voice::{
+    Decoder, Encoder, FRAME_SAMPLES, Gate, PREROLL_FRAMES, Resampler, SAMPLE_RATE, Step, frame_rms,
+};
 
 /// Frames the capture callback may queue before dropping. The encoder consumes
 /// one per 20 ms, so a backlog means it stalled, and late voice is worse than a
 /// gap.
 const CAPTURE_BACKLOG: usize = 8;
-
-// Voice activity detection. A fixed threshold either clips quiet talkers or
-// fires on room noise, so the gate rides on an adaptive noise floor: it falls
-// quickly onto silence and creeps up through it, and a frame is speech when it
-// clears the floor by a margin. The hold keeps a word's tail from being cut and
-// the pre-roll keeps its onset from being clipped.
-const VAD_RATIO: f32 = 3.5; // ~11 dB above the floor
-const VAD_FLOOR_MIN: f32 = 0.004; // absolute floor, so a silent room is silent
-const VAD_FLOOR_START: f32 = 0.002;
-const VAD_FLOOR_FALL: f32 = 0.25; // how fast the floor drops onto quiet input
-const VAD_FLOOR_RISE: f32 = 0.002; // how fast it creeps up through noise
-const VAD_HOLD_FRAMES: u32 = 15; // 300 ms of tail after the last speech frame
-const PREROLL_FRAMES: usize = 2; // 40 ms kept for the onset
 
 /// Decoded voice is mixed into one queue that a single raylib stream drains
 /// through its callback, and playback starts once this much is buffered, so the
@@ -382,65 +366,6 @@ fn encode_loop(raw: Receiver<Vec<f32>>, sender: Outgoing) {
     }
 }
 
-/// What one frame of audio turned out to be.
-#[derive(Debug, PartialEq, Eq)]
-enum Step {
-    /// Below the gate: keep it only for the pre-roll.
-    Silence,
-    /// The first frame of an utterance; the pre-roll goes out first.
-    Onset,
-    /// Inside an utterance, including the hold after the last loud frame.
-    Speech,
-}
-
-/// The speech gate: an adaptive noise floor plus a hold. Split from the thread
-/// so it can be tested without a microphone.
-struct Gate {
-    floor: f32,
-    hold: u32,
-    active: bool,
-}
-
-impl Gate {
-    fn new() -> Gate {
-        Gate {
-            floor: VAD_FLOOR_START,
-            hold: 0,
-            active: false,
-        }
-    }
-
-    /// Feeds one frame's RMS and reports what it is. The floor falls quickly
-    /// onto quiet input and creeps up through noise, but never adapts while an
-    /// utterance is in progress, so a loud voice cannot raise its own threshold.
-    fn push(&mut self, rms: f32) -> Step {
-        if rms < self.floor {
-            self.floor += (rms - self.floor) * VAD_FLOOR_FALL;
-        } else if rms < self.floor * VAD_RATIO {
-            self.floor += (rms - self.floor) * VAD_FLOOR_RISE;
-        }
-
-        let speech = rms > self.floor * VAD_RATIO && rms > VAD_FLOOR_MIN;
-        let was_active = self.active;
-        if speech {
-            self.hold = VAD_HOLD_FRAMES;
-            self.active = true;
-        } else if self.hold > 0 {
-            self.hold -= 1;
-        } else {
-            self.active = false;
-        }
-
-        if !self.active {
-            Step::Silence
-        } else if was_active {
-            Step::Speech
-        } else {
-            Step::Onset
-        }
-    }
-}
-
 /// Encodes one frame and queues it, bumping the sequence number on success.
 fn send_frame(encoder: &mut Encoder, sender: &Outgoing, seq: &mut u32, frame: &[f32]) -> bool {
     if let Some(payload) = encoder.encode(frame) {
@@ -466,14 +391,6 @@ fn debug_on() -> bool {
 /// chain without a peer; only unset, empty and `0` mean off.
 fn loopback_enabled() -> bool {
     std::env::var("GOATS_VOICE_LOOPBACK").is_ok_and(|value| !value.is_empty() && value != "0")
-}
-
-fn frame_rms(frame: &[f32]) -> f32 {
-    if frame.is_empty() {
-        return 0.0;
-    }
-    let sum: f32 = frame.iter().map(|sample| sample * sample).sum();
-    (sum / frame.len() as f32).sqrt()
 }
 
 /// Opens the default microphone and frames it into 20 ms mono blocks at 48 kHz.
@@ -563,155 +480,6 @@ fn build<T: cpal::SizedSample + Send + 'static>(
     )
 }
 
-/// A linear resampler, for a microphone that does not run at 48 kHz (44.1 kHz is
-/// the common case). Interpolating between the neighbouring samples is plenty
-/// for voice.
-struct Resampler {
-    /// Input samples per output sample.
-    step: f64,
-    /// Position within the current input interval, in `[0, 1)`.
-    pos: f64,
-    prev: f32,
-    primed: bool,
-}
-
-impl Resampler {
-    fn new(input_rate: u32, output_rate: u32) -> Resampler {
-        Resampler {
-            step: input_rate as f64 / output_rate as f64,
-            pos: 0.0,
-            prev: 0.0,
-            primed: false,
-        }
-    }
-
-    fn push(&mut self, input: &[f32], out: &mut Vec<f32>) {
-        if (self.step - 1.0).abs() < f64::EPSILON {
-            out.extend_from_slice(input);
-            return;
-        }
-        for &sample in input {
-            if !self.primed {
-                self.prev = sample;
-                self.primed = true;
-            }
-            while self.pos < 1.0 {
-                out.push(self.prev + (sample - self.prev) * self.pos as f32);
-                self.pos += self.step;
-            }
-            self.pos -= 1.0;
-            self.prev = sample;
-        }
-    }
-}
-
-/// The Opus encoder, wrapped so the unsafe FFI lives in one place.
-struct Encoder {
-    state: *mut libopus_sys::OpusEncoder,
-}
-
-impl Encoder {
-    fn new() -> Option<Encoder> {
-        let mut error = 0;
-        // SAFETY: the call allocates and initialises its own state; `error` is a
-        // valid out pointer and the state is destroyed in `Drop`.
-        let state = unsafe {
-            libopus_sys::opus_encoder_create(
-                SAMPLE_RATE as i32,
-                1,
-                libopus_sys::OPUS_APPLICATION_VOIP as i32,
-                &mut error,
-            )
-        };
-        if state.is_null() || error != libopus_sys::OPUS_OK as i32 {
-            return None;
-        }
-        // SAFETY: `state` is live and the variadic argument is the bitrate the
-        // `OPUS_SET_BITRATE_REQUEST` control expects.
-        unsafe {
-            libopus_sys::opus_encoder_ctl(
-                state,
-                libopus_sys::OPUS_SET_BITRATE_REQUEST as i32,
-                BITRATE,
-            );
-        }
-        Some(Encoder { state })
-    }
-
-    fn encode(&mut self, frame: &[f32]) -> Option<Vec<u8>> {
-        let mut out = vec![0u8; MAX_PACKET_BYTES];
-        // SAFETY: `frame` holds exactly `FRAME_SAMPLES` floats and `out` is
-        // `MAX_PACKET_BYTES` long, which is what the call is told.
-        let written = unsafe {
-            libopus_sys::opus_encode_float(
-                self.state,
-                frame.as_ptr(),
-                FRAME_SAMPLES as i32,
-                out.as_mut_ptr(),
-                MAX_PACKET_BYTES as i32,
-            )
-        };
-        if written < 0 {
-            return None;
-        }
-        out.truncate(written as usize);
-        Some(out)
-    }
-}
-
-impl Drop for Encoder {
-    fn drop(&mut self) {
-        // SAFETY: `state` came from `opus_encoder_create` and is freed once.
-        unsafe { libopus_sys::opus_encoder_destroy(self.state) };
-    }
-}
-
-/// The Opus decoder, wrapped the same way.
-struct Decoder {
-    state: *mut libopus_sys::OpusDecoder,
-}
-
-impl Decoder {
-    fn new() -> Option<Decoder> {
-        let mut error = 0;
-        // SAFETY: the call allocates and initialises its own state; `error` is a
-        // valid out pointer and the state is destroyed in `Drop`.
-        let state = unsafe { libopus_sys::opus_decoder_create(SAMPLE_RATE as i32, 1, &mut error) };
-        if state.is_null() || error != libopus_sys::OPUS_OK as i32 {
-            return None;
-        }
-        Some(Decoder { state })
-    }
-
-    fn decode(&mut self, payload: &[u8]) -> Option<Vec<f32>> {
-        let mut out = vec![0f32; FRAME_SAMPLES];
-        // SAFETY: `payload` is a live slice and `out` has room for one frame,
-        // which is the frame size the call is given.
-        let samples = unsafe {
-            libopus_sys::opus_decode_float(
-                self.state,
-                payload.as_ptr(),
-                payload.len() as i32,
-                out.as_mut_ptr(),
-                FRAME_SAMPLES as i32,
-                0,
-            )
-        };
-        if samples < 0 {
-            return None;
-        }
-        out.truncate(samples as usize);
-        Some(out)
-    }
-}
-
-impl Drop for Decoder {
-    fn drop(&mut self) {
-        // SAFETY: `state` came from `opus_decoder_create` and is freed once.
-        unsafe { libopus_sys::opus_decoder_destroy(self.state) };
-    }
-}
-
 /// Starts a named thread, reporting a failure rather than panicking: voice is
 /// not worth taking the game down for.
 fn spawn(name: &str, body: impl FnOnce() + Send + 'static) {
@@ -723,93 +491,6 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_quiet_room_never_opens_the_gate() {
-        let mut gate = Gate::new();
-        for _ in 0..50 {
-            assert_eq!(gate.push(0.0005), Step::Silence);
-        }
-    }
-
-    #[test]
-    fn speech_opens_the_gate_holds_the_tail_then_closes() {
-        let mut gate = Gate::new();
-        for _ in 0..20 {
-            assert_eq!(gate.push(0.0005), Step::Silence);
-        }
-        // A loud frame opens it. 0.05 RMS is normal speech; the floor is around
-        // 0.0005 by now, so the margin is wide.
-        assert_eq!(gate.push(0.05), Step::Onset);
-        // The hold keeps transmitting through the gaps between words...
-        for _ in 0..VAD_HOLD_FRAMES {
-            assert_eq!(gate.push(0.0005), Step::Speech);
-        }
-        // ...and then it closes.
-        assert_eq!(gate.push(0.0005), Step::Silence);
-    }
-
-    #[test]
-    fn the_gate_reports_a_new_onset_after_closing() {
-        let mut gate = Gate::new();
-        assert_eq!(gate.push(0.05), Step::Onset);
-        for _ in 0..VAD_HOLD_FRAMES {
-            gate.push(0.0005);
-        }
-        assert_eq!(gate.push(0.0005), Step::Silence);
-        assert_eq!(gate.push(0.05), Step::Onset);
-    }
-
-    #[test]
-    fn the_resampler_is_identity_at_48k() {
-        let mut resampler = Resampler::new(SAMPLE_RATE, SAMPLE_RATE);
-        let input: Vec<f32> = (0..100).map(|i| i as f32).collect();
-        let mut out = Vec::new();
-        resampler.push(&input, &mut out);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn the_resampler_keeps_the_rate() {
-        // 4410 samples at 44.1 kHz are 100 ms, which is 4800 samples at 48 kHz.
-        let mut resampler = Resampler::new(44_100, SAMPLE_RATE);
-        let input: Vec<f32> = (0..4_410).map(|i| i as f32 / 4_410.0).collect();
-        let mut out = Vec::new();
-        resampler.push(&input, &mut out);
-        assert!(
-            (out.len() as i64 - 4_800).abs() <= 2,
-            "expected about 4800 samples, got {}",
-            out.len()
-        );
-    }
-
-    #[test]
-    fn rms_measures_a_frame() {
-        assert_eq!(frame_rms(&[]), 0.0);
-        let loud = frame_rms(&[1.0f32; FRAME_SAMPLES]);
-        assert!((loud - 1.0).abs() < 1e-6, "got {loud}");
-        assert!(frame_rms(&[0.0f32; FRAME_SAMPLES]) == 0.0);
-    }
-
-    #[test]
-    fn a_frame_survives_the_opus_round_trip() {
-        let mut encoder = Encoder::new().expect("encoder");
-        let mut decoder = Decoder::new().expect("decoder");
-        // A 440 Hz tone at a realistic level: quiet enough to be a real test of
-        // the codec, loud enough that a silent result is a failure.
-        let tone: Vec<f32> = (0..FRAME_SAMPLES)
-            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / SAMPLE_RATE as f32).sin() * 0.3)
-            .collect();
-
-        let payload = encoder.encode(&tone).expect("encode");
-        assert!(!payload.is_empty(), "the encoder produced no bytes");
-        assert!(payload.len() <= MAX_PACKET_BYTES, "{} bytes", payload.len());
-
-        let decoded = decoder.decode(&payload).expect("decode");
-        assert_eq!(decoded.len(), FRAME_SAMPLES);
-        let peak = decoded.iter().fold(0f32, |max, s| max.max(s.abs()));
-        assert!(peak > 0.05, "the decoded frame is near-silent: peak {peak}");
-    }
 
     #[test]
     fn the_mix_fills_the_buffer_and_silences_the_rest() {

@@ -54,11 +54,12 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macr
 # `jit` is the desktop's and the phone's; a wasm sandbox grants no RWX memory, so
 # the wasm block below names the same crate without it (WASM.md D2).
 slag = { workspace = true, features = ["jit", "raylib", "raygui"] }
-# Voice chat, client only (M13b). `cpal` opens the microphone, `libopus_sys`
-# with `bundled` compiles libopus from source, so there is no system codec to
-# install. Neither belongs on the headless server.
+# Voice chat, client only (M13b). `cpal` opens the microphone; the codec, the speech
+# gate and the resampler are `crates/voice`'s, which is what this host and the Godot one
+# share so the frames on the wire are the same codec. Neither belongs on the headless
+# server.
 cpal = { workspace = true }
-libopus_sys = { workspace = true, features = ["bundled"] }
+voice = { workspace = true }
 
 # The browser's two target-specific words. `opengl_es_30` is the same feature the
 # phone names, for the same reason -- WebGL 2 is the context (WASM.md section 3)

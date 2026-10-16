@@ -1,0 +1,20 @@
+# The engine-free half of voice chat (M13b): the Opus coder, the speech gate and the
+# resampler.
+#
+# It names no audio *device*: `cpal` captures and raylib (or Godot) plays, and each client
+# hands its 48 kHz mono 20 ms frames through here. That is what makes the bytes on the wire
+# the same codec on every host -- which a raylib peer and a Godot peer need before they can
+# hear each other at all.
+#
+# `libopus_sys` with `bundled` compiles libopus from source, so there is no system codec to
+# install. A browser has no such build and no microphone to feed it, so the target below
+# leaves the dependency out and the crate compiles to nothing there -- the same shape
+# `crates/mods` leaves its file watcher in (WASM.md section 5).
+[package]
+name = "voice"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libopus_sys = { workspace = true, features = ["bundled"] }
