@@ -11,7 +11,7 @@
 # that a name nothing declared did not, that the per-play volume and pitch were taken, and that
 # the call reached a player rather than only a counter.
 #
-# Four things:
+# Five things:
 #
 #   1. **`load` resolves a declared sound and refuses everything else.** An opaque asset name
 #      becomes a handle; a name nothing declares, and a name with no decoder's extension, both
@@ -23,6 +23,9 @@
 #      engine wants them (`ModAudio` converts 0..1 to decibels and clamps the rate).
 #   4. **A null handle is not a play at all**, so a mod that checks its `load` and skips is not
 #      charged a call.
+#   5. **A built-in name resolves too.** The value of a slot the game fills is one of *the game's*
+#      own files, and `sfx.load` takes it by the same logical name -- so `goats.assets.get` is a
+#      useful thing for a mod to hold on both halves of the table (`APIv1.md` section 4.11).
 #
 # **The sentinel.** GDScript has no `try`, so a runtime error inside a check aborts it and leaves
 # the failure it was about to record unrecorded. `_finished` is set at the very end of `_check`.
@@ -36,6 +39,11 @@ const PROBE_JS := """
         const out = {};
         const sound = goats.sfx.load(GOATS_SOUND);
         out.loaded = sound === null ? "null" : "handle";
+        // ...and a *built-in* name -- the value of a slot the game itself fills -- resolves the
+        // same way, which is what makes `goats.assets.get`/`all` useful for the game's own sounds
+        // and not only for a mod's (`APIv1.md` section 4.11). It is a `load` and not a `play`, so
+        // the play count below still belongs to the declared sound alone.
+        out.builtin = goats.sfx.load(GOATS_BUILTIN) === null ? "null" : "handle";
         out.missing = goats.sfx.load("no-such-sound-anywhere") === null;
         out.junk = goats.sfx.load("mod:nobody:notasound.txt") === null;
         out.nothing = goats.sfx.load(null) === null;
@@ -53,6 +61,9 @@ var _finished := false
 var _main: Node
 var _audio: Object
 var _sound := ""
+## A *built-in* name -- the value of a slot the game itself fills, taken from the scene's own
+## table rather than transcribed, because what is being checked is the resolution and not the file.
+var _builtin := ""
 
 func _initialize() -> void:
 	if not ClassDB.class_exists("ModHost"):
@@ -107,7 +118,19 @@ func _check() -> void:
 		_finished = true
 		return
 
-	var evaluated: String = str(host.call("eval_js", PROBE_JS.replace("GOATS_SOUND", JSON.stringify(_sound))))
+	# The game's own half of the table, from `audio.gd`'s derivation (`verify_audio.gd` holds the
+	# derivation itself against `audio.js`).
+	var bleats: Array = Audio.built_in().get("sfx.bleat", [])
+	if not bleats.is_empty():
+		_builtin = str(bleats[0])
+	if _builtin.is_empty() or _builtin.begins_with("mod:"):
+		_failures.append("the scene's own slot table has no built-in sound to resolve")
+		_finished = true
+		return
+
+	var evaluated: String = str(host.call("eval_js", PROBE_JS
+		.replace("GOATS_SOUND", JSON.stringify(_sound))
+		.replace("GOATS_BUILTIN", JSON.stringify(_builtin))))
 	if evaluated != "ok":
 		_failures.append("the sound probe did not run: " + evaluated)
 		_finished = true
@@ -118,6 +141,7 @@ func _check() -> void:
 		_finished = true
 		return
 	_check_calls(answer)
+	_check_builtin(answer)
 	_check_played()
 	_finished = true
 
@@ -130,6 +154,23 @@ func _check_calls(answer: Dictionary) -> void:
 		if answer.get(key) != true:
 			_failures.append("goats.sfx.load(%s) did not answer null" % key)
 	print("load: declared ", answer.get("loaded"), "  missing/junk/null -> null")
+
+## 5. The same `load`, on the other half of the table: a name the *game* declared.
+func _check_builtin(answer: Dictionary) -> void:
+	if str(answer.get("builtin")) != "handle":
+		_failures.append("goats.sfx.load did not resolve a built-in slot's own name: %s"
+			% answer.get("builtin"))
+		return
+	# Decoded, for the same reason as above: a name that resolved and decoded to nothing would be
+	# silent, and the whole point of resolving it is that it can be heard.
+	var stream: Variant = _audio.call("stream", _builtin)
+	if stream == null or not (stream is AudioStream):
+		_failures.append("the built-in sound did not decode into an AudioStream")
+		return
+	var length: float = (stream as AudioStream).get_length()
+	print("built-in: ", _builtin, " -> ", length, " s")
+	if length <= 0.0:
+		_failures.append("the built-in sound decoded to %s seconds" % length)
 
 ## 2 and 3. The stream that was built, and the player it was handed to.
 func _check_played() -> void:

@@ -132,11 +132,57 @@ const PROBE_JS := """
         out.frozen = goats.frozen();
         const table = goats.mods();
         out.mods = table.length;
-        const started = goats.begin(table.length > 0 ? table[0].id : "nobody");
-        out.mod_id = started.mod === null ? "null" : started.mod.id;
-        out.mod_side = started.mod === null ? "null" : started.mod.side;
+        try {
+            const started = goats.begin(table.length > 0 ? table[0].id : "nobody");
+            out.mod_id = started.mod === null ? "null" : started.mod.id;
+            out.mod_side = started.mod === null ? "null" : started.mod.side;
+            out.assets_kind = typeof started.assets;
+        } catch (error) {
+            out.begin_error = String(error);
+        }
         goats.log("surface: hello from the probe");
         goats.warn("surface: a warning");
+
+        // The asset slots (`APIv1.md` section 4.11): the game's own half and the mods' own half,
+        // resolved together -- and the slots a mod *declared* are the ones it actually asks for.
+        const slots = goats.assets.slots();
+        out.asset_slots = slots.length;
+        out.asset_has_goat = slots.indexOf("model.goat") >= 0;
+        out.asset_has_squawk = slots.indexOf("sfx.squawk") >= 0;
+        // Every slot appendix B names, and none of the three M19g ones it does not: `core.js`'s
+        // `ASSET_SLOTS` holds only slots that have files, so a reserved-but-empty slot is one a
+        // mod *makes* by declaring it -- `audio.js` reads the three by name and lives with an
+        // absent slot, which is why they belong in the play table and not in the asset table.
+        const listed = ["model.goat", "sfx.music", "sfx.rain", "sfx.wind",
+                        "sfx.bleat", "sfx.thunder", "sfx.blast", "sfx.debris"];
+        out.asset_missing = listed.filter(function (slot) { return slots.indexOf(slot) < 0; })
+            .join(",");
+        const reserved = ["sfx.blast.close", "sfx.fuse", "sfx.trap"];
+        out.asset_reserved = reserved.filter(function (slot) { return slots.indexOf(slot) >= 0; })
+            .join(",");
+        out.asset_goat = goats.assets.get("model.goat");
+        out.asset_goat_loads = goats.gfx.model(goats.assets.get("model.goat")) !== null;
+        out.asset_bleat = goats.assets.all("sfx.bleat");
+        out.asset_squawk = goats.assets.all("sfx.squawk").length;
+        out.asset_fatguy = goats.assets.get("model.fatguy");
+        out.asset_unknown = goats.assets.get("no.such.slot") === undefined;
+        // The *shape* rule: the table answers a slot with what the slot holds, so a list slot is
+        // a list and a single-file slot is the name (`modAssetsFor`, `mods.js`).
+        out.asset_bleat_is_list = typeof goats.assets.get("sfx.bleat") === "object";
+        out.asset_goat_is_name = typeof goats.assets.get("model.goat") === "string";
+        // ...and a mod's *own* declaration wins over the table, with a declared list answering
+        // its head: `birds` fills `sfx.squawk` with two files, so the mod itself sees one name
+        // and nobody else does.
+        const birds = goats.begin("com.github.sdgoij.goats.birds");
+        out.own_get = birds.assets.get("sfx.squawk");
+        out.own_all = birds.assets.all("sfx.squawk").length;
+        out.own_fallback = birds.assets.get("model.goat");
+        try {
+            goats.assets.override("model.goat", "x");
+            out.asset_write = "answered";
+        } catch (error) {
+            out.asset_write = "threw";
+        }
         return JSON.stringify(out);
     });
 })();
@@ -222,9 +268,12 @@ func _check() -> void:
 	var snapshot: Dictionary = _main.call("_mod_snapshot")
 	mods.call("frame", _main.call("cmd_hours"), Vector2(1280.0, 720.0), true,
 		_main.get_node("Camera3D"), snapshot)
-	var answer: Variant = JSON.parse_string(str(host.call("run_command", "modsurface", "modsurface")))
+	var raw: String = str(host.call("run_command", "modsurface", "modsurface"))
+	var answer: Variant = JSON.parse_string(raw)
 	if not (answer is Dictionary):
-		_failures.append("the surface probe did not answer with a table")
+		# The raw answer, because a probe that threw answers with the error and a gate that
+		# swallowed it would say only that it had nothing.
+		_failures.append("the surface probe did not answer with a table: " + raw)
 		_finished = true
 		return
 	var read: Dictionary = answer
@@ -244,7 +293,74 @@ func _check() -> void:
 	mods.call("frame", _main.call("cmd_hours"), Vector2(1280.0, 720.0), true,
 		_main.get_node("Camera3D"), snapshot)
 	_check_identity(read, mods, _main.get("console"))
+	_check_assets(read)
 	_finished = true
+
+## The asset slots (`APIv1.md` section 4.11), the one group that is a *merge* of two owners: the
+## game's own files are the scene's (`audio.gd`'s table) and the declared ones are the mods', and
+## what is asserted is that both halves are visible and that a name `get` hands back can actually
+## be loaded -- the API's own example is `gfx.model(goats.assets.get("model.goat"))`.
+func _check_assets(read: Dictionary) -> void:
+	for key: String in ["asset_has_goat", "asset_has_squawk"]:
+		if read.get(key) != true:
+			_failures.append("goats.assets.slots() is missing a slot (%s)" % key)
+	if str(read.get("asset_missing", "?")) != "":
+		_failures.append("goats.assets.slots() is missing appendix B's built-ins: %s"
+			% read.get("asset_missing"))
+	if str(read.get("asset_reserved", "?")) != "":
+		_failures.append("goats.assets.slots() lists a reserved-but-empty M19g slot: %s"
+			% read.get("asset_reserved"))
+	if str(read.get("asset_goat")) != "goat_animated.glb":
+		_failures.append("goats.assets.get(\"model.goat\") is %s, and the game's is goat_animated.glb"
+			% read.get("asset_goat"))
+	if read.get("asset_goat_loads") != true:
+		_failures.append("the built-in slot's own name did not resolve through goats.gfx.model")
+
+	# The *merge*, which is what this group is: a slot can have two owners. `sfx.bleat` is the
+	# one that has both -- the game's own six (`core.js` `ASSET_SLOTS`) and the two the checked-in
+	# example mod joins (`mods/example/mod.json`'s `assetAdds`) -- and the API's rule is that a
+	# join **appends**: the game's files stay where they were and the mod's go on the end
+	# (`APIv1.md` section 4.11). A bare count would pass for a table that had simply replaced the
+	# slot, so what is held is the order too: six the game's, then two the mod's.
+	const BUILT_IN_BLEATS := 6
+	const JOINED_BLEATS := 2
+	var bleats: Array = read.get("asset_bleat", [])
+	if bleats.size() != BUILT_IN_BLEATS + JOINED_BLEATS:
+		_failures.append("goats.assets.all(\"sfx.bleat\") is %s long, and the game's six plus the example mod's two is eight"
+			% bleats.size())
+	for i: int in range(mini(BUILT_IN_BLEATS, bleats.size())):
+		if str(bleats[i]).begins_with("mod:"):
+			_failures.append("a join displaced the game's own bleat at %s (%s)" % [i, bleats[i]])
+	for i: int in range(BUILT_IN_BLEATS, bleats.size()):
+		if not str(bleats[i]).begins_with("mod:"):
+			_failures.append("the example mod's joined bleat is not an opaque name: %s" % bleats[i])
+	if int(read.get("asset_squawk", -1)) != 2:
+		_failures.append("goats.assets.all(\"sfx.squawk\") is %s long, birds declared 2"
+			% read.get("asset_squawk"))
+	if not str(read.get("asset_fatguy", "")).begins_with("mod:"):
+		_failures.append("goats.assets.get(\"model.fatguy\") is %s, and fatguy declared an opaque name"
+			% read.get("asset_fatguy"))
+	if read.get("asset_unknown") != true:
+		_failures.append("goats.assets.get on an unknown slot did not answer undefined")
+	# The shape rule (`modAssetsFor`, `mods.js`): a slot answers with what it holds.
+	if read.get("asset_bleat_is_list") != true:
+		_failures.append("goats.assets.get on the list slot sfx.bleat did not answer a list")
+	if read.get("asset_goat_is_name") != true:
+		_failures.append("goats.assets.get on the single-file slot model.goat did not answer a name")
+	# ...and a mod's own declaration wins over the table, a declared list answering its head.
+	if not str(read.get("own_get", "")).begins_with("mod:"):
+		_failures.append("a mod's own assets.get on the slot it filled answered %s, and its own list should answer its head"
+			% read.get("own_get"))
+	if int(read.get("own_all", -1)) != 2:
+		_failures.append("a mod's own assets.all on the slot it filled is %s long, and birds declared 2"
+			% read.get("own_all"))
+	if str(read.get("own_fallback", "")) != "goat_animated.glb":
+		_failures.append("a mod's assets.get on a slot it did not fill answered %s, and the fallback is the game's own name"
+			% read.get("own_fallback"))
+	if str(read.get("asset_write")) != "threw":
+		_failures.append("goats.assets.override did not throw: %s" % read.get("asset_write"))
+	print("assets: ", read.get("asset_slots"), " slot(s)  model.goat -> ", read.get("asset_goat"),
+		"  bleat ", bleats.size(), "  squawk ", read.get("asset_squawk"))
 
 ## The identity and logging members (`APIv1.md` section 4.1): the API major, the game's version,
 ## the table, a mod's own row, and the three ways to say something -- each held against the

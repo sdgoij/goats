@@ -27,7 +27,7 @@ plan.
 | `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, and the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`) (stages 1 and 8) |
 | `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
 | `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader and a mod's **own** mesh built from its arrays into an `ArrayMesh` (stage 1, 8) |
-| `src/mod_audio.gd` | The mods' sound: `goats.sfx` (`APIv1.md` §4.20) — every sound the loaded mods declared decoded at boot, played through a pool of players (stage 8) |
+| `src/mod_audio.gd` | The mods' sound: `goats.sfx` (`APIv1.md` §4.20) — every sound the loaded mods declared decoded at boot, played through a pool of players, and a *built-in* slot's own name loaded from `res://` on demand (stage 8) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
 | `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
@@ -43,7 +43,7 @@ plan.
 | `src/weather.gd` | The weather: `weather.js`'s state machine, the values a session mirrors and the rain's own integration |
 | `src/celestial.gd` | The two bodies: `world.js`'s `celestialPlacement` as real sun and moon spheres, with the sun's additive glare |
 | `src/rain.gd` | The rain, drawn: `weather.js`'s `drawRain` streaks as a screen-space overlay under the HUD |
-| `src/audio.gd` | The sound: `audio.js`'s ten slots, the variety PRNG, the bang attenuation, the weather beds and the mute (M22) |
+| `src/audio.gd` | The sound: `audio.js`'s ten slots, the variety PRNG, the bang attenuation, the weather beds and the mute (M22) — and `built_in()`, the built-in half of the asset slot table (`APIv1.md` §4.11) the mod facade merges with what the mods declared |
 | `src/water.gd` | The water: `water.js`'s hydrostatic table over the terrain grid, and the drag and drain of wading in it |
 | `src/water_mesh.gd` | The water's surface as an `ArrayMesh`: the grid's ground, cut to the quads that can ever be wet |
 | `src/water.gdshader` | The surface, drawn: `WATER_VS`'s vertex lift, `WATER_FS`'s absorption, `WATER_FS`'s chop and `WATER_FS`'s wake, under Godot's own light and reflection |
@@ -57,9 +57,11 @@ see Godot. It exposes `NetBridge` (the networking bridge over `session` and
 `proto`: `host`, `join`, `say`, `consume`, `pose`, `world`, `blast`, `leave`,
 `poll_events`, `shutdown`) and `ModHost`
 (the embedded Slag engine plus the `goats` facade a mod sees: the API's drawing surfaces
-`goats.draw`/`goats.gfx`, and the readable groups -- `player`, `camera`, `world`, `bots`,
+`goats.draw`/`goats.gfx`, the readable groups -- `player`, `camera`, `world`, `bots`,
 `settings`, `tuning`, `net` -- which it answers out of the world snapshot the scene pushes
-every frame (`push_world`, `set_scene_call`). The facade is
+every frame, and `goats.assets`/`goats.sfx`, whose two halves it merges: the built-in slots
+out of that same snapshot and the declared ones out of the mod table (`push_world`,
+`set_scene_call`). The facade is
 `crates/godot/src/prelude.js`, and the loader it drives is the `crates/mods`
 crate; `mods.gd` in the scene is its only client). It is a workspace member rather
 than a project of its own so it inherits
@@ -110,10 +112,11 @@ Twenty-nine headless gates, all `SceneTree` scripts that exit non-zero on failur
     --script res://tools/verify_mod_gfx.gd
 
 # ...and a *mod* reads its own identity and the live world back: `goats.api`/`game`/`mod`,
-# the mod table, `log`/`warn`/`error`, and every world group -- the goat, the camera, the
+# the mod table, `log`/`warn`/`error`, every world group -- the goat, the camera, the
 # weather and the wind, the herd, the settings, the session and the tuning tree -- against
 # the scene's own values, from inside a `hud` hook where a mod actually reads them, with
-# `terrainHeight` crossing the callback seam and every write refused (stage 8).
+# `terrainHeight` crossing the callback seam, every write refused, and the **asset slots**
+# answering for the game's own files as well as the mods' (stage 8).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_surface.gd
 
@@ -125,9 +128,9 @@ Twenty-nine headless gates, all `SceneTree` scripts that exit non-zero on failur
     --script res://tools/verify_mod_mesh.gd
 
 # ...and a *mod* plays its own sound: a declared asset name resolves to a decoded stream with
-# a length, a name nothing declared answers null, and the play reaches a player -- the API's
-# answer to `loadSound`/`playSound`, and the last engine capability either example read
-# (stage 8).
+# a length, a name nothing declared answers null, a *built-in* name resolves the same way,
+# and the play reaches a player -- the API's answer to `loadSound`/`playSound`, and the last
+# engine capability either example read (stage 8).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_audio.gd
 
@@ -455,9 +458,10 @@ console print the same table and the world-mod digest a host's refusal names.
 `GOATS_MODS` if it is set, else `mods/` beside the project, else `mods/` beside the executable;
 `GOATS_NO_MODS` skips the search. Every entry is evaluated in its own `goats` handle, and one
 that throws costs its own row rather than the load — of the repository's five, four load and
-`birds` fails, because it reads a surface member the port has not built yet (`goats.mod`). A
-mod's `console.log` reaches the console and a mod's registered verb reaches the console first,
-so `hello world` answers the example's `hello`.
+`birds` fails, on the engine library itself: it still reads `rl` on its first line, because that
+is what the examples are written against until the rework. A mod's `console.log` reaches the
+console and a mod's registered verb reaches the console first, so `hello world` answers the
+example's `hello`.
 
 **A mod draws through the API's own surfaces, and the port paints them** (`APIv1.md` §4.18, §4.19):
 the example's HUD clock is a `goats.draw.text` line, which becomes a record the extension queues
@@ -480,7 +484,14 @@ wind, the herd, the settings, the session and the tuning tree — and the extens
 `goats.player.state()`, `goats.world.weather()`, `goats.bots.list()` and the rest answer out of
 the last frame without a crossing per read. `goats.world.terrainHeight(x, z)` is the exception,
 because it is a *function* of the world rather than a value: it calls back into the scene's own
-`Terrain.height_at`, craters and all. The **writes are not in yet** — `goats.world.setTime` and
+`Terrain.height_at`, craters and all. The **asset slots** are in as well (`goats.assets`, §4.11),
+and they are the one group with two owners: the *built-in* half is the scene's (`audio.gd`
+derives it from the table it plays from, so the game's own files are named in one place) and the
+*declared* half is the host's, in the mod table — and the facade merges them the way the
+reference client does, fills replacing and joins appending. `get`/`all` answer for a built-in
+name exactly as for a mod's, so the name they hand back resolves through `goats.gfx.model` and
+`goats.sfx.load`: a mod can ask the game for its own model or its own bleats without knowing a
+path. The **writes are not in yet** — `goats.world.setTime` and
 `setWeather` answer `false`, which is what the API documents for a client that does not own the
 world, and every other write throws an error naming the member, so a mod that tries one fails
 loudly in its own hook rather than doing nothing quietly. The `tuning` tree is a subset of the

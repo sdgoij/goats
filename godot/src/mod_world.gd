@@ -201,31 +201,60 @@ func _apply_tint(root: Node, tint: Color) -> void:
 
 ## The imported scene for an asset name, or null. Packed from the generated node so a draw can
 ## instance it; the node itself is freed, because the scene is what is kept.
+##
+## Two kinds of name arrive here, and they are told apart by their prefix: a mod's declared asset is
+## a `mod:...` opaque name the host holds the bytes of, and a **built-in** slot's value is one of the
+## game's own files under `res://assets/` (`goats.assets.get("model.goat")`), which this build loads
+## itself. Nothing here is reachable by a mod as a path (`APIv1.md` section 0) -- a mod only ever
+## holds the name it was handed.
 func _model_scene(name: String) -> PackedScene:
 	if _models.has(name):
 		return _models[name]
 	var packed: PackedScene = null
-	if host != null and not name.is_empty():
-		var bytes: PackedByteArray = host.call("asset_bytes", name)
-		if bytes.is_empty():
-			print("mod: no asset named ", name)
+	if not name.is_empty():
+		if name.begins_with("mod:"):
+			packed = _imported_scene(name)
 		else:
-			var document := GLTFDocument.new()
-			var state := GLTFState.new()
-			if document.append_from_buffer(bytes, "", state) != OK:
-				print("mod: ", name, " is not a glTF this build can read")
-			else:
-				var scene: Node = document.generate_scene(state)
-				if scene == null:
-					print("mod: ", name, " imported to nothing")
-				else:
-					packed = PackedScene.new()
-					if packed.pack(scene) != OK:
-						packed = null
-						print("mod: ", name, " would not pack")
-					scene.free()
+			packed = _built_in_scene(name)
 	_models[name] = packed
 	return packed
+
+## A mod's own asset, imported at runtime from the bytes the host kept.
+func _imported_scene(name: String) -> PackedScene:
+	var packed: PackedScene = null
+	if host == null:
+		return null
+	var bytes: PackedByteArray = host.call("asset_bytes", name)
+	if bytes.is_empty():
+		print("mod: no asset named ", name)
+		return null
+	var document := GLTFDocument.new()
+	var state := GLTFState.new()
+	if document.append_from_buffer(bytes, "", state) != OK:
+		print("mod: ", name, " is not a glTF this build can read")
+		return null
+	var scene: Node = document.generate_scene(state)
+	if scene == null:
+		print("mod: ", name, " imported to nothing")
+		return null
+	packed = PackedScene.new()
+	if packed.pack(scene) != OK:
+		packed = null
+		print("mod: ", name, " would not pack")
+	scene.free()
+	return packed
+
+## One of the game's own files, by the logical name a built-in slot holds.
+func _built_in_scene(name: String) -> PackedScene:
+	var path: String = Audio.ASSET_ROOT + name
+	if not ResourceLoader.exists(path):
+		print("mod: no built-in asset named ", name)
+		return null
+	var loaded: Variant = ResourceLoader.load(path)
+	if loaded is PackedScene:
+		return loaded
+	print("mod: ", name, " is not a scene this build can instance")
+	return null
 
 ## A node's own metadata, or `default` when it has none. `Object.get_meta` reports an error for
 ## a key that is absent even when it is handed a default (Godot 4.7), and this file asks for

@@ -686,6 +686,10 @@ func _mod_snapshot() -> Dictionary:
 			"roster": _roster.duplicate(),
 		},
 		"tuning": Tuning.tree(herd_count, water.enabled, water_reflect.wish),
+		# The built-in half of the asset slots (`APIv1.md` section 4.11). A mod's *declared* half is
+		# already reachable -- it is in the mod table, which the facade can read -- so what the scene
+		# supplies is only what it alone knows: the game's own files.
+		"assets": Audio.built_in(),
 	}
 
 ## The herd as `goats.bots.list()` wants it (`APIv1.md` section 4.8): `{id, x, z, yaw, mode,

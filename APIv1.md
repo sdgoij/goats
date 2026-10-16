@@ -393,7 +393,15 @@ reported, not silently ignored).
 > **Added with the Godot port's readable surface:** the groups a mod *reads* the live world
 > through (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`) are in on the
 > port's side, and so are **identity and logging** (§4.1: `api`, `game`, `mod`, `mods()`, `frozen()`,
-> `log`/`warn`/`error`). The extension is handed **one JSON snapshot of the world per frame** and the
+> `log`/`warn`/`error`) and the **asset slots** (§4.11: `slots`, `get`, `all`). `assets` is the one
+> group with two owners -- the built-in slots are the client's own table and the declared ones are
+> the host's, in the mod table -- so a client implements the merge itself, in load order, with fills
+> replacing and joins appending, and a name either half hands back resolves through `gfx.model` and
+> `sfx.load`. The port's `assets`, `gfx.model` and `sfx.load` therefore all answer for the game's own
+> files, which is what makes the API's own example -- `goats.gfx.model(goats.assets.get("model.goat"))`
+> -- work without a mod knowing a path. The two writes (`override`/`add`) are pre-freeze in the
+> reference client and are refused in the port with every other write. The extension is handed
+> **one JSON snapshot of the world per frame** and the
 > facade answers every group out of it, so none of these reads crosses the language boundary --
 > the design `PORT.md` §6 records. `world.terrainHeight` is the one read that is a *function*
 > rather than a value, and it (and the writes, when they land) goes the other way through a
@@ -665,6 +673,16 @@ all is created as a list, which is how a mod builds a multi-file slot of its own
 bed, a model) has no list to join, and an addition to one is a warning from a
 manifest and a `throw` from code. One slot cannot be both filled and joined, which
 the host refuses at load.
+
+**`get` answers with what the slot holds, and `all` is the one that lists.** A slot
+the table owns answers with the table's value -- the list for a list slot, the name
+for a single-file one -- while a mod's **own** declaration answers with its head when
+it is a list (`get("model.fatguy")` where the mod declared three files gives the
+first). That asymmetry is the reference client's, kept here so a mod that reads a
+slot back sees the same thing on both; reach for `all` whenever a list is what is
+wanted, as the §4.20 example does. A slot the game has but has not filled -- the
+three reserved M19g cues -- is not one: the game's table holds only slots that have
+files, and one becomes a *slot* when a manifest declares it.
 
 An opaque name ends in the asset file's own extension (`mod:com.example:model.fatguy.glb`)
 because the engine materialises the bytes to a temp file and raylib picks its
@@ -1541,6 +1559,11 @@ sfx.bleat         sfx.thunder    sfx.blast     sfx.debris
 Any other name a manifest declares is the mod's own slot. The host registers its
 bytes and `goats.assets.get` resolves it exactly as for a built-in (§3.3), which
 is how a mod ships a model the game does not have.
+
+A slot the sound module *reserves* but ships no samples for is deliberately absent
+from that list -- `sfx.blast.close`, `sfx.fuse` and `sfx.trap` are read by name at
+play time and an unfilled one is silence -- so one becomes a slot when a manifest
+declares it and not before. `slots()` lists what has files.
 
 ## Appendix C — tuning tree (v1)
 

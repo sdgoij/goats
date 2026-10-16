@@ -72,7 +72,11 @@ const QUIET := -80.0
 ## The slot table (`core.js` `ASSET_SLOTS`), the same paths the client embeds. `godot/assets/`
 ## is a copy rather than a reference because Godot exports only `res://`, the same reason the
 ## model is one.
-const SFX := "res://assets/sfx/"
+const SFX := ASSET_ROOT + "sfx/"
+## Everything the game ships lives under here, and a *built-in slot's value* is the part after it:
+## a mod is handed logical names, never a path (`APIv1.md` section 0), so the port derives them
+## from its own table rather than keeping a second copy of the strings.
+const ASSET_ROOT := "res://assets/"
 const BEDS := {
 	"sfx.music": SFX + "jkstudios-rage-2-187959.mp3",
 	"sfx.rain": SFX + "WE Heavy Outside Rain 1.ogg",
@@ -111,6 +115,32 @@ const SLOTS := {
 	"sfx.fuse": [],
 	"sfx.trap": [],
 }
+
+## The built-in slot table (`APIv1.md` section 4.11), as *logical names* -- what a mod is handed,
+## and what the port resolves back to `res://assets/<name>` when something asks to load one. It is
+## derived from the tables above rather than transcribed, so the game's own files are named in
+## exactly one place.
+##
+## An **empty** slot is not a slot the game has. `core.js`'s `ASSET_SLOTS` is the authority, and it
+## holds only slots that have files; the three M19g ones above (`sfx.blast.close`, `sfx.fuse`,
+## `sfx.trap`) are *reserved* -- `audio.js` reads them by name at play time and `assetList` answers
+## an absent slot with an empty list, which is how an unimplemented sound is silence rather than an
+## error -- so they belong in this module's play table and not in the asset table. Skipping empty
+## lists is that rule, and it is a rule about the *table* rather than about silence: a mod that
+## declares one of the three puts it in `goats.assets.slots()` by declaring it, exactly as in the
+## reference client, and this derivation does not anticipate that by listing it early.
+static func built_in() -> Dictionary:
+	var out: Dictionary = {"model.goat": "goat_animated.glb"}
+	for key: String in BEDS:
+		out[key] = String(BEDS[key]).trim_prefix(ASSET_ROOT)
+	for key: String in SLOTS:
+		var names: Array = []
+		for path: String in SLOTS[key]:
+			names.append(path.trim_prefix(ASSET_ROOT))
+		if names.is_empty():
+			continue
+		out[key] = names
+	return out
 
 ## `SETTINGS.bgm` / `SETTINGS.sfx`, 0..100, and the master mute. The menu's two sliders and its
 ## `M` key are stage 6; until then these are the defaults and the `M` key is the mute.

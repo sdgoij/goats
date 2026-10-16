@@ -59,9 +59,23 @@ func prepare() -> void:
 ## The stream behind a sound name, or null. **A cache read and nothing else** -- a name that was
 ## never declared, or that this build could not decode, is a `null` here, which is the `null`
 ## `goats.sfx.load` answers.
+##
+## One thing is loaded here rather than in `prepare`, and it is safe because it touches no host: a
+## **built-in** slot's value is one of the game's own files under `res://assets/`, and `res://` is
+## this process's own (a mod's bytes are the host's, and only those need the safe moment).
 func stream(name: String) -> AudioStream:
-	var found: Variant = _streams.get(name, null)
-	return found if found is AudioStream else null
+	if _streams.has(name):
+		return _streams[name]
+	if name.begins_with("mod:"):
+		return null
+	var built: AudioStream = null
+	var path: String = Audio.ASSET_ROOT + name
+	if ResourceLoader.exists(path):
+		var loaded: Variant = ResourceLoader.load(path)
+		if loaded is AudioStream:
+			built = loaded
+	_streams[name] = built
+	return built
 
 ## Play a sound, `volume` in 0..1 and `pitch` a rate multiplier (`APIv1.md` section 4.20). A mod
 ## that wants attenuation computes it itself and passes the result, which is what the two examples

@@ -228,6 +228,115 @@ if (typeof globalThis.goats === "undefined") {
             else console.log(line);
         }
 
+        // --- the asset slots --------------------------------------------------
+        //
+        // `goats.assets` (`APIv1.md` section 4.11) is a *merge*, and it is done here because this
+        // is the only place both halves are visible at once: the **built-in** slots are the
+        // scene's (it owns the game's files, and `audio.gd`'s table is pushed each frame), and the
+        // **declared** ones are the host's, in the mod table a mod can already read. Fills replace
+        // and joins append, in load order, which is `modApplyAssets`'s own rule.
+        //
+        // The table holds the values **raw** -- a scalar for a single-file slot, a list for a
+        // multi-file one -- and not normalised to lists, because that distinction is visible
+        // through `get`: `modAssetsFor` (`mods.js`) answers a slot with what the slot holds, so
+        // `get("model.goat")` is the name and `get("sfx.bleat")` is the list. `all` is the member
+        // that normalises, and it keeps the same shape for a slot either half owns.
+        let builtInValues = null;
+
+        /** A slot value as a list: a mod may point a list slot at a single file. */
+        function asList(value) {
+            if (value === undefined || value === null) return [];
+            return Array.isArray(value) ? value : [value];
+        }
+
+        /** The whole slot table: the built-ins, then every enabled mod's fills and joins. */
+        function slotTable() {
+            const table = {};
+            const built = snapshot().assets;
+            if (built !== null && typeof built === "object") {
+                for (const slot in built) table[slot] = built[slot];
+            }
+            const mods = parseJson(__goatsMods(), []);
+            for (let i = 0; i < mods.length; i++) {
+                const row = mods[i];
+                if (row === null || typeof row !== "object" || row.enabled === false) continue;
+                // A fill replaces whatever the slot held, including a list -- which is why a fill
+                // is *not* `asList`ed here and a join is: the reference assigns the declared value
+                // straight into its table (`modApplyAssets`) and only ever appends through
+                // `modSlotJoin`, which refuses a slot that holds a single file.
+                const fills = row.assets === undefined ? {} : row.assets;
+                for (const slot in fills) table[slot] = fills[slot];
+                const joins = row.assetAdds === undefined ? {} : row.assetAdds;
+                for (const slot in joins) {
+                    if (table[slot] === undefined) table[slot] = [];
+                    table[slot] = asList(table[slot]).concat(asList(joins[slot]));
+                }
+            }
+            return table;
+        }
+
+        /**
+         * The first name a value holds. Only a mod's **own** declaration goes through this: the
+         * reference answers a declared list with its head (`Array.isArray(value) ? value[0] :
+         * value`) and a table lookup with the value itself, and both are reproduced rather than
+         * tidied, because a mod that reads a slot back has to see what the reference shows it.
+         */
+        function firstOf(value) {
+            const list = asList(value);
+            return list.length === 0 ? undefined : list[0];
+        }
+
+        /**
+         * Whether a name is one of the *game's* own files rather than a mod's declared asset.
+         * `gfx.model` and `sfx.load` resolve both, and the difference is only where the bytes come
+         * from -- the host's registry or this build's `res://` (`APIv1.md` section 4.11).
+         */
+        function isBuiltIn(name) {
+            if (builtInValues === null) {
+                builtInValues = {};
+                const built = snapshot().assets;
+                if (built !== null && typeof built === "object") {
+                    for (const slot in built) {
+                        const list = asList(built[slot]);
+                        for (let i = 0; i < list.length; i++) builtInValues[list[i]] = true;
+                    }
+                }
+            }
+            return builtInValues[name] === true;
+        }
+
+        /**
+         * The `assets` group for one mod, or for nobody (`goats.assets` outside a `begin`). `get`
+         * prefers **this mod's own** declared asset for the slot -- which is why the group is per
+         * mod and not one shared object -- and falls back to the table.
+         */
+        function assetsFor(id) {
+            const mine = {};
+            const mods = parseJson(__goatsMods(), []);
+            for (let i = 0; i < mods.length; i++) {
+                if (mods[i] !== null && typeof mods[i] === "object" && mods[i].id === id) {
+                    const fills = mods[i].assets === undefined ? {} : mods[i].assets;
+                    for (const slot in fills) mine[slot] = fills[slot];
+                }
+            }
+            return {
+                slots: function () {
+                    return Object.keys(slotTable());
+                },
+                get: function (slot) {
+                    const declared = mine[slot];
+                    if (declared !== undefined) return firstOf(declared);
+                    return slotTable()[slot];
+                },
+                all: function (slot) {
+                    if (mine[slot] !== undefined) return asList(mine[slot]).slice();
+                    return asList(slotTable()[slot]);
+                },
+                override: refuse("assets.override"),
+                add: refuse("assets.add"),
+            };
+        }
+
         // The API major and the game's version (`APIv1.md` section 4.1). Read once, because they
         // are constants -- the host answers them from its own crate, so a prelude copy could not
         // drift from the contract the loader enforces.
@@ -293,6 +402,9 @@ if (typeof globalThis.goats === "undefined") {
                 // Its own identity, which is the one member a handle does not inherit: a mod
                 // asking `goats.mod` is asking who *it* is (`APIv1.md` section 4.1).
                 handle.mod = parseJson(__goatsModInfo(id), null);
+                // ...and its own asset slots, for `get`'s reason: a mod's `get(slot)` prefers the
+                // asset *it* declared for that slot (`APIv1.md` section 4.11).
+                handle.assets = assetsFor(id);
                 return handle;
             },
 
@@ -441,6 +553,15 @@ if (typeof globalThis.goats === "undefined") {
             },
 
             /**
+             * The asset slots (`APIv1.md` section 4.11): the game's own files and everything the
+             * loaded mods declared, resolved together. `get`/`all` prefer *this mod's* own
+             * declaration for a slot, which is why the group is per mod; `slots()` is every slot
+             * either half knows. The two writes are pre-freeze in the reference client and are
+             * refused here with all the rest.
+             */
+            assets: assetsFor(null),
+
+            /**
              * The game's constants (`APIv1.md` section 4.10), read as a tree of dotted
              * paths. `get` throws on an unknown path, which is the API's own contract and
              * is what makes a typo -- or a leaf this client has not ported -- loud rather
@@ -584,7 +705,12 @@ if (typeof globalThis.goats === "undefined") {
                     model: function (name) {
                         if (name === undefined || name === null) return null;
                         const token = String(name);
-                        return __goatsHasAsset(token) ? token : null;
+                        if (__goatsHasAsset(token)) return token;
+                        // A *built-in* slot's value is one of the game's own files, which this
+                        // build loads from `res://assets/` rather than from bytes a mod declared
+                        // -- so `gfx.model(goats.assets.get("model.goat"))` resolves, which is the
+                        // API's own example (`APIv1.md` section 4.11).
+                        return isBuiltIn(token) ? token : null;
                     },
 
                     /**
