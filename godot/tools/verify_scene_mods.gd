@@ -155,7 +155,7 @@ func _check() -> void:
 
 	# The HUD hook, driven explicitly: the frame's own call depends on the node's `_process`, and
 	# a gate that relied on that would check the engine's scheduling rather than the mod.
-	mods.call("frame", 14.5, Vector2(1280.0, 720.0), true)
+	mods.call("frame", 14.5, Vector2(1280.0, 720.0), true, _main.get_node("Camera3D"))
 	var draws: int = int(mods.get("draws"))
 	print("hud hook draws: ", draws)
 	if draws < 1:

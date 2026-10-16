@@ -378,11 +378,11 @@ reported, not silently ignored).
 > `setLevel`, `clear`, `enabled`, §4.17) -- the read-out over M20a-M20e's water, and
 > the door a mod drives the table through.
 >
-> **Added with the Godot port:** `goats.draw` (§4.18), the API's own drawing surface.
-> A mod used to draw with the engine's `rl`, which is raylib; the API now carries
-> its own members, each client implements them, and a mod that reads `rl` directly
-> runs only where raylib is the engine. Only the 2D half is in -- 3D and assets
-> (`goats.gfx`) is the next group.
+> **Added with the Godot port:** `goats.draw` (§4.18) and `goats.gfx` (§4.19), the API's
+own drawing surfaces. A mod used to draw with the engine's `rl`, which is raylib; the
+API now carries its own members, each client implements them, and a mod that reads `rl`
+directly runs only where raylib is the engine. Both surfaces are partial -- `goats.draw`
+is the 2D half and `goats.gfx` the 3D one, and each names what its next additions are.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
@@ -922,6 +922,48 @@ What is **not here yet** is 3D and assets: a mod that puts a model, a cube or a
 texture in the world still needs `goats.gfx` -- handles minted from
 `goats.assets`, and `draw.model` / `draw.cube` to place them -- and until that
 group exists those mods are raylib-client-only.
+
+### 4.19 World graphics
+
+```js
+goats.on("draw3d", function (cam) {
+    // The blob a thing casts, and the thing itself.
+    goats.gfx.draw.cube(x, y + 0.02, z, 1.3, 0.012, 1.75, goats.draw.color(40, 50, 45, 220));
+    const model = goats.gfx.model(goats.assets.get("model.goat"));
+    if (model !== null) goats.gfx.draw.model(model, x, y, z, yaw, 1, goats.draw.WHITE);
+});
+```
+
+| Member | Description |
+| --- | --- |
+| `goats.gfx.model(name)` | A model from an asset name -- usually `goats.assets.get(slot)` -- or `null` when the name resolves to nothing, or when this client cannot load models. |
+| `goats.gfx.draw.model(handle, x, y, z, yaw, scale, tint)` | The model at `(x, y, z)`, turned `yaw` **radians** about +Y, scaled by `scale` (a number, or 1), tinted by `tint` (or white). |
+| `goats.gfx.draw.cube(x, y, z, w, h, d, color)` | A box `w` x `h` x `d` centred on `(x, y, z)`. |
+
+**World space, not screen space.** `goats.draw` (§4.18) takes pixels of the surface
+`screen()` reports; this takes **metres of the world**, and its calls are valid inside
+the `"draw3d"` hook (§4.2), which is handed the camera:
+
+```js
+goats.on("draw3d", function (cam) {
+    // cam: { x, y, z, targetX, targetY, targetZ, fov }
+});
+```
+
+Two surfaces rather than one because they are two *spaces*, and each client implements
+each the way its renderer wants -- a 2D pass and a 3D one. A draw outside its own hook is
+dropped, the same as a 2D one.
+
+**A handle is opaque.** It comes from `model()` and is never a number: compare against
+`null` for failure, and never do arithmetic on one. A name that resolves to nothing
+answers `null`, and a draw of `null` draws nothing -- so the `if` above is the whole of
+the check.
+
+**What is not here yet:** `mesh()` and `texture()` (a mod's own geometry and images, which
+is how `birds` builds its flock), `setModelTexture` (the shadow-map slot), `unload()`, and
+a rotation other than yaw -- `drawModelEx`'s axis and angle, which is what a flung goat's
+tumble needs. Until those land, a mod that builds its meshes in JavaScript rather than
+loading them from an asset can draw on one client only.
 
 ## 5. Examples
 

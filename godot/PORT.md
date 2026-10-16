@@ -1045,18 +1045,41 @@ inside the `uiScreen === "hud"` branch — so a menu silences a mod's HUD hook e
 the game's, and `ModHud`'s list *is* the frame, so a hook that stops drawing is cleared rather than
 left standing.
 
+**And the world has its own half.** `goats.gfx` (`APIv1.md` section 4.19) is the API's world-space
+surface — `model()`, `draw.model` and `draw.cube` — and it is called from the `"draw3d"` hook, the
+frame's 3D pass, which is handed the camera. The crossing is the 2D one on a seam of its own
+(`__goatsDraw3d`, drained by `poll_draw3d`), and its painter is `godot/src/mod_world.gd`, which is
+the interesting part: Godot has no immediate-mode 3D, so a record becomes a **node** — a
+`MeshInstance3D` with a box for a cube, or an instance of the asset's own scene for a model. The
+asset is real: `goats.gfx.model(name)` hands over an opaque name and the port imports the glTF at
+runtime with Godot's `GLTFDocument`, straight from the bytes the extension kept. `verify_mod_gfx.gd`
+draws one cube and the repository's own `fatguy` model through a `draw3d` hook and reads the tree:
+
+```
+model asset: mod:com.github.sdgoij.goats.fatguy:model.fatguy.glb
+records: 2, placed: 2
+after a second frame: 2 child(ren), 2 placed
+after an empty frame: 0 placed
+OK: a mod's goats.gfx draws stand in the world, one node per call
+```
+
+Two things there are the ones worth holding. The instances are **reused by index**, so a mod that
+draws the same thing every frame does not churn the scene tree (the second frame is still two
+children), and a frame that draws less **hides the rest** rather than leaving it standing — the tree
+*is* the frame, exactly as `ModHud`'s list is. And what neither surface has yet is a mod's own
+geometry: `mesh()`/`texture()`, which is how `birds` builds its flock, plus the shadow-map slot,
+`unload()` and a rotation other than yaw.
+
 The hook is also *isolated* now, in `prelude.js`: one that throws is caught and named on the mod's
 own line rather than taking the frame with it, which is the guarantee `PORT.md` section 4 states
 ("a mod cannot affect the frame except by the work it is asked to do") and `APIv1.md` section 7's
 isolation. What stage 1 leaves is stage 8: sixteen of the `goats` surface's seventeen member groups,
 seventeen of its eighteen events, `modSetEnabled` and its session guard, the world-mod datagram, the
-tuning merge, reload/watch, the asset-to-engine path and the wasm path.
+tuning merge, reload/watch, the sound path, a mod's own meshes and textures, and the wasm path.
 
 What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
-rather than a gap); the `Mods` screen's *list* -- the screen is in as of M25 and draws
-`menu.js`'s "no mods found" because the scene does not load mods yet, so it waits on stage 1; the
-mods state and
+rather than a gap); the mods state and
 *voice* reaching GDScript (both are carried on the wire but the core does not consume them yet --
 `NetBridge` has no `voice`; a *bite* was in this list too, and M21 closed it both ways, *audio*
 until M22, and the **bangs** until M26, which gave the bridge its `blast` and the scene its
@@ -1192,20 +1215,30 @@ wrong shape: `rl` *is* raylib, so the shim is an emulation of a C library that g
 member at a time and never quite is what a mod was written against, and every member of
 it is a promise the port has to keep forever. What a mod should read is the *API*.
 
-So `goats.draw` (`APIv1.md` §4.18) is the drawing surface, and each client implements
-it: the raylib client over `rl`, the port over Godot. The port has **no `rl` at all** —
-a mod that reads it fails, clearly and in isolation, which is the honest answer. Only
-the 2D half exists so far (`screen`, `color`, the named colours and six primitives);
-3D and assets are `goats.gfx`, the next group, and until it lands `birds` and `fatguy`
-are raylib-client-only.
+So the API has two drawing surfaces and each client implements it: the raylib client over
+`rl`, the port over Godot. The port has **no `rl` at all** — a mod that reads it fails,
+clearly and in isolation, which is the honest answer.
 
-On the Godot side the crossing is one capability and one control. `goats.draw.text(…)`
-becomes a JSON *record* the extension queues (`ModHost::__goatsDraw`, drained by
-`poll_draws`), and `godot/src/mod_hud.gd` — a `Control` on the UI layer, over the game's
-HUD and under the console — parses a frame's records and paints them in `_draw`. Records
-rather than an argument list, so a primitive can be added on both ends without changing
-a signature here; one record per call, so the paint order is the call order; and drained
-once a frame, so the drawing belongs to the frame the mod was called for.
+`goats.draw` (`APIv1.md` §4.18) is the screen and `goats.gfx` (§4.19) is the world. The 2D
+surface is `screen`, `color`, the named colours and six primitives; the 3D one is `model()`,
+`draw.model` and `draw.cube`. Between them the port can place a thing in the world and write
+on the screen, which is what most mods want to do. What neither has is a mod's *own* geometry
+and images — `mesh()` and `texture()`, which is how `birds` builds its flock — nor the
+shadow-map slot, `unload()` or a rotation other than yaw (`drawModelEx`'s axis and angle,
+what a flung goat's tumble needs). Those are the next additions to the group.
+
+On the Godot side each surface is one capability, one seam and one painter. `goats.draw.text(…)`
+becomes a JSON *record* the extension queues (`ModHost::__goatsDraw`, drained by `poll_draws`),
+and `godot/src/mod_hud.gd` — a `Control` on the UI layer, over the game's HUD and under the
+console — parses a frame's records and paints them in `_draw`. `goats.gfx.draw.cube(…)` is the
+same crossing on a seam of its own (`__goatsDraw3d` / `poll_draw3d`), and its painter is
+`godot/src/mod_world.gd`: Godot has no immediate-mode 3D, so a record becomes a *node* in the
+tree — a `MeshInstance3D` with a box, or an instance of the asset's scene, which the port
+imports at runtime with `GLTFDocument` from the bytes `ModHost::asset_bytes` hands over.
+Records rather than an argument list, so a primitive can be added on both ends without changing
+a signature; one record per call, so the order is the order; and drained once a frame, so the
+drawing belongs to the frame the mod was called for — with the instances reused by index, so a
+steady draw does not churn the tree and a frame that draws less hides the rest.
 
 ## 7. Multiplayer: wire-compatible by construction
 
@@ -1260,7 +1293,7 @@ Sizes are judgement, not measurement.
 | # | Stage | Done when | Size |
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
-| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surface is in too (`goats.draw`, §4.18, painted by `mod_hud.gd`); the tuning merge, reload/watch, the asset-to-engine path, the wasm path, 3D/assets (`goats.gfx`) and the other 16 member groups remain (stage 8) | 2–3 |
+| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`); the tuning merge, reload/watch, a mod's own meshes and textures, the sound path, the wasm path and the other 16 member groups remain (stage 8) | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the mods and voice paths remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
@@ -1769,7 +1802,9 @@ already felt it (`godot/tools/verify_net.gd`, M26); runs the *scene's* mod runti
 table with the one mod whose entry threw named in it, the Mods screen's row-per-mod layout, and a
 mod's own verb answered through the console (`godot/tools/verify_scene_mods.gd`, stage 1); and
 carries a mod's `goats.draw` calls from JavaScript to a record, and a record to a painted control,
-which is the whole of the API's own drawing surface (`godot/tools/verify_mods.gd`'s draw records and
-`verify_scene_mods.gd`'s `ModHud`). Every one
+which is the whole of the API's own 2D drawing surface (`godot/tools/verify_mods.gd`'s draw records
+and `verify_scene_mods.gd`'s `ModHud`); and draws a mod's *world* — a cube of the size the mod asked
+for at the place it asked for, and the repository's own `fatguy` glTF imported at runtime, with the
+tree holding exactly the last frame's draws and no more (`godot/tools/verify_mod_gfx.gd`). Every one
 of them exits zero.
 The rest is read from the tree.*

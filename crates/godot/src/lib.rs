@@ -73,9 +73,11 @@ struct Mod {
     /// only drives it.
     loader: Option<mods::Loader>,
     /// Every loaded mod's assets, by the opaque name a mod addresses them with
-    /// (`APIv1.md` section 0: no paths reach a mod). The engine shim will read
-    /// these; for now they prove the loader's asset half ran.
-    assets: HashMap<String, Vec<u8>>,
+    /// (`APIv1.md` section 0: no paths reach a mod). The engine shim reads these,
+    /// and `goats.gfx.model` resolves through them. Shared with the host, because
+    /// the capability is registered before the engine boots and a later `load_mod`
+    /// is what fills it.
+    assets: Rc<RefCell<HashMap<String, Vec<u8>>>>,
 }
 
 /// The mod runtime: an embedded Slag context, the `goats`/`rl` facade, and the
@@ -90,6 +92,13 @@ struct ModHost {
     /// [`ModHost::poll_draws`]: one JSON object per call, in the order they were
     /// made, so the scene's `ModHud` paints them in that order.
     draws: LineQueue,
+    /// ...and the **world-space** ones, from `goats.gfx.draw`, which go on a seam of
+    /// their own because they are painted by a different thing: `ModWorld` places a
+    /// node per call where `ModHud` draws a primitive.
+    world_draws: LineQueue,
+    /// The assets every loaded mod declared, by opaque name. Shared with the engine's
+    /// `__goatsHasAsset` capability, which is registered before anything is loaded.
+    assets: Rc<RefCell<HashMap<String, Vec<u8>>>>,
     /// The surface the last [`ModHost::emit_hud`] named, which `goats.draw.screen()`
     /// reads back. The *scene* owns the viewport, so this is only the value it
     /// handed in -- the same push-the-readable-values design `PORT.md` section 6
@@ -123,6 +132,8 @@ impl INode for ModHost {
             base,
             lines: LineQueue::default(),
             draws: LineQueue::default(),
+            world_draws: LineQueue::default(),
+            assets: Rc::new(RefCell::new(HashMap::new())),
             screen: Rc::new(Cell::new((0.0, 0.0))),
             world_time: Rc::new(RefCell::new(0.0)),
             module: None,
@@ -234,13 +245,16 @@ impl ModHost {
     /// are what a mod addresses an asset with; the bytes are kept for the
     /// engine shim (`rl.loadSound` and friends) and are not reachable from JS
     /// by path.
+    /// The opaque names of every asset the loaded mods declared, sorted. These
+    /// are what a mod addresses an asset with, and what `goats.gfx.model` resolves
+    /// against; the bytes are handed to the scene by [`ModHost::asset_bytes`].
     #[func]
     fn asset_names(&mut self) -> PackedStringArray {
         let mut out = PackedStringArray::new();
         let Some(module) = self.module.as_ref() else {
             return out;
         };
-        let mut names: Vec<&String> = module.assets.keys().collect();
+        let mut names: Vec<String> = module.assets.borrow().keys().cloned().collect();
         names.sort();
         for name in names {
             out.push(&gstring(name));
@@ -350,6 +364,61 @@ impl ModHost {
         }
         out
     }
+
+    /// Drain the **world-space** draws (`goats.gfx.draw`) the mods made since the last
+    /// call, as JSON records in the order they were made. The scene's `ModWorld` node
+    /// places one child per record, which is the 3D half of what [`ModHost::poll_draws`]
+    /// does for the 2D one.
+    #[func]
+    fn poll_draw3d(&mut self) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        for line in self.world_draws.borrow_mut().drain(..) {
+            out.push(&gstring(line));
+        }
+        out
+    }
+
+    /// The bytes behind an asset's opaque name, for the scene to make something of:
+    /// `goats.gfx.model` hands the name over here, and `mod_world.gd` imports the model
+    /// with Godot's own glTF loader. Empty for a name nothing declared.
+    #[func]
+    fn asset_bytes(&mut self, name: GString) -> PackedByteArray {
+        let assets = self.assets.borrow();
+        match assets.get(name.to_string().as_str()) {
+            Some(bytes) => PackedByteArray::from(bytes.as_slice()),
+            None => PackedByteArray::new(),
+        }
+    }
+
+    /// Fire the `"draw3d"` hooks for one frame, with the camera. This is the pass a
+    /// world-space `goats.gfx.draw` is made inside, and the camera is the same seven
+    /// numbers the scene's own `modEmit("draw3d", ...)` sends.
+    #[func]
+    #[allow(clippy::too_many_arguments)]
+    fn emit_draw3d(
+        &mut self,
+        x: f64,
+        y: f64,
+        z: f64,
+        target_x: f64,
+        target_y: f64,
+        target_z: f64,
+        fov: f64,
+    ) -> GString {
+        let args = [
+            JsValue::number(x),
+            JsValue::number(y),
+            JsValue::number(z),
+            JsValue::number(target_x),
+            JsValue::number(target_y),
+            JsValue::number(target_z),
+            JsValue::number(fov),
+        ];
+        match self.call_goats("__fireDraw3d", &args) {
+            Ok(_) => GString::from("ok"),
+            Err(error) => gstring(format!("error: {error}")),
+        }
+    }
 }
 
 impl ModHost {
@@ -415,6 +484,45 @@ impl ModHost {
             )
             .map_err(|e| e.to_string())?;
 
+        // `goats.gfx.draw.*`: the **world-space** records, on their own seam, because
+        // they are painted by a different thing than `goats.draw`'s are -- `ModWorld`
+        // places a node per call and `ModHud` draws a primitive.
+        let world_draws = self.world_draws.clone();
+        context
+            .register_fn(
+                "__goatsDraw3d",
+                1,
+                Box::new(move |call| {
+                    let record = call
+                        .arg(0)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    world_draws.borrow_mut().push(record);
+                    Ok(JsValue::undefined())
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+
+        // `goats.gfx.model(name)`: does anything declare this name? A `null` from the
+        // facade is a mod comparing against `null`, which is the documented way to tell a
+        // handle from a name that resolves to nothing.
+        let assets = self.assets.clone();
+        context
+            .register_fn(
+                "__goatsHasAsset",
+                1,
+                Box::new(move |call| {
+                    let name = call
+                        .arg(0)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    Ok(JsValue::boolean(
+                        assets.borrow().contains_key(name.as_str()),
+                    ))
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+
         // `goats.draw.screen()`: the surface the frame's own `emit_hud` named. Two
         // values rather than one object, because the crossing is the cost and a
         // `screen()` call is rare.
@@ -447,7 +555,9 @@ impl ModHost {
             context,
             goats,
             loader: None,
-            assets: HashMap::new(),
+            // The same map the host holds, so `__goatsHasAsset` sees what a later
+            // `load_mod` puts here.
+            assets: self.assets.clone(),
         })
     }
 
@@ -495,7 +605,10 @@ impl ModHost {
             .take_assets();
         let asset_count = assets.len();
         for asset in assets {
-            module.assets.insert(asset.name.clone(), asset.bytes);
+            module
+                .assets
+                .borrow_mut()
+                .insert(asset.name.clone(), asset.bytes);
         }
 
         match loader.get(id).and_then(|manifest| manifest.entry_js()) {

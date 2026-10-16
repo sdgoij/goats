@@ -1198,10 +1198,12 @@ function goatsBegin(id) {
         explosions: modExplosionsFor(id),
         water: goatsWater,
         entities: modEntitiesFor(id),
-        // The API's own drawing surface. It is on the handle as well as on the base object
-        // because a mod's `goats` is this literal -- `goatsBegin` builds one rather than
-        // `Object.create`-ing the base -- so a member missing here is a member a mod cannot see.
+        // The API's own drawing surfaces. They are on the handle as well as on the base
+        // object because a mod's `goats` is this literal -- `goatsBegin` builds one rather
+        // than `Object.create`-ing the base -- so a member missing here is a member a mod
+        // cannot see.
         draw: goatsDraw,
+        gfx: goatsGfx,
     };
     modInstances.set(id, handle);
     meta.enabled = true;
@@ -1315,6 +1317,48 @@ const goatsDraw = {
     },
 };
 
+// ---- the world-space surface (APIv1.md section 4.19) -------------------------
+//
+// `goats.draw` is the screen and this is the world. They are two surfaces rather
+// than one because they are two *spaces*: a `draw` call takes pixels of the surface
+// `screen()` reports, and an `gfx.draw` call takes metres of the world the `draw3d`
+// hook was handed a camera for. Splitting them by space is what lets a renderer
+// implement each the way its own engine wants -- a 2D pass here, a 3D one there.
+//
+// A **handle** is opaque. `model()` answers one or `null` when the name does not
+// resolve, and a mod compares against `null` and never against a number again.
+const goatsGfx = {
+    /**
+     * A model from an asset (`goats.assets.get("model.thing")`), or `null` when
+     * the name does not resolve or this client cannot load models.
+     */
+    model: function (name) {
+        if (name === undefined || name === null) return null;
+        if (typeof rl.loadModel !== "function") return null;
+        const handle = rl.loadModel(String(name));
+        return typeof handle === "number" && handle >= 0 ? handle : null;
+    },
+
+    /** World-space drawing. Valid inside the `"draw3d"` hook and nowhere else. */
+    draw: {
+        /**
+         * A model at `(x, y, z)`, turned `yaw` **radians** about +Y, scaled by
+         * `scale` (a number, or 1), tinted by `tint` (or white).
+         */
+        model: function (handle, x, y, z, yaw, scale, tint) {
+            if (handle === undefined || handle === null) return;
+            const s = scale === undefined ? 1 : scale;
+            rl.drawModelEx(handle, x, y, z, 0, 1, 0, yaw * 180 / Math.PI, s, s, s,
+                tint === undefined ? goatsDraw.WHITE : tint);
+        },
+
+        /** A box `w` x `h` x `d` centred on `(x, y, z)`. */
+        cube: function (x, y, z, w, h, d, color) {
+            rl.drawCube(x, y, z, w, h, d, color);
+        },
+    },
+};
+
 // The global. The host wraps an entry with `goats.begin(id)`, so a mod's own
 // `goats` is the per-mod handle; this base object is for the console and the
 // host.
@@ -1344,6 +1388,7 @@ const goats = {
     water: goatsWater,
     entities: modEntitiesFor("-"),
     draw: goatsDraw,
+    gfx: goatsGfx,
 };
 
 // ---- the `mod` console verb ----------------------------------------------

@@ -132,6 +132,43 @@ if (typeof globalThis.goats === "undefined") {
                 };
             })(),
 
+            /**
+             * The API's own **world-space** surface (`APIv1.md` section 4.19). Where
+             * `draw` takes pixels, this takes metres, and its calls are valid inside the
+             * `"draw3d"` hook -- the frame's 3D pass, which is handed the camera. The two
+             * surfaces are two because they are two spaces, and each client implements
+             * each the way its renderer wants.
+             *
+             * A handle is opaque: `model()` answers one or `null` when the name does not
+             * resolve, and a mod compares against `null`.
+             */
+            gfx: (function () {
+                function call(record) {
+                    __goatsDraw3d(JSON.stringify(record));
+                }
+                return {
+                    model: function (name) {
+                        if (name === undefined || name === null) return null;
+                        const token = String(name);
+                        return __goatsHasAsset(token) ? token : null;
+                    },
+                    draw: {
+                        model: function (handle, x, y, z, yaw, scale, tint) {
+                            if (handle === undefined || handle === null) return;
+                            call({
+                                k: "model", h: handle, x: x, y: y, z: z,
+                                yaw: yaw === undefined ? 0 : yaw,
+                                scale: scale === undefined ? 1 : scale,
+                                tint: tint === undefined ? { r: 255, g: 255, b: 255, a: 255 } : tint,
+                            });
+                        },
+                        cube: function (x, y, z, w, h, d, col) {
+                            call({ k: "cube", x: x, y: y, z: z, w: w, h: h, d: d, col: col });
+                        },
+                    },
+                };
+            })(),
+
             // --- host entry points (the `__` prefix marks them as the host's) ---
 
             /** Every state, the idle one first, then the mods in load order. */
@@ -173,6 +210,32 @@ if (typeof globalThis.goats === "undefined") {
                             list[j](arg);
                         } catch (error) {
                             console.log("hud hook failed: " + error);
+                        }
+                    }
+                }
+            },
+            /**
+             * Fire every `"draw3d"` hook for one frame, with the camera. The same
+             * isolation as `__fireHud`: a handler is a mod's code, and one that throws
+             * must not take the frame with it.
+             */
+            __fireDraw3d: function (x, y, z, targetX, targetY, targetZ, fov) {
+                // The camera is built here rather than crossing as an object: the seven
+                // numbers *are* the crossing, and this shape is the one the scene's own
+                // `modEmit("draw3d", ...)` sends (`goat.js`).
+                const camera = {
+                    x: x, y: y, z: z,
+                    targetX: targetX, targetY: targetY, targetZ: targetZ,
+                    fov: fov,
+                };
+                const states = this.__states();
+                for (let i = 0; i < states.length; i++) {
+                    const list = states[i].hooks["draw3d"] || [];
+                    for (let j = 0; j < list.length; j++) {
+                        try {
+                            list[j](camera);
+                        } catch (error) {
+                            console.log("draw3d hook failed: " + error);
                         }
                     }
                 }

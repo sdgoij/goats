@@ -52,6 +52,9 @@ var draws := 0
 ## The control that paints them (`mod_hud.gd`), set by the frame. Without one the draws are
 ## still drained and counted, which is what a build with no `Ui` layer would see.
 var surface: ModHud
+## The node that places a mod's *world*-space draws (`mod_world.gd`), set by the frame. It is
+## the other half of `goats.draw`: `draw` is pixels and this is metres.
+var world: ModWorld
 
 ## Instantiate the runtime and load whatever `mods/` holds. Discovery, every entry, and the table.
 ##
@@ -83,12 +86,20 @@ func _ready() -> void:
 ##
 ## `hud` is therefore the frame's answer to "is the HUD up", passed in rather than asked for: this
 ## file knows about the mods and not about the UI.
-func frame(hours: float, screen: Vector2, hud: bool) -> void:
+func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D) -> void:
 	if host == null:
 		return
 	host.call("set_world_time", hours)
 	if hud:
 		host.call("emit_hud", screen.x, screen.y)
+	# The world pass. Godot has no "the 3D pass" to hook -- a node in the tree is how a thing is
+	# drawn -- so the `draw3d` hooks run here, with the camera, and what they draw becomes a node
+	# per record for this frame (`mod_world.gd`).
+	if world != null and camera != null:
+		var eye: Vector3 = camera.global_position
+		var look: Vector3 = eye - camera.global_transform.basis.z
+		host.call("emit_draw3d", eye.x, eye.y, eye.z, look.x, look.y, look.z, camera.fov)
+		world.adopt(host.call("poll_draw3d"))
 	# The draws the hooks made, handed to the control that paints them. Drained whether or not
 	# the HUD is up -- the hook only fires when it is, so a frame with no HUD has nothing here --
 	# and counted either way, because a gate with no renderer still wants to know.

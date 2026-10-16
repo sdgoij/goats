@@ -25,6 +25,7 @@ plan.
 | `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
 | `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws and the first refusal a mod's console verb gets (stage 1) |
 | `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
+| `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader (stage 1) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
 | `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
@@ -78,7 +79,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Twenty-five headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Twenty-six headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -97,6 +98,12 @@ Twenty-five headless gates, all `SceneTree` scripts that exit non-zero on failur
 # the table the Mods screen draws, and a mod's own verb reaching the console (stage 1).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_scene_mods.gd
+
+# ...and a mod's `goats.gfx` draws become nodes in the world: a cube of its own size where it
+# asked, and the repository's own fatguy glTF imported at runtime, with the tree holding
+# exactly the last frame's draws (stage 1).
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_mod_gfx.gd
 
 # Two Godot peers meet over iroh: host, join, roster, chat, goat snapshots -- and then a
 # third joins, so the world a host publishes, a client's adopted snapshot and both
@@ -216,7 +223,7 @@ Twenty-five headless gates, all `SceneTree` scripts that exit non-zero on failur
     --script res://tools/verify_menu.gd
 ```
 
-All twenty-five pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty-six pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -426,12 +433,14 @@ that throws costs its own row rather than the load — of the repository's five,
 mod's `console.log` reaches the console and a mod's registered verb reaches the console first,
 so `hello world` answers the example's `hello`.
 
-**A mod draws through `goats.draw`, and the port paints it** (`APIv1.md` §4.18): the example's
-HUD clock is a `goats.draw.text` line, which becomes a record the extension queues and
-`mod_hud.gd` paints over the game's HUD. That is deliberately the API's own surface rather than
-the engine's — there is no `rl` in this build at all, because `rl` is raylib, and a mod written
-against it is a mod written against one client. The 2D half is what is in; a mod that draws a
-*model* in the world needs `goats.gfx`, which is the next group.
+**A mod draws through the API's own surfaces, and the port paints them** (`APIv1.md` §4.18, §4.19):
+the example's HUD clock is a `goats.draw.text` line, which becomes a record the extension queues
+and `mod_hud.gd` paints over the game's HUD; `goats.gfx.draw.cube` and `draw.model` from a
+`draw3d` hook become nodes in the world, with a model's glTF imported at runtime from the asset
+the mod declared. That is deliberately the API's own surface rather than the engine's — there is
+no `rl` in this build at all, because `rl` is raylib, and a mod written against it is a mod
+written against one client. A mod's own meshes and textures (`mesh()`/`texture()`, how `birds`
+builds its flock) are the next additions to the group.
 
 To play with somebody, point it at a host:
 

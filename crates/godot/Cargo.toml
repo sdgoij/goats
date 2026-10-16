@@ -56,6 +56,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macr
 #   JavaScript speed rather than interpreter speed.
 # * `wasm` (a default feature) keeps the WebAssembly JS API, which the
 #   compiled-mod path (`crates/plugin`, `ABIv1.md`) needs.
-# * Deliberately **not** `raylib`: Godot draws, so the `rl` a mod sees is this
-#   crate's own Godot-backed shim, not raylib (PORT.md section 6, decision 2).
+# * Deliberately **not** `raylib`: Godot draws. There is no `rl` in the facade at
+#   all -- a mod uses the API's own `goats.draw` / `goats.gfx` (`godot/PORT.md`
+#   section 6).
 slag = { workspace = true, features = ["jit"] }

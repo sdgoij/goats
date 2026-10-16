@@ -178,9 +178,12 @@ var mods := Mods.new()
 var _eat_trap := Callable()
 
 ## What a mod draws goes here (`mod_hud.gd`): the API's `goats.draw` surface, painted. It is a
-## `Control` on the UI layer and not a 3D node, because the only pass a mod draws into is the
-## screen-space `hud` (`APIv1.md` section 4.18).
+## `Control` on the UI layer and not a 3D node, because the screen-space pass is the `hud`
+## (`APIv1.md` section 4.18).
 var mod_hud := ModHud.new()
+## ...and what it draws in the *world* goes here (`mod_world.gd`): `goats.gfx.draw`, a node per
+## call, in the root rather than the UI layer because it is 3D (`APIv1.md` section 4.19).
+var mod_world := ModWorld.new()
 
 ## Whether the scene is in a session as a *client*. It is what the herd mirror hangs on, and
 ## its window is the wire's. A client simulates no world: the host owns the bots, the weather and
@@ -407,11 +410,17 @@ func _ready() -> void:
 	# `modSetEnabled`, which needs the session intents and is stage 8's (`menu.gd` says so).
 	#
 	# `mod_hud` goes on the UI layer *before* the console and the menu, so it paints over the
-	# game's HUD and under the overlays -- which is where a mod's `hud` drawing belongs.
+	# game's HUD and under the overlays -- which is where a mod's `hud` drawing belongs. The
+	# world's own half is a `Node3D` in the root, because it is drawn in three dimensions.
 	$Ui.add_child(mod_hud)
+	add_child(mod_world)
 	mods.console = console
 	mods.surface = mod_hud
 	add_child(mods)
+	# After `add_child(mods)`, because the runtime builds its `ModHost` in `_ready` -- and the
+	# world node wants that host to turn an asset name into bytes.
+	mod_world.host = mods.host
+	mods.world = mod_world
 	menu.mods_list = Callable(mods, "mod_table")
 
 	# `GOATS_UI=<screen>`: open a menu screen at boot, for `GOATS_CONSOLE`'s reason -- the panels are
@@ -592,7 +601,7 @@ func _process(delta: float) -> void:
 	# The mods' own frame: the clock a mod reads, and its `hud` hook while the HUD is up. It is
 	# after `hud.show_for` because that is where this frame decided the HUD is the thing on screen
 	# (`sceneFrame` fires `modEmit("hud", ...)` inside the branch that draws the HUD).
-	mods.frame(_hours, Vector2(get_viewport().get_visible_rect().size), not menu.is_open())
+	mods.frame(_hours, Vector2(get_viewport().get_visible_rect().size), not menu.is_open(), camera)
 	_boom_if_asked()
 
 	# The probe's own clock, which runs whether or not the world is frozen: it is counting the
