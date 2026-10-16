@@ -9,6 +9,7 @@
 #   godot/tools/interop.sh pair     # ...and *two* clients see each other's goat
 #   godot/tools/interop.sh death    # ...and the mirrored herd is still moving after a client dies and respawns
 #   godot/tools/interop.sh hostdeath # ...the same, hosted by *this* scene rather than by `goatsd`
+#   godot/tools/interop.sh jsjoin   # the *reference* client joins this scene hosting (needs a window)
 #   godot/tools/interop.sh offline  # no server: the scene boots without a session
 #   godot/tools/interop.sh shot     # ...and a window renders it, with the herd in it
 #
@@ -42,9 +43,18 @@
 # (`verify_herd_host.gd` hosting, `verify_herd_death.gd` joining and dying) and
 # reads both.
 #
-# Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server), GOATSD_HERD (the
-# host's herd size -- `--herd`; the `herd` mode at a large count is what shows the
-# world datagram carries the larger herd).
+# `jsjoin` is the one mode whose *joiner* is not a Godot peer: it is the reference
+# (raylib/JavaScript) client, the other implementation of the same protocol, which
+# `interop.sh` never otherwise pairs with *this scene's own host*. Every other mode is
+# Godot with Godot or Godot with `goatsd`, so a `PROTOCOL_VERSION` bump or a stale
+# extension hides here: the reference client's ALPN never negotiates, it simply never
+# joins, and no Godot-to-Godot run goes red. It needs a window, because the reference
+# client is a raylib app, like `shot`.
+#
+# Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server), GOATS_BIN (the
+# reference client, `jsjoin`), GOATSD_HERD (the host's herd size -- `--herd`; the
+# `herd` mode at a large count is what shows the world datagram carries the larger
+# herd).
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -54,9 +64,9 @@ log=$root/target/interop-goatsd.log
 
 mode=${1:-join}
 case "$mode" in
-    join|refuse|pull|herd|pair|death|hostdeath|offline|shot) ;;
+    join|refuse|pull|herd|pair|death|hostdeath|jsjoin|offline|shot) ;;
     *)
-        echo "interop.sh: unknown mode '$mode' (want join, refuse, pull, herd, pair, death, hostdeath, offline or shot)" >&2
+        echo "interop.sh: unknown mode '$mode' (want join, refuse, pull, herd, pair, death, hostdeath, jsjoin, offline or shot)" >&2
         exit 2
         ;;
 esac
@@ -160,6 +170,79 @@ if [ "$mode" = "hostdeath" ]; then
         exit 1
     fi
     echo "interop.sh: a Godot host's herd keeps moving through a client's death and respawn"
+    exit 0
+fi
+
+# `jsjoin` is the one mode whose *joiner* is not a Godot peer: it is the reference (raylib/JavaScript)
+# client, the other implementation of the same protocol, joined to *this scene's own host*. Every
+# other mode pairs Godot with Godot or with `goatsd`, and none of them joins this scene's host from
+# the other client, which is where a `PROTOCOL_VERSION` bump or a stale extension hides: the
+# reference client's ALPN never negotiates, so it simply never joins, and no Godot-to-Godot mode goes
+# red. It needs a window (the joiner is a raylib app), and there is no `goatsd` in it at all, so it
+# returns here rather than falling through to the server the other modes start.
+if [ "$mode" = "jsjoin" ]; then
+    goats_bin=${GOATS_BIN:-$root/target/release/goats.exe}
+    if [ ! -x "$goats_bin" ]; then
+        echo "interop.sh: $goats_bin is not built; run:" >&2
+        echo "    cargo build --release -p goats" >&2
+        exit 1
+    fi
+    host_log=$root/target/host-reference.log
+    client_log=$root/target/reference-join.log
+    : > "$host_log"
+    : > "$client_log"
+
+    # The scene resolves `mods/` from the working directory and the reference client must present
+    # the same world-mod set, so both run at the root.
+    cd "$root"
+    "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        --script res://tools/verify_host_reference.gd > "$host_log" 2>&1 &
+    host_pid=$!
+    cleanup_jsjoin() {
+        kill "$host_pid" 2>/dev/null || true
+    }
+    trap cleanup_jsjoin EXIT INT TERM
+
+    # The host probe prints its ticket raw on a line of its own, once it is up.
+    attempts=0
+    ticket=
+    while [ "$attempts" -lt 240 ]; do
+        ticket=$(sed -n 's/^ticket //p' "$host_log" | sed -n '1p')
+        if [ -n "$ticket" ]; then
+            break
+        fi
+        attempts=$((attempts + 1))
+        sleep 0.25
+    done
+    if [ -z "$ticket" ]; then
+        kill "$host_pid" 2>/dev/null || true
+        echo "interop.sh: the hosting probe never printed a ticket. Its output:" >&2
+        grep -vE "^$|Godot Engine|Initialize godot-rust" "$host_log" >&2
+        exit 1
+    fi
+    echo "interop.sh: this scene is hosting; the reference client will join (jsjoin mode)"
+
+    set +e
+    # The reference client's console is a line-based stdin/stdout channel: `connect <ticket>
+    # <name>`, then a `net` read whose reply is the evidence it *joined* (`"mode":"client"`),
+    # then a clean `quit`. The delay keeps the read inside the host's own hold window.
+    ( printf 'connect %s jsgoat\n' "$ticket"; sleep 8; printf 'net\n'; sleep 1; printf 'quit\n' ) \
+        | timeout 60 "$goats_bin" --mods mods > "$client_log" 2>&1
+    client_status=$?
+    wait "$host_pid"
+    host_status=$?
+    set -e
+
+    # Both ends are read, not only the exit codes: which end failed is the first thing worth
+    # knowing, and a client that never joined is the whole point of the mode.
+    grep -E "^(OK|FAIL|peer|herd|host)" "$host_log" || true
+    joined=$(grep -c '"mode":"client"' "$client_log" || true)
+    if [ "$host_status" -ne 0 ] || [ "$client_status" -ne 0 ] || [ "$joined" -eq 0 ]; then
+        echo "interop.sh: the reference client did not join this scene's session. Its output:" >&2
+        grep -E "^(ok|error)" "$client_log" | head -20 >&2
+        exit 1
+    fi
+    echo "interop.sh: a reference client joined this scene's own host and mirrored its herd"
     exit 0
 fi
 

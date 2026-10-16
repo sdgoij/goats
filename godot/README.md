@@ -307,11 +307,12 @@ sh godot/tools/gates.sh              # GODOT_BIN=…, GATE_TIMEOUT=… if the de
     --script res://tools/verify_voice.gd
 ```
 
-All thirty-four pass against Godot 4.7.2 today. Four more need a live session and are run by
+All thirty-five pass against Godot 4.7.2 today. Five more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse), `verify_peers_live.gd`
-(two clients, `interop.sh pair`), and the herd-death pair — `verify_herd_death.gd` (a client's own
+(two clients, `interop.sh pair`), the herd-death pair — `verify_herd_death.gd` (a client's own
 death and respawn against `goatsd`, `interop.sh death`) and `verify_herd_host.gd` (the same question
-with this scene *hosting*, `interop.sh hostdeath`).
+with this scene *hosting*, `interop.sh hostdeath`) — and `verify_host_reference.gd`, the same host
+the *reference* client joins (`interop.sh jsjoin`, which needs a window).
 
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that
@@ -450,6 +451,13 @@ godot/tools/interop.sh death
 # because the host stopped publishing or because it published a herd that stood still.
 godot/tools/interop.sh hostdeath
 
+# The host the *reference* (raylib/JavaScript) client joins: this scene hosts, prints its
+# ticket, and the shipping client is pointed at it over its own stdin/stdout console. Every
+# other mode is Godot with Godot or Godot with `goatsd`, so this is the one that turns a stale
+# extension or a `PROTOCOL_VERSION` mismatch -- which leaves the client silently un-joined --
+# red. Needs a window, like `shot`.
+godot/tools/interop.sh jsjoin
+
 # No server at all: the scene must boot and keep running, and its own herd with it.
 # Needs no goatsd.
 godot/tools/interop.sh offline
@@ -459,7 +467,8 @@ godot/tools/interop.sh offline
 godot/tools/interop.sh shot
 ```
 
-It reads `GODOT_BIN` and `GOATSD_BIN` if the defaults do not fit.
+It reads `GODOT_BIN`, `GOATSD_BIN` and `GOATS_BIN` (the reference client, `jsjoin`) if the
+defaults do not fit.
 
 ## Running the scene
 
