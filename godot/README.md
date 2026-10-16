@@ -460,8 +460,9 @@ console print the same table and the world-mod digest a host's refusal names.
 `GOATS_MODS` if it is set, else `mods/` beside the project, else `mods/` beside the executable;
 `GOATS_NO_MODS` skips the search. Every entry is evaluated in its own `goats` handle, and one
 that throws costs its own row rather than the load — of the repository's five, four load and
-`birds` fails, on the engine library itself: it still reads `rl` on its first line, because that
-is what the examples are written against until the rework. A mod's `console.log` reaches the
+`birds` fails, and now on a *member* rather than the engine library: the examples no longer read `rl`
+at all, and the flock stops on `goats.world.extend`, which this client has not built yet (see
+below). A mod's `console.log` reaches the
 console and a mod's registered verb reaches the console first, so `hello world` answers the
 example's `hello`.
 
@@ -478,7 +479,9 @@ an **axis and an angle** rather than a yaw — so a mod that generates its shape
 never the engine library. A mod's own **sound** is in too (`goats.sfx`): `load(name)` resolves an
 opaque asset name to a handle or `null` and `play(handle, volume, pitch)` sounds it, and
 `goats.gfx.unload` frees a shared mesh — so between them `birds` and `fatguy` have **no engine
-capability left to read**, and the only thing between them and the API is the rework.
+capability left to read** -- and as of the rework they do not read it: both examples are API-only,
+which is what makes them the *same* files on both clients, and what is left is the members on this
+side (`world.extend`, `goats.water`, two `player` writes) rather than a rewrite on theirs.
 
 **A mod reads the live world through the API's own accessors** (`APIv1.md` §4.5–4.12). The
 scene builds one snapshot of the world each frame — the goat, the camera, the weather and the

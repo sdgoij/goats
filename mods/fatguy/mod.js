@@ -9,7 +9,7 @@
 // opaque name, and hands that name back through `goats.assets.get`. A slot does
 // not have to be one of the built-ins the scene already uses: a mod may name its
 // own, which is how this model travels with the mod instead of being embedded in
-// the game's binary. Read it with `.get()` before handing it to `rl.loadModel`,
+// the game's binary. Read it with `.get()` before handing it to `goats.gfx.model`,
 // because a slot that is neither declared nor built in resolves to `undefined`
 // rather than failing.
 //
@@ -127,7 +127,10 @@ const VOICE_FADE = 12.0;    // metres at which a voice is half as loud
 const YELL_SLOT = "sfx.fatguy.yell";
 const LAND_SLOT = "sfx.fatguy.land";
 
-let model = -1;
+// A model handle is opaque, and `null` is how a client says it could not load one --
+// which is also what a client with no renderer says, so the check below is the same one
+// on every platform (APIv1.md section 0).
+let model = null;
 let x = -9;                 // metres from the spawn, where he starts his day
 let z = 0;
 let heading = -Math.PI / 2; // radians; the model faces local +Z, so this is -X
@@ -188,8 +191,8 @@ function ensureModel() {
         }
         return;
     }
-    model = rl.loadModel(name);
-    if (model < 0) goats.log("fatguy: could not load " + name);
+    model = goats.gfx.model(name);
+    if (model === null) goats.log("fatguy: could not load " + name);
 }
 
 // The two voices, read once. `all` rather than `get`: a slot holds a list and this mod
@@ -200,8 +203,8 @@ function loadVoices(slot) {
     const names = goats.assets.all(slot);
     const out = [];
     for (let i = 0; i < names.length; i++) {
-        const sound = rl.loadSound(names[i]);
-        if (sound >= 0) out.push(sound);
+        const sound = goats.sfx.load(names[i]);
+        if (sound !== null) out.push(sound);
     }
     return out;
 }
@@ -209,7 +212,6 @@ function loadVoices(slot) {
 function ensureVoice() {
     if (voiceRead) return;
     voiceRead = true;
-    if (typeof rl.loadSound !== "function") return;
     yells = loadVoices(YELL_SLOT);
     lands = loadVoices(LAND_SLOT);
 }
@@ -226,9 +228,7 @@ function say(sounds, volume) {
     const dx = x - p.x;
     const dz = z - p.z;
     const att = 1 / (1 + Math.sqrt(dx * dx + dz * dz) / VOICE_FADE);
-    rl.setSoundVolume(sound, goats.settings.get().sfx * volume * att);
-    rl.setSoundPitch(sound, 0.92 + roll * 0.22);
-    rl.playSound(sound);
+    goats.sfx.play(sound, goats.settings.get().sfx * volume * att, 0.92 + roll * 0.22);
 }
 
 // The nearest goat: the player first, then the herd. The offset *to* it, so the
@@ -609,8 +609,8 @@ goats.on("draw3d", function () {
     }
     const bob = flung ? 0 : Math.abs(Math.sin(stride * Math.PI)) * (BOB_BASE + speed * BOB_PER_SPEED);
     const hop = flung ? 0 : Math.sin(knock * Math.PI) * HOP;
-    rl.drawModelEx(model, dx, y + goats.world.terrainHeight(dx, dz) + bob + hop, dz,
-        axisX, axisY, axisZ, yaw, SCALE, SCALE, SCALE, rl.WHITE);
+    goats.gfx.draw.mesh(model, dx, y + goats.world.terrainHeight(dx, dz) + bob + hop, dz,
+        axisX, axisY, axisZ, yaw, SCALE, goats.draw.WHITE);
 });
 
 // ---- the console ----------------------------------------------------------
@@ -658,8 +658,8 @@ goats.command("fatguy", function (parts) {
 });
 
 goats.on("shutdown", function () {
-    if (typeof rl.unloadModel === "function" && model >= 0) rl.unloadModel(model);
-    model = -1;
+    if (model !== null) goats.gfx.unload(model);
+    model = null;
     // The voices are dropped rather than freed: there is no `unloadSound` to call.
     yells = [];
     lands = [];

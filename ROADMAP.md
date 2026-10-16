@@ -1211,17 +1211,23 @@ decisions behind it and the constraints that shape it.
   startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
   diagnosis one look rather than a guess. Opaque assets are still compared byte
   byte, since the loader cannot know what they are. `mods/birds` itself is
-  pinned at `4f3291755f0c1837` by a test, because a release ships it and an
-  older client refuses a server whose birds differs. That pin has moved five
+  pinned at `5de4fa3cb5c077d0` by a test, because a release ships it and an
+  older client refuses a server whose birds differs. That pin has moved six
   times: once when the mod's arithmetic was rewritten to stop naming `Math`
   (PERF.md §4b), again when the flock learned to set devices off, to sit on
   the goat and to squawk (M19's surface, below), then because it offers the
   flock to other mods so the fat guy can collide with a bird (APIv1.md
   §4.16), then when the flock's pose stopped building a quaternion a wing a
-  frame (the per-frame allocation pass, PERF.md appendix B), and now because
-  the flock does not stand under the water (M20f′, *The rules the water
-  made*) -- deliberate changes all five, and a compatibility boundary: a peer
-  on the older birds cannot join a host on the newer one. The test's failure
+  frame (the per-frame allocation pass, PERF.md appendix B), then because
+  the flock does not stand under the water (M20f′, *The rules the water*
+  *made*), and now -- the sixth, and the one this port was for -- because the
+  flock stopped reading the engine's `rl` altogether: every mesh, texture,
+  sound and draw it makes goes through `goats.gfx`/`goats.sfx`/`goats.draw`,
+  and its two `>= 0` handle tests became `null` ones because a handle is
+  opaque in the API and an integer in raylib. It is the same mod on both
+  clients now, which is what `APIv1.md` §3.3 was for. Deliberate changes all
+  six, and a compatibility boundary: a peer on the older birds cannot join a
+  host on the newer one. The test's failure
   message prints the new digest in the source's own form, so the next move is
   a paste rather than another decimal-to-hex conversion by hand. (A note in
   the fixture itself would be the surest place for the warning, and it is the

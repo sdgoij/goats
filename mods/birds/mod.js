@@ -3,9 +3,9 @@
 //
 // It is a `side: "world"` mod, so the host simulates the flock and every peer
 // renders the same birds (the join handshake requires the same set). The model
-// is built in JavaScript -- `rl.makeModel` for the meshes, `rl.makeTexture` for
-// the feather pattern -- and the only files it ships are the two macaw calls its
-// manifest declares for the squawk. See APIv1.md §5.4 for the walk-through.
+// is built in JavaScript -- `goats.gfx.mesh` for the meshes, `goats.gfx.texture`
+// for the feather pattern -- and the only files it ships are the two macaw calls
+// its manifest declares for the squawk. See APIv1.md §5.4 for the walk-through.
 //
 // Two of its behaviours reach into the world rather than only drawing in it, both
 // through the surface M19g added for mods (`goats.explosions`, APIv1.md §4.15): a
@@ -13,11 +13,11 @@
 // the only sound this mod ships -- and a bird perched on the player's goat gives the
 // goat energy and health back while it sits there.
 //
-// Two engine facts shape the code:
+// Two facts about the *surface* shape the code:
 //
-//   * `rl.makeTexture` uploads to the GPU, so it needs the window: the meshes
-//     are built lazily on the first `update`/`draw3d`, never in the entry.
-//   * `rl.drawModelEx` takes a single axis and angle. Yaw, pitch, roll and each
+//   * `goats.gfx.texture` hands its image to the GPU, so it needs the window: the
+//     meshes are built lazily on the first `update`/`draw3d`, never in the entry.
+//   * `goats.gfx.draw.mesh` takes a single axis and angle. Yaw, pitch, roll and each
 //     wing's flap are therefore composed into one quaternion per part and
 //     handed over as that axis-angle.
 
@@ -76,9 +76,9 @@ const HEAD_COL = [140, 110, 74];
 const WING_COL = [172, 142, 104];
 const WING_EDGE = [104, 82, 56];
 const BEAK_COL = [232, 156, 58];
-// Colours handed to the engine must come from `rl.color`: the real binding packs
-// one into a number, while the null `rl` the server uses returns an object.
-const SHADOW = rl.color(0, 0, 0, 60);
+// Colours come from `goats.draw.color`, which is also where the named constants are:
+// a client packs one into whatever its engine wants, and a mod never sees that.
+const SHADOW = goats.draw.color(0, 0, 0, 60);
 
 const SHOULDER = { x: 0.06, y: 0.055, z: 0.05 };
 
@@ -267,7 +267,7 @@ Mesh.prototype.quad = function (a, b, c, d, ex, ey, ez) {
     this.face(a, c, d, ex, ey, ez);
 };
 Mesh.prototype.model = function () {
-    return rl.makeModel(this.v, this.i, this.n, this.c, this.uv);
+    return goats.gfx.mesh(this.v, this.i, this.n, this.c, this.uv);
 };
 
 function buildBodyModel() {
@@ -359,7 +359,7 @@ function buildWingModel(side) {
 }
 
 // A tiling feather texture: soft bars along one axis over value noise. Baked to
-// a "rrggbbaa" string and handed to `rl.makeTexture`.
+// a "rrggbbaa" string and handed to `goats.gfx.texture` as the mod's own image.
 function featherHex(n) {
     let out = "";
     for (let y = 0; y < n; y++) {
@@ -377,7 +377,7 @@ function featherHex(n) {
 
 let BIRDS = [];
 let built = false;
-let bodyModel = -1, wingR = -1, wingL = -1, featherTex = -1;
+let bodyModel = null, wingR = null, wingL = null, featherTex = null;
 let trips = 0;      // devices the flock has set off (M19g's surface, below)
 let mineTrips = 0;  // ...and which kind they were: a case can tell a trap from a mine
 let trapTrips = 0;
@@ -430,28 +430,29 @@ function placeBird(b, i) {
 function ensureBuilt() {
     if (built) return;
     built = true;
-    if (typeof rl.makeModel === "function" && typeof rl.makeTexture === "function") {
-        bodyModel = buildBodyModel();
-        wingR = buildWingModel(1);
-        wingL = buildWingModel(-1);
-        featherTex = rl.makeTexture(32, 32, featherHex(32));
-        if (featherTex >= 0) {
-            rl.setModelTexture(bodyModel, 0, featherTex);
-            rl.setModelTexture(wingR, 0, featherTex);
-            rl.setModelTexture(wingL, 0, featherTex);
-        }
-        goats.log("birds: models " + bodyModel + "/" + wingR + "/" + wingL +
-            " tex " + featherTex);
-        // The squawk: the two files the manifest declares under one slot of the mod's
-        // own, which the host registered with the engine before this entry ran -- so
-        // what comes back here is an opaque name and `rl.loadSound` finds the bytes.
-        // The `rl` surface has no `unloadSound`, so these live until the process ends,
-        // the way the scene's own effects do when a mod is switched off.
-        const squawkNames = goats.assets.all("sfx.squawk");
-        for (let i = 0; i < squawkNames.length; i++) {
-            const sound = rl.loadSound(squawkNames[i]);
-            if (sound >= 0) SQUAWKS.push(sound);
-        }
+    // A handle is *opaque*, so a client with no renderer answers `null` here and the
+    // whole flock draws nothing -- which is one `if` in this mod rather than a check on
+    // an engine library it would have to name (APIv1.md section 0).
+    bodyModel = buildBodyModel();
+    wingR = buildWingModel(1);
+    wingL = buildWingModel(-1);
+    featherTex = goats.gfx.texture(32, featherHex(32));
+    if (featherTex !== null) {
+        goats.gfx.bind(bodyModel, featherTex);
+        goats.gfx.bind(wingR, featherTex);
+        goats.gfx.bind(wingL, featherTex);
+    }
+    goats.log("birds: models " + bodyModel + "/" + wingR + "/" + wingL +
+        " tex " + featherTex);
+    // The squawk: the two files the manifest declares under one slot of the mod's
+    // own, which the host registered with the engine before this entry ran -- so
+    // what comes back here is an opaque name and `goats.sfx.load` finds the bytes.
+    // The surface has no `unload`, so these live until the process ends, the way the
+    // scene's own effects do when a mod is switched off.
+    const squawkNames = goats.assets.all("sfx.squawk");
+    for (let i = 0; i < squawkNames.length; i++) {
+        const sound = goats.sfx.load(squawkNames[i]);
+        if (sound !== null) SQUAWKS.push(sound);
     }
     seedFlockIfEmpty();
 }
@@ -827,9 +828,8 @@ function playSquawk(x, z) {
     const p = goats.player.state();
     const att = 1 / (1 + HYPOT(x - p.x, z - p.z) / SQUAWK_FADE);
     const sound = SQUAWKS[FLOOR(flockRnd() * SQUAWKS.length) % SQUAWKS.length];
-    rl.setSoundVolume(sound, goats.settings.get().sfx * SQUAWK_VOLUME * att);
-    rl.setSoundPitch(sound, 0.9 + flockRnd() * 0.25);
-    rl.playSound(sound);
+    goats.sfx.play(sound, goats.settings.get().sfx * SQUAWK_VOLUME * att,
+        0.9 + flockRnd() * 0.25);
 }
 
 function flingBird(b, dev) {
@@ -1060,19 +1060,19 @@ function drawFlock(cam) {
         const lift = b.y - gy;
         if (lift < 7) {
             const sh = clamp(1 - lift / 7, 0, 1) * 0.9 * s;
-            rl.drawCube(b.x, gy + 0.03, b.z, sh, 0.012, sh * 0.7, SHADOW);
+            goats.gfx.draw.cube(b.x, gy + 0.03, b.z, sh, 0.012, sh * 0.7, SHADOW);
         }
         const q = bodyQuatInto(Q_BODY, b);
         const ba = qAxisAngleInto(AA_BODY, q);
-        const tint = rl.color(200 + ((i * 17) % 56), 200 + ((i * 29) % 56), 200 + ((i * 11) % 56), 255);
-        rl.drawModelEx(bodyModel, b.x, b.y, b.z, ba.x, ba.y, ba.z, ba.deg, s, s, s, tint);
+        const tint = goats.draw.color(200 + ((i * 17) % 56), 200 + ((i * 29) % 56), 200 + ((i * 11) % 56), 255);
+        goats.gfx.draw.mesh(bodyModel, b.x, b.y, b.z, ba.x, ba.y, ba.z, ba.deg, s, tint);
         const f = flapFor(b);
         for (let side = -1; side <= 1; side += 2) {
             const wq = qMulInto(Q_TMP1, q, qAxisInto(Q_TMP2, 1, 0, 0, side > 0 ? -f : f));
             const wa = qAxisAngleInto(AA_WING, wq);
             const pv = qRotInto(V_WING, q, SHOULDER.x * s, SHOULDER.y * s, side * SHOULDER.z * s);
-            rl.drawModelEx(side > 0 ? wingR : wingL,
-                b.x + pv.x, b.y + pv.y, b.z + pv.z, wa.x, wa.y, wa.z, wa.deg, s, s, s, tint);
+            goats.gfx.draw.mesh(side > 0 ? wingR : wingL,
+                b.x + pv.x, b.y + pv.y, b.z + pv.z, wa.x, wa.y, wa.z, wa.deg, s, tint);
         }
     }
 }
@@ -1115,16 +1115,15 @@ goats.on("update", function (dt) {
 
 goats.on("draw3d", function (cam) {
     ensureBuilt();
-    if (bodyModel < 0) return;
+    if (bodyModel === null) return;
     drawFlock(cam);
 });
 
 goats.on("shutdown", function () {
-    if (typeof rl.unloadModel !== "function") return;
-    if (bodyModel >= 0) rl.unloadModel(bodyModel);
-    if (wingR >= 0) rl.unloadModel(wingR);
-    if (wingL >= 0) rl.unloadModel(wingL);
-    bodyModel = wingR = wingL = -1;
+    if (bodyModel !== null) goats.gfx.unload(bodyModel);
+    if (wingR !== null) goats.gfx.unload(wingR);
+    if (wingL !== null) goats.gfx.unload(wingL);
+    bodyModel = wingR = wingL = null;
     built = false;
     BIRDS = [];
     // The sounds are dropped rather than freed: there is no `unloadSound` to call.

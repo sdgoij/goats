@@ -662,7 +662,7 @@ non-leaf or unknown path throws, so a typo is loud.
 
 ```js
 goats.assets.slots();                 // every known slot: ["model.goat", ...]
-goats.assets.get("model.goat");       // the name to pass to rl.loadModel
+goats.assets.get("model.goat");       // the name to pass to goats.gfx.model
 goats.assets.override("sfx.music", "mod:com.example:sfx.music.mp3");   // pre-freeze only
 goats.assets.add("sfx.bleat", "mod:com.example:sfx.bleat");           // ...as one more bleat
 ```
@@ -1185,26 +1185,27 @@ with the same `Goat*` action names just works.
 
 The checked-in `mods/birds/` is the worked example of a mod that is more than a
 patch: it adds a flock of birds nobody else knows about. Its meshes come from
-`rl.makeModel` and its feather texture from `rl.makeTexture`, so the only files it
+`goats.gfx.mesh` and its feather texture from `goats.gfx.texture`, so the only files it
 ships are the two macaw calls its manifest declares for the squawk (§3.3) -- and it
-is `side: "world"`, so every peer sees the same birds.
+is `side: "world"`, so every peer sees the same birds. **It reads no engine library:
+enone of the members below is `rl`,** which is what lets the same file run on a raylib
+client and on one that has no raylib in it (§3.3).
 
-Tools a mod already has, without new API:
+Tools a mod already has:
 
-- **Its own geometry.** `rl.makeModel(vertices, indices, normals, colours,
-  texcoords)` takes flat arrays; the terrain uses it, and a mod may too. A
-  generated texture is `rl.makeTexture(n, n, "rrggbbaa...")`.
-- **Its own draw.** The `draw3d` event fires inside the scene's `beginMode3D`,
-  after the world is drawn, and hands the camera position. `drawModelEx` draws a
-  handle with an axis, an angle, a scale and a tint.
-- **Its own models.** `rl.loadModel(name)` takes an asset name the same way the
-  game's own goat does. One warning: on a `gpu-skinning` build (`rl.GPU_SKINNING`)
-  raylib leaves the deform to the material's shader, so a model the mod *animates
-  itself* needs a shader that declares `vertexBoneIndices`/`vertexBoneWeights` and
-  `boneMatrices` — or one call, `rl.setModelCpuSkinning(model, true)`, to hand that
-  model back to raylib's CPU deform pass, which is what the scene does for a rig its
-  own skinned programs cannot cover. A model drawn at a fixed pose (the `fatguy`
-  mod's) needs neither.
+- **Its own geometry.** `goats.gfx.mesh(vertices, indices, normals, colours,
+  texcoords)` takes flat arrays, and `goats.gfx.texture(n, "rrggbbaa...")` a generated
+  image. Both answer a handle or `null` -- compare against `null`, because a client
+  with no renderer is a `null` here rather than an error.
+- **Its own draw.** The `draw3d` event fires inside the scene's 3D pass, after the
+  world is drawn, and hands the camera. `goats.gfx.draw.mesh(handle, x, y, z, ax, ay,
+  az, angle, scale, tint)` draws one with an axis, an angle, a scale and a tint;
+  `goats.gfx.draw.model` is the same with the axis fixed at +Y.
+- **Its own models.** `goats.gfx.model(name)` takes an asset name the same way the
+  game's own goat does. (On a raylib client a `gpu-skinning` build leaves a skinned
+  deform to the material's shader, so a mod that *animates a rig itself* needs the
+  client's own `setModelCpuSkinning`; nothing in the API exposes that, and a model
+  drawn at a fixed pose -- the `fatguy` mod's -- does not need it.)
 - **Its own simulation.** `update` fires once a frame with `dt` (and `dt` is 0
   while the menu or console is open, so birds freeze with the world).
 - **Its own shared state.** `world.registerStream` seeds a PRNG,
@@ -1214,9 +1215,9 @@ Tools a mod already has, without new API:
   manifest (`assets: { "sfx.squawk": ["assets/call-a.mp3", "assets/call-b.mp3"] }`),
   and the host registers the bytes under an opaque name before the entry runs. The
   mod reads them back with `goats.assets.all(slot)` and hands them to
-  `rl.loadSound` -- no path, no filesystem. A slot of the mod's own is the way to
+  `goats.sfx.load` -- no path, no filesystem. A slot of the mod's own is the way to
   keep its audio out of the game's own slots, and the name must keep the file's
-  extension, because that is the decoder hint the engine materialises it with.
+  extension, because that is the decoder hint the client materialises it with.
 
 **Reaching into the world.** The flock does more than draw itself: a bird walking over
 a device sets it off, is flung away by it and squawks about it, and a bird perched on
@@ -1230,19 +1231,19 @@ state and its clock rather than sent. All of it is a console verb away if you wa
 watch: `birds boom [mine|trap]` sends a bird onto the nearest device, and `birds sit`
 puts one on the goat.
 
-**The one gap a sound-firing mod has:** there is no `unloadSound` in the `rl` surface
+**The one gap a sound-firing mod has:** there is no `unload` in the sound surface
 and no master-mute flag on `goats.settings`, so a mod's own sound lives until the
 process ends and plays on while `M` has everything else silent.
 
 Two things are worth knowing before writing one.
 
-**Build models lazily.** `rl.makeTexture` uploads to the GPU, so it needs the
+**Build models lazily.** `goats.gfx.texture` hands its image to the GPU, so it needs the
 window, and a mod entry runs before `sceneInit` opens it. The birds build their
 meshes on the first `update`/`draw3d`, not in the entry. (The `"ready"` event
 fires after the window exists, but a reload of an already-ready scene does not
 re-fire it, so a lazy build is the robust form.)
 
-**Pose with one axis-angle.** `drawModelEx` takes a single rotation axis and
+**Pose with one axis-angle.** `goats.gfx.draw.mesh` takes a single rotation axis and
 angle, so yaw, pitch, roll and each wing's flap are composed as quaternions and
 reduced to one axis-angle per part in `draw3d`. The birds are three models --
 body and two wings -- each drawn with its own composed rotation; the wings are

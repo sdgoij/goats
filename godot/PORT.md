@@ -193,7 +193,7 @@ OK: the host refused the join by mod digest
 The first proves the transport, the join handshake, the chat routing and the
 world's *fields* — bots, weather, streams, meadow, craters, spent — against the
 shipping binary rather than between two Godot peers. The second is the one that
-matters most: `goatsd` demanded `com.github.sdgoij.goats.birds@1.0.0#4f3291755f0c1837`,
+matters most: `goatsd` demanded `com.github.sdgoij.goats.birds@1.0.0#5de4fa3cb5c077d0`,
 and the Godot client — which hashes nothing itself, it hands the set to
 `crates/mods` — was refused by digest with the missing id named. Two
 independently built implementations agreeing on a digest handshake is
@@ -1001,15 +1001,17 @@ the offline return, so a player with no ticket still has their mods.
 The load is **isolated** and the table is **truthful**. `crates/mods` validates a manifest before
 anything runs, so only the host that *ran* an entry can say it threw; `ModHost::mods_json` therefore
 merges `failed`/`error` into the loader's table, which is `mods.js`'s `sceneModResult` folded into
-`sceneMods`. Of the repository's five mods, four load and `birds` fails -- and it fails on the
-*engine library itself*, `ReferenceError: "rl" is not defined`, which is the point: every `rl` call
-it makes now has an API member, so the only thing left between it and this client is the rework.
-The Mods screen says so rather than drawing five healthy rows.
+`sceneMods`. Of the repository's five mods, four load and `birds` fails -- and as of the rework it
+fails on a *member* rather than the engine library: `TypeError: undefined is not a function`, which
+is `goats.world.extend` and the last of the surface this client has not built. The examples no
+longer read `rl` at all, which is the thing that made them two clients' mods; what is left between
+them and this one is a handful of members, not a rewrite. The Mods screen says so rather than
+drawing five healthy rows.
 
 ```
 table: 5 row(s)
   com.example.jitprobe v0.1.0 [client]
-  com.github.sdgoij.goats.birds v1.0.0 [world]  FAILED: ReferenceError: "rl" is not defined
+  com.github.sdgoij.goats.birds v1.0.0 [world]  FAILED: TypeError: undefined is not a function
   com.github.sdgoij.goats.fatguy v1.0.0 [client]
   com.github.sdgoij.goats.hello v1.0.0 [client]
   com.github.sdgoij.goats.wasm v1.0.0 [client]
@@ -1436,7 +1438,7 @@ Sizes are judgement, not measurement.
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | **done**: the HUD is a `Control` drawing `drawHud` (M23), the console is in (M24: `console.gd` + `commands.gd` + `verify_console.gd` -- the shell, the sixty-odd verbs, chat, and six of the seven `GOATS_*` knobs as verbs), and the menu's four screens are in with the settings they drive (M25: `menu.gd` + `settings.gd` + `verify_menu.gd`); what is left is the `Mods` screen's *list*, which waits on the scene loading mods (stage 1) | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the console's `mute` and `setting bgm|sfx` are in (M24) and the menu's two sliders are in (M25), so what is left is *voice*, which is still the bridge's to carry | 2–3 |
-| 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: identity and logging, the readable groups, both drawing surfaces, a mod's own geometry and images, `gfx.unload`, a mod's own **sound**, the **asset slots**, the **entities** two mods see of each other and a world mod's **seeded stream** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`, `verify_mod_audio.gd`); the writes, the events, `entities`' unload path, the world-mod datagram, `explosions`/`water`/`extend`, reload and the wasm path remain — and the two examples now have **no engine capability left to read**, so what they need is the rework |
+| 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: identity and logging, the readable groups, both drawing surfaces, a mod's own geometry and images, `gfx.unload`, a mod's own **sound**, the **asset slots**, the **entities** two mods see of each other and a world mod's **seeded stream** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`, `verify_mod_audio.gd`), and the two examples have been **rewritten onto the API** — no `rl` in either, and `birds` now stops on `world.extend` rather than on the engine library, which is the whole difference the API was for; the writes, the events, `entities`' unload path, the world-mod datagram, `water`/`extend`, reload and the wasm path remain |
 | 9 | Platforms | desktop, Android, web export presets + CI | 2–4 |
 | 10 | Tests | golden-value checks per deterministic system; GUT/GdUnit for the core | 3–6 |
 
