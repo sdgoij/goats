@@ -60,3 +60,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macr
 #   all -- a mod uses the API's own `goats.draw` / `goats.gfx` (`godot/PORT.md`
 #   section 6).
 slag = { workspace = true, features = ["jit"] }
+
+# The compiled-mod host (`ABIv1.md`, M17b): a mod that ships a `.wasm` module and no
+# JavaScript is decoded, instantiated and driven from Rust, so its frame path has no
+# JavaScript in front of it. This is the *same* crate the raylib client and `goatsd`
+# drive -- reused rather than re-grown, like `mods`, `session` and `proto` above -- which
+# is what makes a compiled mod behave identically on all three hosts.
+plugin = { workspace = true }

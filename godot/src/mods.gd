@@ -1,13 +1,14 @@
 # The mod runtime, as the scene drives it: the extension's `ModHost` node, the directory its mods
-# come from, and the three things the rest of the scene asks of it.
+# come from, and the things the rest of the scene asks of it.
 #
 # The split is `mods.js`'s, and it is the same split for the same reason. The *host* -- here the
-# GDExtension over `crates/mods` and the embedded engine -- discovers, validates, orders and runs;
-# the *scene* owns the table the UI draws, the per-frame hooks a mod registered, and the console's
-# first refusal. What the port does not have yet is `mods.js`'s other half: `modSetEnabled` and its
-# session guard, the world-mod datagram, the tuning *merge* (a write), reload/watch and the
-# asset-to-engine path. Those are stage 8 (`PORT.md` section 6, and section 10's third item); this
-# file is stage 1's, and it stops at "the scene is running the mods and can see what happened".
+# GDExtension over `crates/mods` and `crates/plugin`, and the embedded engine -- discovers,
+# validates, orders, runs and drives; the *scene* owns the table the UI draws, the per-frame hooks
+# a mod registered, and the console's first refusal. What the port does not have yet is `mods.js`'s
+# other half: `modSetEnabled` and its session guard, the world-mod datagram, the tuning *merge* (a
+# write), reload/watch and the asset-to-engine path. Those are stage 8 (`PORT.md` section 6, and
+# section 10's third item); this file is stage 1's, and it stops at "the scene is running the mods
+# and can see what happened".
 #
 # The **readable surface** is this file's other job now (`APIv1.md` section 4.5-4.12): every frame
 # the scene hands the host one JSON snapshot of the live world -- the goat, the camera, the
@@ -61,6 +62,15 @@ var dir := ""
 var table: Array = []
 ## The host's one-line report of the whole load, for the console. Empty until `load_all` has run.
 var report := ""
+## The **compiled** mods' HUD contribution, one frame old: `{id: fill}` from the host, which is
+## exactly the map `mods.js`'s `sceneSetWasmHud` stores and `modWasmHudFill` reads (`ABIv1.md`
+## section 3.4). The HUD draws a bar for the first fill it finds, so a build with no compiled client
+## mod has an empty map and no bar -- never a built-in fallback a disabled mod left behind.
+var wasm_hud := {}
+## ...and what the compiled *world* mods published, `{id: base64}`: the bridge half of the mods
+## datagram (`ABIv1.md` section 3.3). `mods.js` folds the same map into `sceneWorldMods().data`;
+## here the wire is `NetBridge`'s, so the map is kept for it rather than sent from this file.
+var wasm_published := {}
 ## How many draws the mods have made through `goats.draw`. The surface counts them as it paints
 ## them, and this is the total -- the evidence a gate without a renderer can still check.
 var draws := 0
@@ -157,10 +167,56 @@ func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
 	if devices != null:
 		for bang: Dictionary in devices.call("take_blast_events"):
 			emit_blast(bang)
+	# ...and the **compiled** mods, after the world has moved and outside every JavaScript hook:
+	# the reference's own order (its loop runs the scene's frame, then the Rust plugin host).
+	_drive_wasm(dt, snapshot)
 
 ## The table, as `menu.gd`'s Mods screen and the console's `mod list` want it.
 func mod_table() -> Array:
 	return table
+
+## The first compiled client mod's HUD bar fill (0..1), or `-1.0` when none is running.
+##
+## `mods.js`'s `modWasmHudFill` returns the first finite value in the host's `{id: fill}` map and
+## `null` when the map is empty. This returns a *float* with a sentinel instead of a nullable,
+## because the HUD reads it every frame and a sentinel costs no type test -- and because the fill's
+## own range is 0..1, so nothing a module can report collides with it.
+func wasm_hud_fill() -> float:
+	for id in wasm_hud:
+		var value: float = float(wasm_hud[id])
+		if is_finite(value):
+			return value
+	return -1.0
+
+## One frame for the compiled mods (`ABIv1.md`, M17b). `tick_world` and the belly are read out of
+## the frame's own snapshot rather than taken as further arguments: both are values the scene already
+## pushes for the *readable* groups (`main.gd`'s `_mod_snapshot`), and reading them from there is
+## what makes a compiled mod and a JavaScript one be told the same world in the same words.
+## `localWorld` is the scene's own mirroring bit, and it is the one the reference's `netWorldLocal()`
+## answers: a client that joined a host does not simulate the world's compiled mods either.
+func _drive_wasm(dt: float, snapshot: Dictionary) -> void:
+	if host == null:
+		return
+	var world_local := true
+	var belly := 0.0
+	if not snapshot.is_empty():
+		world_local = bool(snapshot.get("localWorld", true))
+		var player: Variant = snapshot.get("player", {})
+		if player is Dictionary:
+			belly = float((player as Dictionary).get("satiety", 0.0))
+	var answer: String = String(host.call("drive_wasm", dt, world_local, belly))
+	# Empty is the common case -- no compiled mod is loaded -- and it leaves the last frame's maps
+	# alone rather than clearing them, which is what an unloaded host should look like.
+	if answer.is_empty():
+		return
+	var parsed: Variant = JSON.parse_string(answer)
+	if not (parsed is Dictionary):
+		return
+	var report: Dictionary = parsed
+	var hud: Variant = report.get("hud", {})
+	var published: Variant = report.get("published", {})
+	wasm_hud = hud if hud is Dictionary else {}
+	wasm_published = published if published is Dictionary else {}
 
 ## Re-derive the world mods' streams from the session seed (`APIv1.md` section 4.13). It is
 ## `sceneUseSeed`'s last act in the reference client (`weather.js`), which is why it is an *event*

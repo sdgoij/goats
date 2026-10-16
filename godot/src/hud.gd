@@ -12,6 +12,7 @@
 #     which `drawDamagePulse` reads and `hurtBy` sets -- the strongest unrecovered hit wins, so a
 #     second bang cannot make a bruise look like a scratch);
 #   * the **health and energy bars**, top right, with the read-out line under them;
+#   * the **compiled mod's bar**, under that read-out, while a `side: "client"` module reports one;
 #   * the sleep cue, `Z z z`, where the bars' read-out would be;
 #   * the **action prompt**, bottom right, when a tuft is in reach;
 #   * and the **weather line** and the **status line**, bottom left.
@@ -23,9 +24,13 @@
 # the layout -- which is what is left -- is a picture's question.
 #
 # Two of the scene's words are *settings* read-outs rather than state: `light` (the lit shader and
-# its shadow mode) and `sky`/`clouds`. The port has no settings screen yet, so they are the
-# scene's defaults -- and there is no `belly (wasm)` bar, because a compiled client mod's
-# `goats_hud` needs the wasm path that stages 1 and 8 still owe.
+# its shadow mode) and `sky`/`clouds`, which `Settings` owns and `main.gd` reads back each frame.
+#
+# The **`belly (wasm)` bar** is the one HUD a *compiled* mod can have, because a module has no
+# drawing surface at all (`ABIv1.md` section 3.4: `goats_hud` returns a number and the host draws
+# it). It is drawn only while a module reports a value -- `mods.js`'s `modWasmHudFill` -- so
+# disabling that mod removes the bar rather than leaving a built-in fallback behind, and the sleep
+# cue moves down to make room for it, which is exactly what `drawHud`'s `sleepY` is for.
 class_name Hud
 extends Control
 
@@ -37,6 +42,11 @@ const BAR_PAD := 1.0
 const INNER_HEIGHT := 12.0
 const READOUT_Y := 50.0
 const SLEEP_Y := 70.0
+## The compiled mod's own bar: `goat.js` puts it where the sleep cue was and moves the cue down
+## when it is there, so a frame with no compiled mod is pixel-for-pixel the frame it always was.
+const WASM_Y := 70.0
+const WASM_TEXT_Y := 90.0
+const WASM_SLEEP_Y := 110.0
 const ACTION_WIDTH := 132.0
 const ACTION_HEIGHT := 34.0
 const ACTION_MARGIN := 12.0
@@ -51,6 +61,7 @@ const ACTION_BG := Color(24.0 / 255.0, 26.0 / 255.0, 32.0 / 255.0, 220.0 / 255.0
 const WARM := Color(232.0 / 255.0, 201.0 / 255.0, 116.0 / 255.0)
 const TEXT := Color(245.0 / 255.0, 245.0 / 255.0, 245.0 / 255.0)
 const PULSE := Color(150.0 / 255.0, 20.0 / 255.0, 16.0 / 255.0)
+const WASM_FILL := Color(96.0 / 255.0, 186.0 / 255.0, 96.0 / 255.0)
 
 ## The four text sizes the HUD uses: the two lines, the sleep cue, and the prompt's two halves.
 const SIZE_LINE := 14
@@ -78,6 +89,10 @@ var _herd := 0
 var _fps := 0
 var _audio := ""
 var _hurt := 0.0
+## The compiled client mod's bar fill (0..1), or `-1.0` when no module is reporting one. It is one
+## frame old at most: the frame refreshes the HUD and *then* drives the mods, which is the
+## reference's own order and worth a frame to the file that owns the value (`Mods.frame`).
+var _wasm_belly := -1.0
 
 func _ready() -> void:
 	# Anchors *and* offsets: `set_anchors_preset` alone leaves the offsets where they were, so a
@@ -109,6 +124,7 @@ func show_for(goat: PlayerGoat, hours: float, weather: Dictionary, water: String
 	_fps = int(world.get("fps", Engine.get_frames_per_second()))
 	_audio = String(world.get("audio", ""))
 	_hurt = float(world.get("hurt", 0.0))
+	_wasm_belly = float(world.get("wasm_belly", -1.0))
 	queue_redraw()
 
 ## `drawHud`'s state word, transcribed. `move` is the frame's *axis*, which is the whole
@@ -166,6 +182,12 @@ static func clock_text(hours: float) -> String:
 	var mm: int = int(floor((hours - float(hh)) * 60.0))
 	return "%02d:%02d" % [hh, mm]
 
+## `drawHud`'s compiled-mod line: the bar's percentage, with the word that says where it came from
+## -- the scene's own "belly (wasm)", because the bar is not the goat's own belly even though a
+## module may well be modelling it.
+static func wasm_text(fill: float) -> String:
+	return "belly (wasm) %d%%" % int(round(fill * 100.0))
+
 ## How wide a bar's fill is, in pixels: `Math.round((bw - 2) * value / max)`. The scene hands the
 ## fraction in directly, so this takes one too -- the rules keep health, energy and the belly
 ## inside their own ranges.
@@ -198,8 +220,16 @@ func _draw() -> void:
 	_text(font, bx, READOUT_Y, SIZE_LINE, "health %d   energy %d   belly %d%%" % [
 		int(round(_goat.health)), int(round(_goat.energy)),
 		int(round(_goat.satiety * 100.0))])
+	# The compiled client mod's own bar, when one is reporting: the same trough and inset as the two
+	# above, its fill clamped because the number is a module's to get wrong, and the sleep cue moved
+	# down under it.
+	var sleep_y: float = SLEEP_Y
+	if _wasm_belly >= 0.0:
+		_draw_bar(bx, WASM_Y, clampf(_wasm_belly, 0.0, 1.0), WASM_FILL)
+		_text(font, bx, WASM_TEXT_Y, SIZE_LINE, wasm_text(_wasm_belly))
+		sleep_y = WASM_SLEEP_Y
 	if _goat.mode == "sleep":
-		_text(font, bx, SLEEP_Y, SIZE_SLEEP, "Z z z")
+		_text(font, bx, sleep_y, SIZE_SLEEP, "Z z z")
 	if _food_ready:
 		_draw_action(font, wide, tall)
 	_text(font, 10.0, tall - WEATHER_Y, SIZE_LINE,

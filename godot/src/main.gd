@@ -646,6 +646,10 @@ func _hud_world(controls: Dictionary) -> Dictionary:
 		"hurt": explosions.hurt(),
 		"fps": Engine.get_frames_per_second(),
 		"audio": audio.word(),
+		# A compiled client mod's bar, or `-1.0` for none. It is the *previous* frame's value here,
+		# because the mods are driven after the HUD is refreshed -- the reference's own order, and
+		# the reason `Mods.wasm_hud_fill()`'s comment calls the value one frame old.
+		"wasm_belly": mods.wasm_hud_fill(),
 	}
 
 ## The world as a mod reads it (`APIv1.md` section 4.5-4.12), one dictionary per frame.

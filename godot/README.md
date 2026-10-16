@@ -24,7 +24,7 @@ plan.
 | `src/menu.gd` | The menu, drawn: `menu.js`'s four screens — main, settings, mods, keymap — as a layout a gate can hold, with the Escape walk (M25) |
 | `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
 | `src/tuning.gd` | The tuning tree `goats.tuning.get` reads (`APIv1.md` §4.10), gathered leaf by leaf from the module that owns each constant — a subset, and an absent path throws |
-| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, and the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`, and the built-in half of `goats.assets`) (stages 1 and 8) |
+| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`, and the built-in half of `goats.assets`), and the per-frame drive of the **compiled** mods `crates/plugin` instantiates (stages 1 and 8) |
 | `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
 | `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader and a mod's **own** mesh built from its arrays into an `ArrayMesh` (stage 1, 8) |
 | `src/mod_audio.gd` | The mods' sound: `goats.sfx` (`APIv1.md` §4.20) — every sound the loaded mods declared decoded at boot, played through a pool of players, and a *built-in* slot's own name loaded from `res://` on demand (stage 8) |
@@ -85,7 +85,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Twenty-nine headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Thirty headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -104,6 +104,12 @@ Twenty-nine headless gates, all `SceneTree` scripts that exit non-zero on failur
 # the table the Mods screen draws, and a mod's own verb reaching the console (stage 1).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_scene_mods.gd
+
+# ...and a *compiled* mod -- one that ships a `.wasm` module and no JavaScript at all -- loads,
+# is driven by the scene's own frame, reports a HUD bar and a wrong-ABI module is refused by name
+# (stage 8's last slice, `ABIv1.md`).
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_wasm_mod.gd
 
 # ...and a mod's `goats.gfx` draws become nodes in the world: a cube of its own size where it
 # asked, and the repository's own fatguy glTF imported at runtime, with the tree holding
@@ -459,12 +465,21 @@ console print the same table and the world-mod digest a host's refusal names.
 **Mods are loaded from `mods/` at boot**, the directory the raylib client reads:
 `GOATS_MODS` if it is set, else `mods/` beside the project, else `mods/` beside the executable;
 `GOATS_NO_MODS` skips the search. Every entry is evaluated in its own `goats` handle, and one
-that throws costs its own row rather than the load — of the repository's five, four load and
-`birds` fails, and now on a *member* rather than the engine library: the examples no longer read `rl`
-at all, and the flock stops on `goats.world.extend`, which this client has not built yet (see
-below). A mod's `console.log` reaches the
+that throws costs its own row rather than the load -- of the repository's five, all five load: the
+examples no longer read `rl` at all, and the flock's last missing member (`goats.world.extend`) is
+in. A mod's `console.log` reaches the
 console and a mod's registered verb reaches the console first, so `hello world` answers the
 example's `hello`.
+
+**A mod may also ship a `.wasm` module and no JavaScript** (`ABIv1.md`): the fifth of the
+repository's mods does exactly that. `crates/godot` links `crates/plugin` -- the same host the
+raylib client and `goatsd` drive -- so the module is decoded, instantiated against the capabilities
+its own import list asks for, and stepped from Rust, and `mods.gd`'s frame is what drives it. The
+two things a module produces are scene values: the HUD bar a `side: "client"` module reports (drawn
+by `hud.gd` as `belly (wasm)`) and the opaque bytes a `side: "world"` one published. `mod info
+<id>` shows what the module made of itself -- its ABI, its imports, its frame count, its last log
+line -- and `verify_wasm_mod.gd` holds the whole path, including the refusal of a module built for
+another ABI.
 
 **A mod draws through the API's own surfaces, and the port paints them** (`APIv1.md` §4.18, §4.19):
 the example's HUD clock is a `goats.draw.text` line, which becomes a record the extension queues

@@ -22,6 +22,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use godot::prelude::*;
+use plugin::{PluginSet, Side as PluginSide};
 use slag::{Context, HostCallbacks, JsObject, JsValue};
 
 mod net;
@@ -148,6 +149,15 @@ struct ModHost {
     /// `crates/goats/src/game/mods.js`'s `sceneModResult`, with the result folded
     /// into `sceneMods`' table instead of a second call from the scene.
     outcomes: HashMap<String, Result<(), String>>,
+    /// The **compiled** mods: a mod that ships a `.wasm` module instead of (or beside) an
+    /// entry, decoded, instantiated and driven from Rust by `crates/plugin`. This is the same
+    /// `PluginSet` the raylib client and `goatsd` drive, and the same split the rest of this
+    /// file makes -- the host owns the store and the module's memory, so a `.wasm` file is
+    /// never a path or an `ArrayBuffer` that anybody else holds (`ABIv1.md` section 3.2). It
+    /// is a plain field rather than an `Rc`-shared cell because nothing in the JavaScript
+    /// facade reaches it: a plugin's imports are served inside `crates/plugin`, not through
+    /// Slag.
+    plugins: PluginSet,
 }
 
 // SAFETY: a `Slag` context and its values are single-threaded, and every method
@@ -177,6 +187,7 @@ impl INode for ModHost {
             scene_call: Rc::new(RefCell::new(None)),
             module: None,
             outcomes: HashMap::new(),
+            plugins: PluginSet::new(),
         }
     }
 }
@@ -373,9 +384,62 @@ impl ModHost {
     #[func]
     fn use_seed(&mut self, seed: i64) -> GString {
         let args = [JsValue::number(seed as f64)];
-        match self.call_goats("__useSeed", &args) {
+        let answer = match self.call_goats("__useSeed", &args) {
             Ok(_) => GString::from("ok"),
             Err(error) => gstring(format!("error: {error}")),
+        };
+        // A compiled world mod's streams live *inside* its module rather than in the facade's
+        // `modStreams`, so the same seed has to reach them too -- one draw per stream, *after* the
+        // scene's own derivation, which is `goatsd`'s own order (`crates/server/src/headless.rs`).
+        // A client mod's streams do not re-derive at all (`ABIv1.md` section 3.5), so this is
+        // inert for the fixture that ships today.
+        self.plugins.seed_all(seed as i32);
+        answer
+    }
+
+    /// Drive every compiled mod one frame (`ABIv1.md`), and hand back what they produced.
+    ///
+    /// The reference client's own loop does exactly this once the scene has moved: it pushes the
+    /// player's belly in, ticks the modules that are this peer's to tick, and reads two things out
+    /// -- the HUD bar a `side: "client"` module reports, and the opaque bytes a `side: "world"` one
+    /// published. It is one call rather than three because `ABIv1.md` section 2 is "one crossing per
+    /// frame", and because the two documents travel together: a frame either happened or it did not.
+    ///
+    /// `tick_world` is the mirroring rule. A client that joined a host does not simulate the world
+    /// at all, so it must not simulate the world's compiled mods either: its modules are
+    /// instantiated and applied to, never stepped. The reference asks its own `netWorldLocal()` for
+    /// the same bit. `belly` is the player's fullness (0..1), which only a client module can import
+    /// -- a world module that asks for it fails to link (`ABIv1.md` section 3.3).
+    ///
+    /// The answer is `{"hud": {id: fill}, "published": {id: base64}}`, and it is the empty string
+    /// when no compiled mod is loaded -- the common case, and the reason a frame with none costs
+    /// nothing rather than a JSON round trip.
+    #[func]
+    fn drive_wasm(&mut self, dt: f64, tick_world: bool, belly: f64) -> GString {
+        if self.plugins.is_empty() {
+            return GString::new();
+        }
+        self.plugins.set_belly(belly as f32);
+        self.plugins.tick_all(dt as f32, tick_world);
+        // `crates/plugin` builds each bridge as JSON already -- `{id: fill}` and `{id: base64}`,
+        // the two shapes the scene's `sceneWorldMods` and the HUD read -- so they are parsed back
+        // only to be nested in the one object the scene parses once.
+        let hud: serde_json::Value = serde_json::from_str(&self.plugins.hud_json())
+            .unwrap_or_else(|_| serde_json::json!({}));
+        let published: serde_json::Value = serde_json::from_str(&self.plugins.published_json())
+            .unwrap_or_else(|_| serde_json::json!({}));
+        gstring(serde_json::json!({ "hud": hud, "published": published }).to_string())
+    }
+
+    /// What one compiled mod's module reports about itself: the ABI it negotiated, the
+    /// capabilities it imports, how many frames it has run, whether it has trapped and its last
+    /// `goats.log` line. `null` for a mod that ships no module, which is what `mod info` reads --
+    /// the same JSON the raylib client shows through `modWasmInfo`.
+    #[func]
+    fn wasm_describe(&mut self, id: GString) -> GString {
+        match self.plugins.describe_json(id.to_string().as_str()) {
+            Some(json) => gstring(json),
+            None => GString::from("null"),
         }
     }
 
@@ -396,6 +460,10 @@ impl ModHost {
     /// It is where a mod frees what it built, which is the one thing a reload cannot do for it.
     #[func]
     fn emit_shutdown(&mut self) -> GString {
+        // A compiled mod's instance goes with its mod, and the scene is going down: the module's
+        // store is dropped here rather than left to the process, so nothing a plugin owns outlives
+        // the frame it was driven in.
+        self.plugins = PluginSet::new();
         match self.call_goats("__fireShutdown", &[]) {
             Ok(_) => GString::from("ok"),
             Err(error) => gstring(format!("error: {error}")),
@@ -992,13 +1060,43 @@ impl ModHost {
                 .insert(asset.name.clone(), asset.bytes);
         }
 
-        match loader.get(id).and_then(|manifest| manifest.entry_js()) {
+        // A compiled mod ships a module rather than an entry, and the two are read together
+        // because a mod may have both (`ABIv1.md` section 3). The bytes are *taken* here --
+        // cloned out of the manifest, so the loader's borrow ends before the plugin set is
+        // touched -- because the plugin host owns the module's store and memory from here on,
+        // and a `.wasm` file is never a path or an `ArrayBuffer` that anybody else holds.
+        let compiled = loader.get(id).and_then(|manifest| {
+            manifest
+                .wasm
+                .as_ref()
+                .map(|wasm| (wasm.bytes.clone(), manifest.side))
+        });
+
+        let mut note = match loader.get(id).and_then(|manifest| manifest.entry_js()) {
             Some(js) => {
                 module.context.eval(&js).map_err(|e| e.to_string())?;
-                Ok(format!("loaded {id} ({asset_count} asset(s))"))
+                format!("loaded {id} ({asset_count} asset(s))")
             }
-            // A compiled mod has no entry to run; its module is a separate path.
-            None => Ok(format!("{id}: no entry (a compiled mod?)")),
+            // A mod with no entry and no module is data only, which is a success: the manifest,
+            // the assets and the tuning tree are the whole of it.
+            None => format!("loaded {id} ({asset_count} asset(s), no entry)"),
+        };
+        if let Some((bytes, side)) = compiled {
+            // An ABI this build does not know, a missing import or a file that is not a module
+            // fails *here*, before any of the mod's code runs, and is named like any other broken
+            // entry -- the row carries it and the rest still load (`ABIv1.md` section 3.6,
+            // `APIv1.md` section 7). An existing instance goes first, which is what a reload
+            // wants and what `add_plugin` does in the raylib client.
+            self.plugins.remove(id);
+            let side = match side {
+                mods::Side::Client => PluginSide::Client,
+                mods::Side::World => PluginSide::World,
+            };
+            self.plugins
+                .add(id, &bytes, side)
+                .map_err(|error| format!("{id}: {error}"))?;
+            note = format!("loaded {id} ({asset_count} asset(s), a compiled module)");
         }
+        Ok(note)
     }
 }

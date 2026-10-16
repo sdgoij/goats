@@ -69,7 +69,7 @@ into GDScript only through the `goats` surface a mod asked for.
 | `proto` (protocol + packed wire) | 1,970 lines incl. tests | **Reused** unchanged |
 | `session` (iroh transport) | 2,595 lines incl. tests | **Reused** unchanged |
 | `mods` (loader) | 2,088 lines | **Reused** unchanged — pure Rust |
-| `plugin` (wasm ABI v1) | 819 lines | **Reused** unchanged |
+| `plugin` (wasm ABI v1) | 819 lines | **Reused** unchanged — and now *linked* by `crates/godot`, so a `.wasm` mod is decoded, instantiated and stepped from Rust on the Godot client too (`ABIv1.md`, section 6) |
 | `pull` (mod sync) | 598 lines | **Reused** unchanged |
 | `goats` host (bridge, audio, android) | ~4.2k lines | Rewritten: bridge in Rust, audio in Godot |
 | `harness` (scene tests) | ~11.7k lines, 205 cases | **At risk** — see section 9 |
@@ -1011,22 +1011,42 @@ drawing five healthy rows.
 ```
 table: 5 row(s)
   com.example.jitprobe v0.1.0 [client]
-  com.github.sdgoij.goats.birds v1.0.0 [world]  FAILED: TypeError: undefined is not a function
+  com.github.sdgoij.goats.birds v1.0.0 [world]
   com.github.sdgoij.goats.fatguy v1.0.0 [client]
   com.github.sdgoij.goats.hello v1.0.0 [client]
   com.github.sdgoij.goats.wasm v1.0.0 [client]
-failed: 1 of 5
+failed: 0 of 5
 mods screen: 6 label(s), 6 button(s)
-hud hook draws: 6
 OK: the scene runs the mods, names the one that threw, and draws them
 ```
 
 The gate holds four things, each one the direct host check cannot see: that the *scene* owns a
 runtime (read from the live scene, because "loaded by nothing" is exactly what the port had); that
-the table names the failure and leaves the four that loaded unmarked; that the **Mods screen draws
-the list** (a label and a button per mod, the failed row saying `FAILED`, and `menu.js`'s "no mods
-found" gone); and that the vocabulary reaches the mods both ways -- the example's own `hello` verb
-answers through the console's dispatch, and `mod list` / `mod key` answer from the host's table.
+the table is **truthful** -- `failed: 0 of 5` is the expected line now that not one repository mod
+reads the engine, so a failed row is a regression here, and the failure *path* stays held on a mod
+the gate writes at run time instead; that the **Mods screen draws the list** (a label and a button
+per mod, and `menu.js`'s "no mods found" gone); and that the vocabulary reaches the mods both ways
+-- the example's own `hello` verb answers through the console's dispatch, and `mod list` / `mod key`
+answer from the host's table.
+
+**The compiled path is a gate of its own**, because a module reaches none of the above: Slag never
+evaluates it (`ABIv1.md`, section 6). `verify_wasm_mod.gd`:
+
+```
+module: abi 1  imports ["goats.log","goats.rng","goats.belly","goats.publish"]  frames 44  log wasm mod: ready
+compiled frames: 44  of 45 scene frame(s)
+wasm hud fill: 0.0026
+staged refusal: com.example.wasmabi2: compiled for ABI 2, this build is ABI 1
+published keys: ["com.example.worldwasm"]
+mirroring: frames 30 -> 30
+OK: a compiled mod loads, is driven by the scene, reports a HUD bar and is refused by ABI
+```
+
+`compiled frames: 44` is the line that matters: it can only come from the *scene's* own frame
+calling `drive_wasm` (`mods.gd`), so a host that instantiated a module and never stepped it fails
+here rather than looking healthy. `mirroring: frames 30 -> 30` is `ABIv1.md`'s rule that a client
+which joined a host does not simulate the world's modules either -- the compiled half of
+`netWorldLocal()` -- and the refusal is the ABI's own: the module's *number*, not the manifest's.
 
 And the drawing is **the API's own surface, not the engine's** — which is a correction to this
 slice's first cut, and worth naming. That cut queued a mod's `rl.drawText` as a line and rendered
@@ -1197,7 +1217,9 @@ isolation. What stage 1 and stage 8's readable half leave is the rest of stage 8
 tuning merge among them), the rest of the events (`hud` and `draw3d` are the two that fire today),
 `modSetEnabled` and its session guard,
 `world.extend`'s world-mod datagram, reload/watch, the sound path, a mod's own meshes and textures,
-and the wasm path.
+and the compiled path's *datagram* half — the module itself loads, runs and reports as of stage 8's
+last slice (`verify_wasm_mod.gd`), with what it publishes exposed for the wire the port has not got
+yet.
 
 What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
@@ -1207,7 +1229,7 @@ rather than a gap); the mods state and
 until M22, and the **bangs** until M26, which gave the bridge its `blast` and the scene its
 `apply_remote_blast`); the asset bytes reaching an engine shim (`rl.loadSound`
 and friends) rather than a map; the mod surface's *writes* (the tuning merge among them), reload and
-the file watcher; the wasm path through `crates/plugin`; and `goats.world.extend`, `goats.entities`
+the file watcher; and `goats.world.extend`, `goats.entities`
 and `goats.water` -- the three groups still absent from the port's `goats` handle. Those are sections
 6 and 7.
 
@@ -1312,6 +1334,19 @@ registry is the only one here that is *mods'* own state rather than the host's),
 drawing surfaces. What is still thin is the
 *writable* surface: a mod that tries to change the world is refused with a thrown error and isolated
 rather than silently ignored (see section 3).
+
+**The compiled path is in as of the last slice of stage 8, and it is the half that never touches
+JavaScript.** A mod may ship a `.wasm` module instead of an entry (`ABIv1.md`), and `crates/godot`
+now links `crates/plugin` -- the same host the raylib client and `goatsd` drive -- so a module is
+decoded, instantiated against the capabilities its *own* import list asks for, and stepped from
+Rust. That is what the `wasm` feature on Slag is for, and it is why the plugin set can be a plain
+field: nothing in the facade reaches it, because a plugin's imports are served inside
+`crates/plugin`. The **scene's** frame drives it (`mods.gd`'s `_drive_wasm`), because the two things
+a module produces are scene values -- the HUD bar a `side: "client"` module reports and the opaque
+bytes a `side: "world"` one published -- and because the mirroring rule is the scene's: a client
+that joined a host does not step the world's modules. `verify_wasm_mod.gd` holds the whole ABI: the
+load, the scene's drive, the module's own report, the HUD bar, a wrong-ABI refusal by name, and that
+mirroring rule.
 
 **The one hard problem: the `goats` surface is now a cross-language bridge.**
 Today the surface is JS-to-JS: a mod calls `goats.world.terrainHeight(x, z)` and
@@ -1431,14 +1466,14 @@ Sizes are judgement, not measurement.
 | # | Stage | Done when | Size |
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
-| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`, including a mod's **own** geometry and images — `mesh`/`texture`/`bind`/`draw.mesh`, `verify_mod_mesh.gd`), and so are the **readable groups** (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`, §4.5–4.12, one per-frame snapshot + a callback for `terrainHeight`, held by `verify_mod_surface.gd`) with **`assets`** in among them (§4.11: the built-in half is `audio.gd`'s, the declared half is the host's, and the facade merges fills and joins the way the reference client does, so a name either half hands back resolves through `gfx.model`/`sfx.load`), and **`entities`** (§4.16: the registry a mod offers its own things into and any mod queries, which is the one group whose crossing is between two mods and not between a mod and the scene), and the **world mods' streams** (`rng`/`world.registerStream`, §4.13, derived from the session seed the way `sceneUseSeed` derives the scene's own); what remains of stage 8 is the *writes*, `modSetEnabled`, the world-mod datagram, `world.extend`'s transport, reload/watch and the wasm path — **and the events are in** (`update`, `shutdown`, `blast`, so the flock flies: `verify_scene_mods.gd` sends it into the air and holds the scene's own frames to it) — and that same gate now checks what the two examples **drew** (`_check_drawn`: the fat guy is in the world with twelve distinct surface shades, and a `mesh` record's angle is radians) | 2–3 |
+| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`, including a mod's **own** geometry and images — `mesh`/`texture`/`bind`/`draw.mesh`, `verify_mod_mesh.gd`), and so are the **readable groups** (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`, §4.5–4.12, one per-frame snapshot + a callback for `terrainHeight`, held by `verify_mod_surface.gd`) with **`assets`** in among them (§4.11: the built-in half is `audio.gd`'s, the declared half is the host's, and the facade merges fills and joins the way the reference client does, so a name either half hands back resolves through `gfx.model`/`sfx.load`), and **`entities`** (§4.16: the registry a mod offers its own things into and any mod queries, which is the one group whose crossing is between two mods and not between a mod and the scene), and the **world mods' streams** (`rng`/`world.registerStream`, §4.13, derived from the session seed the way `sceneUseSeed` derives the scene's own); what remains of stage 8 is the *writes*, `modSetEnabled`, the world-mod datagram, `world.extend`'s transport and reload/watch — **and the events are in** (`update`, `shutdown`, `blast`, so the flock flies: `verify_scene_mods.gd` sends it into the air and holds the scene's own frames to it) — and that same gate now checks what the two examples **drew** (`_check_drawn`: the fat guy is in the world with twelve distinct surface shades, and a `mesh` record's angle is radians) — and **the compiled path is in**: `crates/godot` links `crates/plugin`, so a `.wasm` mod loads, is driven by the scene's own frame, reports a HUD bar and is refused by ABI (`verify_wasm_mod.gd`) | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the mods and voice paths remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | **done**: the HUD is a `Control` drawing `drawHud` (M23), the console is in (M24: `console.gd` + `commands.gd` + `verify_console.gd` -- the shell, the sixty-odd verbs, chat, and six of the seven `GOATS_*` knobs as verbs), and the menu's four screens are in with the settings they drive (M25: `menu.gd` + `settings.gd` + `verify_menu.gd`); what is left is the `Mods` screen's *list*, which waits on the scene loading mods (stage 1) | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the console's `mute` and `setting bgm|sfx` are in (M24) and the menu's two sliders are in (M25), so what is left is *voice*, which is still the bridge's to carry | 2–3 |
-| 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: identity and logging, the readable groups, both drawing surfaces, a mod's own geometry and images, `gfx.unload`, a mod's own **sound**, the **asset slots**, the **entities** two mods see of each other, a world mod's **seeded stream**, the **devices** and **`goats.water`** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`, `verify_mod_audio.gd`), **the events are fired** (`update`/`shutdown`/`blast`), and the two examples have been **rewritten onto the API** — no `rl` in either, and every one of them loads, and *draws* right (the handle-kind and radians fixes, `_check_drawn`); the writes, `entities`' unload path, the world-mod datagram (`world.extend`'s transport), reload and the wasm path remain |
+| 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: identity and logging, the readable groups, both drawing surfaces, a mod's own geometry and images, `gfx.unload`, a mod's own **sound**, the **asset slots**, the **entities** two mods see of each other, a world mod's **seeded stream**, the **devices** and **`goats.water`** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`, `verify_mod_audio.gd`), **the events are fired** (`update`/`shutdown`/`blast`), and the two examples have been **rewritten onto the API** — no `rl` in either, and every one of them loads, and *draws* right (the handle-kind and radians fixes, `_check_drawn`); the writes, `entities`' unload path, the world-mod datagram (`world.extend`'s transport) and reload remain; **the compiled path is done** (`crates/godot` links `crates/plugin`: a `.wasm` module loads, runs and reports, `verify_wasm_mod.gd`) |
 | 9 | Platforms | desktop, Android, web export presets + CI | 2–4 |
 | 10 | Tests | golden-value checks per deterministic system; GUT/GdUnit for the core | 3–6 |
 
@@ -1947,7 +1982,10 @@ disagreements and fails if there are none.
   change now has two homes.
 - **GDExtension weight.** `iroh` + tokio + Slag in one `cdylib` is a lot of
   runtime behind an engine plugin; build time and binary size both grow, and the
-  Android/web targets are harder again. Stage 2 measures this.
+  Android/web targets are harder again. Stage 2 measures this. The compiled-mod
+  host adds least of the three: `crates/plugin` drives `slag::wasm`, which is the
+  engine's own pure-Rust interpreter rather than `wasmtime`, so linking it in is
+  one crate and no new runtime (`ABIv1.md` section 5).
 
 ## 10. Next steps
 
@@ -2000,14 +2038,16 @@ audio and the mod surface, and new work last.
    `ModHost::use_seed`, and the drawing surfaces (`goats.draw`,
    `goats.gfx`, and a mod's **own** geometry and images -- `mesh`/`texture`/`bind`/`draw.mesh`)
    painted (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`,
-   `verify_mod_audio.gd`). What is left is the half a mod *writes* and the rest of the surface: the
-   otherwise. What is left is the half a mod *writes*, and it is a shorter list than it was: the
-   events are **in** (`update`, `shutdown`, `blast`), `explosions`/`water` are in, and both examples
-   have been **rewritten onto the API** and now draw right (`verify_scene_mods.gd`'s `_check_drawn`;
-   the flock's unit fix is the seventh `birds` digest move, M14d). What remains is `modSetEnabled`
-   and its session guard, the world-mod datagram -- `world.extend`'s transport, which is the last
-   multiplayer gap -- `publishRows`, `entities`' unload path, reload/watch and the wasm path. **No
-   mod knows what `rl` is**, which is the milestone this order has been walking towards.
+   `verify_mod_audio.gd`). What is left is the half a mod *writes*, and it is a shorter list than it
+   was: the events are **in** (`update`, `shutdown`, `blast`), `explosions`/`water` are in, both
+   examples have been **rewritten onto the API** and now draw right (`verify_scene_mods.gd`'s
+   `_check_drawn`; the flock's unit fix is the seventh `birds` digest move, M14d), and **the compiled
+   path is in** -- `crates/godot` links `crates/plugin`, so a `.wasm` mod loads, the scene's own frame
+   drives it, it reports a HUD bar and a wrong ABI is refused by name (`verify_wasm_mod.gd`). What
+   remains is `modSetEnabled` and its session guard, the world-mod datagram -- `world.extend`'s
+   transport, which is the last multiplayer gap -- `publishRows`, `entities`' unload path and
+   reload/watch. **No mod knows what `rl` is**, which is the milestone this order has been walking
+   towards.
 4. **M20g, and anything else the JavaScript does not have.** Last on purpose.
 
 Orders 1-3 are "the same game the JavaScript client is"; 4 is new work in both, and

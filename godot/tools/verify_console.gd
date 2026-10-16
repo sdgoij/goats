@@ -201,7 +201,7 @@ const LIVE := [
 	["mod", "starts", "ok ["],
 	["mod list", "starts", "ok ["],
 	["mod key", "starts", "ok ["],
-	["mod bogus", "exact", "error mod expects list|key"],
+	["mod bogus", "exact", "error mod expects list|key|info"],
 	["perf", "exact", "error perf unavailable"],
 	# `host` is deliberately absent: it is backed, so running it here would bind a real session
 	# endpoint inside a partly-pure gate. `verify_net.gd` is where a session is started.

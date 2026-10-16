@@ -656,13 +656,18 @@ func _host(parts: PackedStringArray) -> String:
 	_call("cmd_host", [name])
 	return "ok host"
 
-## `mod [list|key]`: the metadata table the host found, and the world-mod digest key a join
-## handshake compares (`ctl.js`'s `modCommand`).
+## `mod [list|key|info]`: the metadata table the host found, the world-mod digest key a join
+## handshake compares, and one mod's own entry (`ctl.js`'s `modCommand`).
 ##
-## `info`, `enable`, `disable` and `reload` are the other half of `mods.js`: `info` wants a mod's
-## own command list, and the toggles queue session intents and re-point asset slots. Those are
-## stage 8, so the two readable halves are what is here -- and `key` is the one a player actually
-## needs, because it is the string a host's refusal names.
+## `info` adds what the table cannot carry: a *compiled* mod's module report, straight from the host
+## that instantiated it (`crates/plugin`'s `describe_json`: the ABI, the imports, the frame count,
+## the last log line). That is `mods.js`'s `modWasmInfo`, and it is the only place a player can see
+## what a `.wasm` module made of itself. The scene's `commands` list is the one part of the
+## reference's reply that is *not* here: the registered verbs live in the JavaScript facade, and the
+## port has no reader for that registry yet.
+##
+## `enable`, `disable` and `reload` are the other half: they queue session intents and re-point
+## asset slots, which is stage 8's `modSetEnabled`.
 func _mod(parts: PackedStringArray) -> String:
 	if mods == null:
 		return "error mod unavailable"
@@ -678,7 +683,27 @@ func _mod(parts: PackedStringArray) -> String:
 				String(meta.get("hash", ""))])
 		world.sort()
 		return "ok " + json_of(world)
-	return "error mod expects list|key"
+	if verb == "info":
+		var id: String = parts[2] if parts.size() > 2 else ""
+		if id == "":
+			return "error mod info expects an id"
+		var row: Variant = null
+		for meta: Dictionary in mods.mod_table():
+			if String(meta.get("id", "")) == id:
+				row = meta
+		if row == null:
+			return "error unknown mod: " + id
+		var info: Dictionary = (row as Dictionary).duplicate()
+		info["wasm"] = _wasm_info(id)
+		return "ok " + json_of(info)
+	return "error mod expects list|key|info"
+
+## A compiled mod's own report, or `null`. The host answers the string `"null"` for a mod with no
+## module rather than an empty reply, so the two answers parse the same way and there is one path.
+func _wasm_info(id: String) -> Variant:
+	if mods == null or mods.host == null:
+		return null
+	return JSON.parse_string(String(mods.host.call("wasm_describe", id)))
 
 ## `copy [text]`: with no argument, the ticket -- the one thing long enough that it should
 ## never have to be typed. The clipboard is Godot's own, and `console.gd` says whether it
