@@ -193,7 +193,7 @@ OK: the host refused the join by mod digest
 The first proves the transport, the join handshake, the chat routing and the
 world's *fields* — bots, weather, streams, meadow, craters, spent — against the
 shipping binary rather than between two Godot peers. The second is the one that
-matters most: `goatsd` demanded `com.github.sdgoij.goats.birds@1.0.0#5de4fa3cb5c077d0`,
+matters most: `goatsd` demanded `com.github.sdgoij.goats.birds@1.0.0#77675b54122841b5`,
 and the Godot client — which hashes nothing itself, it hands the set to
 `crates/mods` — was refused by digest with the missing id named. Two
 independently built implementations agreeing on a digest handshake is
@@ -1431,7 +1431,7 @@ Sizes are judgement, not measurement.
 | # | Stage | Done when | Size |
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
-| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`, including a mod's **own** geometry and images — `mesh`/`texture`/`bind`/`draw.mesh`, `verify_mod_mesh.gd`), and so are the **readable groups** (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`, §4.5–4.12, one per-frame snapshot + a callback for `terrainHeight`, held by `verify_mod_surface.gd`) with **`assets`** in among them (§4.11: the built-in half is `audio.gd`'s, the declared half is the host's, and the facade merges fills and joins the way the reference client does, so a name either half hands back resolves through `gfx.model`/`sfx.load`), and **`entities`** (§4.16: the registry a mod offers its own things into and any mod queries, which is the one group whose crossing is between two mods and not between a mod and the scene), and the **world mods' streams** (`rng`/`world.registerStream`, §4.13, derived from the session seed the way `sceneUseSeed` derives the scene's own); what remains of stage 8 is the *writes*, `modSetEnabled`, the world-mod datagram, `world.extend`'s transport, reload/watch and the wasm path — **and the events are in** (`update`, `shutdown`, `blast`, so the flock flies: `verify_scene_mods.gd` sends it into the air and holds the scene's own frames to it) -- and that same gate now checks what the two examples **drew** (`_check_drawn`: the fat guy is in the world, and a `mesh` record's angle is radians) | 2–3 |
+| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`, including a mod's **own** geometry and images — `mesh`/`texture`/`bind`/`draw.mesh`, `verify_mod_mesh.gd`), and so are the **readable groups** (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`, §4.5–4.12, one per-frame snapshot + a callback for `terrainHeight`, held by `verify_mod_surface.gd`) with **`assets`** in among them (§4.11: the built-in half is `audio.gd`'s, the declared half is the host's, and the facade merges fills and joins the way the reference client does, so a name either half hands back resolves through `gfx.model`/`sfx.load`), and **`entities`** (§4.16: the registry a mod offers its own things into and any mod queries, which is the one group whose crossing is between two mods and not between a mod and the scene), and the **world mods' streams** (`rng`/`world.registerStream`, §4.13, derived from the session seed the way `sceneUseSeed` derives the scene's own); what remains of stage 8 is the *writes*, `modSetEnabled`, the world-mod datagram, `world.extend`'s transport, reload/watch and the wasm path — **and the events are in** (`update`, `shutdown`, `blast`, so the flock flies: `verify_scene_mods.gd` sends it into the air and holds the scene's own frames to it) — and that same gate now checks what the two examples **drew** (`_check_drawn`: the fat guy is in the world with twelve distinct surface shades, and a `mesh` record's angle is radians) | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the mods and voice paths remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
@@ -1914,6 +1914,34 @@ disagreements and fails if there are none.
   showing the engine's quirk through it -- a leak here is invisible in every gate and obvious in one
   picture, which is why `_check_drawn` bounds an angle at a full turn. (It is also the seventh
   `birds` digest move, M14d: the entry changed, so a peer on the older flock cannot join.)
+- **raylib's tint *scales* a model's own colours; a flat `material_override` erases them, and the
+  difference is an entire character.** `mod_world.gd`'s `_apply_tint` replaced each mesh node with one
+  `StandardMaterial3D` at the tint and copied only `albedo_texture` across. That is right for the goat
+  — one material, a fleece texture, the tint the scene's own day/night asks for — and wrong for the
+  fat guy: his glTF carries no texture at all, only twelve `baseColorFactor`s, so at the white tint a
+  mod passes he drew a flat white blob, shirt and skin and hair and guitar all gone, while *he was
+  plainly coloured in the raylib client*, where `DrawModelEx`'s tint multiplies what the surface
+  already had. "The examples draw right" (section 8) was true of the flock and false of him, which is
+  exactly what a count of drawn records cannot see. The fix is the engine's own rule: a material per
+  *surface*, a duplicate with `albedo_color * tint`, so white is a no-op and a dusk-blue dims without
+  repainting. `_check_drawn` now counts the fat guy's distinct surface shades (twelve) rather than only
+  his existence. The shape mirrors `_apply_mesh_material`'s: a mod's own mesh really is one material and
+  the tint belongs *on* it, while an imported model already has one per surface and the tint belongs
+  *in* each.
+- **The port found a bug in the reference — and the only reason it could is that it shares no code.**
+  `birds` worked under Godot and threw in the raylib client, every session, in its `update` handler:
+  `TypeError: rl.makeTexture: argument 1 must be a number`. The fault was the *reference's* own
+  implementation of `goats.gfx.texture`: the API's image is **one** size (`APIv1.md` §4.19) and
+  raylib's `makeTexture` takes **two** — a width, a height and the pixels — so the member passed
+  `rl.makeTexture(size, pixels)` and the hex string landed in the height's slot. `crates/godot`
+  implements the same member without the engine (an `Image` from the hex), so it had no arity to get
+  wrong, and the port is what exposed it. The harness could not have: its recording stub took the same
+  two arguments the bug passed, which is the lesson that matters here — **a stub that agrees with a bug
+  is a copy of the mistake, not a reference to the engine**. Fixed in `mods.js`; the stub is
+  `(w, h, hex)` with types checked and `crates/harness/tests/mods.rs` calls the member and reads the
+  texture back square, so it cannot drift back (ROADMAP's M14f has the reference-side write-up). The
+  argument from section 4 stands in both directions: an independent implementation is a second opinion,
+  and a second opinion is worth having precisely when it disagrees.
 - **A second engine to maintain.** The raylib client and the Godot port share a
   protocol and a mod format but not a line of code. Every balance or protocol
   change now has two homes.

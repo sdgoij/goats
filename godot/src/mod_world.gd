@@ -200,9 +200,17 @@ func _place_cube(box: MeshInstance3D, command: Dictionary) -> void:
 	material.albedo_color = _color(command.get("col", null))
 	box.material_override = material
 
-## Tint every mesh in an instance. The material is kept per mesh node and rebuilt only when the
-## tint changes, so a mod that tints the same model a different colour each frame pays for it
-## and one that does not pays nothing.
+## Tint every mesh in an instance the way raylib's `drawModelEx` does: the tint **multiplies** each
+## surface's own material rather than replacing the whole node with one flat colour.
+##
+## The distinction is an entire look. raylib scales a model's own colours by the tint, so a white
+## tint changes nothing; a single `material_override` at the tint instead *erases* them. The fat guy
+## is the model that shows the difference -- his glTF carries no texture at all, only twelve
+## `baseColorFactor`s (shirt, skin, hair, guitar...), so the flat override drew him white. It is
+## `_apply_mesh_material`'s shape on the other side: a mod's own mesh really is one material and the
+## tint belongs on it, while an imported model already has a material per surface and the tint
+## belongs *in* each. The material is kept per surface and rebuilt only when the tint changes,
+## which is this function's old rule for its old reason.
 func _apply_tint(root: Node, tint: Color) -> void:
 	var stack: Array = [root]
 	while not stack.is_empty():
@@ -211,17 +219,40 @@ func _apply_tint(root: Node, tint: Color) -> void:
 			stack.append(child)
 		if not (node is MeshInstance3D):
 			continue
-		var mesh: MeshInstance3D = node
-		var last: Variant = _meta(mesh, "mod_tint", null)
+		var instance: MeshInstance3D = node
+		var last: Variant = _meta(instance, "mod_tint", null)
 		if last != null and (last as Color).is_equal_approx(tint):
 			continue
-		var source: Material = mesh.get_active_material(0)
-		var material := StandardMaterial3D.new()
+		var surfaces: int = 0 if instance.mesh == null else instance.mesh.get_surface_count()
+		if surfaces == 0:
+			# Nothing to multiply into: a mesh with no surface still takes the tint flat.
+			var flat := StandardMaterial3D.new()
+			flat.albedo_color = tint
+			instance.material_override = flat
+		else:
+			# A flat override a previous tint may have left is cleared, because the surface
+			# overrides below are what the node draws with now.
+			instance.material_override = null
+			for surface in surfaces:
+				instance.set_surface_override_material(surface,
+					_tinted(instance.mesh.surface_get_material(surface), tint))
+		instance.set_meta("mod_tint", tint)
+
+## One surface's material with `tint` multiplied into its albedo, which is raylib's rule: the tint
+## scales what the surface already had, so white changes nothing and a dusk-blue dims without
+## repainting. A surface with no material of its own draws white times the tint, and the texture,
+## the roughness and the metallic all ride along in the duplicate.
+static func _tinted(source: Material, tint: Color) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	if source is StandardMaterial3D:
+		var standard: StandardMaterial3D = source
+		material = standard.duplicate() as StandardMaterial3D
+		material.albedo_color = standard.albedo_color * tint
+	else:
 		material.albedo_color = tint
-		if source is StandardMaterial3D and (source as StandardMaterial3D).albedo_texture != null:
-			material.albedo_texture = (source as StandardMaterial3D).albedo_texture
-		mesh.material_override = material
-		mesh.set_meta("mod_tint", tint)
+	if tint.a < 1.0:
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	return material
 
 ## The imported scene for an asset name, or null. Packed from the generated node so a draw can
 ## instance it; the node itself is freed, because the scene is what is kept.

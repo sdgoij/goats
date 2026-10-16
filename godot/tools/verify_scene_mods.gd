@@ -258,6 +258,7 @@ func _check_events(vocabulary: Object) -> void:
 ##     of them failed to fly.
 func _check_drawn(world: Object) -> void:
 	var fat := false
+	var colours: Array[Color] = []
 	for child in world.get_children():
 		if not (child is Node3D):
 			continue
@@ -269,6 +270,7 @@ func _check_drawn(world: Object) -> void:
 			continue
 		if _meshes_under(node) > 0:
 			fat = true
+			colours = _surface_colours(node)
 	# A rotation's canonical angle is at most a full turn, so a value past 2*PI is a unit error and
 	# not a bird -- degrees are 57x, and six flying birds make it certain rather than likely.
 	var worst := 0.0
@@ -277,9 +279,17 @@ func _check_drawn(world: Object) -> void:
 		if not str(command.get("h", "")).begins_with("mesh:"):
 			continue
 		worst = maxf(worst, absf(float(command.get("angle", 0.0))))
-	print("drawn: fat guy ", fat, "  flock records ", records.size(), "  largest angle ", worst)
+	var shades: int = _distinct_colours(colours)
+	print("drawn: fat guy ", fat, "  shades ", shades, "  flock records ", records.size(),
+		"  largest angle ", worst)
 	if not fat:
 		_failures.append("the fat guy is not in the world: a `mesh` record with a model handle placed no meshes")
+	# A model's look can *be* its materials, and the fat guy's is exactly that: his glTF has no
+	# texture at all, only twelve `baseColorFactor`s, so a tint that replaced them with one flat
+	# colour drew him white. Two distinct surface shades is the cheapest way to say the tint
+	# multiplied into them (raylib's rule) instead of overwriting them.
+	if fat and shades < 2:
+		_failures.append("the fat guy's surfaces carry %d distinct shade(s), so the tint replaced his materials rather than multiplying into them" % shades)
 	if worst > TAU + 1e-3:
 		_failures.append("a mesh record's angle is %s, and an angle is at most a full turn (%s) -- degrees rather than radians?"
 			% [worst, TAU])
@@ -295,6 +305,39 @@ func _meshes_under(root: Node) -> int:
 		if node is MeshInstance3D:
 			count += 1
 	return count
+
+## The albedo of every surface an instance's meshes have been tinted with, which is where
+## `mod_world.gd`'s `_apply_tint` puts it (one override per surface).
+func _surface_colours(root: Node) -> Array[Color]:
+	var out: Array[Color] = []
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		for child in node.get_children():
+			stack.append(child)
+		if not (node is MeshInstance3D):
+			continue
+		var mesh: MeshInstance3D = node
+		var count: int = 0 if mesh.mesh == null else mesh.mesh.get_surface_count()
+		for surface in count:
+			var material: Material = mesh.get_surface_override_material(surface)
+			if material is StandardMaterial3D:
+				out.append((material as StandardMaterial3D).albedo_color)
+	return out
+
+## How many of a list's colours differ from each other, to within float32 -- the measure of
+## whether a model kept its own shades.
+func _distinct_colours(colours: Array[Color]) -> int:
+	var seen: Array[Color] = []
+	for colour in colours:
+		var fresh := true
+		for other in seen:
+			if colour.is_equal_approx(other):
+				fresh = false
+				break
+		if fresh:
+			seen.append(colour)
+	return seen.size()
 
 ## Two files written at run time into `user://`, and the host asked to load the directory: one mod
 ## whose entry throws on its first line. Staged rather than shipped because the repository's mods
