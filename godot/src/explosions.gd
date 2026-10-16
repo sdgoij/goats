@@ -83,6 +83,12 @@ var salt := DEFAULT_SALT
 ## Counters a probe reads rather than asserts.
 var trips := 0
 var blasts := 0
+## Whether the *core* devices are in the field at all (`APIv1.md` section 4.15's
+## `goats.explosions.armed`). It is the mirror of the facade's own set of mods that have taken the
+## field away -- the request belongs to the mod that made it, so the set is the mods' and this is
+## one answer derived from it. Both derivations read it (`mine_armed`, `trap_at`), which is what
+## makes a "clear the field" tool a mod rather than a second device system.
+var core_armed := true
 
 ## The player's own reaction to a bang it was inside: metres of camera knock and
 ## where the knock is in its oscillation. Both are this process's, and nothing on the
@@ -253,6 +259,10 @@ func mine_at(cx: int, cz: int) -> bool:
 ## Whether cell `(cx, cz)` holds an armed mine *now*: the derived field, minus the
 ## mines that have gone off, plus the replacements that have moved in.
 func mine_armed(cx: int, cz: int) -> bool:
+	# `explosions.js`'s own first line: while any mod has the field away, nothing in it is armed.
+	# A bang already in flight still lands -- this is the *derivation*, and `pending` is not asked.
+	if not core_armed:
+		return false
 	var key: int = Meadow.key(cx, cz)
 	if spent.has(key):
 		return false
@@ -260,11 +270,20 @@ func mine_armed(cx: int, cz: int) -> bool:
 
 ## Whether the tuft in this cell is trapped now, on the same rule.
 func trap_at(cx: int, cz: int) -> bool:
+	if not core_armed:
+		return false
 	var key: int = Meadow.key(cx, cz)
 	if trap_spent.has(key):
 		return false
 	return trap_moved.has(key) \
 		or trap_noise(cx ^ 0x5bf03635, cz ^ 0x27d4eb2f, salt) < TRAP_CHANCE
+
+## `goats.explosions.armed(on)`: whether the core devices are in the field. The *set* of requests
+## is the facade's (it is the mods' own ids), so this is the one bit they derive to; `true` hands
+## the field back. Answers the new state, which is what the reference's `modCoreArmed` does.
+func set_core_armed(on: bool) -> bool:
+	core_armed = on
+	return core_armed
 
 ## The armed mine within `trigger` of `(x, z)`, as `{ cx, cz, x, z }`, or empty.
 ##

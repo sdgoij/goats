@@ -823,6 +823,12 @@ func _mod_call(name: String, args_json: String) -> String:
 			if is_nan(bx) or is_nan(bz):
 				return _mod_err("explosions.blast needs two numbers")
 			return _mod_ok(explosions.mod_blast(String(args[2]), bx, bz))
+		"explosions.coreArmed":
+			# The facade's set of mods that have taken the core devices away, derived to the one bit
+			# the scene's own derivation reads (`Explosions.set_core_armed`). Private to the seam: the
+			# *member* is `goats.explosions.armed(on)`, and whose request it is is the facade's own
+			# bookkeeping -- which is why a mod that unloads restores the field without a second call.
+			return _mod_ok(explosions.set_core_armed(args.is_empty() or args[0] != false))
 		"player.giveEnergy":
 			# The goat's two stats, given rather than read (`APIv1.md` section 4.5). A bird
 			# perched on its back is the caller these exist for, and the clamp is the API's own:

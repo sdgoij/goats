@@ -547,11 +547,13 @@ the API's own clamps); sets any setting -- `herd` included -- through the scene'
 `applySettings`; drives the clock and the weather (local-only, and they answer `false` for a client,
 which is what the API documents); says a chat line; and resizes the herd and works its four bot
 handles. Each crosses the same `Callable` seam `terrainHeight` does -- `main.gd`'s `_mod_call` -- so
-a slider in the menu, a line in the console and a mod's call are one code path. Three families are
-still not there, and each throws an error naming the member rather than doing nothing quietly:
-`assets.override`/`add` (a *pre-freeze* pair, and this client has no freeze to precede),
+a slider in the menu, a line in the console and a mod's call are one code path. `explosions.armed`
+is in too: the request belongs to the *mod* that made it, so `armed(false)` takes the core devices
+out of the derivation and a mod that unloads hands the field back. Two families are still not
+there, and each throws an error naming the member rather than doing nothing quietly:
+`assets.override`/`add` (a *pre-freeze* pair, and this client has no freeze to precede) and
 `tuning.set`/`merge` (the tree is a subset of the API's and the leaves this build has answer, but
-it is still the scene's *constants* rather than something mutable), and `explosions.armed`.
+it is still the scene's *constants* rather than something mutable).
 
 To play with somebody, point it at a host:
 

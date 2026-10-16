@@ -80,11 +80,10 @@ if (typeof globalThis.goats === "undefined") {
 
         // A write the port has not got. `APIv1.md` section 7's isolation logs it with the mod's id
         // and the frame goes on, which is a failure a mod author can see instead of a member that
-        // quietly did nothing. Three families are still here, and each for a reason of its own:
-        // `assets.override`/`add` are *pre-freeze* writes and this client has no freeze to precede;
-        // `tuning.set`/`merge` need the constants lifted into a mutable tree, which the scene still
-        // holds as constants; and `explosions.armed` owns a field the scene derives from the seed.
-        // The readable half of the same member (if any) still works.
+        // quietly did nothing. Two families are still here, and each for a reason of its own:
+        // `assets.override`/`add` are *pre-freeze* writes and this client has no freeze to precede,
+        // and `tuning.set`/`merge` need the constants lifted into a mutable tree, which the scene
+        // still holds as constants. The readable half of the same member (if any) still works.
         function refuse(member) {
             return function () {
                 throw new Error("goats." + member + ": this client has no write path to " +
@@ -692,6 +691,45 @@ if (typeof globalThis.goats === "undefined") {
         }
 
         /**
+         * The devices (`APIv1.md` section 4.15), as a group *per mod*. `traps` and `blast` are the
+         * same for every caller, but `armed` belongs to the mod that asked -- which is why the
+         * reference client's group is `modExplosionsFor(id)` and not one shared object. "Whether
+         * the core devices are in the field" is one answer derived from a set of requests, so two
+         * mods cannot cancel each other by load order and a mod that is unloaded takes its own
+         * request with it (`dropRegistrations`).
+         */
+        const coreOff = new Set();
+
+        /** Hand the scene the one bit its own derivation reads (`Explosions.mine_armed`). */
+        function pushCoreArmed() {
+            ask("explosions.coreArmed", [coreOff.size === 0]);
+        }
+
+        function explosionsFor(id) {
+            return {
+                traps: function (x, z, range) {
+                    return ask("explosions.traps", [Number(x), Number(z), Number(range)]);
+                },
+                blast: function (x, z, kind) {
+                    return ask("explosions.blast",
+                        [Number(x), Number(z), kind === undefined ? "mine" : String(kind)]);
+                },
+                /**
+                 * `armed(on)`: with no argument, whether the core devices are in the field; with
+                 * `false`, take them out of it; with `true`, hand them back. The answer is whether
+                 * the change took, and the *question* costs no crossing -- the set is here.
+                 */
+                armed: function (on) {
+                    if (on === undefined) return coreOff.size === 0;
+                    if (on) coreOff.delete(id);
+                    else coreOff.add(id);
+                    pushCoreArmed();
+                    return true;
+                },
+            };
+        }
+
+        /**
          * Drop everything one mod registered *outside its own handle*: its streams, its world
          * extensions and its offered entities. Its hooks and commands go with its `__mods` entry,
          * which the caller deletes -- those are its `state`, and the state is the handle's.
@@ -714,6 +752,11 @@ if (typeof globalThis.goats === "undefined") {
                     delete entityOffers[key];
                 }
             }
+            // ...and its request for the core devices, which is `modCoreArmed(id, true)` in
+            // `goatsEnd`: the request belongs to the mod that made it, so a mod that is gone asks
+            // for nothing and a second mod's own request is untouched. The crossing happens only
+            // when the field actually comes back.
+            if (coreOff.delete(id)) pushCoreArmed();
         }
 
         /**
@@ -870,6 +913,9 @@ if (typeof globalThis.goats === "undefined") {
                 // inventing a base one that would answer for nobody.
                 handle.rng = function (name) { return rngFor(id, name); };
                 handle.world = worldFor(id);
+                // ...and its own devices group, for the one member whose *owner* matters: `armed`
+                // records the request under this mod's id (`APIv1.md` section 4.15).
+                handle.explosions = explosionsFor(id);
                 return handle;
             },
 
@@ -1087,20 +1133,10 @@ if (typeof globalThis.goats === "undefined") {
              * bang: `kind` is the core's own `"mine"` or `"trap"`, so the scene runs its own path --
              * the crater, the damage, the flash, the knock, the sound, the `"blast"` event and the
              * report -- which is what makes a world mod's bang the host's and visible to every peer.
-             * `armed` is the group's one write and is still refused: the field it would take away
-             * is derived in the scene from the seed, and a per-mod "my devices rule" flag belongs
-             * with the scene's own derivation rather than in the facade.
+             * `armed` is the group's one write, and it is why the group is built per mod rather
+             * than shared: the request belongs to the mod that made it.
              */
-            explosions: {
-                traps: function (x, z, range) {
-                    return ask("explosions.traps", [Number(x), Number(z), Number(range)]);
-                },
-                blast: function (x, z, kind) {
-                    return ask("explosions.blast",
-                        [Number(x), Number(z), kind === undefined ? "mine" : String(kind)]);
-                },
-                armed: refuse("explosions.armed"),
-            },
+            explosions: explosionsFor("-"),
 
             /**
              * The game's constants (`APIv1.md` section 4.10), read as a tree of dotted

@@ -18,6 +18,9 @@
 #   * **A compiled bar clears.** The wasm mod's `goats_hud` bar is drawn from a value the scene holds
 #     (`wasm_hud`), so a disable the host performed correctly still leaves the bar on screen unless
 #     the scene reads the host's empty answer as an empty map. This is the failure a player saw.
+#   * **A mod's armed request dies with it.** `explosions.armed(false)` is the *mod's* -- the field
+#     is armed while no mod has asked otherwise -- so unloading the mod that asked hands the field
+#     back without a second call, which is `APIv1.md` section 4.15 and `goatsEnd`'s own line.
 #   * **The guard is the scene's.** A world mod's side is fixed at join, so changing one mid-session
 #     would desync a joiner. The session is driven through the same `Callable` the frame sets, so the
 #     guard is exercised without binding an endpoint -- and a *client* mod still toggles in it.
@@ -43,6 +46,22 @@ const WASM_ID := "com.github.sdgoij.goats.wasm"
 const HELLO_REPLY := "ok hello world"
 ## Frames to let the scene boot and the mods load before the checks.
 const SETTLE_FRAMES := 6
+
+## The `armed` probe (`APIv1.md` section 4.15): a *mod's* own request, made through the handle the
+## loader gives it, plus the base object's read of the one answer derived from every request. Two
+## verbs rather than one, because the gate has to read the field between the request and the unload
+## that should hand it back.
+const ARM_JS := """
+(function () {
+    goats.command("armoff", function () {
+        const birds = goats.begin("com.github.sdgoij.goats.birds");
+        return "ok " + String(birds.explosions.armed(false));
+    });
+    goats.command("armnow", function () {
+        return "ok " + String(goats.explosions.armed());
+    });
+})();
+"""
 
 var _failures: Array[String] = []
 var _frames := 0
@@ -138,9 +157,22 @@ func _check() -> void:
 	print("hello after enable -> ", hello_on)
 	_expect(hello_on == HELLO_REPLY, "the verb did not come back: '%s'" % hello_on)
 
-	# 4. A world mod's *registrations* go with it. `birds` registers a stream and an extension, and
-	#    those are what the mods datagram carries -- so a disable that missed them would keep
-	#    publishing for a mod that is off, which is the one thing `world_mods_json` can be asked.
+	# 4. A world mod's *registrations* go with it -- its stream, its extension, and its own request
+	#    for the core devices. `birds` registers a stream and an extension, and those are what the
+	#    mods datagram carries -- so a disable that missed them would keep publishing for a mod that
+	#    is off, which is the one thing `world_mods_json` can be asked. The armed request is
+	#    `APIv1.md` section 4.15's "the request belongs to the mod that made it": `goatsEnd` hands
+	#    the field back, so a mod that is unloaded leaves no trace in the derivation.
+	var host: Object = mods.get("host")
+	if str(host.call("eval_js", ARM_JS)) != "ok":
+		_failures.append("the armed probe did not evaluate")
+	var devices: Object = _main.get("explosions")
+	_expect(String(host.call("run_command", "armoff", "armoff")) == "ok true",
+		"a mod could not take the core devices out of the field")
+	_expect(not bool(devices.get("core_armed")),
+		"the scene still has the field armed after a mod took it away")
+	_expect(String(host.call("run_command", "armnow", "armnow")) == "ok false",
+		"armed() answered true while a mod had the field away")
 	var world_before: String = String(mods.call("world_mods_json"))
 	print("world mods before -> ", world_before.substr(0, 96))
 	_expect(world_before.contains(WORLD_ID),
@@ -151,6 +183,11 @@ func _check() -> void:
 	var world_off: String = String(mods.call("world_mods_json"))
 	print("world mods after -> '", world_off, "'")
 	_expect(world_off == "", "the flock's state outlived its mod: '%s'" % world_off)
+	# ...and the field the mod had taken away comes back with it, without a second call.
+	_expect(bool(devices.get("core_armed")),
+		"unloading the mod that took the field away did not hand it back")
+	_expect(String(host.call("run_command", "armnow", "armnow")) == "ok true",
+		"armed() did not come back to true after the mod went")
 	_expect(String(mods.call("set_enabled", WORLD_ID, true)) == "ok mod enable " + WORLD_ID,
 		"the world mod did not re-enable")
 	_expect(String(mods.call("world_mods_json")).contains(WORLD_ID),

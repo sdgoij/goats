@@ -39,9 +39,10 @@
 #   6. **The writes are the scene's** (`APIv1.md` sections 4.5-4.12). Each is applied and held
 #      against the *scene's own* field -- a position, a heading, a gait, a clamped camera, a gain,
 #      a clock, a herd size and a bot's own x/z/yaw -- because a write is a claim about the
-#      simulation and only the simulation can keep its invariants. The three families the port has
-#      still not got (`tuning.set`, `assets.override`, `explosions.armed`) are asserted as
-#      refusals with them, so a member that quietly became a no-op would show.
+#      simulation and only the simulation can keep its invariants. The two families the port has still
+#      not got (`tuning.set`, `assets.override`) are asserted as refusals with them, so a member that
+#      quietly became a no-op would show. (`explosions.armed` was the third and is now in -- it is
+#      checked with the devices, above.)
 #   7. **The asset slots have both of their owners** (`assets`, section 4.11). This is the one group
 #      two things supply -- the built-in half is the scene's own table and the declared half is the
 #      mods' -- so what is held is that both are visible, that a built-in slot's name really loads
@@ -294,16 +295,20 @@ const PROBE_JS := """
         out.mines = near.mines.length;
         out.traps = near.traps.length;
         out.mine = near.mines.length > 0 ? near.mines[0] : null;
+        // `armed` (`APIv1.md` section 4.15): the request is the mod's, and with the field away the
+        // derivation answers *nothing* -- which is what makes a "clear the field" tool a mod.
+        out.armed_before = goats.explosions.armed();
+        goats.explosions.armed(false);
+        out.armed_after = goats.explosions.armed();
+        const off = goats.explosions.traps(x, z, 40);
+        out.off_mines = off.mines.length;
+        out.off_traps = off.traps.length;
+        goats.explosions.armed(true);
+        out.on_mines = goats.explosions.traps(x, z, 40).mines.length;
         // The bang goes through the *core's* path, so the scene's own count rises and the device is
         // spent -- and a spent device is a cell that is armed nowhere, which the query below says.
         out.blast = goats.explosions.blast(x, z, "mine");
         out.single = goats.explosions.traps(x, z, 1).mines.length;
-        try {
-            goats.explosions.armed(false);
-            out.armed = "answered";
-        } catch (error) {
-            out.armed = "threw";
-        }
         return JSON.stringify(out);
     });
 
@@ -336,14 +341,11 @@ const PROBE_JS := """
         b.zoomies(2);
         b.startle();
         out.bot_wrote = { x: WX + 4, z: WZ - 3, yaw: 1.25 };
-        // The three families still refused: a pre-freeze asset write, the tuning tree, and the
-        // core-armed flag.
+        // The two families still refused: a pre-freeze asset write, and the tuning tree.
         try { goats.tuning.set("stats.max", 5); out.tune_write = "answered"; }
         catch (error) { out.tune_write = "threw"; }
         try { goats.assets.override("sfx.music", "mod:com.example:sfx.music.mp3"); out.asset_write = "answered"; }
         catch (error) { out.asset_write = "threw"; }
-        try { goats.explosions.armed(false); out.armed_write = "answered"; }
-        catch (error) { out.armed_write = "threw"; }
         return JSON.stringify(out);
     });
 })();
@@ -789,8 +791,21 @@ func _check_devices(host: Object) -> void:
 	if int(answer.get("single", -1)) != 0:
 		_failures.append("the cell is still armed a moment after the bang (%s found)"
 			% answer.get("single"))
-	if str(answer.get("armed")) != "threw":
-		_failures.append("goats.explosions.armed did not throw: %s" % answer.get("armed"))
+	# `armed` (`APIv1.md` section 4.15): the field answers nothing while a mod has it away, and
+	# `armed(true)` hands it back -- so the count comes home, which is what makes the toggle the
+	# *derivation's* rather than a second device system.
+	if answer.get("armed_before") != true:
+		_failures.append("goats.explosions.armed() was %s with the field armed"
+			% answer.get("armed_before"))
+	if answer.get("armed_after") != false:
+		_failures.append("goats.explosions.armed(false) left armed() at %s"
+			% answer.get("armed_after"))
+	if int(answer.get("off_mines", -1)) != 0 or int(answer.get("off_traps", -1)) != 0:
+		_failures.append("the derivation still found a device with the field away: %s/%s"
+			% [answer.get("off_mines"), answer.get("off_traps")])
+	if int(answer.get("on_mines", -1)) != (want["mines"] as Array).size():
+		_failures.append("armed(true) did not hand the field back: %s mine(s), the scene has %d"
+			% [answer.get("on_mines"), (want["mines"] as Array).size()])
 	# ...and a frame, because the `blast` event a mod's *own* bang produces is **queued** and said by
 	# the frame rather than inside the bang: a bang a mod asked for runs in that mod's JavaScript,
 	# where the extension is borrowed, and a call back into `ModHost` from there panics (`PORT.md`
@@ -1121,8 +1136,8 @@ func _check_writes(read: Dictionary, main: Node) -> void:
 				or not _near(float(one.get("yaw", 0.0)), float(bw.get("yaw", 0.0))):
 			_failures.append("a bot handle's teleport/face did not land: %s" % one)
 
-	# The three families that are still refused.
-	for member: String in ["tune_write", "asset_write", "armed_write"]:
+	# The two families that are still refused.
+	for member: String in ["tune_write", "asset_write"]:
 		if str(read.get(member)) != "threw":
 			_failures.append("a refused write (%s) did not throw: %s" % [member, read.get(member)])
 

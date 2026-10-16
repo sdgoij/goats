@@ -413,10 +413,12 @@ reported, not silently ignored).
 > rather than a value, and it -- and every write -- goes the other way through a `Callable` the
 > scene registers. The writes the scene owns are then in: `player`'s position, heading, mode and
 > restart, `camera.set` with its clamps, `settings.set`, the local-only `world.setTime`/`setWeather`,
-> `net.say`, `bots.setCount` and its four handles. Three families are still *thrown* rather than
-> answered -- `assets.override`/`add` (a pre-freeze pair, with no freeze to precede here),
-> `tuning.set`/`merge` and `explosions.armed` -- so a mod that tries one is named in its own hook
-> rather than silently doing nothing. The port's `tuning` tree is also
+> `net.say`, `bots.setCount` and its four handles, and `explosions.armed` -- whose request is the
+> *mod's*, so a mod's `armed(false)` takes the core devices out of the derivation and a mod that
+> unloads hands the field back (`goatsEnd`). Two families are still *thrown* rather than answered --
+> `assets.override`/`add` (a pre-freeze pair, with no freeze to precede here) and `tuning.set`/`merge`
+> -- so a mod that tries one is named in its own hook rather than silently doing nothing. The port's
+> `tuning` tree is also
 > a **subset**: it gathers the port's own constants, and a path it has not got throws the same
 > "unknown path" a typo does, so a leaf the port never ported is never answered with a wrong
 > number.
