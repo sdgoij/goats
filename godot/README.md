@@ -560,7 +560,10 @@ module, a mod's `tuning.json` merges before its entry runs, and every change is 
 event by the frame that follows it. The tree is a subset of the API's, and a path this build has not
 got throws. The two slot writes (`assets.override`/`add`) are in too, gated the way the reference
 client gates them: legal only while a mod's *own entry* runs, and refused anywhere else with its own
-`registration is closed` (`APIv1.md` §4.11).
+`registration is closed` (`APIv1.md` §4.11). **Registration closes** when the load is over: the scene
+calls `goats.freeze()` once every entry has run, so `goats.frozen()` answers `true` and a hook, a
+verb, a registry or a slot write asked for after that is refused -- unless it is the mod's own entry
+again, which a reload re-opens.
 
 To play with somebody, point it at a host:
 

@@ -1119,7 +1119,7 @@ writes: player/camera/settings/world/net/bots/tuning took, the two local-only on
 answer false for a client, and the asset writes are refused outside an entry
 tuning event: 8 change(s), herd.count 4.0
 staged assets: override true  add true  bleats 6.0->7.0  outside Error: goats.assets.override: registration is closed
-identity: api 1.0  game 0.1.0  mods 5.0  mod com.example.jitprobe/client  frozen false
+identity: api 1.0  game 0.1.0  mods 5.0  mod com.example.jitprobe/client  frozen true
 assets: 12.0 slot(s)  model.goat -> goat_animated.glb  bleat 8  squawk 2.0
 entities: 2.0 in range from com.example.owner:blob  at a point 1.0  past a throw 3.0  named true
 OK: the mods read the live world through every readable goats group
@@ -1355,9 +1355,11 @@ facade rather than either side) and the **entities** one mod offers another (`go
 registry is the only one here that is *mods'* own state rather than the host's), plus the two
 drawing surfaces. The **writable** surface is in too
 (see section 3): the scene's own writes, the tuning tree's `set`/`merge`, and a `tuning.json` merged
-before an entry runs. What is still thin is a mod that reaches for `assets.override`/`add`
-*outside* its own entry -- refused with the reference's own `registration is closed` and isolated
-rather than silently ignored.
+before an entry runs. **Registration closes** when the load is over -- the scene calls
+`goats.freeze()` once every entry has run, so `goats.frozen()` answers `true` -- and what is still
+thin is a mod that reaches for `assets.override`/`add` or any other registration *outside* its own
+entry: refused with the reference's own `registration is closed` and isolated rather than silently
+ignored.
 
 **The compiled path is in as of the last slice of stage 8, and it is the half that never touches
 JavaScript.** A mod may ship a `.wasm` module instead of an entry (`ABIv1.md`), and `crates/godot`

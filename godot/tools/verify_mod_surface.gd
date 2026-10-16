@@ -941,8 +941,8 @@ func _check_identity(read: Dictionary, mods: Object, console: Object) -> void:
 		_failures.append("goats.api is %s, and the API major is 1" % read.get("api"))
 	if str(read.get("game", "")).is_empty():
 		_failures.append("goats.game is empty")
-	if read.get("frozen") != false:
-		_failures.append("goats.frozen() is %s and nothing has frozen" % read.get("frozen"))
+	if read.get("frozen") != true:
+		_failures.append("goats.frozen() is %s after every entry has run" % read.get("frozen"))
 	var table: Array = mods.call("mod_table")
 	if int(read.get("mods", -1)) != table.size():
 		_failures.append("goats.mods() is %s row(s), the scene's table is %d"
@@ -1357,6 +1357,14 @@ goats.command("stagedassets", function () {
     try { goats.assets.override("model.goat", "x"); seen.after_window = "answered"; }
     catch (error) { seen.after_window = String(error); }
     seen.kept = goats.assets.get("model.goat");
+    // ...as is every other registration, now that the freeze has closed them: a hook, a verb, a
+    // registry. (`goats.frozen()` is read by the surface probe and held there.)
+    try { goats.command("late", function () {}); seen.late_command = "answered"; }
+    catch (error) { seen.late_command = String(error); }
+    try { goats.on("update", function () {}); seen.late_on = "answered"; }
+    catch (error) { seen.late_on = String(error); }
+    try { goats.world.registerStream("late", 1); seen.late_stream = "answered"; }
+    catch (error) { seen.late_stream = String(error); }
     return JSON.stringify(seen);
 });
 """
@@ -1395,11 +1403,15 @@ goats.command("stagedassets", function () {
 		_failures.append("assets.add on a single-file slot answered %s" % read.get("single"))
 	if not str(read.get("after_window")).contains("registration is closed"):
 		_failures.append("assets.override outside an entry answered %s" % read.get("after_window"))
+	for member: String in ["late_command", "late_on", "late_stream"]:
+		if not str(read.get(member)).contains("registration is closed"):
+			_failures.append("a registration after the freeze (%s) answered %s"
+				% [member, read.get(member)])
 	if str(read.get("kept")) != "mod:com.example.assets:goat.glb":
 		_failures.append("an entry's override did not survive its window: %s" % read.get("kept"))
 	print("staged assets: override ", read.get("override"), "  add ", read.get("added"),
 		"  bleats ", read.get("before"), "->", read.get("after"), "  outside ",
-		read.get("after_window"))
+		read.get("after_window"), "  late ", read.get("late_command"))
 
 ## 6b. The `"tuning"` event (`APIv1.md` section 4.2): `(path, value)`, once per changed leaf, said by
 ##     the frame that follows the write. The probe's writes are the changes, so the listener's list

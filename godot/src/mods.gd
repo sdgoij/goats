@@ -101,6 +101,9 @@ func _ready() -> void:
 	dir = resolve_dir()
 	if dir == "":
 		_line("mod: no mods directory found")
+		# Nothing to register, but the freeze is still the boot's shape: there is no entry left to
+		# run, so registration has nothing to be open *for* (`APIv1.md` section 4.4).
+		host.call("freeze")
 		return
 	_line("mod: scanning " + dir)
 	# `load_mods` discovers and validates; `load_all` runs every entry, isolating the ones that
@@ -113,6 +116,10 @@ func _ready() -> void:
 	_merge_declared_tuning(parse_table(host.call("mods_json")))
 	Tuning.take_changed()
 	report = String(host.call("load_all"))
+	# Registration closes once every entry has run (`APIv1.md` section 4.4): a hook, a verb, a
+	# registry or an asset override a mod asks for after this is refused, unless the entry is the
+	# mod's *own* again -- a reload re-opens it. `goats.frozen()` answers with this from here on.
+	host.call("freeze")
 	for line in report.split("\n"):
 		_line(line)
 	table = parse_table(host.call("mods_json"))

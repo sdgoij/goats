@@ -402,10 +402,10 @@ reported, not silently ignored).
 > back resolves through `gfx.model` and `sfx.load`. The port's `assets`, `gfx.model` and `sfx.load`
 > therefore all answer for the game's own files, which is what makes the API's own example --
 > `goats.gfx.model(goats.assets.get("model.goat"))` -- work without a mod knowing a path. The two
-> writes (`override`/`add`) are pre-freeze in the reference client; the port takes the *effective*
-> half of that rule -- legal only while a mod's own **entry** runs, and refused anywhere else with the
-> reference's own `registration is closed` -- which is where a client with no `goats.freeze()` can
-> put it. `entities` is the only group whose crossing is between two *mods* rather than
+> writes (`override`/`add`) are pre-freeze in the reference client; the port freezes the same way --
+> `goats.freeze()` once every entry has run -- so both are legal inside a mod's own **entry** (a
+> reload re-opens it) and refused anywhere else with the reference's own `registration is closed`.
+> `entities` is the only group whose crossing is between two *mods* rather than
 > between a mod and the scene, so a client implements both members locally and the host is not
 > involved at all, and a mod's offers are **dropped on unload** (`goatsEnd`, which `modSetEnabled`
 > drives), so a disable takes them with it. The extension is

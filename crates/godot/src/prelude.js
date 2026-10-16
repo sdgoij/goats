@@ -255,10 +255,20 @@ if (typeof globalThis.goats === "undefined") {
         // load (`modApplyAssets`'s rebuild, done lazily).
         const assetFills = {};   // id -> { slot: name }
         const assetJoins = {};   // id -> { slot: [names] }
-        // The mod whose entry is executing, if any. Both writes are legal only in that window
-        // (`mods.js`'s `modOpenFor`) -- this client's stand-in for "before the freeze", and the same
-        // effective rule: a mod declares its assets while it loads and never again.
+        // The mod whose entry is executing, if any (`mods.js`'s `modOpenFor`). Registration is open
+        // to it even after the freeze, so a reload can re-register what the freeze closed.
         let openFor = null;
+        // Whether registration has closed (`mods.js`'s `modsFrozen`). The scene freezes once every
+        // entry has run, and from then on only the mod whose entry is executing may register.
+        let frozen = false;
+
+        /** `mods.js`'s `modRegistrationAllowed`: open before the freeze, or for the mod whose own
+         *  entry is running -- which is the one window a reload gets. The *idle* state (`id ===
+         * null`, the one `eval_js` code registers on) is not a mod, so the freeze does not close it:
+         * that is the port's own door for a probe rather than a mod's. */
+        function registrationAllowed(id) {
+            return !frozen || openFor === id;
+        }
 
         /** A row's fills: the manifest's, then any `override` the entry made, with the code last. */
         function fillsOf(row) {
@@ -291,10 +301,10 @@ if (typeof globalThis.goats === "undefined") {
         /**
          * `goats.assets.override(slot, name)`: point a slot at one of this mod's assets, replacing
          * what it held. Legal only while the mod's *own entry* runs -- `modRegistrationAllowed`'s
-         * rule with the freeze taken out -- and recorded so every later read of the slot sees it.
+         * rule -- and recorded so every later read of the slot sees it.
          */
         function assetOverride(id, slot, name) {
-            if (id === null || openFor !== id) {
+            if (id === null || !registrationAllowed(id)) {
                 throw new Error("goats.assets.override: registration is closed");
             }
             if (typeof slot !== "string" || slot === "") {
@@ -314,7 +324,7 @@ if (typeof globalThis.goats === "undefined") {
          * list to join, which is `modSlotJoin`'s own refusal rather than a bug here.
          */
         function assetAdd(id, slot, name) {
-            if (id === null || openFor !== id) {
+            if (id === null || !registrationAllowed(id)) {
                 throw new Error("goats.assets.add: registration is closed");
             }
             if (typeof slot !== "string" || slot === "") {
@@ -580,6 +590,9 @@ if (typeof globalThis.goats === "undefined") {
          * still get different sequences. Returns the draw, which is what a mod keeps.
          */
         function registerStreamFor(id, name, seed) {
+            if (!registrationAllowed(id)) {
+                throw new Error("goats.world.registerStream: registration is closed");
+            }
             if (!isWorldMod(id)) {
                 throw new Error(
                     "goats.world.registerStream: only a side:\"world\" mod may do this");
@@ -613,6 +626,9 @@ if (typeof globalThis.goats === "undefined") {
 
         /** `goats.world.extend(id, handlers)`, namespaced by the *extension* id a mod chooses. */
         function extendFor(id, extensionId, handlers) {
+            if (!registrationAllowed(id)) {
+                throw new Error("goats.world.extend: registration is closed");
+            }
             if (!isWorldMod(id)) {
                 throw new Error("goats.world.extend: only a side:\"world\" mod may do this");
             }
@@ -944,12 +960,23 @@ if (typeof globalThis.goats === "undefined") {
                 return parseJson(__goatsMods(), []);
             },
             /**
-             * Whether registration has closed. It never has in this client -- there is no
-             * `goats.freeze()` to call -- so a mod that guards a late registration on it is told
-             * the truth rather than a guess.
+             * Whether registration has closed (`APIv1.md` section 4.1, section 7). The scene freezes
+             * once every entry has run, so a mod that guards a late registration on it is told the
+             * truth rather than a guess.
              */
             frozen: function () {
-                return false;
+                return frozen;
+            },
+
+            /**
+             * Close registration (`APIv1.md` section 4.4): after this, `on`, `command`, the
+             * registries and `assets.override`/`add` are legal only inside a mod's own entry (a
+             * reload). The scene calls it once every entry has run -- `mods.js`'s `sceneModFreeze`,
+             * which its host drives there and this one drives here.
+             */
+            freeze: function () {
+                frozen = true;
+                return "ok";
             },
 
             /**
@@ -1007,6 +1034,11 @@ if (typeof globalThis.goats === "undefined") {
              * in the client, so a mod cannot shadow one.
              */
             command: function (name, fn) {
+                const id = this.__state.id;
+                // The freeze is about *mods*: the idle state registers for a probe, not for a mod.
+                if (id !== null && !registrationAllowed(id)) {
+                    throw new Error("goats.command: registration is closed");
+                }
                 this.__state.commands[name] = fn;
             },
 
@@ -1016,6 +1048,12 @@ if (typeof globalThis.goats === "undefined") {
              */
             on: function (event, fn) {
                 const state = this.__state;
+                if (typeof fn !== "function") {
+                    throw new Error("goats.on: handler must be a function");
+                }
+                if (state.id !== null && !registrationAllowed(state.id)) {
+                    throw new Error("goats.on: registration is closed");
+                }
                 (state.hooks[event] || (state.hooks[event] = [])).push(fn);
             },
 

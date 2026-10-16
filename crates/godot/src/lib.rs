@@ -278,6 +278,18 @@ impl ModHost {
         gstring(table)
     }
 
+    /// Close registration (`APIv1.md` section 4.4): the scene calls this once every entry has run,
+    /// and from then on `on`, `command`, the registries and `assets.override`/`add` are legal only
+    /// inside a mod's own entry -- a reload. This is `mods.js`'s `sceneModFreeze`, which the raylib
+    /// host drives and this one is driven to.
+    #[func]
+    fn freeze(&mut self) -> GString {
+        match self.call_goats("freeze", &[]) {
+            Ok(_) => GString::from("ok"),
+            Err(error) => gstring(format!("error: {error}")),
+        }
+    }
+
     /// The opaque names of every asset the loaded mods declared, sorted. These
     /// are what a mod addresses an asset with; the bytes are kept for the
     /// engine shim (`rl.loadSound` and friends) and are not reachable from JS
