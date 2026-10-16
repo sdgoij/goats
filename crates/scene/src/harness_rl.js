@@ -344,7 +344,22 @@
         },
         // A mod that builds its own geometry has nothing else to check: the meshes
         // it makes, the texture it bakes, the binds it does and the unload.
-        makeTexture: (w, h) => {
+        //
+        // The engine's `makeTexture` is **three** arguments -- a width, a height and the
+        // pixels -- and this stub says so rather than taking what it is handed. It used to be
+        // `(w, h)`, which is the shape an API member that passes *one* size would want, and it
+        // therefore agreed with `goats.gfx.texture`'s own arity bug instead of catching it:
+        // the flock's feather texture was rejected only in the real client, where the hex
+        // string landed in the height's slot (`argument 1 must be a number`). The `drawModelEx`
+        // tint check two hundred lines down is the same idea -- a stub is a reference to the
+        // engine, so where it is loose it hides a real difference rather than tolerating one.
+        makeTexture: (w, h, hex) => {
+            if (typeof w !== 'number' || typeof h !== 'number') {
+                throw new TypeError('rl.makeTexture: the size must be two numbers');
+            }
+            if (typeof hex !== 'string') {
+                throw new TypeError('rl.makeTexture: the pixels must be a hex string, not ' + typeof hex);
+            }
             counters.texturesMade += 1;
             const handle = 900 + counters.texturesMade;
             textureSizes[handle] = { w: w, h: h };

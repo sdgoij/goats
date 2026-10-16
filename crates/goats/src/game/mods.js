@@ -1367,7 +1367,14 @@ const goatsGfx = {
     texture: function (size, pixels) {
         if (typeof rl.makeTexture !== "function") return null;
         if (typeof size !== "number" || typeof pixels !== "string") return null;
-        const handle = rl.makeTexture(size, pixels);
+        // The API's image is **one** size and the engine's call takes **two** -- a width, a
+        // height and the pixels -- so the size is passed twice. This is not a detail: passing
+        // it once put the hex string in the height's slot and the real client answered
+        // `rl.makeTexture: argument 1 must be a number`, which broke `birds` there and nowhere
+        // else, because the port implements this member without the engine and the harness's
+        // stub had the same two-argument shape as the bug. `APIv1.md` section 4.19 fixes the
+        // API at one size; the translation to the engine's two belongs here.
+        const handle = rl.makeTexture(size, size, pixels);
         return typeof handle === "number" && handle >= 0 ? handle : null;
     },
 

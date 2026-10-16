@@ -66,6 +66,11 @@ fn the_mod_surface_works() {
     checks.check("mod tuning hook sees a change", api.tune_event, &api);
     checks.check("mod accessors read live state", api.accessors, &api);
     checks.check(
+        "goats.gfx.texture bakes the API's one size into the engine's two",
+        api.gfx,
+        &api,
+    );
+    checks.check(
         "mod freeze gates late registration",
         api.late_rejected,
         &api,
@@ -525,6 +530,7 @@ struct ModApi {
     frames: bool,
     tune_event: bool,
     accessors: bool,
+    gfx: bool,
     late_rejected: bool,
     reserved: bool,
 }
@@ -569,6 +575,20 @@ fn api_block(harness: &mut Harness) -> Result<ModApi, String> {
         && bool_of(harness.eval("goats.world.weather().kind !== undefined")?)
         && bool_of(harness.eval("typeof goats.settings.get().bgm === \"number\"")?)
         && bool_of(harness.eval("goats.net.inSession() === false")?);
+
+    // The drawing surface's one member that is a *translation* rather than a pass-through:
+    // `goats.gfx.texture` is the API's one size (`APIv1.md` section 4.19) and the engine's
+    // `makeTexture` takes a width, a height and the pixels. A texture that answers a handle and
+    // reads back square is the check -- and it is the one that was missing, because the stub used
+    // to take the same two arguments the member passed, so the flock's feather texture was
+    // rejected only in the real client (`argument 1 must be a number`).
+    let texture = harness.eval(
+        "(function () { try { \
+           const h = goats.gfx.texture(4, \"00112233\".repeat(16)); \
+           return JSON.stringify(h === null ? null : [rl.textureWidth(h), rl.textureHeight(h)]); \
+         } catch (e) { return JSON.stringify(\"threw: \" + e); } })()",
+    )?;
+    api.gfx = texture.as_str().is_some_and(|json| json == "[4,4]");
 
     // Freeze gates registration once the entry window has closed.
     api.late_rejected = throws(

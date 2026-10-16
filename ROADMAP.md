@@ -1211,7 +1211,7 @@ decisions behind it and the constraints that shape it.
   startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
   diagnosis one look rather than a guess. Opaque assets are still compared byte
   byte, since the loader cannot know what they are. `mods/birds` itself is
-  pinned at `5de4fa3cb5c077d0` by a test, because a release ships it and an
+  pinned at `77675b54122841b5` by a test, because a release ships it and an
   older client refuses a server whose birds differs. That pin has moved seven
   times: once when the mod's arithmetic was rewritten to stop naming `Math`
   (PERF.md §4b), again when the flock learned to set devices off, to sit on
@@ -1277,17 +1277,33 @@ decisions behind it and the constraints that shape it.
   only, so the vanilla assertions are unchanged.
 - **M14f — A full example world mod: `birds`. ✅ Done.** `mods/birds/` is the
   worked example of a mod that adds an entity of its own rather than patching
-  an existing one. It builds a low-poly body and two wings with `rl.makeModel`,
-  bakes a feather texture with `rl.makeTexture`, and poses the parts with
-  quaternions reduced to the single axis-angle `drawModelEx` accepts. Five
+  an existing one. It builds a low-poly body and two wings with
+  `goats.gfx.mesh`, bakes a feather texture with `goats.gfx.texture`, and poses
+  the parts with quaternions reduced to the single axis-angle
+  `goats.gfx.draw.mesh` accepts (`rl.makeModel`/`rl.makeTexture`/`drawModelEx`
+  before the port reworked the examples onto the API). Five
   states -- idle (standing on the ground, or perched on a player's or a bot's
   goat), walk, take-off, fly and land -- with boids flocking while flying, a
   seeded stream and `world.extend` so the host simulates and clients ease to the
   published positions. It is `side: "world"`, so the flock is shared. Two
   engine facts it documented: models must be built lazily on the first
-  `update`/`draw3d` (an entry runs before the window exists, and `makeTexture`
-  needs the GL context), and `drawModelEx`'s one axis-angle means yaw, pitch,
+  `update`/`draw3d` (an entry runs before the window exists, and a texture
+  needs the GL context), and the API's one axis-angle means yaw, pitch,
   roll and wing flap are composed into a quaternion per part.
+
+  A third fact it taught, and it was taught the hard way: the API's image is
+  **one** size and the engine's call takes **two**, and the reference client's
+  implementation of `goats.gfx.texture` passed one -- `rl.makeTexture(size,
+  pixels)`, with the hex string landing in the height's slot, so the real client
+  answered `rl.makeTexture: argument 1 must be a number` and the flock threw in
+  its `update` handler there while the Godot port, which implements the member
+  without the engine at all, went on drawing it. Every other caller in the scene
+  passes the width, the height and the hex. It survived a whole port because the
+  harness's own stub took the same two arguments the bug passed, which is the
+  lesson: **a stub that agrees with a bug is not a reference to the engine, it
+  is a copy of the mistake.** The stub is `(w, h, hex)` with the argument types
+  checked now, and `crates/harness/tests/mods.rs` calls the member and reads the
+  texture back square, so the arity cannot drift back.
   `crates/harness/tests/birds.rs` (`tools/birds_mod_test.js` when this landed)
   drives the mod with a stub `rl` and asserts the
   meshes build, every state is reached, separation holds, a bird perches, a
