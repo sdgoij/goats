@@ -4,11 +4,20 @@
 # The split is `mods.js`'s, and it is the same split for the same reason. The *host* -- here the
 # GDExtension over `crates/mods` and the embedded engine -- discovers, validates, orders and runs;
 # the *scene* owns the table the UI draws, the per-frame hooks a mod registered, and the console's
-# first refusal. What the port does not have yet is `mods.js`'s other half: the `goats` surface's
-# sixteen unimplemented member groups, the eighteen events, `modSetEnabled` and its session guard,
-# the world-mod datagram, the tuning merge, reload/watch and the asset-to-engine path. Those are
-# stage 8 (`PORT.md` section 6, and section 10's third item); this file is stage 1's, and it stops
-# at "the scene is running the mods and can see what happened".
+# first refusal. What the port does not have yet is `mods.js`'s other half: `modSetEnabled` and its
+# session guard, the world-mod datagram, the tuning *merge* (a write), reload/watch and the
+# asset-to-engine path. Those are stage 8 (`PORT.md` section 6, and section 10's third item); this
+# file is stage 1's, and it stops at "the scene is running the mods and can see what happened".
+#
+# The **readable surface** is this file's other job now (`APIv1.md` section 4.5-4.12): every frame
+# the scene hands the host one JSON snapshot of the live world -- the goat, the camera, the
+# weather and the wind, the herd, the settings, the session and the tuning tree -- and a mod reads
+# those groups out of it. It is a *push*, not a callback, because `PORT.md` section 6 decision 3
+# settled that a hot read should never touch the boundary: the scene already knows these values,
+# so telling the extension once a frame is cheaper than answering per question and cannot invent a
+# second copy of the world to drift from the first. The two things a push cannot carry -- a
+# *function* of the world (`terrainHeight`) and a write -- go the other way, through the scene's
+# own `Callable` (see `frame` and `_scene_call`).
 #
 # Three decisions worth naming, because each is a place the port deliberately stops short:
 #
@@ -55,6 +64,11 @@ var surface: ModHud
 ## The node that places a mod's *world*-space draws (`mod_world.gd`), set by the frame. It is
 ## the other half of `goats.draw`: `draw` is pixels and this is metres.
 var world: ModWorld
+## The scene's entry point for the API's functional members -- `terrainHeight` today, the writes
+## when they land -- handed in by the frame *before* this node enters the tree, because the host
+## is built in `_ready` and needs it at once. A `Callable` and not a reference to the frame, for
+## the reason `PlayerGoat.bleat` is one: this file does not link against the world modules.
+var scene_call: Callable = Callable()
 
 ## Instantiate the runtime and load whatever `mods/` holds. Discovery, every entry, and the table.
 ##
@@ -78,18 +92,31 @@ func _ready() -> void:
 	for line in report.split("\n"):
 		_line(line)
 	table = parse_table(host.call("mods_json"))
+	# The scene's own entry point for `goats` calls, registered once the host exists. An invalid
+	# `Callable` -- a gate driving the runtime with no frame behind it -- is handed over as it is,
+	# and the host answers a call with a clear error rather than panicking.
+	host.call("set_scene_call", scene_call)
 
 ## One frame of the runtime. The clock is pushed every frame -- a mod may read it from any hook --
-## and the `hud` hook fires only while the HUD is up, which is `sceneFrame`'s own gate: `modEmit("hud",
-## ...)` sits in the `uiScreen === "hud"` branch, the same branch that draws the HUD. A menu
-## replaces the HUD rather than covering it, so a mod's HUD drawing is not shown either.
+## and so is the world snapshot (`snapshot`), which is what `goats.player`, `goats.world`,
+## `goats.bots`, `goats.settings`, `goats.tuning` and `goats.net` read. The `hud` hook fires only
+## while the HUD is up, which is `sceneFrame`'s own gate: `modEmit("hud", ...)` sits in the
+## `uiScreen === "hud"` branch, the same branch that draws the HUD. A menu replaces the HUD rather
+## than covering it, so a mod's HUD drawing is not shown either.
 ##
 ## `hud` is therefore the frame's answer to "is the HUD up", passed in rather than asked for: this
-## file knows about the mods and not about the UI.
-func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D) -> void:
+## file knows about the mods and not about the UI. `snapshot` is the same shape -- the frame builds
+## it, because the frame owns the world, and this file only hands it on.
+func frame(hours: float, screen: Vector2, hud: bool, camera: Camera3D,
+		snapshot: Dictionary = {}) -> void:
 	if host == null:
 		return
 	host.call("set_world_time", hours)
+	# The readable surface, pushed *before* the hooks run, so a `hud` or `draw3d` handler reads the
+	# frame it is drawing. An empty dictionary -- a gate driving the runtime with no scene behind
+	# it -- pushes nothing, so the last real snapshot stands rather than being replaced by nothing.
+	if not snapshot.is_empty():
+		host.call("push_world", JSON.stringify(snapshot))
 	if hud:
 		host.call("emit_hud", screen.x, screen.y)
 	# The world pass. Godot has no "the 3D pass" to hook -- a node in the tree is how a thing is

@@ -106,6 +106,22 @@ struct ModHost {
     screen: Rc<Cell<(f64, f64)>>,
     /// The clock the core pushes; a mod reads it through `goats.world.time()`.
     world_time: Rc<RefCell<f64>>,
+    /// The world snapshot the core pushes each frame, as JSON. This is what
+    /// `goats.player`, `goats.camera`, `goats.world`, `goats.bots`, `goats.settings`,
+    /// `goats.tuning` and `goats.net` read: the general form of the push half of
+    /// `godot/PORT.md` section 6, decision 3, where `world_time` above is its first
+    /// instance. One object for every group, so a group can grow a member without a
+    /// signature here.
+    snapshot: Rc<RefCell<String>>,
+    /// How many times the snapshot has been replaced. The facade caches the *parsed*
+    /// snapshot and re-parses it only when this moves, so a frame's reads share one
+    /// parse between them rather than each paying for one.
+    pushes: Rc<Cell<u64>>,
+    /// The scene's entry point for the API's *functional* members -- `terrainHeight`
+    /// today, the writes when they land. They cannot be pushed values, because they are
+    /// a question asked of the world rather than an answer told to it. This is the
+    /// "callbacks for the rest" half of the same decision.
+    scene_call: Rc<RefCell<Option<Callable>>>,
     /// Built on first use so a node can be created before the engine is wanted.
     module: Option<Mod>,
     /// What became of each mod's entry, by id: `Ok(())` once it evaluated (or
@@ -136,6 +152,9 @@ impl INode for ModHost {
             assets: Rc::new(RefCell::new(HashMap::new())),
             screen: Rc::new(Cell::new((0.0, 0.0))),
             world_time: Rc::new(RefCell::new(0.0)),
+            snapshot: Rc::new(RefCell::new(String::new())),
+            pushes: Rc::new(Cell::new(0)),
+            scene_call: Rc::new(RefCell::new(None)),
             module: None,
             outcomes: HashMap::new(),
         }
@@ -341,6 +360,34 @@ impl ModHost {
         *self.world_time.borrow_mut() = hours;
     }
 
+    /// Replace the world snapshot a mod reads the live world out of: `goats.player`,
+    /// `goats.camera`, `goats.world`, `goats.bots`, `goats.settings`, `goats.tuning` and
+    /// `goats.net`. One JSON object per frame, built by the scene (`main.gd`'s
+    /// `_mod_snapshot`), for the reason `PROTO`'s world is one object: the two ends agree
+    /// on a *shape* rather than on an argument list, so a group can grow a member without
+    /// a signature here -- the same choice `__goatsDraw`'s records make.
+    ///
+    /// Pushing a whole snapshot rather than crossing per read is the design
+    /// `godot/PORT.md` section 6 records: the hot reads never touch the boundary, and the
+    /// extension keeps no second copy of the world to drift from the scene's own.
+    #[func]
+    fn push_world(&mut self, json: GString) {
+        *self.snapshot.borrow_mut() = json.to_string();
+        self.pushes.set(self.pushes.get() + 1);
+    }
+
+    /// Hand the extension the scene's entry point for the API's functional members. The
+    /// scene passes a `Callable` that takes `(name, args_json)` and answers a JSON
+    /// object: `{"ok": <value>}` for an answer or `{"err": "<message>"}` for a refusal,
+    /// which the facade turns into a returned value or a thrown error.
+    ///
+    /// A shape rather than a typed method per member, for `push_world`'s reason: the
+    /// surface grows on the scene's side without a signature changing here.
+    #[func]
+    fn set_scene_call(&mut self, callable: Callable) {
+        *self.scene_call.borrow_mut() = Some(callable);
+    }
+
     /// Drain the lines the mods logged since the last call: a mod's
     /// `console.log`, which is what `goats.log` and a bare `console.log` both
     /// reach. A mod's *drawing* is [`ModHost::poll_draws`] instead.
@@ -540,6 +587,63 @@ impl ModHost {
                 "__goatsScreenH",
                 0,
                 Box::new(move |_call| Ok(JsValue::number(screen_h.get().1))),
+            )
+            .map_err(|e| e.to_string())?;
+
+        // The readable world: the snapshot the core last pushed, as JSON the facade parses.
+        // Two calls rather than one because the parse is what costs: `__goatsPush` is the
+        // counter the facade compares to decide whether its cached parse is still the
+        // frame's, so a frame's reads share one `JSON.parse` instead of each paying one.
+        let snapshot = self.snapshot.clone();
+        context
+            .register_fn(
+                "__goatsSnapshot",
+                0,
+                Box::new(move |_call| Ok(JsValue::string(snapshot.borrow().clone()))),
+            )
+            .map_err(|e| e.to_string())?;
+        let pushes = self.pushes.clone();
+        context
+            .register_fn(
+                "__goatsPush",
+                0,
+                Box::new(move |_call| Ok(JsValue::number(pushes.get() as f64))),
+            )
+            .map_err(|e| e.to_string())?;
+
+        // The functional members: every `goats` call that is not a read of a pushed value
+        // goes here and is answered by the scene's own `Callable`. One capability for the
+        // lot, on `__goatsDraw`'s pattern -- a JSON request and a JSON answer, so the two
+        // ends agree on a shape and the surface can grow on the scene's side alone.
+        let scene_call = self.scene_call.clone();
+        context
+            .register_fn(
+                "__goatsCall",
+                2,
+                Box::new(move |call| {
+                    let name = call
+                        .arg(0)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    let args = call
+                        .arg(1)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    // The `Callable` is taken out of the borrow before the call, because the
+                    // scene's own code runs inside it and a re-entrant `set_scene_call` would
+                    // otherwise find the cell borrowed.
+                    let callable = scene_call.borrow().clone();
+                    let answer = match callable {
+                        Some(callable) if callable.is_valid() => {
+                            let result = callable.callv(&varray![name, args]);
+                            result.try_to::<GString>().unwrap_or_default().to_string()
+                        }
+                        _ => {
+                            "{\"err\":\"the scene has no entry point for goats calls\"}".to_string()
+                        }
+                    };
+                    Ok(JsValue::string(answer))
+                }),
             )
             .map_err(|e| e.to_string())?;
 

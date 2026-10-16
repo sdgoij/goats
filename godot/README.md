@@ -23,7 +23,8 @@ plan.
 | `src/commands.gd` | The command vocabulary: `ctl.js`'s `sceneCommand`, about sixty verbs, the same words the host's stdin channel drives (M24) |
 | `src/menu.gd` | The menu, drawn: `menu.js`'s four screens — main, settings, mods, keymap — as a layout a gate can hold, with the Escape walk (M25) |
 | `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
-| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws and the first refusal a mod's console verb gets (stage 1) |
+| `src/tuning.gd` | The tuning tree `goats.tuning.get` reads (`APIv1.md` §4.10), gathered leaf by leaf from the module that owns each constant — a subset, and an absent path throws |
+| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, and the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`) (stages 1 and 8) |
 | `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
 | `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader (stage 1) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
@@ -54,8 +55,10 @@ plan.
 see Godot. It exposes `NetBridge` (the networking bridge over `session` and
 `proto`: `host`, `join`, `say`, `consume`, `pose`, `world`, `blast`, `leave`,
 `poll_events`, `shutdown`) and `ModHost`
-(the embedded Slag engine plus the `goats` facade a mod sees, including
-`goats.draw`; the facade is
+(the embedded Slag engine plus the `goats` facade a mod sees: the API's drawing surfaces
+`goats.draw`/`goats.gfx`, and the readable groups -- `player`, `camera`, `world`, `bots`,
+`settings`, `tuning`, `net` -- which it answers out of the world snapshot the scene pushes
+every frame (`push_world`, `set_scene_call`). The facade is
 `crates/godot/src/prelude.js`, and the loader it drives is the `crates/mods`
 crate; `mods.gd` in the scene is its only client). It is a workspace member rather
 than a project of its own so it inherits
@@ -79,7 +82,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Twenty-six headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Twenty-seven headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -104,6 +107,13 @@ Twenty-six headless gates, all `SceneTree` scripts that exit non-zero on failure
 # exactly the last frame's draws (stage 1).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_gfx.gd
+
+# ...and a *mod* reads the live world back: every readable `goats` group -- the goat, the
+# camera, the weather and the wind, the herd, the settings, the session and the tuning tree
+# -- against the scene's own values, from inside a `hud` hook where a mod actually reads
+# them, with `terrainHeight` crossing the callback seam and every write refused (stage 8).
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_mod_surface.gd
 
 # Two Godot peers meet over iroh: host, join, roster, chat, goat snapshots -- and then a
 # third joins, so the world a host publishes, a client's adopted snapshot and both
@@ -223,7 +233,7 @@ Twenty-six headless gates, all `SceneTree` scripts that exit non-zero on failure
     --script res://tools/verify_menu.gd
 ```
 
-All twenty-six pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty-seven pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -441,6 +451,18 @@ the mod declared. That is deliberately the API's own surface rather than the eng
 no `rl` in this build at all, because `rl` is raylib, and a mod written against it is a mod
 written against one client. A mod's own meshes and textures (`mesh()`/`texture()`, how `birds`
 builds its flock) are the next additions to the group.
+
+**A mod reads the live world through the API's own accessors** (`APIv1.md` §4.5–4.12). The
+scene builds one snapshot of the world each frame — the goat, the camera, the weather and the
+wind, the herd, the settings, the session and the tuning tree — and the extension keeps it, so
+`goats.player.state()`, `goats.world.weather()`, `goats.bots.list()` and the rest answer out of
+the last frame without a crossing per read. `goats.world.terrainHeight(x, z)` is the exception,
+because it is a *function* of the world rather than a value: it calls back into the scene's own
+`Terrain.height_at`, craters and all. The **writes are not in yet** — `goats.world.setTime` and
+`setWeather` answer `false`, which is what the API documents for a client that does not own the
+world, and every other write throws an error naming the member, so a mod that tries one fails
+loudly in its own hook rather than doing nothing quietly. The `tuning` tree is a subset of the
+API's: the leaves this build has answer, and a path it has not got throws.
 
 To play with somebody, point it at a host:
 

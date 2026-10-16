@@ -379,10 +379,24 @@ reported, not silently ignored).
 > the door a mod drives the table through.
 >
 > **Added with the Godot port:** `goats.draw` (§4.18) and `goats.gfx` (§4.19), the API's
-own drawing surfaces. A mod used to draw with the engine's `rl`, which is raylib; the
-API now carries its own members, each client implements them, and a mod that reads `rl`
-directly runs only where raylib is the engine. Both surfaces are partial -- `goats.draw`
-is the 2D half and `goats.gfx` the 3D one, and each names what its next additions are.
+> own drawing surfaces. A mod used to draw with the engine's `rl`, which is raylib; the
+> API now carries its own members, each client implements them, and a mod that reads `rl`
+> directly runs only where raylib is the engine. Both surfaces are partial -- `goats.draw`
+> is the 2D half and `goats.gfx` the 3D one, and each names what its next additions are.
+>
+> **Added with the Godot port's readable surface:** the groups a mod *reads* the live world
+> through (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`) are in on the
+> port's side. The extension is handed **one JSON snapshot of the world per frame** and the
+> facade answers every group out of it, so none of these reads crosses the language boundary --
+> the design `PORT.md` §6 records. `world.terrainHeight` is the one read that is a *function*
+> rather than a value, and it (and the writes, when they land) goes the other way through a
+> `Callable` the scene registers. What the port does **not** answer yet are the *writes*:
+> `world.setTime` and `world.setWeather` return the API's own `false` -- the answer this
+> section documents for a client that does not own the world -- and every other write throws an
+> error naming the member, rather than silently doing nothing. The port's `tuning` tree is also
+> a **subset**: it gathers the port's own constants, and a path it has not got throws the same
+> "unknown path" a typo does, so a leaf the port never ported is never answered with a wrong
+> number.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.

@@ -115,6 +115,24 @@ func report() -> Array:
 		})
 	return out
 
+## The mirrored herd as a *mod* reads it (`goats.bots.list()`, `APIv1.md` section 4.8):
+## `report()`'s fields plus the **gait** the snapshot posed each goat with. The gait is the
+## closest thing the wire carries to a bot's `mode`, which is what lets `goats.bots.list()`
+## answer a mode at all on a client -- and a belly is genuinely absent, because no snapshot
+## field carries one.
+func state() -> Array:
+	var indexes: Array = _goats.keys()
+	indexes.sort()
+	var out: Array = []
+	for index in indexes:
+		var goat: Dictionary = _goats[index]
+		var node: Node3D = goat["node"]
+		out.append({
+			"index": int(index), "x": node.position.x, "z": node.position.z,
+			"yaw": node.rotation.y, "gait": String(goat["gait"]),
+		})
+	return out
+
 ## The mirrored herd's wake actors: `(x, z, py)` a goat, in index order -- which is the
 ## order the scene's own `BOTS` array has, so `Water`'s wake marks and the host's bots stay
 ## paired. A client splashes the herd it mirrors, which is the one part of M20d that would
@@ -201,6 +219,7 @@ func _goat_for(index: int) -> Dictionary:
 		"target": node.position,
 		"yaw": 0.0,
 		"clip": "",
+		"gait": "idle",
 	}
 	_goats[index] = goat
 	return goat
@@ -233,8 +252,11 @@ func ground_range() -> Array:
 
 ## Play the clip for a gait and pose it at the snapshot's phase. A gait name is
 ## the scene's (`net.js` publishes `mode`) and a clip name is the model's, so this
-## is the one place the two vocabularies are joined.
+## is the one place the two vocabularies are joined. The gait is *kept* (`state`)
+## because it is the closest thing the wire carries to a bot's mode, and a mod
+## reading `goats.bots.list()` on a client has nothing else to go on.
 func _pose(goat: Dictionary, gait: String, phase: float) -> void:
+	goat["gait"] = gait
 	var clip: String = _clip_for(gait)
 	var anim: AnimationPlayer = goat["anim"]
 	if clip != goat["clip"]:

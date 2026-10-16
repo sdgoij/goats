@@ -128,9 +128,9 @@ var _roster: Array = []
 ## -- so the eye is *under* the deck, and the sky shader's march is a function of
 ## that. From higher up the same slab is a band across the horizon instead of a
 ## canopy overhead.
-var _cam_yaw := 0.7
-var _cam_pitch := 0.42
-var _cam_dist := 5.2
+var _cam_yaw := Tuning.CAMERA_YAW
+var _cam_pitch := Tuning.CAMERA_PITCH
+var _cam_dist := Tuning.CAMERA_DIST
 var _dragging := false
 ## Whether the world is frozen (`goat.js`'s `paused`). `P` toggles it, the HUD says so, and the
 ## *view* keeps running -- see `_process`.
@@ -416,6 +416,9 @@ func _ready() -> void:
 	add_child(mod_world)
 	mods.console = console
 	mods.surface = mod_hud
+	# The scene's entry point for the API's functional members (`_mod_call`), handed over *before*
+	# the runtime enters the tree because it builds its host in `_ready` and registers this at once.
+	mods.scene_call = Callable(self, "_mod_call")
 	add_child(mods)
 	# After `add_child(mods)`, because the runtime builds its `ModHost` in `_ready` -- and the
 	# world node wants that host to turn an asset name into bytes.
@@ -601,7 +604,8 @@ func _process(delta: float) -> void:
 	# The mods' own frame: the clock a mod reads, and its `hud` hook while the HUD is up. It is
 	# after `hud.show_for` because that is where this frame decided the HUD is the thing on screen
 	# (`sceneFrame` fires `modEmit("hud", ...)` inside the branch that draws the HUD).
-	mods.frame(_hours, Vector2(get_viewport().get_visible_rect().size), not menu.is_open(), camera)
+	mods.frame(_hours, Vector2(get_viewport().get_visible_rect().size), not menu.is_open(), camera,
+		_mod_snapshot())
 	_boom_if_asked()
 
 	# The probe's own clock, which runs whether or not the world is frozen: it is counting the
@@ -629,6 +633,110 @@ func _hud_world(controls: Dictionary) -> Dictionary:
 		"fps": Engine.get_frames_per_second(),
 		"audio": audio.word(),
 	}
+
+## The world as a mod reads it (`APIv1.md` section 4.5-4.12), one dictionary per frame.
+##
+## This *is* the readable surface: it is built here, where the world modules live, and handed to
+## `Mods.frame`, which pushes it (`PORT.md` section 6 decision 3). Every value is taken from the
+## same place the HUD's own read-out and the wire's world take it, so there is no third derivation
+## of anything -- a snapshot that disagreed with the HUD would be one bug in two places.
+##
+## The read is `goat`'s own fields rather than `PlayerGoat`'s, and `_weather_now()` is *not* used:
+## that dictionary is the wire's shape (snake_case, `rain_amount`), while the API's `weather()` is
+## its own (`rain`, `wind`, `speed`), so the two are joined here rather than one being renamed.
+func _mod_snapshot() -> Dictionary:
+	var herd_count: int = bots.count() if not _joined else herd.count()
+	return {
+		"player": {
+			"mode": goat.mode, "health": goat.health, "energy": goat.energy,
+			"exhausted": goat.exhausted, "satiety": goat.satiety,
+			"x": goat.px, "y": goat.py, "z": goat.pz,
+			"yaw": goat.yaw, "phase": goat.phase, "speed": goat.speed,
+			"clip": goat.playing_clip(),
+		},
+		"camera": {"yaw": _cam_yaw, "pitch": _cam_pitch, "dist": _cam_dist},
+		"weather": {
+			"kind": weather.kind,
+			"cloudiness": weather.cloudiness,
+			"rain": weather.rain_amount,
+			"wind": _wind_sway,
+			"speed": goat.weather_speed_now(),
+		},
+		"wind": {"x": _wind_x, "z": _wind_z, "sway": _wind_sway},
+		"bots": _mod_bots(),
+		"settings": {
+			"bgm": settings.bgm, "sfx": settings.sfx, "light": settings.light,
+			"shadow": settings.shadow, "sky": settings.sky, "cloud": settings.cloud,
+			"fullscreen": settings.fullscreen, "herd": herd_count,
+		},
+		"net": {
+			"mode": "host" if _hosting else ("client" if _joined else "off"),
+			"inSession": _hosting or _joined,
+			"isHost": _hosting,
+			"localWorld": not _joined,
+			"name": _net_name,
+			"roster": _roster.duplicate(),
+		},
+		"tuning": Tuning.tree(herd_count, water.enabled, water_reflect.wish),
+	}
+
+## The herd as `goats.bots.list()` wants it (`APIv1.md` section 4.8): `{id, x, z, yaw, mode,
+## satiety}` per bot, in index order. Offline that is the scene's own herd, reported directly; in a
+## session it is the host's, mirrored, and the best a snapshot can say about a bot's `mode` is the
+## *gait* it is posed with -- which is why `Herd.state()` reports one -- and nothing carries its
+## belly, so `satiety` is 0.
+func _mod_bots() -> Array:
+	var out: Array = []
+	if _joined:
+		for entry: Dictionary in herd.state():
+			out.append({
+				"id": int(entry.get("index", 0)),
+				"x": entry.get("x", 0.0), "z": entry.get("z", 0.0),
+				"yaw": entry.get("yaw", 0.0),
+				"mode": entry.get("gait", "idle"), "satiety": 0.0,
+			})
+	else:
+		for entry: Dictionary in bots.report():
+			out.append({
+				"id": out.size(),
+				"x": entry.get("x", 0.0), "z": entry.get("z", 0.0),
+				"yaw": entry.get("yaw", 0.0),
+				"mode": entry.get("mode", "idle"), "satiety": entry.get("belly", 0.0),
+			})
+	return out
+
+## The scene's entry point for the API's *functional* members -- the ones a pushed snapshot cannot
+## answer, because they are asked rather than told (`APIv1.md` section 4.7's `terrainHeight`, and
+## the writes when they land). The extension routes a `goats` call here through `ModHost`'s
+## `__goatsCall`; the answer is a JSON object -- `{\"ok\": <value>}` or `{\"err\": \"<message>\"}`
+## -- which the facade turns into a returned value or a thrown error.
+##
+## A member this client does not answer is an `err` rather than silence, so a mod that calls one
+## fails loudly in its own hook and is isolated (`APIv1.md` section 7), which is the same refusal
+## the write members give from the facade.
+func _mod_call(name: String, args_json: String) -> String:
+	var parsed: Variant = JSON.parse_string(args_json)
+	var args: Array = parsed if parsed is Array else []
+	match name:
+		"world.terrainHeight":
+			# The scene's own function, craters and all -- not a second heightfield, which is
+			# the whole reason this crosses instead of being pushed as values.
+			if args.size() < 2:
+				return _mod_err("world.terrainHeight needs an x and a z")
+			var x: float = float(args[0])
+			var z: float = float(args[1])
+			if is_nan(x) or is_nan(z):
+				return _mod_err("world.terrainHeight needs two numbers")
+			return _mod_ok(Terrain.height_at(x, z))
+	return _mod_err("goats." + name + ": this client does not answer that member")
+
+## A successful `_mod_call` answer.
+func _mod_ok(value: Variant) -> String:
+	return JSON.stringify({"ok": value})
+
+## ...and a refusal, which the facade throws.
+func _mod_err(message: String) -> String:
+	return JSON.stringify({"err": message})
 
 ## This frame's controls, in the form `PlayerGoat.step` wants. `sceneFrame` reads
 ## its keys the same way and combines them the same way: a held axis, a gait chosen
@@ -700,8 +808,8 @@ func _orbit(delta: float) -> void:
 		_cam_pitch += 1.0 * delta
 	if Input.is_physical_key_pressed(KEY_DOWN):
 		_cam_pitch -= 1.0 * delta
-	_cam_pitch = clampf(_cam_pitch, 0.08, 1.35)
-	_cam_dist = clampf(_cam_dist, 2.2, 12.0)
+	_cam_pitch = clampf(_cam_pitch, Tuning.CAMERA_MIN_PITCH, Tuning.CAMERA_MAX_PITCH)
+	_cam_dist = clampf(_cam_dist, Tuning.CAMERA_MIN_DIST, Tuning.CAMERA_MAX_DIST)
 
 ## Put the camera where the scene's own camera goes: an orbit of the goat, aimed at
 ## its shoulders. There is always a goat -- one you drive, offline or not -- so there
@@ -1277,15 +1385,15 @@ func cmd_camera() -> Dictionary:
 
 func cmd_set_camera(yaw: float, pitch: float, dist: float) -> void:
 	_cam_yaw = yaw
-	_cam_pitch = clampf(pitch, 0.08, 1.35)
-	_cam_dist = clampf(dist, 2.2, 12.0)
+	_cam_pitch = clampf(pitch, Tuning.CAMERA_MIN_PITCH, Tuning.CAMERA_MAX_PITCH)
+	_cam_dist = clampf(dist, Tuning.CAMERA_MIN_DIST, Tuning.CAMERA_MAX_DIST)
 
 ## `camera reset`: the three numbers `TUNING.camera` boots with, which are this frame's
 ## starting values.
 func cmd_camera_reset() -> void:
-	_cam_yaw = 0.7
-	_cam_pitch = 0.42
-	_cam_dist = 5.2
+	_cam_yaw = Tuning.CAMERA_YAW
+	_cam_pitch = Tuning.CAMERA_PITCH
+	_cam_dist = Tuning.CAMERA_DIST
 
 func cmd_paused() -> bool:
 	return _paused
