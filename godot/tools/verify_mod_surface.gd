@@ -1287,6 +1287,13 @@ func _check_tuning(read: Dictionary, bots: Object, reflect: Object) -> void:
 			% t.get("steps"))
 	if not bool(t.get("branch", false)):
 		_failures.append("goats.tuning.get(\"explosions.blast\") is not a branch")
+	# The herd's ceiling is stated twice in the port -- `Bots.MAX_HERD` and this tree's own clamp --
+	# and they were separate literals until the ceiling moved from ten to a hundred. `Tuning.CLAMP`
+	# now names `Bots.MAX_HERD`, so this is a claim that cannot drift rather than a guard that only
+	# catches it: it fails loudly if either is ever put back as a bare number.
+	if not _near(float(Tuning.CLAMP["herd.count"][1]), float(Bots.MAX_HERD)):
+		_failures.append("Tuning.CLAMP[\"herd.count\"][1] is %s, Bots.MAX_HERD is %s"
+			% [Tuning.CLAMP["herd.count"][1], Bots.MAX_HERD])
 	# An unknown path throws, which is the API's own contract and is what makes a typo -- or a
 	# leaf this client never ported -- loud rather than answered with `undefined`.
 	if str(read.get("tuning_unknown")) != "threw":
@@ -1311,7 +1318,8 @@ func _check_tuning(read: Dictionary, bots: Object, reflect: Object) -> void:
 		_failures.append("the tuning tree is missing %d leaf(s) it registers: %s"
 			% [missing.size(), ", ".join(PackedStringArray(missing))])
 	print("tuning: stats.max ", t.get("max"), "  blast.lift ", t.get("blast_lift"),
-		"  herd.count ", t.get("herd_count"), "  sky.steps ", t.get("steps"),
+		"  herd.count ", t.get("herd_count"), "  herd.max ", Tuning.CLAMP["herd.count"][1],
+		"  sky.steps ", t.get("steps"),
 		"  ", Tuning._leaves().size(), " leaf(s) resolved")
 
 ## 2f. The session's read, off the frame's own net state. Offline the scene is its own world.

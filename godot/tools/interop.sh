@@ -42,7 +42,9 @@
 # (`verify_herd_host.gd` hosting, `verify_herd_death.gd` joining and dying) and
 # reads both.
 #
-# Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server).
+# Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server), GOATSD_HERD (the
+# host's herd size -- `--herd`; the `herd` mode at a large count is what shows the
+# world datagram carries the larger herd).
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -184,7 +186,9 @@ fi
 # goatsd resolves `mods/` from the working directory, so start it at the root.
 cd "$root"
 : > "$log"
-"$server" godot-host $mods_flag > "$log" 2>&1 &
+# `GOATSD_HERD`, when set, sizes the host's herd through the shipping `--herd` flag:
+# `herd` at a large count is the only run that proves the world datagram carries it.
+"$server" godot-host $mods_flag ${GOATSD_HERD:+--herd "$GOATSD_HERD"} > "$log" 2>&1 &
 server_pid=$!
 
 cleanup() {
@@ -241,8 +245,11 @@ if [ "$mode" = "pair" ]; then
     grep -E "^(OK|FAIL|peers:)" "$a" || true
     grep -E "^(OK|FAIL|peers:)" "$b" || true
 elif [ "$mode" = "herd" ]; then
-    # The real scene, with the probe switched on: it settles, reports and exits.
-    GOATSD_TICKET="$ticket" GOATS_PROBE=1 \
+    # The real scene, with the probe switched on: it settles, reports and exits. `GOATSD_HERD`
+    # is handed through as `GOATS_PROBE_HERD`, so a large herd is not only *mirrored* but
+    # *checked*: the probe insists the mirror holds exactly the count the host was asked for,
+    # which a client emitting one part of a split snapshot would fail.
+    GOATSD_TICKET="$ticket" GOATS_PROBE=1 GOATS_PROBE_HERD="${GOATSD_HERD:-}" \
         "$godot_bin" --headless --path "$(to_native "$godot_dir")"
     status=$?
 elif [ "$mode" = "death" ]; then

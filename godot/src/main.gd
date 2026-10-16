@@ -1759,6 +1759,15 @@ func _probe_report() -> void:
 	if herd.count() != _last_bots:
 		failures.append("the snapshot named %d bots and the mirror holds %d"
 			% [_last_bots, herd.count()])
+	# A herd the host was *asked* for, so the probe can insist the mirror holds exactly it: the
+	# `herd.count() == _last_bots` check above only says the mirror agrees with whatever
+	# arrived, and a client that emitted one part of a split snapshot would agree with a
+	# partial herd. `interop.sh herd` passes `GOATSD_HERD` through, which is what makes the
+	# large-herd run prove the split datagrams carry the whole herd (`GOATS_PROBE_HERD`).
+	var asked := OS.get_environment("GOATS_PROBE_HERD")
+	if not asked.is_empty() and asked.is_valid_int() and herd.count() != asked.to_int():
+		failures.append("the host was asked for %s goats and the mirror holds %d"
+			% [asked, herd.count()])
 	if herd.worst_gap() > PROBE_TOLERANCE:
 		failures.append("the grounded herd has not converged: worst gap %.4f m" % herd.worst_gap())
 	# Agreeing with a herd that never moved would be a weaker thing than it

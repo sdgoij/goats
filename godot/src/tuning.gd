@@ -76,9 +76,10 @@ const INT := {
 }
 
 ## Bounds, listed only where the game needs one (`tuningCoerce`'s `TUNING_CLAMP`, restricted to the
-## leaves this client has). Each value is `[least, most]`.
+## leaves this client has). Each value is `[least, most]`. `herd.count`'s ceiling is the herd's own
+## `Bots.MAX_HERD` rather than a second `100`, so the clamp and the resize cannot disagree.
 const CLAMP := {
-	"herd.count": [0.0, 10.0],
+	"herd.count": [0.0, Bots.MAX_HERD],
 	"herd.deathLinger": [0.5, 120.0],
 	"food.fullBelly": [0.0, 1.0],
 	"food.fullBellyHeal": [0.0, 100.0],

@@ -62,8 +62,11 @@ function makeBotTextures() {
 }
 
 // The temperament/coat for bot `i`. Only six fleeces are hand-authored, so past
-// the sixth the coats recycle with a bigger body -- enough variety up to the
-// settings' ten goats.
+// the sixth the coats recycle with a bigger body. That was "enough variety up to the
+// settings' ten goats"; at `MAX_HERD` the coats cycle sixteen times and the last body
+// is ~2.3x its hand-authored scale. Left as it is -- a herd is mostly the six coats and
+// the tail is a fringe -- but a reader at the ceiling should know why the far end of the
+// herd looks oversized rather than think it is a bug.
 function botSpec(i) {
     const base = TUNING.herd.spec[i % TUNING.herd.spec.length];
     const cycle = Math.floor(i / TUNING.herd.spec.length);
@@ -137,11 +140,11 @@ function botAdd(i) {
     return true;
 }
 
-// Grow or shrink the herd to `n` (0..10). Every bot owns its model (CPU skinning),
+// Grow or shrink the herd to `n` (0..MAX_HERD). Every bot owns its model (CPU skinning),
 // so a change loads or unloads individual goats at runtime.
 function setHerdSize(n) {
     if (typeof rl.loadModel !== "function" || !haveModel) return;
-    n = clamp(Math.round(n), 0, 10);
+    n = clamp(Math.round(n), 0, MAX_HERD);
     while (BOTS.length > n) {
         const b = BOTS.pop();
         modEmit("despawn", modBotHandle(b));

@@ -177,7 +177,7 @@ function drawSettings(sw, sh) {
 
     rl.guiGroupBox(lx, cy, lw, 66, "Gameplay");
     cy += 26;
-    const herd = rl.guiSlider(lx + 10, cy, lw - 20, 24, "Herd size", "", TUNING.herd.count, 0, 10);
+    const herd = rl.guiSlider(lx + 10, cy, lw - 20, 24, "Herd size", "", TUNING.herd.count, 0, MAX_HERD);
     if (Math.round(herd.value) !== TUNING.herd.count) {
         tuningSet("herd.count", Math.round(herd.value));
     }

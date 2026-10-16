@@ -119,8 +119,13 @@ const GOAT_SCENE := preload("res://assets/goat_animated.glb")
 ## the tree's (`goats.tuning`), and a write to it resizes through `set_herd_size`, so this is
 ## only what a session-less scene starts at.
 const COUNT := 7
-## `TUNING.herd.count`'s own ceiling -- `setHerdSize` clamps to it.
-const MAX_HERD := 10
+## `TUNING.herd.count`'s own ceiling -- `setHerdSize` clamps to it, `menu.gd` derives the settings
+## slider's max from it and `Tuning.CLAMP` names it, so this is the port's one `100`. It is a
+## *frame-cost* ceiling as much as a game one: every bot owns its rig and its `AnimationPlayer`
+## (`GOAT_SCENE` below), so a full herd of a hundred is a hundred rigs skinned and animated every
+## frame. The reference names the same ceiling once (`MAX_HERD` in `core.js`) and `goatsd`
+## validates against `proto::MAX_HERD`.
+const MAX_HERD := 100
 ## `TUNING.herd.deathLinger`: seconds a killed bot lies there before it gets up.
 static var DEATH_LINGER: float = 8.0
 ## `TUNING.herd.spec`: coat colour, body scale and temperament. `bold` scales a bot's
@@ -209,7 +214,7 @@ func set_lit(on: bool) -> void:
 	for coat: StandardMaterial3D in _coats:
 		coat.shading_mode = TerrainMesh.shading(on)
 
-## Grow or shrink the herd to `count` (0..10). A bot that leaves takes its rig with it.
+## Grow or shrink the herd to `count` (0..MAX_HERD). A bot that leaves takes its rig with it.
 ##
 ## A scene with no goat to ring has nothing to resize, and it is not a corner case: `main.gd`
 ## wires the herd to its goat only where the world is this end's -- the session-less boot -- so a
@@ -354,8 +359,11 @@ func register(spec: Dictionary) -> int:
 	return SPEC.size()
 
 ## The temperament and coat for bot `index`. Only six fleeces are hand-authored, so past
-## the sixth the coats recycle with a bigger body -- enough variety up to the settings' ten
-## goats.
+## the sixth the coats recycle with a bigger body. That was "enough variety up to the
+## settings' ten goats"; at `MAX_HERD` the coats cycle sixteen times and the last body is
+## ~2.3x its hand-authored scale. Left as it is -- a herd is mostly the six coats and the
+## tail is a fringe -- but a reader at the ceiling should know why the far end of the herd
+## looks oversized rather than think it is a bug (`bots.js` says the same of its `botSpec`).
 func spec_of(index: int) -> Dictionary:
 	var base: Dictionary = SPEC[index % SPEC.size()]
 	var cycle: int = index / SPEC.size()

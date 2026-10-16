@@ -37,7 +37,16 @@ mod wire;
 /// world mods differ, which is exactly the silent divergence the set exists to
 /// prevent. Version 8 is a stronger case still: a 7 peer would fail to decode
 /// every datagram, so the two would agree on a session and see nothing move.
-pub const PROTOCOL_VERSION: u16 = 10;
+///
+/// 11 splits the world snapshot into parts (see [`WorldPart`]): the world datagram's payload
+/// changes from the whole `WorldState` to one part of it, so a version-10 peer and this one
+/// would not agree on what a world datagram even is. A bump is what makes that a refused
+/// handshake -- a version-10 peer fails the ALPN -- rather than a client decoding a part as a
+/// whole world and taking a herd of one part for the whole herd, which is the shrinking mirror
+/// `466b967` was about. A backwards-compatible variant was not worth it: part 0 of a split
+/// world is a *legal-looking* world with fewer bots, which is exactly the shape an old peer
+/// would misread rather than reject.
+pub const PROTOCOL_VERSION: u16 = 11;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -55,10 +64,78 @@ pub const MAX_CHAT_BYTES: usize = 512;
 /// The name a nameless player gets.
 pub const DEFAULT_NAME: &str = "goat";
 
+/// The largest a herd may be: `TUNING.herd.count`'s ceiling in the scene (`MAX_HERD` in
+/// `core.js`, `Bots.MAX_HERD` in the Godot port), and what `goatsd --herd` refuses beyond.
+/// It lives here because this is the one language the JavaScript and the GDScript cannot
+/// read, and because it is the number the datagram budget below is sized for.
+pub const MAX_HERD: usize = 100;
+
 /// The largest datagram payload either end will accept, so a corrupt or hostile
-/// one cannot be decoded into something far larger than it is. Comfortably
-/// under the smallest MTU a QUIC datagram is guaranteed.
+/// one cannot be decoded into something far larger than it is -- and the cap a world
+/// part is measured against (see [`MAX_WORLD_PART_BYTES`]).
+///
+/// A world snapshot no longer has to fit one datagram: its herd is split across parts (see
+/// [`split_world`]), so the ceiling is carried by the *parts* rather than by a taller budget.
+/// This stays the hard cap every receiver applies, and it is what [`fit_world`] shaves the
+/// sheddable state to. Measured with the real encoder, a hundred goats spread across the field
+/// cost about 1200 bytes of the world that can *never* be shed (the bots, the sky and the
+/// streams), and about 1300 if every one is mid-fling; a running world -- a meadow, sixteen
+/// craters, twelve spent devices -- adds about 230. They travel as three parts -- measured at
+/// 590, 600 and 365 bytes -- rather than as one ~1500-byte datagram; the cases that pin the
+/// arithmetic are in `proto`'s tests and `goatsd`'s `--herd`.
+///
+/// The cost is why this is not simply "as big as it takes". These are *unreliable* QUIC
+/// datagrams: the transport will not split one, so a snapshot past the path MTU is one the path
+/// cannot carry at all rather than one that arrives in pieces. So this stays where the transport's
+/// guarantee is -- around 1200 bytes, the smallest MTU a QUIC datagram is promised to cross --
+/// and it is the *hard cap every receiver applies* rather than a size anything is packed to. A
+/// world is packed to [`MAX_WORLD_PART_BYTES`], half of this, so its herd reaches narrow paths
+/// too, which is the whole reason it is split. Both clients and `goatsd` read this one constant,
+/// so it is one number on the wire.
 pub const MAX_DATAGRAM_BYTES: usize = 1200;
+
+/// The largest a single part of a world snapshot is packed to, which is what the herd is
+/// split against.
+///
+/// A snapshot does not have to fit one datagram: its herd is divided across parts (see
+/// [`split_world`]) so that each one is small enough to arrive. This is the size a part is
+/// *packed* to, and it is deliberately half of [`MAX_DATAGRAM_BYTES`] rather than equal to it: a
+/// part that is half the budget sits under the ~1200 bytes QUIC *guarantees* it can carry, so it
+/// is sent on every path rather than only on wide ones. Honest headroom, sized from the measured
+/// per-bot cost: a hundred goats are ~12 bytes each (~1200 bytes) and part 0 also carries the
+/// header, so half the budget splits them across about three parts of about six hundred bytes
+/// each (measured 590 + 600 + 365) rather than the one datagram the budget cannot carry.
+pub const MAX_WORLD_PART_BYTES: usize = MAX_DATAGRAM_BYTES / 2;
+
+/// The most parts one snapshot may be split into.
+///
+/// It is a bound on the *herd* (a hundred goats cannot need many parts at
+/// [`MAX_WORLD_PART_BYTES`]) and a bound on a peer: a receiver gathers the parts a snapshot
+/// announces, so an unbounded count would let a hostile one make a client hold state for a
+/// snapshot that can never complete. The smaller the count the better, too, for the reason in
+/// [`split_world`]: a snapshot is only usable once every part arrives, so more parts means a
+/// snapshot less likely to assemble.
+pub const MAX_WORLD_PARTS: u8 = 8;
+
+// The two numbers the world's sizing turns on, pinned at compile time. The herd's ceiling is
+// carried by *parts* and never by a taller datagram (see [`split_world`]): an unreliable QUIC
+// datagram is not fragmented by the transport, so a snapshot past the path MTU is one the path
+// cannot carry at all. Raising the budget to fit a bigger herd -- the shortcut this forbids --
+// now fails the build rather than quietly shipping a world no path can deliver.
+const _: () = {
+    assert!(
+        MAX_DATAGRAM_BYTES == 1200,
+        "the transport's guaranteed datagram size moved"
+    );
+    assert!(
+        MAX_WORLD_PART_BYTES == 600,
+        "a part is packed to half the budget"
+    );
+    assert!(
+        MAX_WORLD_PART_BYTES < MAX_DATAGRAM_BYTES,
+        "a part is packed inside the budget, not to its edge"
+    );
+};
 
 /// The largest Opus packet accepted on the media channel. Opus at ~24 kbps is
 /// ~60 bytes per 20 ms frame; this leaves room for a larger bitrate while keeping
@@ -627,6 +704,98 @@ impl WorldState {
                 .iter()
                 .all(Crater::is_finite)
     }
+
+    /// The part of a snapshot that travels on part 0 alone: everything but the herd.
+    pub fn head(&self) -> WorldHead {
+        WorldHead {
+            weather: self.weather.clone(),
+            streams: self.streams,
+            eaten: self.eaten.clone(),
+            craters: self.craters.clone(),
+            spent: self.spent.clone(),
+        }
+    }
+}
+
+/// The header of a world snapshot: the sky, the four PRNG streams and the sheddable state
+/// (the meadow, the craters, the spent devices). It is [`WorldState`] minus the herd, and it
+/// rides the *first* part of a split snapshot (see [`WorldPart`]) because the whole snapshot no
+/// longer fits one datagram once the herd is at [`MAX_HERD`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldHead {
+    pub weather: WeatherState,
+    pub streams: Streams,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eaten: Option<Vec<EatenCell>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub craters: Option<Vec<Crater>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent: Option<Vec<Spent>>,
+}
+
+impl WorldHead {
+    pub fn is_finite(&self) -> bool {
+        self.weather.is_finite()
+            && self
+                .eaten
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .all(EatenCell::is_finite)
+            && self
+                .craters
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .all(Crater::is_finite)
+    }
+}
+
+/// One part of a split world snapshot.
+///
+/// A world is published as [`split_world`]'s parts, which together are *one* snapshot: part 0
+/// carries the [`WorldHead`] and every part carries a contiguous slice of the herd, so a herd
+/// too large for one datagram travels as several rather than as none -- the failure a single
+/// over-budget datagram gives, since the transport will not fragment one. Every part states its
+/// place: the snapshot's `seq`, which part it is of how many (`part`, `parts`), the herd's
+/// total size (`herd`) and the index of its first bot (`first`).
+///
+/// The channel is lossy, so the sequence is monotone per host and a receiver drops a part older
+/// than the snapshot it is gathering rather than applying it late; a snapshot whose parts do
+/// not all arrive is simply not emitted (a partial snapshot is the bug, not the fix -- see
+/// `466b967`), and at the host's ten-a-second cadence the next one is a hundred milliseconds
+/// away. Keeping `parts` small matters for the same reason: a snapshot is only usable once
+/// every part is in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorldPart {
+    pub seq: u32,
+    pub part: u8,
+    pub parts: u8,
+    pub herd: u16,
+    pub first: u16,
+    pub head: Option<WorldHead>,
+    pub bots: Vec<BotState>,
+}
+
+impl WorldPart {
+    /// The whole `world` as one part: every bot, the header on part 0. Used to measure a world
+    /// as a datagram and by tests; a published snapshot is [`split_world`]'s parts instead.
+    pub fn whole(world: &WorldState, seq: u32) -> WorldPart {
+        WorldPart {
+            seq,
+            part: 0,
+            parts: 1,
+            herd: world.bots.len() as u16,
+            first: 0,
+            head: Some(world.head()),
+            bots: world.bots.clone(),
+        }
+    }
+
+    pub fn is_finite(&self) -> bool {
+        self.head.as_ref().is_none_or(WorldHead::is_finite)
+            && self.bots.iter().all(BotState::is_finite)
+    }
 }
 
 /// What every world mod contributes: `{ streams: {...}, data: { <id>: <published> } }`,
@@ -741,7 +910,7 @@ impl WorldOutcome {
     }
 }
 
-/// Trims `world` until it fits `budget`, and says whether it can go out at all.
+/// Trims `world` until it can be published as parts, and says what it had to give up.
 ///
 /// The bots, the sky and the streams are the world itself -- a client that stops
 /// receiving them freezes at the last snapshot it got -- and a world mod's state is not
@@ -761,16 +930,25 @@ impl WorldOutcome {
 /// would resurrect every cell left out of it. A refused world is handed back untouched,
 /// so the reported `TooLarge` size is what the parts that can never be shed come to on
 /// their own.
+///
+/// "Fits" now means the snapshot can go out as its parts ([`split_world`]), not that it is
+/// under one datagram: the herd is never shed, so at [`MAX_HERD`] the bots alone are over
+/// [`MAX_WORLD_PART_BYTES`] and the snapshot is three part-datagrams rather than a refused one.
+/// The three shedables still ride part 0, and `budget` is what *every* part is measured against --
+/// the host passes [`MAX_WORLD_PART_BYTES`], so the shed threshold is one *part*, which is smaller
+/// than the one-datagram budget a world was measured against before the herd was split. A meadow
+/// therefore gives way sooner than it did; it is content rather than geometry and it self-corrects,
+/// which is why it is shed before the craters.
 pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
     if !world.is_finite() {
         return WorldOutcome::NotFinite;
     }
-    if datagram_size(world) <= budget {
+    if fits(world, budget) {
         return WorldOutcome::Whole;
     }
 
     let spent = world.spent.take();
-    if datagram_size(world) <= budget {
+    if fits(world, budget) {
         return WorldOutcome::Shed {
             spent: spent.is_some(),
             meadow: false,
@@ -779,7 +957,7 @@ pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
     }
 
     let meadow = world.eaten.take();
-    if datagram_size(world) <= budget {
+    if fits(world, budget) {
         return WorldOutcome::Shed {
             spent: spent.is_some(),
             meadow: meadow.is_some(),
@@ -788,8 +966,7 @@ pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
     }
 
     let craters = world.craters.take();
-    let bare = datagram_size(world);
-    if bare <= budget {
+    if fits(world, budget) {
         return WorldOutcome::Shed {
             spent: spent.is_some(),
             meadow: meadow.is_some(),
@@ -800,16 +977,153 @@ pub fn fit_world(world: &mut WorldState, budget: usize) -> WorldOutcome {
     world.spent = spent;
     world.eaten = meadow;
     world.craters = craters;
-    WorldOutcome::TooLarge { size: bare }
+    WorldOutcome::TooLarge {
+        size: bare_size(world),
+    }
+}
+
+/// Whether `world` can go out as parts: its herd splits within [`MAX_WORLD_PARTS`] and every
+/// part is within `budget`. The herd is measured and packed by the real encoder, not an
+/// estimate -- a part's cost depends on its bots' varints.
+fn fits(world: &WorldState, budget: usize) -> bool {
+    match split_world(world, 0) {
+        Ok(parts) => parts.iter().all(|part| part_size(part) <= budget),
+        Err(_) => false,
+    }
+}
+
+/// Splits `world` into the parts that carry it, or refuses when the herd cannot be split within
+/// [`MAX_WORLD_PARTS`] parts.
+///
+/// The herd is packed greedily, each part measured with the real encoder against
+/// [`MAX_WORLD_PART_BYTES`], so a hundred goats at the ceiling become about three parts of about
+/// six hundred bytes each rather than one datagram at the budget's edge (or, on a narrow
+/// path, none at all). Part 0 carries the [`WorldHead`] -- the sky, the streams and the
+/// sheddable state it is left with -- and every part carries a slice of the herd from `first`.
+/// The sheddables are measured *with* part 0, so a meadow the first part cannot carry is what
+/// makes [`fit_world`] shed it rather than something that overflows after the bots are placed.
+///
+/// `Err` is [`WorldOutcome::TooLarge`] naming the bare size (the header and every bot), which is
+/// what [`fit_world`] reports and what a reader needs when a snapshot is refused.
+pub fn split_world(world: &WorldState, seq: u32) -> Result<Vec<WorldPart>, WorldOutcome> {
+    pack_herd(world, seq).map_err(|size| WorldOutcome::TooLarge { size })
+}
+
+/// Reassembles the parts of one snapshot into the whole world, or `None` when they are not a
+/// complete, consistent snapshot: a missing part, a part 0 with no header, parts that disagree
+/// on the snapshot's sequence or the herd, or a herd whose bot indices are not `0..herd`.
+///
+/// This is what makes a partial snapshot *not* a world. A snapshot carrying fewer bots than the
+/// host has would faithfully shrink the mirror, which is the bug this exists to prevent
+/// (`466b967`), not the fix; so a receiver emits nothing until every part of a snapshot is in.
+pub fn join_world(parts: &[WorldPart]) -> Option<WorldState> {
+    let count = parts.iter().map(|part| part.parts).max()?;
+    if count == 0 || parts.len() != count as usize {
+        return None;
+    }
+    let first = parts.iter().find(|part| part.part == 0)?;
+    let seq = first.seq;
+    let herd = first.herd;
+    let head = first.head.clone()?;
+    let mut seen = vec![false; count as usize];
+    let mut bots = Vec::new();
+    for part in parts {
+        let at = part.part as usize;
+        if at >= count as usize || seen[at] || part.seq != seq || part.herd != herd {
+            return None;
+        }
+        seen[at] = true;
+        bots.extend(part.bots.iter().cloned());
+    }
+    if seen.iter().any(|seen| !seen) || bots.len() != herd as usize {
+        return None;
+    }
+    bots.sort_by_key(|bot| bot.index);
+    if bots
+        .iter()
+        .enumerate()
+        .any(|(at, bot)| bot.index as usize != at)
+    {
+        return None;
+    }
+    Some(WorldState {
+        bots,
+        weather: head.weather,
+        streams: head.streams,
+        eaten: head.eaten,
+        craters: head.craters,
+        spent: head.spent,
+    })
+}
+
+/// Packs the herd into parts, each measured to [`MAX_WORLD_PART_BYTES`], the header and the
+/// world's sheddable state on part 0. Returns the bare size when the herd needs more than
+/// [`MAX_WORLD_PARTS`] parts, or no bot fits a part.
+fn pack_herd(world: &WorldState, seq: u32) -> Result<Vec<WorldPart>, usize> {
+    let herd = world.bots.len();
+    let mut parts: Vec<WorldPart> = Vec::new();
+    let mut at = 0usize;
+    // An empty herd still needs one part: it is the header and "no bots", which is a world a
+    // client has to act on (`466b967`), not nothing to send.
+    while at < herd || parts.is_empty() {
+        let mut part = WorldPart {
+            seq,
+            part: 0,
+            parts: 1,
+            herd: herd as u16,
+            first: at as u16,
+            head: parts.is_empty().then(|| world.head()),
+            bots: Vec::new(),
+        };
+        while at < herd {
+            part.bots.push(world.bots[at].clone());
+            if part_size(&part) > MAX_WORLD_PART_BYTES {
+                part.bots.pop();
+                break;
+            }
+            at += 1;
+        }
+        // A part that cannot hold even one bot is the *header's* problem -- a meadow the first
+        // part cannot carry, which `fit_world` sheds -- or, with no bot in a later part, the
+        // herd's. Either way a herd is all-or-nothing: never drop a bot to make the count work.
+        if part.bots.is_empty() && at < herd {
+            return Err(bare_size(world));
+        }
+        parts.push(part);
+        if parts.len() > MAX_WORLD_PARTS as usize {
+            return Err(bare_size(world));
+        }
+    }
+    let count = parts.len() as u8;
+    for (index, part) in parts.iter_mut().enumerate() {
+        part.part = index as u8;
+        part.parts = count;
+    }
+    Ok(parts)
 }
 
 /// What `world` comes to as one encoded datagram, or `usize::MAX` when it cannot
 /// be encoded at all -- which is a size nothing fits rather than a size of zero.
 fn datagram_size(world: &WorldState) -> usize {
-    match encode_datagram(&Datagram::World(world.clone())) {
+    part_size(&WorldPart::whole(world, 0))
+}
+
+/// One part's size on the wire.
+fn part_size(part: &WorldPart) -> usize {
+    match encode_datagram(&Datagram::World(part.clone())) {
         Ok(bytes) => bytes.len(),
         Err(_) => usize::MAX,
     }
+}
+
+/// What the never-sheddable part of `world` comes to: the header and every bot, no meadow, no
+/// craters, no spent devices.
+fn bare_size(world: &WorldState) -> usize {
+    let mut probe = world.clone();
+    probe.eaten = None;
+    probe.craters = None;
+    probe.spent = None;
+    datagram_size(&probe)
 }
 
 /// One Opus packet on the media channel. `from` is stamped by the relay, like a
@@ -839,7 +1153,7 @@ impl VoiceFrame {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Datagram {
     Peer(PeerFrame),
-    World(WorldState),
+    World(WorldPart),
     Mods(ModsState),
     Voice(VoiceFrame),
 }
@@ -851,7 +1165,7 @@ impl Datagram {
     pub fn is_finite(&self) -> bool {
         match self {
             Datagram::Peer(frame) => frame.state.is_finite(),
-            Datagram::World(world) => world.is_finite(),
+            Datagram::World(part) => part.is_finite(),
             // A mod's payload is JSON: it cannot carry a NaN (`JSON.stringify`
             // would have written `null`), and the transport does not look inside
             // it anyway.
@@ -927,11 +1241,30 @@ pub fn encode_datagram(datagram: &Datagram) -> Result<Vec<u8>, Error> {
 ///
 /// Everything this can produce is finite: the wire cannot carry a NaN (see
 /// `wire`), so the checks that remain are about the bridge, where the scene
-/// hands Rust JSON.
+/// hands Rust JSON. A world part is also checked against [`MAX_HERD`] and
+/// [`MAX_WORLD_PARTS`] here, on *decode*, because this is the one place a peer's bytes
+/// become typed: it bounds what a client will allocate for a herd it is told to hold, and
+/// it is what makes [`MAX_HERD`] the ceiling for `goatsd --herd` and the chunker rather
+/// than only a client-side clamp.
 pub fn decode_datagram(payload: &[u8]) -> Result<Datagram, Error> {
     let packed: wire::WireDatagram =
         postcard::from_bytes(payload).map_err(|error| Error::Decode(error.to_string()))?;
-    packed.unpack()
+    let datagram = packed.unpack()?;
+    if let Datagram::World(part) = &datagram {
+        if part.herd as usize > MAX_HERD || part.bots.len() > MAX_HERD {
+            return Err(Error::Decode(format!(
+                "the herd is {} bots, over the {MAX_HERD} ceiling",
+                part.herd
+            )));
+        }
+        if part.parts == 0 || part.parts > MAX_WORLD_PARTS || part.part >= part.parts {
+            return Err(Error::Decode(format!(
+                "a world part is {} of {}, over the {MAX_WORLD_PARTS}-part ceiling",
+                part.part, part.parts
+            )));
+        }
+    }
+    Ok(datagram)
 }
 
 /// Wraps a payload in a wire frame: a big-endian `u32` length, then the payload.
@@ -1337,10 +1670,33 @@ mod tests {
                 },
             ]),
         };
-        let datagram = Datagram::World(world.clone());
+        let datagram = Datagram::World(WorldPart::whole(&world, 7));
         let bytes = encode_datagram(&datagram).expect("encode");
         assert_eq!(decode_datagram(&bytes).expect("decode"), datagram);
         assert!(world.is_finite());
+
+        // A split snapshot round-trips part for part, and `join_world` puts the herd back
+        // together: this is the shape a hundred goats travel in.
+        let parts = split_world(&world, 9).expect("split");
+        for part in &parts {
+            let bytes = encode_datagram(&Datagram::World(part.clone())).expect("encode");
+            assert_eq!(
+                &decode_datagram(&bytes).expect("decode"),
+                &Datagram::World(part.clone())
+            );
+        }
+        let reassembled: Vec<WorldPart> = parts
+            .iter()
+            .map(|part| {
+                match decode_datagram(&encode_datagram(&Datagram::World(part.clone())).unwrap())
+                    .unwrap()
+                {
+                    Datagram::World(part) => part,
+                    other => panic!("expected a world part, got {other:?}"),
+                }
+            })
+            .collect();
+        assert_eq!(join_world(&reassembled).as_ref(), Some(&world));
 
         // A world mod's state rides its own datagram, and the transport does not
         // look inside it: it is the scene's JSON, round-tripped as bytes.
@@ -1564,23 +1920,78 @@ mod tests {
     }
 
     #[test]
-    fn a_world_with_the_herd_at_its_clamp_still_fits() {
-        // The M16 guard, extended to the two new lists: a session at its worst -- ten
-        // bots, sixteen craters, twelve spent devices and a meadow -- has to fit one
-        // datagram, or the craters need a datagram of their own.
+    fn a_world_at_the_herd_ceiling_splits_within_the_budget() {
+        // The invariant the budget exists for, restated for parts: at the ceiling -- the herd at
+        // `MAX_HERD`, every bot flung, sixteen craters, twelve spent devices and a meadow -- the
+        // snapshot goes out whole and *every emitted part* fits the packing budget. `fit_world`
+        // never sheds a bot, so a herd the parts could not carry would refuse the whole world
+        // (the frozen herd) rather than shrink it.
         let mut world = a_running_world(10);
-        world.bots = (0..10).map(bot).collect();
+        world.bots = (0..MAX_HERD as u16)
+            .map(|index| {
+                let mut bot = bot(index);
+                bot.gait = Gait::Flung;
+                bot.py = 250;
+                bot
+            })
+            .collect();
         world.craters = Some(craters(16));
         world.spent = Some(spent_devices(12));
-        let size = datagram_size(&world);
-        assert!(
-            size <= MAX_DATAGRAM_BYTES,
-            "a full session is {size} bytes, over the {MAX_DATAGRAM_BYTES} budget"
-        );
+
         assert_eq!(
-            fit_world(&mut world, MAX_DATAGRAM_BYTES),
-            WorldOutcome::Whole
+            fit_world(&mut world, MAX_WORLD_PART_BYTES),
+            WorldOutcome::Whole,
+            "the budget carries the ceiling"
         );
+
+        let parts = split_world(&world, 0).expect("the herd splits");
+        // More than one part at the ceiling: this is the chunking, not a raise of the budget --
+        // a hundred goats do not fit one datagram at the headroom a part is packed for.
+        assert!(
+            parts.len() >= 2,
+            "the ceiling needs its herd split: {} part(s)",
+            parts.len()
+        );
+        assert!(parts.len() <= MAX_WORLD_PARTS as usize);
+        for part in &parts {
+            let size = part_size(part);
+            assert!(
+                size <= MAX_WORLD_PART_BYTES,
+                "a part is {size} bytes, over the {MAX_WORLD_PART_BYTES}-byte budget"
+            );
+        }
+        // The herd is all there and comes back whole: never a partial snapshot.
+        let joined = join_world(&parts).expect("the parts are one snapshot");
+        assert_eq!(joined.bots.len(), MAX_HERD);
+        assert_eq!(joined, world);
+    }
+
+    #[test]
+    fn an_over_ceiling_herd_is_refused_at_decode() {
+        // The ceiling belongs in `proto` because it is the one language the JavaScript and
+        // the GDScript cannot read, and it is enforced where a peer's bytes become typed: a
+        // payload claiming a herd over `MAX_HERD` is an error, not an allocation. This is what
+        // makes `goatsd --herd`'s validation and the chunker's bound one number rather than
+        // two, and it is a bad peer's problem rather than a client's.
+        let head = a_running_world(0).head();
+        let mut over = WorldPart {
+            seq: 1,
+            part: 0,
+            parts: 1,
+            herd: MAX_HERD as u16 + 1,
+            first: 0,
+            head: Some(head.clone()),
+            bots: Vec::new(),
+        };
+        let bytes = encode_datagram(&Datagram::World(over.clone())).expect("encode");
+        let error = decode_datagram(&bytes).expect_err("a herd over the ceiling is refused");
+        assert!(matches!(error, Error::Decode(_)), "{error:?}");
+        assert!(error.to_string().contains("ceiling"), "{error}");
+
+        // The ceiling itself is not over it: a boundary, not an off-by-one.
+        over.herd = MAX_HERD as u16;
+        let bytes = encode_datagram(&Datagram::World(over)).expect("encode");
+        assert!(decode_datagram(&bytes).is_ok());
     }
 
     #[test]
@@ -1656,17 +2067,21 @@ mod tests {
         // unable to eat. An empty meadow is a different, real state and travels.
         let mut shed = a_running_world(3);
         shed.eaten = None;
-        let shed_bytes = encode_datagram(&Datagram::World(shed)).expect("encode");
+        let shed_bytes =
+            encode_datagram(&Datagram::World(WorldPart::whole(&shed, 0))).expect("encode");
         match decode_datagram(&shed_bytes).expect("decode") {
-            Datagram::World(decoded) => assert_eq!(decoded.eaten, None),
+            Datagram::World(part) => assert_eq!(part.head.expect("a head").eaten, None),
             other => panic!("expected a world, got {other:?}"),
         }
 
         let mut empty = a_running_world(3);
         empty.eaten = Some(Vec::new());
-        let empty_bytes = encode_datagram(&Datagram::World(empty)).expect("encode");
+        let empty_bytes =
+            encode_datagram(&Datagram::World(WorldPart::whole(&empty, 0))).expect("encode");
         match decode_datagram(&empty_bytes).expect("decode") {
-            Datagram::World(decoded) => assert_eq!(decoded.eaten, Some(Vec::new())),
+            Datagram::World(part) => {
+                assert_eq!(part.head.expect("a head").eaten, Some(Vec::new()))
+            }
             other => panic!("expected a world, got {other:?}"),
         }
 
@@ -1687,12 +2102,15 @@ mod tests {
 
     #[test]
     fn the_vanilla_world_fits_with_room_to_spare() {
-        // The worst case a player can reach without any mod: the herd at its
-        // clamp and a meadow well along. Under JSON this was 1600 bytes and
-        // climbing against a 1200-byte cap; binary and quantized it fits whole,
-        // with most of the budget still free. This is the guard against the
-        // budget eroding again -- the next field added to `WorldState` has to
-        // argue for its bytes.
+        // The common mod-free world: the default herd and a meadow well along. Under JSON this
+        // was 1600 bytes and climbing against a 1200-byte cap; binary and quantized it fits
+        // whole, with most of the budget still free. This is the guard that the budget does not
+        // *erode* -- the next field added to `WorldState` has to argue for its bytes.
+        //
+        // `a_world_at_the_herd_ceiling_splits_within_the_budget` above is the other half: the
+        // same shape with the herd at `MAX_HERD`, which splits into parts rather than shrinking
+        // the herd -- which is why the ceiling could be raised to a hundred without raising the
+        // budget out from under it.
         //
         // The water (M20) is the third system to argue for none: the level is a
         // function of the seed's rain on both ends rather than a state, so nothing
@@ -1700,7 +2118,6 @@ mod tests {
         // that claim (`water.rs`'s `the_world_snapshot_carries_no_water`, which pins
         // the keys a host actually publishes).
         let mut world = a_running_world(20);
-        world.bots = (0..10).map(bot).collect();
         let size = datagram_size(&world);
         assert_eq!(
             fit_world(&mut world, MAX_DATAGRAM_BYTES),
@@ -1753,7 +2170,7 @@ mod tests {
         // gets, and it has to name the size.
         let big = ModsState(serde_json::json!({
             "streams": {},
-            "data": { "com.example.big": { "blob": "x".repeat(1_500) } },
+            "data": { "com.example.big": { "blob": "x".repeat(MAX_DATAGRAM_BYTES) } },
         }));
         let outcome = fit_mods(&big);
         match outcome {

@@ -1348,11 +1348,15 @@ takes `--mods`/`--no-mods`, hashes the assets without keeping them
 now **runs its mods** in the headless world (M14d2), so their published state
 and streams reach clients beside the world rather than inside it.
 
-`PROTOCOL_VERSION` is `10` (M19f; `7` when this section was written, and the
-milestones since have bumped it for the gait they added and the flung height they
-taught the world to carry). Nothing in *this* section changes with it: a mod
-reference and the comparison are the same shape at every version, and the bump is
-what makes a mismatch a refusal rather than a decode of somebody else's field.
+`PROTOCOL_VERSION` is `11` (the world snapshot is split across parts, so a
+world datagram carries one part of a snapshot rather than the whole thing; `10`
+before it, `7` when this section was written, and the milestones between bumped it
+for the gait they added and the flung height they taught the world to carry).
+Nothing in *this* section changes with it: a mod reference and the comparison are
+the same shape at every version, and the bump is what makes a mismatch a refusal
+rather than a decode of somebody else's field. The bump for the split is the same
+kind of case as version 8: a `10` peer would read a part as a whole world, so the
+parts need an ALPN that refuses a `10` peer rather than one that misreads it.
 
 `Goatsd` takes `--mods <dir>` and loads the same loader; a server with no
 `mods/` only accepts clients with no world mods.

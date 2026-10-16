@@ -9,6 +9,13 @@
 //! into the client's console with `connect <ticket> <name>`. `--listen` also
 //! serves that ticket, the connected-client count and a client download link as
 //! a small status page (`src/web.rs`); without `--listen` no HTTP server runs.
+//!
+//! The herd is this end's to size: `--herd N` is written into the scene's own
+//! `TUNING.herd.count` before the world builds its goats, so the snapshot every
+//! joiner mirrors is `N` goats rather than the default seven. The ceiling is
+//! `proto::MAX_HERD` -- a hundred, the same number each client names -- and a herd that
+//! large travels as several part-datagrams rather than one (`proto::split_world`), so the
+//! `--herd` ceiling is what the *parts* are sized for rather than the datagram budget.
 
 mod headless;
 mod web;
@@ -27,8 +34,13 @@ const WORLD_EVERY: u64 = 6;
 /// says otherwise.
 const DEFAULT_DOWNLOAD: &str = "https://github.com/sdgoij/goats/releases";
 
+/// The herd `--herd` asks for when the flag says nothing: the scene's own default
+/// (`TUNING.herd.count` in `core.js`, `Bots.COUNT` in the port), which a session-less
+/// scene boots at. The ceiling a count is validated against is `proto::MAX_HERD`.
+const DEFAULT_HERD: usize = 7;
+
 const USAGE: &str = "\
-goatsd [name] [--listen address:port] [--download URL] [--mods DIRECTORY] [--no-mods]
+goatsd [name] [--listen address:port] [--download URL] [--mods DIRECTORY] [--no-mods] [--herd N]
 
   name                the name to host under (default: server)
   -l, --listen ADDR   serve a status page on ADDR; a bare port means 0.0.0.0:port.
@@ -39,6 +51,9 @@ goatsd [name] [--listen address:port] [--download URL] [--mods DIRECTORY] [--no-
                       (default search: $GOATS_MODS, then mods/ next to the binary,
                       then mods/ in the current directory)
       --no-mods       require no mods
+      --herd N        bots in the world's herd, 0..100 (default: 7). The herd is
+                      simulated here and broadcast, so this is what every joiner
+                      mirrors; a hundred is a real per-frame cost at both ends.
   -h, --help          this text";
 
 /// What the command line asked for.
@@ -48,6 +63,7 @@ struct Options {
     download: String,
     mods_dir: Option<PathBuf>,
     no_mods: bool,
+    herd: usize,
 }
 
 /// Asking for help is not an error, but it ends the process the same way.
@@ -63,6 +79,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
         download: DEFAULT_DOWNLOAD.to_string(),
         mods_dir: None,
         no_mods: false,
+        herd: DEFAULT_HERD,
     };
     let mut named = false;
     let mut args = args;
@@ -81,6 +98,19 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 ));
             }
             "--no-mods" => options.no_mods = true,
+            "--herd" => {
+                let value = args.next().ok_or("--herd needs a count")?;
+                let count: usize = value
+                    .parse()
+                    .map_err(|_| format!("--herd expects a number, got {value}"))?;
+                if count > proto::MAX_HERD {
+                    return Err(format!(
+                        "--herd {count} is over the {}-goat ceiling",
+                        proto::MAX_HERD
+                    ));
+                }
+                options.herd = count;
+            }
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             other => {
                 if named {
@@ -266,7 +296,7 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-    let mut sim = match headless::Sim::start(host.seed(), &loader) {
+    let mut sim = match headless::Sim::start(host.seed(), &loader, options.herd) {
         Ok(sim) => sim,
         Err(error) => {
             eprintln!("goatsd: could not start the world: {error}");
@@ -564,6 +594,44 @@ mod tests {
         assert_eq!(options.name, "server");
         assert!(options.listen.is_none(), "no page unless asked for");
         assert_eq!(options.download, DEFAULT_DOWNLOAD);
+        assert_eq!(options.herd, DEFAULT_HERD, "the scene's own default herd");
+    }
+
+    #[test]
+    fn the_herd_flag_sets_the_count() {
+        assert_eq!(
+            options(&["--herd", "42"]).herd,
+            42,
+            "the flag drives the herd"
+        );
+        assert_eq!(
+            options(&["--herd", "0"]).herd,
+            0,
+            "an empty herd is allowed"
+        );
+        let ceiling = proto::MAX_HERD.to_string();
+        assert_eq!(
+            options(&["--herd", &ceiling]).herd,
+            proto::MAX_HERD,
+            "the ceiling itself is allowed"
+        );
+    }
+
+    #[test]
+    fn a_herd_over_the_ceiling_is_refused() {
+        let over = (proto::MAX_HERD + 1).to_string();
+        let refusals: [(&[&str], &str); 4] = [
+            (&["--herd", over.as_str()], "over the ceiling"),
+            (&["--herd"], "a missing count"),
+            (&["--herd", "many"], "a non-number"),
+            (&["--herd", "-1"], "a negative count"),
+        ];
+        for (args, why) in refusals {
+            match parse(args) {
+                Err(message) => assert!(!message.is_empty(), "{why}: an empty message"),
+                Ok(_) => panic!("{why} should be refused"),
+            }
+        }
     }
 
     #[test]

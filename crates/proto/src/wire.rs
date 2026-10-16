@@ -2,9 +2,9 @@
 //!
 //! [`Datagram`] is the vocabulary the session speaks; this is how it travels.
 //! Every datagram is binary, and the entity fields are quantized, because the
-//! world snapshot goes out ten times a second inside a 1200-byte budget and voice
-//! fifty. JSON spent most of that budget on key names and decimal digits: one bot
-//! was 86 bytes of text and is ~10 here.
+//! world snapshot goes out ten times a second inside a 1200-byte budget -- split across parts,
+//! each well under it (see `crate::MAX_WORLD_PART_BYTES`) -- and voice fifty. JSON spent most of
+//! that budget on key names and decimal digits: one bot was 86 bytes of text and is ~10 here.
 //!
 //! Three properties matter more than the size:
 //!
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BotState, Crater, Datagram, EatenCell, Error, Gait, ModsState, PeerFrame, PeerState, Spent,
-    Streams, VoiceFrame, WeatherState, WorldState,
+    Streams, VoiceFrame, WeatherState, WorldHead, WorldPart,
 };
 
 // ---- the quantization grid -------------------------------------------------
@@ -131,7 +131,7 @@ fn seconds_of(units: u16) -> f32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum WireDatagram {
     Peer(WirePeer),
-    World(WireWorld),
+    World(WireWorldPart),
     Mods(WireMods),
     Voice(WireVoice),
 }
@@ -151,17 +151,28 @@ pub(crate) struct WirePeer {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct WireWorld {
+pub(crate) struct WireWorldPart {
+    /// The snapshot this part belongs to, and its place in it. `postcard` varints the small
+    /// u16s, so the whole header is a handful of bytes ahead of the herd.
+    seq: u32,
+    part: u8,
+    parts: u8,
+    herd: u16,
+    first: u16,
+    /// The sky, the streams and the sheddable state, on part 0 only (`None` otherwise).
+    head: Option<WireWorldHead>,
     bots: Vec<WireBot>,
-    /// The sky and the streams carry no entity count, so they travel as they are
-    /// and postcard's `f32`/`u32` fields are already fixed-width.
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WireWorldHead {
     weather: WeatherState,
     streams: Streams,
     /// `None` when the snapshot could not carry the meadow -- see
-    /// [`WorldState::eaten`].
+    /// [`crate::WorldState::eaten`].
     eaten: Option<Vec<WireEaten>>,
     /// `None` when the snapshot could not carry the craters, and the same for
-    /// `spent`: see [`WorldState::craters`] and [`fit_world`].
+    /// `spent`: see [`crate::WorldState::craters`] and [`crate::fit_world`].
     craters: Option<Vec<WireCrater>>,
     spent: Option<Vec<WireSpent>>,
 }
@@ -230,7 +241,7 @@ impl WireDatagram {
     pub(crate) fn pack(datagram: &Datagram) -> Result<WireDatagram, Error> {
         Ok(match datagram {
             Datagram::Peer(frame) => WireDatagram::Peer(WirePeer::pack(frame)),
-            Datagram::World(world) => WireDatagram::World(WireWorld::pack(world)),
+            Datagram::World(part) => WireDatagram::World(WireWorldPart::pack(part)),
             Datagram::Mods(mods) => WireDatagram::Mods(WireMods::pack(mods)?),
             Datagram::Voice(frame) => WireDatagram::Voice(WireVoice {
                 from: frame.from.clone(),
@@ -284,30 +295,54 @@ impl WirePeer {
     }
 }
 
-impl WireWorld {
-    fn pack(world: &WorldState) -> WireWorld {
-        WireWorld {
-            bots: world.bots.iter().map(WireBot::pack).collect(),
-            weather: world.weather.clone(),
-            streams: world.streams,
-            eaten: world
+impl WireWorldPart {
+    fn pack(part: &WorldPart) -> WireWorldPart {
+        WireWorldPart {
+            seq: part.seq,
+            part: part.part,
+            parts: part.parts,
+            herd: part.herd,
+            first: part.first,
+            head: part.head.as_ref().map(WireWorldHead::pack),
+            bots: part.bots.iter().map(WireBot::pack).collect(),
+        }
+    }
+
+    fn unpack(self) -> WorldPart {
+        WorldPart {
+            seq: self.seq,
+            part: self.part,
+            parts: self.parts,
+            herd: self.herd,
+            first: self.first,
+            head: self.head.map(WireWorldHead::unpack),
+            bots: self.bots.into_iter().map(WireBot::unpack).collect(),
+        }
+    }
+}
+
+impl WireWorldHead {
+    fn pack(head: &WorldHead) -> WireWorldHead {
+        WireWorldHead {
+            weather: head.weather.clone(),
+            streams: head.streams,
+            eaten: head
                 .eaten
                 .as_deref()
                 .map(|cells| cells.iter().map(WireEaten::pack).collect()),
-            craters: world
+            craters: head
                 .craters
                 .as_deref()
                 .map(|list| list.iter().map(WireCrater::pack).collect()),
-            spent: world
+            spent: head
                 .spent
                 .as_deref()
                 .map(|list| list.iter().map(WireSpent::pack).collect()),
         }
     }
 
-    fn unpack(self) -> WorldState {
-        WorldState {
-            bots: self.bots.into_iter().map(WireBot::unpack).collect(),
+    fn unpack(self) -> WorldHead {
+        WorldHead {
             weather: self.weather,
             streams: self.streams,
             eaten: self

@@ -447,7 +447,7 @@ function sceneLoadStep() {
     else if (i === 8) makeBotTextures();
     else {
         // One bot per step, so the bar keeps moving through the model loads.
-        const want = clamp(Math.round(TUNING.herd.count), 0, 10);
+        const want = clamp(Math.round(TUNING.herd.count), 0, MAX_HERD);
         if (BOTS.length < want) botAdd(BOTS.length);
     }
 }
@@ -494,7 +494,7 @@ function sceneInit() {
     // The load runs a step at a time from `sceneFrame`, so the splash shows.
     loaded = false;
     loadStep = 0;
-    loadTotal = 9 + clamp(Math.round(TUNING.herd.count), 0, 10);
+    loadTotal = 9 + clamp(Math.round(TUNING.herd.count), 0, MAX_HERD);
     screenW = rl.getScreenWidth();
     screenH = rl.getScreenHeight();
     sceneFrames = 0;

@@ -54,10 +54,11 @@ pub struct Sim {
 }
 
 impl Sim {
-    /// Evaluates the scene, loads the world mods, seeds it, and initialises it.
-    /// The caller then drives [`Sim::step`] at whatever rate it wants; the
-    /// scene's `dt` is a fixed 1/60 from the stub.
-    pub fn start(seed: u32, loader: &mods::Loader) -> Result<Sim, String> {
+    /// Evaluates the scene, loads the world mods, seeds it with `herd` goats, and
+    /// initialises it. `herd` is `goatsd`'s `--herd`; it drives the scene's own
+    /// `TUNING.herd.count`. The caller then drives [`Sim::step`] at whatever rate it wants;
+    /// the scene's `dt` is a fixed 1/60 from the stub.
+    pub fn start(seed: u32, loader: &mods::Loader, herd: usize) -> Result<Sim, String> {
         let mut context = Context::new().map_err(|error| error.to_string())?;
         let callbacks = HostCallbacks {
             // The scene's own `console.log` lines are useful on a server, but
@@ -76,6 +77,17 @@ impl Sim {
         // mod's registered streams are seeded rather than left at their initial
         // value. World compiled mods come back as a Rust-hosted plugin set.
         let plugins = Rc::new(RefCell::new(load_mods(&mut context, loader)?));
+
+        // `--herd` drives the scene's own `TUNING.herd.count` rather than a second herd:
+        // `sceneInit` builds the bots from that leaf and the session publishes them, so this
+        // is the count every joiner mirrors. It is applied after the mods have merged their
+        // tuning -- an operator's explicit count outranks a mod's -- and before `sceneInit`,
+        // which is where the herd is actually made.
+        call_scene(
+            &mut context,
+            "tuningSet",
+            &[JsValue::string("herd.count"), JsValue::number(herd as f64)],
+        )?;
 
         let seed_fn = scene_function(&context, "sceneUseSeed")?;
         let init = scene_function(&context, "sceneInit")?;
@@ -291,7 +303,8 @@ mod tests {
 
     /// Runs a world for `steps` frames and returns the bots as JSON.
     fn run_world(seed: u32, steps: usize) -> String {
-        let mut sim = Sim::start(seed, &mods::Loader::empty()).expect("start the headless scene");
+        let mut sim = Sim::start(seed, &mods::Loader::empty(), crate::DEFAULT_HERD)
+            .expect("start the headless scene");
         for _ in 0..steps {
             sim.step().expect("step");
         }
@@ -320,7 +333,7 @@ mod tests {
         let loader = mods::Loader::discover_with(&dir, mods::AssetMode::HashOnly);
         assert!(loader.errors().is_empty(), "{:?}", loader.errors());
 
-        let mut sim = Sim::start(0x1234_5678, &loader).expect("start");
+        let mut sim = Sim::start(0x1234_5678, &loader, crate::DEFAULT_HERD).expect("start");
         for _ in 0..40 {
             sim.step().expect("step");
         }
@@ -359,7 +372,7 @@ mod tests {
             "the birds mod must load"
         );
 
-        let mut sim = Sim::start(0x1234_5678, &loader).expect("start");
+        let mut sim = Sim::start(0x1234_5678, &loader, crate::DEFAULT_HERD).expect("start");
         for _ in 0..120 {
             sim.step().expect("step");
         }
@@ -429,7 +442,7 @@ mod tests {
             "KeepWasm keeps the module the server must run"
         );
 
-        let mut sim = Sim::start(0x1234_5678, &loader).expect("start");
+        let mut sim = Sim::start(0x1234_5678, &loader, crate::DEFAULT_HERD).expect("start");
         for _ in 0..120 {
             sim.step().expect("step");
         }
@@ -468,6 +481,25 @@ mod tests {
         assert!(json.contains("\"world_time\":"), "{json}");
         assert!(json.contains("\"streams\":"), "{json}");
         assert!(json.contains("\"eaten\":"), "{json}");
+    }
+
+    #[test]
+    fn the_herd_flag_sizes_the_headless_world() {
+        // `goatsd --herd` has to reach the world it publishes, not just the flag parser:
+        // the scene builds its herd from `TUNING.herd.count`, and `Sim::start` writes the
+        // flag's count there before `sceneInit` runs. A wrong count here is the "host's
+        // herd" being a different size from what the operator asked for.
+        let mut sim = Sim::start(0x1234_5678, &mods::Loader::empty(), 3).expect("start");
+        for _ in 0..40 {
+            sim.step().expect("step");
+        }
+        let world: serde_json::Value = serde_json::from_str(&sim.world_json().expect("world json"))
+            .expect("world json parses");
+        assert_eq!(
+            world["bots"].as_array().map(Vec::len),
+            Some(3),
+            "the herd should be the flag's count"
+        );
     }
 
     #[test]
@@ -513,7 +545,7 @@ mod tests {
         // The published state is what has to be reproducible, and it is now on
         // its own the datagram: the world snapshot no longer carries it.
         let run = |seed: u32| {
-            let mut sim = Sim::start(seed, &loader).expect("start");
+            let mut sim = Sim::start(seed, &loader, crate::DEFAULT_HERD).expect("start");
             for _ in 0..40 {
                 sim.step().expect("step");
             }

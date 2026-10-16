@@ -417,7 +417,7 @@ const TUNING = {
         nightDrainMult: 1.6,       // energy drains faster in the cold
     },
     herd: {
-        count: 7,                  // bot goats, 0..10
+        count: 7,                  // bot goats, 0..MAX_HERD
         deathLinger: 8,            // seconds a killed bot lies there before it gets up
         spec: [
             { coat: [196, 168, 128], scale: 0.80, bold: 0.95, lazy: 0.55, name: "tan kid" },
@@ -458,11 +458,25 @@ const TUNING = {
     },
 };
 
+// The herd's ceiling: the most goats the settings screen, the console and a mod may ask for,
+// and the bound every path that clamps a herd size reads -- `setHerdSize`, the tuning tree's own
+// bound below, the boot loop and the settings screen. One number, because four separate `10`s is
+// exactly how a ceiling drifts. The Godot port names it once too (`Bots.MAX_HERD`) and `goatsd`
+// validates against `proto::MAX_HERD`, so each language states it in one place rather than four.
+//
+// It is a *frame-cost* ceiling as much as a game one: every bot owns its own model (the CPU
+// skinning `bots.js`'s header explains), so a hundred goats is a hundred rigs loaded, skinned and
+// animated each frame. The world datagram that carries the herd did *not* grow to match it -- the
+// budget is the transport's and does not move -- so the herd is split across parts instead
+// (`proto::split_world`): a hundred goats travel in about three datagrams of about six hundred
+// bytes rather than one the budget could never carry.
+const MAX_HERD = 100;
+
 // A write is validated against the value it replaces: numbers stay finite,
 // arrays stay arrays, and a branch is not a leaf. Bounds are only listed where
 // the game needs one.
 const TUNING_CLAMP = {
-    "herd.count": [0, 10],
+    "herd.count": [0, MAX_HERD],
     // A killed bot has to lie there for *some* of it: `0` would ping-pong it in and
     // out of the world, and the death is worth watching.
     "herd.deathLinger": [0.5, 120],

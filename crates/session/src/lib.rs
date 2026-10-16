@@ -24,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -44,7 +45,7 @@ use tokio::sync::{Mutex, mpsc};
 pub use proto::{
     BlastKind, BotState, Crater, Datagram, EatenCell, Gait, ModMismatch, ModRef, ModsOutcome,
     ModsState, PeerFrame, PeerState, Spent, Streams, VoiceFrame, WeatherKind, WeatherState,
-    WorldOutcome, WorldState, compare_world_mods, describe_mods,
+    WorldHead, WorldOutcome, WorldPart, WorldState, compare_world_mods, describe_mods,
 };
 
 /// The ALPN, carrying the major wire version so a peer built against a
@@ -595,6 +596,11 @@ pub struct Host {
     server: Arc<Mutex<Server>>,
     sender: mpsc::UnboundedSender<Event>,
     events: mpsc::UnboundedReceiver<Event>,
+    /// The snapshot counter a split world stamps its parts with (see
+    /// [`proto::split_world`]). Monotone per host, so a receiver can drop a part of an older
+    /// snapshot rather than applying it late; only `publish_world` touches it, and only to
+    /// advance it.
+    world_seq: AtomicU32,
 }
 
 /// A fresh session seed, mixed from the clock so two sessions rarely share one.
@@ -694,6 +700,7 @@ impl Host {
             server,
             sender: events,
             events: receiver,
+            world_seq: AtomicU32::new(0),
         })
     }
 
@@ -738,23 +745,38 @@ impl Host {
         self.broadcast(datagram).await;
     }
 
-    /// Broadcasts the server's world, shedding the meadow if the snapshot does
-    /// not fit one datagram. Only the host may send a world, which is what makes
-    /// it authoritative: a client mirrors what it is told and does not simulate.
+    /// Broadcasts the server's world, splitting the herd across parts when a snapshot does not
+    /// fit one datagram. Only the host may send a world, which is what makes it authoritative: a
+    /// client mirrors what it is told and does not simulate.
     ///
-    /// The outcome comes back rather than being logged here -- a library does not
-    /// own the log -- so the caller can report what happened when it *changes*,
+    /// The parts are one snapshot with a shared, monotone sequence, and the herd is divided
+    /// across them rather than shed (see [`proto::split_world`]); the sheddable state -- the
+    /// meadow, the craters, the spent devices -- rides the first part and is what goes when the
+    /// world is over budget, in the order [`proto::fit_world`] documents.
+    ///
+    /// The outcome comes back rather than being logged here -- a library does not own
+    /// the log -- so the caller can report what happened when it *changes*,
     /// instead of ten times a second.
     pub async fn publish_world(&self, world: &WorldState) -> WorldOutcome {
         let mut fitted = world.clone();
-        let outcome = proto::fit_world(&mut fitted, proto::MAX_DATAGRAM_BYTES);
+        // The part budget, not `MAX_DATAGRAM_BYTES`: a part is packed well inside the datagram
+        // budget so it is sent on a narrow path too, so it is what a snapshot is fitted to.
+        let outcome = proto::fit_world(&mut fitted, proto::MAX_WORLD_PART_BYTES);
         if matches!(
             outcome,
             WorldOutcome::TooLarge { .. } | WorldOutcome::NotFinite
         ) {
             return outcome;
         }
-        self.broadcast(Datagram::World(fitted)).await;
+        let seq = self.world_seq.fetch_add(1, Ordering::Relaxed);
+        let Ok(parts) = proto::split_world(&fitted, seq) else {
+            // `fit_world` just agreed the world splits, so this cannot happen; do not send a
+            // half snapshot if it somehow does.
+            return WorldOutcome::TooLarge { size: usize::MAX };
+        };
+        for part in parts {
+            self.broadcast(Datagram::World(part)).await;
+        }
         outcome
     }
 
@@ -1130,6 +1152,66 @@ pub struct Client {
     events: mpsc::UnboundedReceiver<Event>,
 }
 
+/// Gathers the parts of a split world snapshot and yields the whole world once they are all in.
+///
+/// The host publishes a world as [`proto::split_world`]'s parts -- one snapshot across several
+/// datagrams -- and this is where they become one [`Event::World`] again, so neither client's
+/// game code has to know a snapshot can be split. Both bridges consume the event and keep their
+/// existing rule: adopt the herd the host names, down to none (`466b967`).
+///
+/// It is deliberately tolerant of loss and reordering, with no flush timer:
+///
+/// * a part of the snapshot being gathered fills its slot, whatever order it arrives in;
+/// * a snapshot is emitted the moment every part is in, and never before -- a partial snapshot
+///   would faithfully *shrink* a client's mirror of the herd, which is the bug, not the fix;
+/// * a part older than the snapshot being gathered (by `seq`) is dropped rather than applied
+///   late, and a part from a newer snapshot abandons the one in progress;
+/// * a snapshot missing a part is simply never emitted. At the host's ten-a-second cadence the
+///   next one is a hundred milliseconds away, so a flush timer would only invent a world the
+///   host did not send.
+#[derive(Default)]
+struct WorldGather {
+    /// The snapshot being gathered, or `None` until a first part arrives.
+    seq: Option<u32>,
+    /// One slot per part of that snapshot, filled as the parts arrive.
+    parts: Vec<Option<proto::WorldPart>>,
+}
+
+impl WorldGather {
+    /// Feeds one part, returning the whole world when its snapshot is complete.
+    fn feed(&mut self, part: proto::WorldPart) -> Option<WorldState> {
+        match self.seq {
+            // Stale: this snapshot has been passed, so the part is dropped rather than applied
+            // to a world it was not made for.
+            Some(seq) if part.seq < seq => return None,
+            Some(seq) if part.seq == seq => {}
+            // The first part, or one from a newer snapshot: (re)start, abandoning whatever was
+            // being gathered -- it cannot be completed now.
+            _ => {
+                self.seq = Some(part.seq);
+                self.parts = vec![None; part.parts as usize];
+            }
+        }
+        if self.parts.len() != part.parts as usize {
+            self.parts = vec![None; part.parts as usize];
+        }
+        let at = part.part as usize;
+        if self.parts.get(at).is_some_and(Option::is_none) {
+            self.parts[at] = Some(part);
+        }
+        if self.parts.iter().any(Option::is_none) {
+            return None;
+        }
+        let parts: Vec<proto::WorldPart> = self
+            .parts
+            .drain(..)
+            .map(|slot| slot.expect("every slot is filled"))
+            .collect();
+        self.seq = None;
+        proto::join_world(&parts)
+    }
+}
+
 impl Client {
     /// Parses the ticket, dials the host, completes the handshake, and returns
     /// once the server has accepted us -- so [`Client::name`] is the canonical
@@ -1203,6 +1285,9 @@ impl Client {
         let snapshot_connection = connection.clone();
         let snapshot_events = events.clone();
         tokio::spawn(async move {
+            // The parts of a split world snapshot, gathered here so a client only ever sees a
+            // whole one (`WorldGather`).
+            let mut gather = WorldGather::default();
             while let Ok(bytes) = snapshot_connection.read_datagram().await {
                 if bytes.len() > proto::MAX_DATAGRAM_BYTES {
                     continue;
@@ -1220,17 +1305,22 @@ impl Client {
                             state: frame.state,
                         }
                     }
-                    Datagram::World(world) => {
-                        if !world.is_finite() {
+                    Datagram::World(part) => {
+                        if !part.is_finite() {
                             continue;
                         }
-                        Event::World {
-                            bots: world.bots,
-                            weather: world.weather,
-                            streams: world.streams,
-                            eaten: world.eaten,
-                            craters: world.craters,
-                            spent: world.spent,
+                        // A part on its own is not a world: emit nothing until the snapshot's
+                        // parts are all in, or a client would shrink its mirror to one part.
+                        match gather.feed(part) {
+                            Some(world) => Event::World {
+                                bots: world.bots,
+                                weather: world.weather,
+                                streams: world.streams,
+                                eaten: world.eaten,
+                                craters: world.craters,
+                                spent: world.spent,
+                            },
+                            None => continue,
                         }
                     }
                     Datagram::Mods(mods) => Event::Mods { mods },
@@ -1907,6 +1997,135 @@ mod tests {
                 return event;
             }
         }
+    }
+
+    /// A world at the herd ceiling, split into the parts a host would broadcast -- the shape
+    /// `publish_world` sends and `WorldGather` has to put back together.
+    fn chunked_world(seq: u32, bots: usize) -> Vec<WorldPart> {
+        let world = WorldState {
+            bots: (0..bots as u16)
+                .map(|index| BotState {
+                    index,
+                    x: 1.0 + f32::from(index),
+                    z: -2.0 - f32::from(index),
+                    yaw: 0.5,
+                    phase: 0.25,
+                    gait: proto::Gait::Walk,
+                    variant: 0,
+                    py: 0,
+                })
+                .collect(),
+            weather: WeatherState {
+                kind: WeatherKind::Clear,
+                cloudiness: 0.1,
+                rain_amount: 0.0,
+                wind_x: 0.5,
+                wind_z: 0.0,
+                wind_sway: 0.4,
+                world_time: 6.0,
+            },
+            streams: Streams {
+                weather: 1,
+                bots: 2,
+                food: 3,
+                audio: 4,
+            },
+            eaten: Some(vec![EatenCell {
+                key: 33_570_816,
+                left: 60.0,
+            }]),
+            craters: Some(vec![Crater {
+                x: 1.0,
+                z: 2.0,
+                r: 1.5,
+                depth: 0.4,
+            }]),
+            spent: Some(vec![Spent {
+                key: 33_570_816,
+                trap: false,
+            }]),
+        };
+        let parts = proto::split_world(&world, seq).expect("the herd splits");
+        assert!(
+            parts.len() >= 2,
+            "the ceiling needs its herd split: {} part(s)",
+            parts.len()
+        );
+        parts
+    }
+
+    #[test]
+    fn a_chunked_snapshot_arrives_as_one_whole_world() {
+        // A snapshot in N parts is one `Event::World`, not N: the parts share a sequence and
+        // are gathered, and nothing is emitted until every one is in -- so a client never sees
+        // a world carrying fewer bots than the host has (the bug `466b967` was about).
+        let parts = chunked_world(1, 100);
+        let mut gather = WorldGather::default();
+        let mut emitted = 0;
+        let mut whole = None;
+        for part in &parts {
+            if let Some(world) = gather.feed(part.clone()) {
+                emitted += 1;
+                whole = Some(world);
+            }
+        }
+        assert_eq!(emitted, 1, "one snapshot is one world, not one per part");
+        assert_eq!(whole.expect("the snapshot assembled").bots.len(), 100);
+    }
+
+    #[test]
+    fn parts_arriving_out_of_order_still_assemble() {
+        let mut parts = chunked_world(4, 100);
+        parts.reverse();
+        let mut gather = WorldGather::default();
+        let mut whole = None;
+        for part in &parts {
+            whole = gather.feed(part.clone()).or(whole);
+        }
+        assert_eq!(whole.expect("assembled").bots.len(), 100);
+    }
+
+    #[test]
+    fn a_snapshot_missing_a_part_is_not_emitted() {
+        let parts = chunked_world(7, 100);
+        let mut gather = WorldGather::default();
+        for part in &parts[..parts.len() - 1] {
+            assert!(
+                gather.feed(part.clone()).is_none(),
+                "a partial snapshot is not a world"
+            );
+        }
+        // The next snapshot starts, and the incomplete one is abandoned rather than completed
+        // with the next snapshot's parts or emitted late.
+        let mut emitted = 0;
+        for part in &chunked_world(8, 100) {
+            if gather.feed(part.clone()).is_some() {
+                emitted += 1;
+            }
+        }
+        assert_eq!(emitted, 1, "only the complete snapshot is emitted");
+    }
+
+    #[test]
+    fn a_stale_part_is_dropped_by_sequence() {
+        let older = chunked_world(1, 100);
+        let newer = chunked_world(2, 100);
+        let mut gather = WorldGather::default();
+        // A newer snapshot is already being gathered when the older one's parts arrive: they
+        // are dropped by sequence and complete nothing.
+        assert!(gather.feed(newer[0].clone()).is_none());
+        for part in &older {
+            assert!(
+                gather.feed(part.clone()).is_none(),
+                "a stale part completes nothing"
+            );
+        }
+        // ...and the newer snapshot still assembles from its remaining parts.
+        let mut whole = None;
+        for part in &newer[1..] {
+            whole = gather.feed(part.clone()).or(whole);
+        }
+        assert_eq!(whole.expect("the newer snapshot assembled").bots.len(), 100);
     }
 
     #[tokio::test]
