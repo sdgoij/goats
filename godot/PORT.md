@@ -175,7 +175,7 @@ knowing about a claim like that.
 joining it. Both modes run against the built `target/release/goatsd.exe`:
 
 ```
-$ godot/tools/interop.sh                 # goatsd --no-mods: the client joins
+$ godot/tools/interop.sh                 # a modless probe against goatsd --no-mods
 welcome:         {"name":"godot","type":"welcome"}
 roster:          {"names":["godot-host","godot"],"type":"roster"}
 chat echo:       {"direct":false,"from":"godot","text":"hello from godot","type":"chat"}
@@ -184,20 +184,32 @@ world bot 0:     {"gait":"idle","index":0,"phase":0.486,"py":0,"variant":-1,"x":
 world weather:   clear at hour 8.0
 OK: a Godot client joined goatsd, chatted and mirrored its world
 
-$ godot/tools/interop.sh refuse          # goatsd with the repository's mods/
+$ godot/tools/interop.sh refuse          # the same probe, against goatsd requiring the flock
 refusal: {"text":"could not join: refused: world mods do not match
           (missing com.github.sdgoij.goats.birds)","type":"error"}
 OK: the host refused the join by mod digest
+
+$ godot/tools/interop.sh herd            # ...and the *scene*, presenting the repository's world mods
+welcome:         godot
+OK: the herd mirrors goatsd's bots, on Godot-drawn ground
 ```
 
 The first proves the transport, the join handshake, the chat routing and the
 world's *fields* — bots, weather, streams, meadow, craters, spent — against the
-shipping binary rather than between two Godot peers. The second is the one that
-matters most: `goatsd` demanded `com.github.sdgoij.goats.birds@1.0.0#77675b54122841b5`,
-and the Godot client — which hashes nothing itself, it hands the set to
-`crates/mods` — was refused by digest with the missing id named. Two
-independently built implementations agreeing on a digest handshake is
-`APIv1.md` section 6.3 working end to end.
+shipping binary rather than between two Godot peers. The second is the refusal:
+`goatsd` demanded `com.github.sdgoij.goats.birds@1.0.0#77675b54122841b5`, and
+`verify_interop.gd` — a bare `NetBridge` with no `ModHost` behind it, so it
+presents the empty set — was refused by digest with the missing id named. The
+third is the *match*, and it is the one that needed a member: `herd` runs the real
+scene, which presents the repository's own set (`ModHost::world_mod_refs`, hashed
+by the same `crates/mods` loader the host and the raylib client use), against a
+`goatsd` requiring exactly that flock, so the join is **accepted** and the flock
+travels both ways. Before that member existed the port presented nothing on both
+sides of the handshake — which a `--no-mods` host never noticed and a host running
+the flock refused as a missing world mod, the exact symptom a player meets when a
+raylib client and a Godot one try to play together. Two independently built
+implementations *agreeing* on a digest, rather than one merely refusing the other,
+is `APIv1.md` section 6.3 working end to end.
 
 Two caveats the check uncovered and now encodes. `goatsd` loads the shared JS
 scene one step per frame, so its *first* snapshots are of a half-built world
@@ -1488,11 +1500,14 @@ voice's bytes go out and come back through the session the bridge owns (M13b;
 `crates/godot/src/voice.rs`, section 3).
 
 Verified so far by `verify_net.gd` (two Godot peers) and by `interop.sh`
-(a Godot client against the shipping `goatsd`, in both the join and the refusal
-mode) — section 3. What the interop run adds over the peer check is that the far
+(a Godot client against the shipping `goatsd`, in the join, refusal and modded-herd
+modes) — section 3. What the interop run adds over the peer check is that the far
 end is a *separately built* binary: the digest handshake, the ticket, the framed
 handshake and the world datagrams all have to agree with code that shares no
-crate version with this one at link time.
+crate version with this one at link time. `host` and `join` carry this client's
+**world-mod set** (`ModHost::world_mod_refs`), so that handshake is the *same*
+`ModRef` digest `crates/mods` computes for the raylib client — a Godot peer and a
+raylib peer running the flock therefore agree rather than refuse one another.
 
 Two things this does *not* solve, both worth knowing now:
 
@@ -2039,10 +2054,11 @@ disagreements and fails if there are none.
 
 ## 10. Next steps
 
-Both spikes have landed, and the interop check passes in five modes: a Godot
-client joins the shipping `goatsd`, chats, receives its world, and is refused by
-digest when it presents the wrong mods (section 3); two of them face each other and mirror
-each other's goat (`interop.sh pair`); and the scene boots, runs and keeps its
+Both spikes have landed, and the interop check passes in six modes: a modless probe
+joins the shipping `goatsd`, chats and receives its world; the same probe is refused by
+digest against a host requiring the flock; the *scene*, presenting the repository's own
+world mods, joins that host and mirrors its herd (section 3); two of them face each other and
+mirror each other's goat (`interop.sh pair`); and the scene boots, runs and keeps its
 own herd with **no server at all** (`interop.sh offline`). And the scene is a *game*: a goat
 you drive, on a heightfield, in a meadow it can eat, among mines it can set off,
 under the scene's own sky, with a weather that runs itself, with **a herd of its own
@@ -2123,7 +2139,8 @@ through the embedded engine, invoking its command and receiving its `rl.drawText
 snapshots between two Godot peers over iroh (`godot/tools/verify_net.gd`); joins the shipping `goatsd`, accepted and
 mirroring its world in one mode and refused by digest in another
 (`interop.sh join`, `interop.sh refuse`); runs the mirror scene against it,
-standing seven real goats on Godot-drawn ground at a 0.07 m worst gap
+**presenting the repository's own world-mod set, so the host's flock is required and
+matched**, standing seven real goats on Godot-drawn ground at a 0.07 m worst gap
 (`interop.sh herd`); runs the scene **twice** against one host and requires each end to mirror the
 other player's goat, settling at a 0.0 m gap (`interop.sh pair`, M21); measures the ported heightfield against the JavaScript one
 at 5.0e-11 m (`godot/tools/verify_terrain.gd`); builds the scene's own 48x48

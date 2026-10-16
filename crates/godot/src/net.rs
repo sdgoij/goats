@@ -24,7 +24,7 @@ use std::thread;
 use godot::prelude::*;
 use serde::Deserialize;
 use serde_json::json;
-use session::{BlastKind, Client, Event as Net, Gait, Host, PeerState, WorldState};
+use session::{BlastKind, Client, Event as Net, Gait, Host, ModRef, PeerState, WorldState};
 use tokio::sync::mpsc;
 
 /// Events waiting for the frame loop to drain. Shared with the runtime thread.
@@ -63,10 +63,17 @@ struct WorldIntent {
 enum Command {
     Host {
         name: String,
+        /// The world-mod set every joiner must present (`ModHost::world_mod_refs`). Empty is the
+        /// common case -- a session with no world mods -- and is what the raylib client's
+        /// `--no-mods` presents too.
+        mods: Vec<ModRef>,
     },
     Join {
         ticket: String,
         name: String,
+        /// This client's world-mod set, which the host compares with its own and refuses a
+        /// mismatch of (`APIv1.md` section 6.3).
+        mods: Vec<ModRef>,
     },
     Say {
         text: String,
@@ -231,16 +238,33 @@ impl INode for NetBridge {
 
 #[godot_api]
 impl NetBridge {
-    /// Host a session under `name` and start serving. The ticket arrives as a
-    /// `ticket` event; the `seed` as a `session` event.
+    /// Host a session under `name` and start serving, requiring the world-mod set `mods` of
+    /// every joiner (`APIv1.md` section 6.2). The ticket arrives as a `ticket` event; the `seed`
+    /// as a `session` event.
+    ///
+    /// `mods` is `ModHost::world_mod_refs`'s JSON -- or an empty string for none, which is what
+    /// every gate presents -- and it has to be *this* client's own set: a host that required
+    /// anything else would refuse the peers it can actually agree with.
+    ///
+    /// A host does *not* yet serve its archives to a joiner missing a world mod (M18's fetch)
+    /// as the raylib client's host does; a refused joiner is named and left to install it.
     #[func]
-    fn host(&mut self, name: GString) -> GString {
-        self.queue_command(Command::Host {
-            name: name.to_string(),
-        })
+    fn host(&mut self, name: GString, mods: GString) -> GString {
+        match parse_mod_refs(&mods.to_string()) {
+            Ok(mods) => self.queue_command(Command::Host {
+                name: name.to_string(),
+                mods,
+            }),
+            Err(error) => crate::gstring(format!("error: {error}")),
+        }
     }
 
-    /// Join the session `ticket` names, asking to be called `name`.
+    /// Join the session `ticket` names, asking to be called `name`, and presenting this client's
+    /// world-mod set `mods`.
+    ///
+    /// `mods` is `ModHost::world_mod_refs`'s JSON (or empty for none). Without it a joiner could
+    /// never enter a session whose host runs a world mod -- the host refuses a set that differs,
+    /// and "nothing" is not the host's set.
     ///
     /// `join`, not `connect`: `Node` already has `connect` for signals, and a
     /// GDExtension method that shadows a base one is resolved by the static type
@@ -248,11 +272,15 @@ impl NetBridge {
     /// would silently reach the wrong method. godot-rust warns about it, and
     /// will make it an error.
     #[func]
-    fn join(&mut self, ticket: GString, name: GString) -> GString {
-        self.queue_command(Command::Join {
-            ticket: ticket.to_string(),
-            name: name.to_string(),
-        })
+    fn join(&mut self, ticket: GString, name: GString, mods: GString) -> GString {
+        match parse_mod_refs(&mods.to_string()) {
+            Ok(mods) => self.queue_command(Command::Join {
+                ticket: ticket.to_string(),
+                name: name.to_string(),
+                mods,
+            }),
+            Err(error) => crate::gstring(format!("error: {error}")),
+        }
     }
 
     /// Say a line. A leading `@name` is a whisper; the routing is the
@@ -671,7 +699,7 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue, voice
 /// live (the caller has already closed it).
 async fn start(command: Command, queue: &Queue) -> Option<Live> {
     match command {
-        Command::Host { name } => match Host::start(&name).await {
+        Command::Host { name, mods } => match Host::start_with_mods(&name, mods).await {
             Ok(host) => {
                 push(
                     queue,
@@ -690,21 +718,23 @@ async fn start(command: Command, queue: &Queue) -> Option<Live> {
                 None
             }
         },
-        Command::Join { ticket, name } => match Client::join(&ticket, &name).await {
-            Ok(client) => {
-                // The canonical name, which may differ from the one asked for:
-                // names are first come, first served.
-                push(
-                    queue,
-                    json!({"type": "welcome", "name": client.name()}).to_string(),
-                );
-                Some(Live::Client(client))
+        Command::Join { ticket, name, mods } => {
+            match Client::join_with_mods(&ticket, &name, mods).await {
+                Ok(client) => {
+                    // The canonical name, which may differ from the one asked for:
+                    // names are first come, first served.
+                    push(
+                        queue,
+                        json!({"type": "welcome", "name": client.name()}).to_string(),
+                    );
+                    Some(Live::Client(client))
+                }
+                Err(error) => {
+                    push(queue, error_event(&format!("could not join: {error}")));
+                    None
+                }
             }
-            Err(error) => {
-                push(queue, error_event(&format!("could not join: {error}")));
-                None
-            }
-        },
+        }
         // Handled in `run`, which has the live session in hand.
         Command::Say { .. }
         | Command::Consume { .. }
@@ -788,6 +818,18 @@ fn event_json(event: Net) -> String {
         Net::Voice { .. } => json!({"type": "voice"}),
     };
     value.to_string()
+}
+
+/// The world-mod set a client presents, as `ModHost::world_mod_refs` writes it: a JSON array of
+/// `{id, version, hash}` (`APIv1.md` section 6.2). An empty string is the empty set, so a bare
+/// `host("x", "")` is a session with no world mods -- what the gates and a `--no-mods` client
+/// present. Anything else that will not parse is an `error: ...` the scene can read, which is far
+/// better than silently presenting nothing and being refused for a reason that is not the truth.
+fn parse_mod_refs(json: &str) -> Result<Vec<ModRef>, String> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str::<Vec<ModRef>>(json).map_err(|error| error.to_string())
 }
 
 fn notice(text: String) -> String {

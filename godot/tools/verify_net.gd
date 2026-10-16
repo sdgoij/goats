@@ -14,7 +14,12 @@
 # `WorldIntent`), the **world mods**, on a datagram of their own, and the two
 # directions of a bang -- a host's own device, and a client's *report* that the host
 # relays, leaving the reporter out (M19e). That last one needs a third player, so
-# one joins late.
+# one joins late. The last check is the **world-mod digest** (M14d, `APIv1.md`
+# section 6.2): a host is given a set and a client presents a different one, so the
+# refusal crosses the same comparison a session uses -- and then that client presents
+# the host's set, so the digest is shown to *match* as well as to differ. That is the
+# plumbing `interop.sh herd` exercises against the shipping host; before it, every
+# bridge in this file presented the empty set and the port shipped presenting nothing.
 #
 # It takes twenty to thirty seconds: a host binds a real iroh endpoint.
 extends SceneTree
@@ -45,8 +50,11 @@ func _initialize() -> void:
 	_client = ClassDB.instantiate("NetBridge")
 	_carol = ClassDB.instantiate("NetBridge")
 
-	# 1. Host. The ticket is what a joiner needs, and it has to be a real one.
-	print("host -> ", _host.call("host", HOST_NAME))
+	# 1. Host. The ticket is what a joiner needs, and it has to be a real one. The third
+	#    argument is the host's world-mod set (`APIv1.md` section 6.2); empty here, because this
+	#    gate is about the transport and both ends present the same nothing -- the digest is
+	#    `verify_voice.gd`'s neighbour `interop.sh herd`, where the scene presents the real flock.
+	print("host -> ", _host.call("host", HOST_NAME, ""))
 	var ticket_line: String = _wait(_host, ["\"type\":\"ticket\""], 60000)
 	if ticket_line.is_empty():
 		print("FAIL: no ticket within 60s; the host never came up")
@@ -57,7 +65,7 @@ func _initialize() -> void:
 
 	# 2. Join with it. The name comes back canonical, which may differ from the
 	#    one asked for -- names are first come, first served.
-	print("join -> ", _client.call("join", ticket, CLIENT_NAME))
+	print("join -> ", _client.call("join", ticket, CLIENT_NAME, ""))
 	var welcome: String = _wait(_client, ["\"type\":\"welcome\"", CLIENT_NAME], 60000)
 	print("welcome:        ", welcome)
 	if welcome.is_empty():
@@ -192,7 +200,7 @@ func _initialize() -> void:
 
 	# ...and the host relays it to everybody *but* the reporter, who has already felt it.
 	# That needs a third player, or the "everybody" is the reporter.
-	print("join carol ->   ", _carol.call("join", ticket, CAROL_NAME))
+	print("join carol ->   ", _carol.call("join", ticket, CAROL_NAME, ""))
 	var carol_welcome: String = _wait(_carol, ["\"type\":\"welcome\"", CAROL_NAME], 60000)
 	print("carol welcome:  ", carol_welcome)
 	if carol_welcome.is_empty():
@@ -210,18 +218,52 @@ func _initialize() -> void:
 				and String(line).contains("\"by\":\"alice\""):
 			failures.append("the relay reached the reporter, who had already felt it")
 
+	# 10. The world-mod digest (M14d, `APIv1.md` section 6.2). The set is the *third* argument to
+	#     `host`/`join`, and it is what a host compares: a mismatch is refused with the id named,
+	#     and a match is let in. No `ModHost` is needed to prove the plumbing -- a made-up id and
+	#     hash exercise the very wire a real flock's does -- and until this section existed nothing
+	#     in the suite presented anything but the empty set, which is how the port shipped a bridge
+	#     that carried no world mods at all.
+	var strict: Object = ClassDB.instantiate("NetBridge")
+	var lax: Object = ClassDB.instantiate("NetBridge")
+	var flock := "[{\"id\":\"com.example.flock\",\"version\":\"1.0.0\",\"hash\":123456789}]"
+	print("strict host ->  ", strict.call("host", "strict", flock))
+	var strict_line: String = _wait(strict, ["\"type\":\"ticket\""], 60000)
+	if strict_line.is_empty():
+		failures.append("the world-mod host never came up")
+	else:
+		var strict_ticket: String = JSON.parse_string(strict_line)["ticket"]
+		# A client presenting a *different* set is refused, and the mod it lacks is named.
+		print("mismatch ->     ", lax.call("join", strict_ticket, "lax", "[]"))
+		var refused: String = _wait(lax, ["\"type\":\"error\""], 60000)
+		print("refusal:        ", refused)
+		if refused.is_empty():
+			failures.append("a mismatched world-mod set was not refused")
+		elif not refused.contains("com.example.flock"):
+			failures.append("the refusal does not name the world mod: " + refused)
+		# ...and the same client presenting the *host's* set is let in.
+		print("match ->        ", lax.call("join", strict_ticket, "lax", flock))
+		var matched: String = _wait(lax, ["\"type\":\"welcome\"", "lax"], 60000)
+		print("matched:        ", matched)
+		if matched.is_empty():
+			failures.append("a matching world-mod set was refused")
+
 	# `shutdown` closes the channel and *joins* the runtime thread, which is what
 	# makes the exit clean: without it the process ends while iroh is still
 	# tearing an endpoint down and dies on the way out.
 	_host.call("shutdown")
 	_client.call("shutdown")
 	_carol.call("shutdown")
+	strict.call("shutdown")
+	lax.call("shutdown")
 	_host.free()
 	_client.free()
 	_carol.free()
+	strict.free()
+	lax.free()
 
 	if failures.is_empty():
-		print("OK: three Godot peers meet over the session crate's own wire, world and bangs included")
+		print("OK: three Godot peers meet over the session crate's own wire, world, bangs and the world-mod digest included")
 		quit(0)
 	else:
 		# `print`, not `printerr`: a non-zero `quit()` truncates stderr before it

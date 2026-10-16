@@ -33,7 +33,11 @@ func _initialize() -> void:
 	var failures: Array[String] = []
 	var bridge: Object = ClassDB.instantiate("NetBridge")
 	print("mode: ", expect)
-	print("join -> ", bridge.call("join", ticket, "godot"))
+	# The third argument is the world-mod set this client presents. A bare `NetBridge` has no
+	# `ModHost` behind it, so it presents *nothing* -- which is precisely the case `refuse` needs,
+	# and the reason `join` runs a host that requires nothing (`interop.sh --no-mods`). The scene
+	# is the one that presents the real set (`main.gd`'s verbs, `interop.sh herd`).
+	print("join -> ", bridge.call("join", ticket, "godot", ""))
 
 	if expect == "refuse":
 		var refusal: String = _wait(bridge, ["\"type\":\"error\""], 60000)

@@ -56,7 +56,9 @@ plan.
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
 see Godot. It exposes `NetBridge` (the networking bridge over `session` and
 `proto`: `host`, `join`, `say`, `consume`, `pose`, `world`, `blast`, `leave`,
-`poll_events`, `shutdown` — and voice, M13b: `push_voice`, `pull_voice`,
+`poll_events`, `shutdown` — `host` and `join` also carry this client's world-mod
+set, so the join handshake compares the same `crates/mods` digest the raylib client
+presents — and voice, M13b: `push_voice`, `pull_voice`,
 `set_voice_gain` and `voice_state`, whose codec is a shared `crates/voice` and whose
 `voice.rs` resamples and frames what the scene's capture bus hands over) and `ModHost`
 (the embedded Slag engine plus the `goats` facade a mod sees: the API's drawing surfaces
@@ -64,7 +66,9 @@ see Godot. It exposes `NetBridge` (the networking bridge over `session` and
 `settings`, `tuning`, `net` -- which it answers out of the world snapshot the scene pushes
 every frame, and `goats.assets`/`goats.sfx`/`goats.entities`, whose halves it resolves: the built-in
 asset slots out of that same snapshot, the declared ones out of the mod table, and an entity offer
-out of another mod's own callback (`push_world`, `set_scene_call`). The facade is
+out of another mod's own callback (`push_world`, `set_scene_call`), and the **world-mod set and
+state** a session needs: `world_mod_refs` for the join digest and
+`world_mods_json`/`apply_world_mods` for the datagram). The facade is
 `crates/godot/src/prelude.js`, and the loader it drives is the `crates/mods`
 crate; `mods.gd` in the scene is its only client). It is a workspace member rather
 than a project of its own so it inherits

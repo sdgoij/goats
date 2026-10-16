@@ -43,15 +43,16 @@ func _initialize() -> void:
 	var host: Object = ClassDB.instantiate("NetBridge")
 	var client: Object = ClassDB.instantiate("NetBridge")
 
-	# 1. Host and join, exactly as `verify_net.gd` does: a real ticket, a real joiner.
-	print("host -> ", host.call("host", HOST_NAME))
+	# 1. Host and join, exactly as `verify_net.gd` does: a real ticket, a real joiner, and the
+	#    empty world-mod set both ends present (the digest is `interop.sh herd`'s subject).
+	print("host -> ", host.call("host", HOST_NAME, ""))
 	var ticket_line: String = _wait(host, ["\"type\":\"ticket\""], 60000)
 	if ticket_line.is_empty():
 		print("FAIL: no ticket within 60s; the host never came up")
 		quit(1)
 		return
 	var ticket: String = JSON.parse_string(ticket_line)["ticket"]
-	print("join -> ", client.call("join", ticket, CLIENT_NAME))
+	print("join -> ", client.call("join", ticket, CLIENT_NAME, ""))
 	if _wait(client, ["\"type\":\"welcome\"", CLIENT_NAME], 60000).is_empty():
 		failures.append("the client never joined")
 	# A frame that reaches a client before it is welcomed has nobody's name to carry; waiting for

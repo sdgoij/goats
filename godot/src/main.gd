@@ -524,7 +524,7 @@ func _ready() -> void:
 		bots.in_water = Callable(water, "in_water")
 		bots.set_herd_size(Bots.COUNT)
 		return
-	print("join -> ", bridge.call("join", ticket, "godot"))
+	print("join -> ", bridge.call("join", ticket, "godot", mods.world_mod_refs()))
 	# The scene is a *client* here, and a client is the one that publishes its goat: a
 	# host's own goat is already local to its owns scene (`NetBridge::pose`). The name lands
 	# when the `welcome` event arrives; until it does, this is the name that was asked for.
@@ -1890,7 +1890,10 @@ func cmd_net_status() -> Dictionary:
 func cmd_host(name: String) -> String:
 	if _joined or _hosting:
 		return "error already in a session (leave first)"
-	bridge.call("host", name)
+	# The world-mod digest this host requires of every joiner is its *own* set (`APIv1.md` section
+	# 6.2): `mods.world_mod_refs`, which is empty when no world mod is loaded. Without it a host
+	# could not accept a peer running the same flock it does.
+	bridge.call("host", name, mods.world_mod_refs())
 	_hosting = true
 	_net_name = name
 	return "ok host"
@@ -1901,7 +1904,9 @@ func cmd_join(ticket: String, name: String) -> String:
 	if _joined or _hosting:
 		return "error already in a session (leave first)"
 	var asked: String = name if name != "" else "godot"
-	bridge.call("join", ticket, asked)
+	# The set is presented at the join, not the ticket: the host compares it with its own and
+	# refuses a mismatch, which is the whole point of the digest (`APIv1.md` section 6.3).
+	bridge.call("join", ticket, asked, mods.world_mod_refs())
 	_net_ticket = ticket
 	_net_name = asked
 	_joined = true

@@ -358,6 +358,16 @@ func world_mods_json() -> String:
 		return ""
 	return String(host.call("world_mods_json"))
 
+## The world-mod set this client presents at a host or a join (`APIv1.md` section 6.2), as JSON:
+## one `{id, version, hash}` per `side: "world"` mod, from the loader's own digest. The frame hands
+## it to `NetBridge::host`/`join`, which is what carries it into the handshake -- a host refuses a
+## set that differs, and "nothing" is not the set of a host that runs the flock. `[]` on a build
+## with no mods (`GOATS_NO_MODS`, or an empty directory), which is what a vanilla session presents.
+func world_mod_refs() -> String:
+	if host == null:
+		return "[]"
+	return String(host.call("world_mod_refs"))
+
 ## Apply a host's world-mod state, from the `mods` event: the mods' streams are **adopted** rather
 ## than re-derived, and every world mod is handed what the host published under its id -- a
 ## JavaScript extension through its own `apply`, a compiled module through `goats_apply`. It is the

@@ -2,9 +2,9 @@
 #
 # The scene against the shipping host, and against nothing at all.
 #
-#   godot/tools/interop.sh          # goatsd --no-mods: the client joins
-#   godot/tools/interop.sh refuse   # goatsd with the repo's mods: the client is refused
-#   godot/tools/interop.sh herd     # ...and the mirror scene places the herd
+#   godot/tools/interop.sh          # a modless probe joins a --no-mods host
+#   godot/tools/interop.sh refuse   # the same probe is refused by a host requiring the repo's world mods
+#   godot/tools/interop.sh herd     # the scene (presenting the repo's world mods) joins a host running them
 #   godot/tools/interop.sh pair     # ...and *two* clients see each other's goat
 #   godot/tools/interop.sh offline  # no server: the scene boots without a session
 #   godot/tools/interop.sh shot     # ...and a window renders it, with the herd in it
@@ -15,7 +15,10 @@
 # (`APIv1.md` section 6.3) crosses two independent implementations -- the failure
 # a player with the wrong mods actually sees. `herd` runs the real scene
 # (`scenes/herd.tscn`) instead of a probe script, so it is the one that shows the
-# core doing something with the wire rather than only reading it. `pair` is the
+# core doing something with the wire rather than only reading it -- *and* it is
+# where the digest **matches**: the scene presents the repository's own world set
+# (`mods.world_mod_refs`) and the host requires exactly them, so the join is
+# accepted and the flock travels. `pair` is the
 # same scene twice against one host, which is the only way to see a *peer*: a
 # `peer` frame is somebody else's goat, so one client can never produce one. And
 # `offline` checks the thing a player hits first: pressing play with no session
@@ -90,11 +93,15 @@ if [ "$mode" = "offline" ]; then
     exit 0
 fi
 
-# `--no-mods` is what lets a client presenting no world mods in; without it,
-# goatsd resolves the repository's own `mods/` and requires the world set in it.
+# Which world-mod set `goatsd` requires. `join` and `refuse` run a bare
+# `verify_interop.gd` probe with no `ModHost` behind it, so it presents *nothing*:
+# `join` gives it a host that requires nothing (`--no-mods`), and `refuse` a host
+# that requires the repository's world mods -- the digest refusal. `herd`, `pair`
+# and `shot` run the real *scene*, which presents the repository's own set
+# (`mods.world_mod_refs`), so the host runs the same mods and the join is accepted.
 case "$mode" in
-    join|herd|pair|shot) mods_flag=--no-mods ;;
-    refuse) mods_flag= ;;
+    join) mods_flag=--no-mods ;;
+    herd|pair|shot|refuse) mods_flag= ;;
 esac
 
 server=${GOATSD_BIN:-$root/target/release/goatsd.exe}

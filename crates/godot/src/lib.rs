@@ -660,6 +660,42 @@ impl ModHost {
         }
     }
 
+    /// The world-mod set this client presents at a host or a join (M14d, `APIv1.md` section 6.2):
+    /// one `{id, version, hash}` per `side: "world"` mod, in load order, as JSON.
+    ///
+    /// It is `crates/goats`'s own `world_mod_refs` over the same `crates/mods` loader -- the digest
+    /// is the loader's FNV-1a over the id, the version, the entry's text, the `tuning.json` tree and
+    /// every asset's bytes -- and the *scene* hands the answer to `NetBridge::host`/`join`, which is
+    /// what carries it into the handshake. `[]` until the mods are discovered, which is the honest
+    /// answer rather than a guess.
+    ///
+    /// This is the member whose absence is felt first, and hardest: a client that presented nothing
+    /// could never join a host running a world mod (the flock), and a host that presented nothing
+    /// could never accept one. `interop.sh` used to paper over it with `--no-mods`.
+    #[func]
+    fn world_mod_refs(&self) -> GString {
+        let Some(loader) = self
+            .module
+            .as_ref()
+            .and_then(|module| module.loader.as_ref())
+        else {
+            return gstring("[]");
+        };
+        let refs: Vec<serde_json::Value> = loader
+            .mods()
+            .iter()
+            .filter(|manifest| manifest.side == mods::Side::World)
+            .map(|manifest| {
+                serde_json::json!({
+                    "id": &manifest.id,
+                    "version": &manifest.version,
+                    "hash": manifest.hash,
+                })
+            })
+            .collect();
+        gstring(serde_json::Value::Array(refs).to_string())
+    }
+
     /// The world mods' state as one JSON object -- `{streams, data}` -- or the **empty string** when
     /// there is nothing to send. This is `sceneWorldMods()` and `modWorldActive()` in one call, and
     /// it is a *host's* member: a client mirrors a host's world-mod state and never builds one
