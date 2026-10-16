@@ -1607,7 +1607,7 @@ Sizes are judgement, not measurement.
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the console's `mute` and `setting bgm|sfx` are in (M24) and the menu's two sliders are in (M25), and *voice* is in as of M13b, so stage 7 is done | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: identity and logging, the readable groups, both drawing surfaces, a mod's own geometry and images, `gfx.unload`, a mod's own **sound**, the **asset slots**, the **entities** two mods see of each other, a world mod's **seeded stream**, the **devices** and **`goats.water`** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`, `verify_mod_audio.gd`), **the events are fired** (`update`/`shutdown`/`blast`), and the two examples have been **rewritten onto the API** — no `rl` in either, and every one of them loads, and *draws* right (the handle-kind and radians fixes, `_check_drawn`); the slot writes are in (`assets.override`/`add`, gated to a mod's own entry), and so are **reload and the watcher** (`mod reload` + `GOATS_WATCH` — `verify_scene_mods.gd`); **the writes the scene owns are in**, `explosions.armed` with them, and **the tuning tree is in** (`tuning.set`/`merge`, the `tuning.json` merge before an entry runs, and the `tuning` event — `verify_mod_surface.gd`), **the toggle is in** (`modSetEnabled`, with the session guard and `goatsEnd`'s teardown of a mod's registrations — `verify_mod_toggle.gd`), **the world-mod datagram is in** (`world.extend`'s transport: `ModHost::world_mods_json` on the `mods` datagram, adopted by a joiner — `verify_hosting.gd`, `verify_net.gd`'s 7b) and **the compiled path is done** (`crates/godot` links `crates/plugin`: a `.wasm` module loads, runs and reports, `verify_wasm_mod.gd`) |
 | 9 | Platforms | desktop, Android, web export presets + CI | 2–4 |
-| 10 | Tests | golden-value checks per deterministic system; GUT/GdUnit for the core | 3–6 |
+| 10 | Tests | golden-value checks per deterministic system; GUT/GdUnit for the core | 3–6 — **in progress, and the port answered it its own way**: each deterministic system is held against the *JavaScript oracle at runtime* by a gate rather than against a recorded value, which cannot drift, and `godot/tools/gates.sh` runs all thirty-four (section 9). What is left is the scene harness's own cases -- mined rather than replayed, and only the simulation half of them -- and the question of whether to adopt GUT/GdUnit at all, since the gates are already `SceneTree` scripts with the same exit contract |
 
 Roughly **a quarter or two**, with stages 4, 8 and 10 carrying the uncertainty.
 Stage 2 is independent of everything else and can start immediately.
@@ -1718,10 +1718,24 @@ Stage 2 is independent of everything else and can start immediately.
   the assertion is Godot's rule rather than the author's. This and a sun
   transform pointing at the sky were both invisible in data and obvious in one
   image, which is the whole argument for `tools/screenshot.gd`.
-- **The harness (highest, and it is a real loss).** 205 cases encode the current
-  behaviour precisely; they cannot run against GDScript. They should be mined for
-  golden values and re-expressed, not discarded — and that is stage 10, not an
-  afterthought.
+- **The harness (highest, and it is a real loss).** The scene cases encode the current behaviour
+  precisely; they cannot run against GDScript, and they should be mined for golden values rather
+  than discarded -- stage 10, not an afterthought. Measured rather than remembered:
+  `cargo test --release -p harness -- --include-ignored` is **490** checks (the "205" this section
+  opened with is the M15-era `scene_logic` count alone; the `--ignored` scene run is 233). They
+  split cleanly into two kinds, and only one of them is a loss to a rewrite. **Simulation** -- the
+  heightfield, the meadow and its regrowth, the gaits and the stats, the herd and its
+  never-penetrate invariant, the water's level against the rain and its pools, the explosion
+  numbers, the session's seed derivation and mirroring, the console's wrapping and the tuning
+  tree's clamps -- is state a differently-rendered port can be held to. **Rendering** -- the GLSL
+  dialect checks, the GPU-skinning routing, the shadow/sky/celestial draw order, the water's
+  mirror pass, the effect-art draw counts -- is the *recording shim's* surface, and a port with
+  another renderer replaces it wholesale rather than transcribing it.
+
+  The port's own answer to the simulation half has been the thirty-four gates: each transcribes
+  the JavaScript as an **oracle** and compares against it at runtime, which is a stronger thing
+  than a golden value because it cannot drift -- and `godot/tools/gates.sh` is the harness that
+  runs them, committed rather than kept in a scratch directory.
 - **The `goats` bridge.** The mod API is the most JS-shaped part of the codebase,
   and it is being pulled across two language boundaries. Budget it as design work.
 - **A runaway mod still hangs a frame.** True today (`ABIv1.md` §3.6 has no fuel
@@ -2163,9 +2177,10 @@ audio and the mod surface, and new work last.
    M25 with a `Settings` object the console, the menu and the HUD all read -- so every control on
    the settings screen really does what it names. Six of the seven `GOATS_*` staging knobs are
    verbs now (`time <h>`, `setting cloud`, `weather <state>`, `camera <yaw> <pitch> <dist>`,
-   `flood <h>`, `setting reflect`) and only `GOATS_BOOM` maps to none. What is left of stage 6 is
-   the `Mods` screen's *list*: it draws `menu.js`'s "no mods found" because the scene does not load
-   mods yet, so it waits on stage 1 rather than on the UI.
+   `flood <h>`, `setting reflect`) and only `GOATS_BOOM` maps to none. **The `Mods` screen's list
+   landed with stage 1**, so nothing of stage 6 is left: `menu.mods_list` is `mods.gd`'s own table
+   (`ModHost::mods_json`), the screen draws it with the failures named, and its Enable/Disable
+   button toggles a mod for the session (`verify_scene_mods.gd`, `verify_mod_toggle.gd`).
 3. **The mod surface -- stage 8.** The host is in and the scene drives it (stage 1), and so is the
    half a mod *reads*: **identity and logging** (`api`, `game`, `mod`, `mods()`, `frozen()`,
    `log`/`warn`/`error`, §4.1), the seven world groups (`player`, `camera`, `world`, `bots`,

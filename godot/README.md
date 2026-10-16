@@ -92,7 +92,15 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Thirty-four headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Thirty-four headless gates, all `SceneTree` scripts that exit non-zero on failure. `tools/gates.sh`
+runs every gate that needs no server -- discovered rather than listed, so a new one is picked up
+existing, with a timeout each:
+
+```sh
+sh godot/tools/gates.sh              # GODOT_BIN=…, GATE_TIMEOUT=… if the defaults do not fit
+```
+
+...and one at a time, which is how a single failure is debugged:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
