@@ -1,0 +1,19 @@
+[remap]
+
+importer="oggvorbisstr"
+type="AudioStreamOggVorbis"
+uid="uid://diqbkann8v3ik"
+path="res://.godot/imported/WE Light Wind Whistle 1.ogg-715f04b4496c2ac88a4bb98d6d72df79.oggvorbisstr"
+
+[deps]
+
+source_file="res://assets/sfx/WE Light Wind Whistle 1.ogg"
+dest_files=["res://.godot/imported/WE Light Wind Whistle 1.ogg-715f04b4496c2ac88a4bb98d6d72df79.oggvorbisstr"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4

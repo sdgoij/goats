@@ -159,6 +159,21 @@ func ready_up() -> void:
 	_measure_ground_offset(node)
 	_pose("idle", 0.0)
 
+## The bleat gains `goat.js` fires with: one per situation, at the call site in the source
+## rather than in the audio module, because the gain is the *situation's* -- a goat falling
+## asleep is quieter than one being thrown.
+const BLEAT_JUMP := 0.9
+const BLEAT_FLING := 1.0
+const BLEAT_SLEEP := 0.45
+const BLEAT_WAKE := 0.7
+const BLEAT_DIE := 1.0
+
+## `goat.js` `playBleat`, as a seam: the scene hands this goat a `Callable` and this file never
+## learns what is on the other end of it.
+func _sound(gain: float) -> void:
+	if bleat.is_valid():
+		bleat.call(gain)
+
 ## Advance one frame. `controls` carries what the goat acts on:
 ##
 ##   `move` (int, -1..1), `turn` (int, -1..1), `gait` (String), and the four
@@ -184,6 +199,11 @@ func ready_up() -> void:
 ## session about the bite (`food.js`'s `netQueue({"type":"consume"})`), and it is a `Callable`
 ## for the same reason `trap` is: this file does not link against the network.
 var bite: Callable = Callable()
+
+## `bleat` is called with the gain the situation calls for, at the five moments `goat.js`
+## bleats: a jump, a fling, falling asleep, waking, and dying. A `Callable` for the reason
+## `bite` is one -- this file does not link against the audio either.
+var bleat: Callable = Callable()
 func step(delta: float, controls: Dictionary, sky_light: float, weather: Dictionary,
 		meadow: Meadow, trap: Callable = Callable(), water: Dictionary = {}) -> void:
 	var move: int = int(controls.get("move", 0))
@@ -253,6 +273,7 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 	if _update_stats(delta, sky_light, weather_drain(weather) * _water_drain_now) == "die":
 		mode = "dead"
 		_death_time = 0.0
+		_sound(BLEAT_DIE)
 
 	# The idle variant advances each time the goat settles into idle, so it cycles
 	# through the idle clips instead of always doing the same one.
@@ -481,6 +502,7 @@ func start_jump(move: int, gait: String) -> void:
 		base = trot_speed()
 	_jump_speed = base * _weather_speed_now * _water_speed_now
 	energy = maxf(0.0, energy - JUMP_ENERGY_COST)
+	_sound(BLEAT_JUMP)
 
 ## Eat a tuft: turn onto it, take it out of the meadow, and bank what it gives.
 ##
@@ -531,6 +553,7 @@ func start_sleep() -> bool:
 	cycle_variant("sleep")
 	_sleep_time = 0.0
 	_idle_timer = 0.0
+	_sound(BLEAT_SLEEP)
 	return true
 
 ## `goat.js` `restart`, which is also what a console `restart` does: a new life at
@@ -588,6 +611,9 @@ func start_fling(vx: float, vz: float, vy: float) -> void:
 		_fling_y = base_y()          # the arc starts where the goat is
 		_fling_time = 0.0
 		mode = "flung"
+		# `goat.js` bleats on the *entry* to the arc and not on a chain that adds to one: the
+		# second blast of a cascade is not a second goat being thrown.
+		_sound(BLEAT_FLING)
 	_fling_vx += vx
 	_fling_vz += vz
 	_fling_vy += vy
@@ -613,6 +639,7 @@ func _place() -> void:
 func _wake() -> void:
 	mode = "idle"
 	_sleep_time = 0.0
+	_sound(BLEAT_WAKE)
 
 ## `goat.js` `updateStats`: drain by mode, faster at night and in the rain; at zero
 ## energy the goat is exhausted and starts losing health; above `restedEnergy` and

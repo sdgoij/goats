@@ -112,6 +112,13 @@ var terrain: TerrainMesh
 ## blast, and a client's is empty because it only mirrors what the host sends.
 var bots: Bots
 
+## The two sound seams (`audio.js` `playTrigger` and `playBlast`): `Callable`s rather than an
+## audio reference, for the reason `Meadow.nearest`'s filter is one -- this file does not link
+## against the audio module. A bang is *heard* wherever the goat is, so it is the devices that
+## know one happened and the scene that decides what that sounds like.
+var trigger_sound: Callable = Callable()
+var bang_sound: Callable = Callable()
+
 func _ready() -> void:
 	_build_fx()
 	_build_light()
@@ -333,6 +340,10 @@ func relocate(kind: String, fcx: int, fcz: int) -> bool:
 func trip(kind: String, cx: int, cz: int, x: float, z: float, depth: int) -> bool:
 	if not spend(kind, cx, cz):
 		return false
+	# The click between the trigger and the bang (M19g), at the device rather than at the goat: a
+	# mine underfoot ticks, and one the goat walks away from ticks behind it.
+	if trigger_sound.is_valid():
+		trigger_sound.call(kind, x, z)
 	pending.append({
 		"kind": kind,
 		"key": Meadow.key(cx, cz),
@@ -438,6 +449,11 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int) -> void:
 	spawn_burst(x, z, seed)
 	flash_at(x, z)
 	knock(x, z)
+	# Heard wherever the goat is, in or out of the radius (`audio.js` `playBlast`). Last of the
+	# things a bang *is*, and before the chain, so the bang the player hears is the one they set
+	# off rather than the neighbour it woke.
+	if bang_sound.is_valid():
+		bang_sound.call(x, z, depth)
 	if depth < CHAIN_DEPTH:
 		chain_from(x, z, depth + 1)
 

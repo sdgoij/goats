@@ -14,6 +14,7 @@ plan.
 | `goat.gdextension` | Tells Godot to load the library built from `crates/godot` |
 | `addons/goats_godot/bin/` | Where `crates/godot/build.sh` copies the built library (git-ignored) |
 | `assets/goat_animated.glb` | A copy of the repository-root model, so the project is self-contained |
+| `assets/sfx/` | The 21 sound files `core.js`'s slot table names, copied for the same reason (Godot exports only `res://`) |
 | `scenes/herd.tscn` | The main scene and the port's first world: a client that joins a session and mirrors the host's herd |
 | `src/main.gd` | The frame loop: it joins a session, drains the bridge each frame, reads the keyboard, drives the world's clock and weather, and (as a probe) reports whether the mirror converged |
 | `src/player_goat.gd` | The local goat: `goat.js`'s gait state machine, movement and stats — the goat you drive |
@@ -33,6 +34,7 @@ plan.
 | `src/weather.gd` | The weather: `weather.js`'s state machine, the values a session mirrors and the rain's own integration |
 | `src/celestial.gd` | The two bodies: `world.js`'s `celestialPlacement` as real sun and moon spheres, with the sun's additive glare |
 | `src/rain.gd` | The rain, drawn: `weather.js`'s `drawRain` streaks as a screen-space overlay under the HUD |
+| `src/audio.gd` | The sound: `audio.js`'s ten slots, the variety PRNG, the bang attenuation, the weather beds and the mute (M22) |
 | `src/water.gd` | The water: `water.js`'s hydrostatic table over the terrain grid, and the drag and drain of wading in it |
 | `src/water_mesh.gd` | The water's surface as an `ArrayMesh`: the grid's ground, cut to the quads that can ever be wet |
 | `src/water.gdshader` | The surface, drawn: `WATER_VS`'s vertex lift, `WATER_FS`'s absorption, `WATER_FS`'s chop and `WATER_FS`'s wake, under Godot's own light and reflection |
@@ -154,6 +156,11 @@ Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_water_wake.gd
 
+# The audio: `audio.js`'s variety PRNG, its variant/copy rule, the bang attenuation and the
+# chain, and the two gains the menu will drive -- against `audio.js`'s own.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_audio.gd
+
 # The peers: `net.js`'s mirror of the other *players* -- the one-shot gaits, the role table
 # over every model that could lack a clip, and the three easing lines -- against `net.js`'s own.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
@@ -166,7 +173,7 @@ Nineteen headless gates, all `SceneTree` scripts that exit non-zero on failure:
     --script res://tools/verify_water_reflect.gd
 ```
 
-All nineteen pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -222,6 +229,10 @@ uniforms and the splashes are a `MultiMeshInstance3D` (`water_splash.gd`), a dee
 thins the meadow where it hides it (`grass.gd`), and the reflection is the port's **own
 mirrored pass** (`water_mirror.gd`) — the goat, the herd and, on a second draw of the ground
 itself, the shore — because Godot's `ssr_enabled` does not reach a transparent surface (M20e).
+The sound is `audio.js`'s ten slots (`audio.gd`, M22): a bleat is one of six samples at a random
+pitch, a bang falls off with the distance past its own radius and drops its grit a beat later,
+and the three beds swell with the weather — the one part of this port a picture cannot show, and
+so the one whose gate can hold only the rules rather than the result.
 And the HUD is one `Label` rather than the scene's bars, action menu and console: the
 words are the scene's, the layout is stage 6.
 
@@ -312,6 +323,7 @@ C              the next weather state (offline only; for previewing the cycle)
 mouse drag     orbit the camera
 mouse wheel    zoom
 arrow keys     the camera, if you have no mouse
+M              mute
 F11            fullscreen
 ```
 

@@ -1,0 +1,19 @@
+[remap]
+
+importer="oggvorbisstr"
+type="AudioStreamOggVorbis"
+uid="uid://h7mfqaqv14cw"
+path="res://.godot/imported/WE Heavy Outside Rain 1.ogg-e67d6e7b74092bd017cb8a75883d38d3.oggvorbisstr"
+
+[deps]
+
+source_file="res://assets/sfx/WE Heavy Outside Rain 1.ogg"
+dest_files=["res://.godot/imported/WE Heavy Outside Rain 1.ogg-e67d6e7b74092bd017cb8a75883d38d3.oggvorbisstr"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4

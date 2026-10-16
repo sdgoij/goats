@@ -1,0 +1,19 @@
+[remap]
+
+importer="oggvorbisstr"
+type="AudioStreamOggVorbis"
+uid="uid://bnlxbvjysqpft"
+path="res://.godot/imported/WE Thunder 29.ogg-ab66a4c239c834c98f6364f211e293d9.oggvorbisstr"
+
+[deps]
+
+source_file="res://assets/sfx/WE Thunder 29.ogg"
+dest_files=["res://.godot/imported/WE Thunder 29.ogg-ab66a4c239c834c98f6364f211e293d9.oggvorbisstr"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4

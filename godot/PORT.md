@@ -309,6 +309,54 @@ is not local, the goat now reports its own bite through a callback (`PlayerGoat.
 `trap` already had), the bridge grew a `consume` intent, and the host's `consume` event lands in
 `Meadow.consume_key` -- which had no caller from the wire at all.
 
+**The sound** (`verify_audio.gd`): M22, and the last of the scene's senses to arrive. The port had
+no audio at all -- no `AudioStreamPlayer`, no assets -- so this is a new module rather than a gap
+being closed, and `audio.js` is 307 lines of which four rules carry everything: the **variety
+PRNG** (`arnd` is xorshift32 written with `>>> 0`, and GDScript's integers are 64-bit and signed,
+so every shift needs a mask -- a mask in the wrong place is a stream that looks random and is
+never the scene's), the **variant and the copy** (a variant at random, then the first copy that is
+not already in the air, because a `Sound` played twice restarts and a restarted bang is worse than
+a dropped one), the **bang's reach** (full volume inside its own radius, half at twenty-odd
+metres, and quieter with every link of a chain) and the **two gains** the menu will drive. Ten
+slots, three of which shipped empty (M19g's `sfx.blast.close`/`sfx.fuse`/`sfx.trap` -- an empty
+slot is *silence*, not an error):
+
+```
+oracle answered 24 draw(s), 280 pick(s), 54 attenuation(s), 9 chain(s), 96 gain(s)
+stream: 24 draw(s), 0 mismatch(es)
+picks: 280 row(s), 0 mismatch(es)
+schedule: 5 thunder(s) and 5 debris delay(s), ok
+attenuation: 54 offset(s), 0 mismatch(es)
+chain: 9 depth/depths, 0 mismatch(es)
+gains: 96 setting(s), 0 mismatch(es)
+loaded: bleats 6, thunders 3, blasts 5, debris 4, fuses 0, traps 0, close 0, beds 3
+beds: music -14.89 dB, rain -15.81 dB, wind -16.83 dB
+bang: 1 queued and dropped, pending back to 0
+mute: 'muted' while muted, 'on' while not, and a muted roll still reschedules to 18.12 s
+OK: the port's sound is the scene's, slot for slot and draw for draw
+```
+
+What no case can hold is what any of it *sounds* like, and `--headless` could not play it in any
+case -- the engine's audio driver is a dummy there. So the proof that something came out is a
+*window*, twenty frames in, asked what it left playing:
+
+```
+bleat -> true
+bang -> true
+players: 57, playing 5
+  playing: res://assets/sfx/jkstudios-rage-2-187959.mp3 at -14.89 dB, pitch 1.0
+  playing: res://assets/sfx/WE Heavy Outside Rain 1.ogg at -80.0 dB, pitch 1.0
+  playing: res://assets/sfx/WE Light Wind Whistle 1.ogg at -23.56 dB, pitch 1.0
+  playing: res://assets/sfx/dragon-studio-goat-baa-390303.mp3 at -5.57 dB, pitch 1.08
+  playing: res://assets/sfx/universfield-epic-cinematic-explosion-454857.mp3 at -5.29 dB, pitch 0.97
+```
+
+57 players is the arithmetic of the table (3 beds + 6x3 bleats + 3x3 thunders + 5x3 blasts + 4x3
+grit), the five playing are the three beds plus the two things just fired, the rain bed is silent
+because it is not raining and the wind bed is not because it is windy, and the bleat and the bang
+carry the two random pitches that keep a flock from sounding like one goat and a minefield from
+sounding like a button.
+
 **The ground itself** (`verify_terrain_mesh.gd`): the 48x48 grid the client builds
 through `makeModel`, as an `ArrayMesh` -- 2401 vertices and 4608 triangles, a
 normal from central differences, a per-vertex material colour from the scene's
@@ -770,10 +818,10 @@ a drawing one.
 What is *not* yet proven: whether the ground's reflection is *enough* -- the pass shows the mounds a shore is made of and not the submerged bed it cuts away, which is the scene's own rule and still a look no case can hold; the cloud *billboards* (`drawClouds` — the fallback
 for a build with no sky shader, which the port never is, so this is a deliberate skip
 rather than a gap); the HUD as a `Control` tree, the menu and the console (stage 6 —
-there is a one-`Label` read-out and no way to paste a ticket *in game*); audio; the mods state and the
+there is a one-`Label` read-out and no way to paste a ticket *in game*); the mods state and the
 bangs and voice reaching GDScript (they are carried on the wire but the core does not consume
 them yet -- `NetBridge` has no `blast`/`voice`; a *bite* was in this list too, and M21 closed
-it both ways); the asset bytes reaching an engine shim (`rl.loadSound`
+it both ways, and *audio* was in it until M22); the asset bytes reaching an engine shim (`rl.loadSound`
 and friends) rather than a map; the tuning merge, reload and the file watcher; the wasm
 path through `crates/plugin`; and the other 16 `goats` member groups. Those are sections
 6 and 7.
@@ -960,7 +1008,7 @@ Sizes are judgement, not measurement.
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | 2–3 |
-| 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | 2–3 |
+| 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the two menu sliders and the console's `mute`/`setting bgm|sfx` are stage 6, and *voice* is still the bridge's to carry | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 |
 | 9 | Platforms | desktop, Android, web export presets + CI | 2–4 |
 | 10 | Tests | golden-value checks per deterministic system; GUT/GdUnit for the core | 3–6 |
@@ -1216,6 +1264,16 @@ disagreements and fails if there are none.
   probes have to stay up for fifteen seconds to see each other. The shape is worth keeping: when a
   check makes itself known through the environment, the *unmarked* path is the one with no
   coverage, and it is the one a player takes.
+- **A rule and the engine's plumbing are different numbers, and a case written against the wrong
+  one fails on the port being *right*.** `audio.js` sets a *linear* volume (`setSoundVolume`);
+  Godot takes decibels, so `_set_bed` converts on the way to a player. The first version of the
+  gate compared `linear_to_db(gain)` -- the conversion -- and reported 48 of 96 rows wrong, every
+  one of them a scale of zero, where the module clamps to a floor because `linear_to_db(0)` is
+  minus infinity. The fix was not to make the port match the test. It was to factor the rule out
+  as `Audio.bed_gain`, a linear number, which is what the scene has, and compare *that*, leaving
+  the decibels in the one line that hands a number to a player. The shape to keep: when the
+  engine's units differ from the scene's, the case belongs on the scene's side of the conversion,
+  or it is testing the port's plumbing and calling it a rule.
 - **An oracle written from the port proves nothing, and it is the easiest mistake
   here to make.** Every gate in this project checks a transcription against the
   JavaScript the scene runs, and every one of them had to be *written from
@@ -1287,20 +1345,18 @@ audio and the mod surface, and new work last.
    the menu has four screens; and the console is absent entirely, with it its sixty-odd verbs,
    chat, the settings screen, the keymap and the Mods screen. This is also what retires the
    `GOATS_*` environment variables, which exist for no other reason than a missing console.
-3. **Audio -- stage 7.** Ten slots (four of them one rule: a random variant, a copy that is not
-   already playing, a pitch jitter, and a distance attenuation that is not panning), three looping
-   beds started at zero volume so a weather change does not click, and voice -- which is Rust
-   already (`crates/goats/src/audio.rs`, captured, gated, Opus-coded and mixed) and needs a Godot
-   playback stream and a capture path rather than a rewrite.
-4. **The mod surface -- stages 1 and 8.** One of `goats`' seventeen member groups is implemented
+3. **The mod surface -- stages 1 and 8.** One of `goats`' seventeen member groups is implemented
    and one of its eighteen events fires; of the repository's five mods, one runs and runs degraded.
    This is the largest block by any measure and it is what the port's own goal names first, which
    is why it is worth doing carefully rather than early: the facade, the scene driver, the tuning
    merge, the asset path and the wasm ABI are one piece of work or none of it.
-5. **M20g, and anything else the JavaScript does not have.** Last on purpose.
+4. **M20g, and anything else the JavaScript does not have.** Last on purpose.
 
-Orders 1-4 are "the same game the JavaScript client is"; 5 is new work in both, and
-section 8's stage table is the same plan in sizes rather than in order.
+Orders 1-3 are "the same game the JavaScript client is"; 4 is new work in both, and
+section 8's stage table is the same plan in sizes rather than in order. **The sound was 3 until
+M22**, which took it out of the list entirely: `audio.gd` is the ten slots, the variety PRNG, the
+bang's reach and the weather beds, and the two things left of stage 7 are the menu's sliders
+(stage 6) and *voice*, which is the bridge's to carry rather than the scene's to make.
 
 ---
 
@@ -1337,6 +1393,10 @@ with the worst drop out by 5.9e-7 (`godot/tools/verify_water_wake.gd`); and aims
 reflection -- the leaf and its clamp, the promise a build can keep, the mask each of the three
 tiers hands the mirrored pass, and the ground that pass draws on a layer of its own -- against
 `water.js`'s own
-(`godot/tools/verify_water_reflect.gd`). Every one
+(`godot/tools/verify_water_reflect.gd`); and checks the sound -- the variety stream draw for draw,
+the variant and copy rule, the bang's reach and its chain, the two gains and the ten slots --
+against `audio.js`, with the one thing no headless run can answer read off a *window* instead:
+57 players loaded and five of them playing a few frames in (`godot/tools/verify_audio.gd`).
+Every one
 of them exits zero.
 The rest is read from the tree.*

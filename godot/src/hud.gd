@@ -26,14 +26,19 @@ func _ready() -> void:
 ## local machine's values offline, `water` the water's own line from `water.gd`
 ## (already empty when the goat is dry), and `tuning` is none of its business: every
 ## number here is one a rule already decided.
-func show_for(goat: PlayerGoat, hours: float, weather: Dictionary, water: String) -> void:
+##
+## `audio` is the word the status line carries (`goat.js`'s `audio on|muted|off`), empty when the
+## caller has no opinion and then the line reads as it always has.
+func show_for(goat: PlayerGoat, hours: float, weather: Dictionary, water: String,
+		audio: String = "") -> void:
 	var lines: Array[String] = [
 		goat.status(),
 		"health %3d   energy %3d%s" % [
 			int(round(goat.health)), int(round(goat.energy)),
 			"   exhausted" if goat.exhausted else ""],
 		"belly %.2f   speed %.2f m/s" % [goat.satiety, goat.speed],
-		"%s   %s" % [clock_text(hours), weather_text(weather, water)],
+		"%s   %s%s" % [clock_text(hours), weather_text(weather, water),
+			"" if audio == "" else "   audio " + audio],
 	]
 	text = "\n".join(lines)
 

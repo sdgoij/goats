@@ -1,0 +1,19 @@
+[remap]
+
+importer="oggvorbisstr"
+type="AudioStreamOggVorbis"
+uid="uid://tvka30mbyj0q"
+path="res://.godot/imported/WE Thunder 26.ogg-d12c156dac0423e43c7c63c4bf61638e.oggvorbisstr"
+
+[deps]
+
+source_file="res://assets/sfx/WE Thunder 26.ogg"
+dest_files=["res://.godot/imported/WE Thunder 26.ogg-d12c156dac0423e43c7c63c4bf61638e.oggvorbisstr"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4

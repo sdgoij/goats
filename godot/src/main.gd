@@ -72,6 +72,8 @@ const PROBE_RELIEF := 0.05
 @onready var grass: Grass = $Grass
 @onready var explosions: Explosions = $Explosions
 @onready var celestial: Celestial = $Celestial
+## The sound (M22): the beds, the slots and the four rules `audio.js` is (`audio.gd`).
+@onready var audio: Audio = $Audio
 @onready var hud: Hud = $Ui/Hud
 @onready var rain: Rain = $Ui/Rain
 @onready var sun: DirectionalLight3D = $Sun
@@ -223,6 +225,15 @@ func _ready() -> void:
 	# comes back in the next world snapshot. A callback and not a `main.gd` poll, for the
 	# reason `trap` is one -- the goat knows which tuft it ate and this file does not.
 	goat.bite = Callable(self, "_report_bite")
+	# The sound (M22). The goat and the devices *report*; this object decides what a report sounds
+	# like, which is why both ends are `Callable`s into `audio.gd` rather than the modules
+	# knowing about each other. `blast_radius` comes from the devices because the attenuation
+	# knee and the damage radius are the same number in the scene's own table.
+	audio.goat = goat
+	audio.blast_radius = Explosions.BLAST_RADIUS
+	goat.bleat = Callable(audio, "bleat")
+	explosions.trigger_sound = Callable(audio, "trigger")
+	explosions.bang_sound = Callable(audio, "bang")
 	# The water's field is the terrain *grid's*, so it is built where the grid is: once
 	# here -- a child's `_ready` runs before its parent's, so the terrain has built --
 	# and again whenever the grid is rebuilt (below).
@@ -399,6 +410,9 @@ func _process(delta: float) -> void:
 	# plane, and the surface reads what it drew at its own screen position.
 	water_mirror.run(camera, water.level())
 	_advance(delta, camera.global_position)
+	# The sound, once a frame and after the weather has settled: the beds ride the rain and the
+	# wind, the thunder rolls off the rain, and the grit a bang threw lands here (`updateAudio`).
+	audio.update(delta, float(_weather_now().get("rain_amount", 0.0)), _wind_sway)
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
 	water_splash.update()
 	# The two bodies and the rain, from the values `_advance` just settled: the sun and
@@ -406,7 +420,7 @@ func _process(delta: float) -> void:
 	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
 	rain.show_for(weather, _wind_x)
 	_publish_pose(delta)
-	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz))
+	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz), audio.word())
 	_boom_if_asked()
 
 	if _settle >= 0.0:
@@ -523,6 +537,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				_sleep_pressed = true
 			KEY_R:
 				_restart_pressed = true
+			KEY_M:
+				# `goat.js`'s `M`: the master mute. The menu's `bgm`/`sfx` sliders and the console's
+				# `mute` verb are stage 6; this is the key the scene has always bound.
+				audio.set_muted(not audio.muted)
 			KEY_C:
 				# `weather.js`'s `C`: jump to the next state now, for previewing the cycle.
 				# The scene gates it on `netWeatherLocal()` -- a client may not force the
