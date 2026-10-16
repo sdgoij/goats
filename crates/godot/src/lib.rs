@@ -99,6 +99,18 @@ struct ModHost {
     /// The assets every loaded mod declared, by opaque name. Shared with the engine's
     /// `__goatsHasAsset` capability, which is registered before anything is loaded.
     assets: Rc<RefCell<HashMap<String, Vec<u8>>>>,
+    /// The **meshes** a mod built in JavaScript (`goats.gfx.mesh`, `APIv1.md` section 4.19),
+    /// by the opaque handle the facade minted. This crate does not build one -- Godot's
+    /// `ArrayMesh` is the scene's job (`mod_world.gd`) -- it only holds the arrays until the
+    /// scene asks, which is the same division of labour `assets` has for declared bytes.
+    meshes: Rc<RefCell<HashMap<String, String>>>,
+    /// ...and the **textures** (`goats.gfx.texture`), the same way: the pixels a mod generated,
+    /// kept as the hex the facade wrote until the scene makes an `Image` of them.
+    textures: Rc<RefCell<HashMap<String, String>>>,
+    /// Which texture a mesh draws with (`goats.gfx.bind`): mesh handle -> texture handle. A
+    /// binding rather than a field of the mesh's own JSON, because `bind` can be called after
+    /// `mesh` and both are looked up by handle.
+    bindings: Rc<RefCell<HashMap<String, String>>>,
     /// The surface the last [`ModHost::emit_hud`] named, which `goats.draw.screen()`
     /// reads back. The *scene* owns the viewport, so this is only the value it
     /// handed in -- the same push-the-readable-values design `PORT.md` section 6
@@ -150,6 +162,9 @@ impl INode for ModHost {
             draws: LineQueue::default(),
             world_draws: LineQueue::default(),
             assets: Rc::new(RefCell::new(HashMap::new())),
+            meshes: Rc::new(RefCell::new(HashMap::new())),
+            textures: Rc::new(RefCell::new(HashMap::new())),
+            bindings: Rc::new(RefCell::new(HashMap::new())),
             screen: Rc::new(Cell::new((0.0, 0.0))),
             world_time: Rc::new(RefCell::new(0.0)),
             snapshot: Rc::new(RefCell::new(String::new())),
@@ -386,6 +401,40 @@ impl ModHost {
     #[func]
     fn set_scene_call(&mut self, callable: Callable) {
         *self.scene_call.borrow_mut() = Some(callable);
+    }
+
+    /// The arrays behind a mesh a mod built (`goats.gfx.mesh`), as the JSON the facade
+    /// stored -- `{"v": [...], "i": [...], ...}`. Empty for a handle nothing minted, which
+    /// is what makes the scene's "no such mesh" case a null it can fall back from.
+    #[func]
+    fn mesh_data(&mut self, handle: GString) -> GString {
+        let data = self.meshes.borrow();
+        match data.get(handle.to_string().as_str()) {
+            Some(json) => gstring(json),
+            None => GString::new(),
+        }
+    }
+
+    /// The texels behind a texture handle (`goats.gfx.texture`), as the `{size, pixels}` JSON
+    /// the facade stored. Empty for a handle nothing minted.
+    #[func]
+    fn texture_data(&mut self, handle: GString) -> GString {
+        let data = self.textures.borrow();
+        match data.get(handle.to_string().as_str()) {
+            Some(json) => gstring(json),
+            None => GString::new(),
+        }
+    }
+
+    /// The texture handle a mesh was bound to (`goats.gfx.bind`), or empty for one that was
+    /// not -- a mesh drawn in its own vertex colours, which is what both mods' bodies are.
+    #[func]
+    fn mesh_binding(&mut self, handle: GString) -> GString {
+        let bindings = self.bindings.borrow();
+        match bindings.get(handle.to_string().as_str()) {
+            Some(name) => gstring(name),
+            None => GString::new(),
+        }
     }
 
     /// Drain the lines the mods logged since the last call: a mod's
@@ -643,6 +692,69 @@ impl ModHost {
                         }
                     };
                     Ok(JsValue::string(answer))
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+
+        // A mod's *own* geometry and images (`goats.gfx.mesh` / `texture` / `bind`, `APIv1.md`
+        // section 4.19). The facade mints the handle and these keep the data until the scene
+        // asks; nothing is *built* here, because the renderer is Godot's and an `ArrayMesh` is
+        // not a thing this crate is allowed to know about (`godot/PORT.md` section 6's split).
+        // Three capabilities and three readers, the shape `assets` already has.
+        let meshes = self.meshes.clone();
+        context
+            .register_fn(
+                "__goatsStoreMesh",
+                2,
+                Box::new(move |call| {
+                    let handle = call
+                        .arg(0)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    let json = call
+                        .arg(1)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    meshes.borrow_mut().insert(handle, json);
+                    Ok(JsValue::boolean(true))
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        let textures = self.textures.clone();
+        context
+            .register_fn(
+                "__goatsStoreTexture",
+                2,
+                Box::new(move |call| {
+                    let handle = call
+                        .arg(0)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    let json = call
+                        .arg(1)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    textures.borrow_mut().insert(handle, json);
+                    Ok(JsValue::boolean(true))
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        let bindings = self.bindings.clone();
+        context
+            .register_fn(
+                "__goatsBind",
+                2,
+                Box::new(move |call| {
+                    let mesh = call
+                        .arg(0)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    let texture = call
+                        .arg(1)
+                        .and_then(|value| call.to_string(&value).ok())
+                        .unwrap_or_default();
+                    bindings.borrow_mut().insert(mesh, texture);
+                    Ok(JsValue::boolean(true))
                 }),
             )
             .map_err(|e| e.to_string())?;

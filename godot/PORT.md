@@ -1118,6 +1118,35 @@ a write that is quietly not done. The tuning tree is a subset for the same reaso
 throws, which is `tuningGet`'s own contract, so a leaf this client never ported is never answered
 with a wrong number.
 
+**And a mod's own geometry.** The last thing that kept a mod bound to one client was that it
+built its own shapes: `birds` makes a body and two wings out of vertices in JavaScript and bakes
+a feather pattern from its own noise, through raylib's `makeModel`/`makeTexture`/`drawModelEx`.
+`goats.gfx` now carries the same ideas as API members -- `mesh()`, `texture()`, `bind()` and a
+`draw.mesh` whose placement is an axis and an angle rather than a yaw -- so a mod reads the API
+and each client renders it its own way. `verify_mod_mesh.gd` builds one of each and reads what the
+port made of them:
+
+```
+calls: mesh handle  texture handle  malformed -> null
+records: 1, placed: 1
+  mesh  h=mesh:0
+mesh: 3 vertex/vertices, indices [0, 2, 1]
+texture: 2x2  texel 0 (1.0, 0.0, 0.0, 1.0)  texel 3 (1.0, 1.0, 1.0, 1.0)
+OK: a mod builds its own mesh and image, and the port draws them
+```
+
+Three things in that transcript are the point. **The winding is reversed** -- `[0, 1, 2]` in,
+`[0, 2, 1]` out. The arrays are authored for the reference client's culling and raylib and Godot
+wind a front face in opposite directions (the finding that once cost this port an invisible
+ground), so which way a triangle faces is the *client's* business, and the adaptation lives in
+`mod_world.gd` rather than in every mod that builds a mesh. **The placement is a basis and not a
+`rotation.y`**: a tumbling thing is not a turning one, and a port that mapped `draw.mesh` onto the
+yaw would look right for a bird that is standing still. And **a normal does not survive the round
+trip exactly** -- positions and colours read back byte for byte, but Godot re-encodes the vertex
+buffer, so the mod's `(0, 0, 1)` comes back as `(-0.000015, -0.000015, 1.0)` and the gate compares
+to 1e-3 rather than for equality. A gate that demanded exactness would fail on a mesh that is
+right.
+
 The hook is also *isolated* now, in `prelude.js`: one that throws is caught and named on the mod's
 own line rather than taking the frame with it, which is the guarantee `PORT.md` section 4 states
 ("a mod cannot affect the frame except by the work it is asked to do") and `APIv1.md` section 7's
@@ -1273,11 +1302,17 @@ clearly and in isolation, which is the honest answer.
 
 `goats.draw` (`APIv1.md` §4.18) is the screen and `goats.gfx` (§4.19) is the world. The 2D
 surface is `screen`, `color`, the named colours and six primitives; the 3D one is `model()`,
-`draw.model` and `draw.cube`. Between them the port can place a thing in the world and write
-on the screen, which is what most mods want to do. What neither has is a mod's *own* geometry
-and images — `mesh()` and `texture()`, which is how `birds` builds its flock — nor the
-shadow-map slot, `unload()` or a rotation other than yaw (`drawModelEx`'s axis and angle,
-what a flung goat's tumble needs). Those are the next additions to the group.
+`mesh()`, `texture()`, `bind()`, `draw.model`, `draw.mesh` and `draw.cube`. Between them a mod can
+place a thing in the world, build one of its own and write on the screen without ever reading an
+engine library: `godot/src/mod_world.gd` turns a mod's arrays into Godot's own `ArrayMesh` and its
+pixels into an `ImageTexture`, and the raylib client implements the same members over
+`rl.makeModel`/`makeTexture`/`drawModelEx`. That is the whole of the rule -- **a member of the API
+is a thing each client implements its own way, and an engine library is never a thing a mod may
+read.**
+
+What is left of the group is `unload()`, the shadow-map slot, and a mod's own **sound**
+(`loadSound`/`playSound` and its volume and pitch) -- the last engine capability either example
+still reads through `rl`, and the reason `birds` and `fatguy` are not `rl`-free yet.
 
 On the Godot side each surface is one capability, one seam and one painter. `goats.draw.text(…)`
 becomes a JSON *record* the extension queues (`ModHost::__goatsDraw`, drained by `poll_draws`),
@@ -1345,14 +1380,14 @@ Sizes are judgement, not measurement.
 | # | Stage | Done when | Size |
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
-| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`), and so are the **readable groups** (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`, §4.5–4.12, one per-frame snapshot + a callback for `terrainHeight`, held by `verify_mod_surface.gd`); what remains of stage 8 is the *writes*, the events, `modSetEnabled`, the world-mod datagram, reload/watch, a mod's own meshes and textures, the sound path and the wasm path | 2–3 |
+| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surfaces are in too (`goats.draw`, §4.18, painted by `mod_hud.gd`, and `goats.gfx`, §4.19, placed by `mod_world.gd`, including a mod's **own** geometry and images — `mesh`/`texture`/`bind`/`draw.mesh`, `verify_mod_mesh.gd`), and so are the **readable groups** (`player`, `camera`, `world`, `bots`, `settings`, `tuning`, `net`, §4.5–4.12, one per-frame snapshot + a callback for `terrainHeight`, held by `verify_mod_surface.gd`); what remains of stage 8 is the *writes*, the events, `modSetEnabled`, the world-mod datagram, `entities`/`assets`/`log`/`mod`, reload/watch, a mod's own **sound**, `unload()`, and the wasm path | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the mods and voice paths remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
 | 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | **done**: the HUD is a `Control` drawing `drawHud` (M23), the console is in (M24: `console.gd` + `commands.gd` + `verify_console.gd` -- the shell, the sixty-odd verbs, chat, and six of the seven `GOATS_*` knobs as verbs), and the menu's four screens are in with the settings they drive (M25: `menu.gd` + `settings.gd` + `verify_menu.gd`); what is left is the `Mods` screen's *list*, which waits on the scene loading mods (stage 1) | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the console's `mute` and `setting bgm|sfx` are in (M24) and the menu's two sliders are in (M25), so what is left is *voice*, which is still the bridge's to carry | 2–3 |
-| 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: the readable groups and both drawing surfaces are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`); the writes, the events, `entities`/`extend`/`water`, reload and the wasm path remain |
+| 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: the readable groups, both drawing surfaces **and a mod's own geometry and images** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`); the writes, the events, `entities`/`extend`/`water`/`assets`, reload, a mod's own **sound** and the wasm path remain — and the two examples are still `rl`-bound until the sound path lands |
 | 9 | Platforms | desktop, Android, web export presets + CI | 2–4 |
 | 10 | Tests | golden-value checks per deterministic system; GUT/GdUnit for the core | 3–6 |
 
@@ -1791,13 +1826,16 @@ audio and the mod surface, and new work last.
 3. **The mod surface -- stage 8.** The host is in and the scene drives it (stage 1), and so is the
    half a mod *reads*: the seven readable groups (`player`, `camera`, `world`, `bots`, `settings`,
    `tuning`, `net`) arrive as one world snapshot pushed each frame, `terrainHeight` goes back through
-   a scene callback, and the two drawing surfaces (`goats.draw`, `goats.gfx`) are painted
-   (`verify_mod_surface.gd`, `verify_mod_gfx.gd`). What is left is the half a mod *writes* -- the
-   tuning merge among them -- and the rest of the surface: the events, `modSetEnabled` and its
-   session guard, the world-mod datagram (`world.extend`), `entities`/`water`, reload/watch, the
-   asset-to-engine path and the wasm path. **The writes are the piece to do next**, because most of
-   the rest is downstream of a scene a mod can change: a write needs the same `Callable` seam
-   `terrainHeight` already crosses on, so the door is open and the handlers are what is missing.
+   a scene callback, and the drawing surfaces (`goats.draw`, `goats.gfx`, and a mod's **own**
+   geometry and images -- `mesh`/`texture`/`bind`/`draw.mesh`) are painted
+   (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`). What is left is the half a
+   mod *writes* -- the tuning merge among them -- and the rest of the surface: the events,
+   `modSetEnabled` and its session guard, the world-mod datagram (`world.extend`),
+   `entities`/`assets`/`water`/`log`/`mod`, reload/watch, a mod's own **sound**, and the wasm path.
+   **The sound path and the identity/utility members are the piece to do next**, because they are
+   the last things `birds` and `fatguy` read through `rl` and the first things every mod reads at
+   all: with them the two examples can be reworked to the API and the `rl` surface stops being
+   something a mod knows about.
 4. **M20g, and anything else the JavaScript does not have.** Last on purpose.
 
 Orders 1-3 are "the same game the JavaScript client is"; 4 is new work in both, and
@@ -1874,6 +1912,9 @@ tree holding exactly the last frame's draws and no more (`godot/tools/verify_mod
 the live world *back* through every readable `goats` group -- the goat, the camera, the weather and
 the wind, the herd, the settings, the session and the tuning tree -- from inside a `hud` hook, which
 is where a mod actually reads them, with `terrainHeight` crossing the scene's own callback and every
-write refused (`godot/tools/verify_mod_surface.gd`). Every one
-of them exits zero.
+write refused (`godot/tools/verify_mod_surface.gd`); and builds a **mod's own mesh and image** --
+flat vertex arrays and a generated texture -- and reads what the port made of them: an `ArrayMesh`
+of the mod's vertices with the winding reversed for this client's culling, an `ImageTexture` texel
+for texel, and a placement that is a basis and not a yaw (`godot/tools/verify_mod_mesh.gd`). Every
+one of them exits zero.
 The rest is read from the tree.*

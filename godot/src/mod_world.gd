@@ -18,10 +18,10 @@
 #     and the name is remembered either way -- including the `null` of a name that would not
 #     import, so a broken asset is reported once rather than every frame.
 #
-# What is *not* here: a mod's own procedural geometry and textures (`makeModel`/`makeTexture`),
-# the shadow-map texture slot, `unloadModel`, and non-Y rotation (`drawModelEx`'s axis and
-# angle, which is what a flung goat's tumble needs). Those are the next additions, and until
-# they exist a mod that builds its meshes in JavaScript -- `birds` -- cannot draw in this build.
+# What is *not* here: the texture a mesh draws in when the mod binds one is in, but the
+# shadow-map slot and `unload()` are not, and neither is a mod's own *sound* -- the other half
+# of the engine surface these members replace. Those are the next additions, and until they
+# exist a mod that builds its meshes in JavaScript draws its shapes but not its voices.
 class_name ModWorld
 extends Node3D
 
@@ -37,6 +37,11 @@ var placed := 0
 ## Asset name -> the imported scene, or `null` for a name that did not import. `null` is
 ## remembered on purpose: a broken asset is parsed once and reported once.
 var _models := {}
+## Mesh handle -> the `ArrayMesh` a mod built, or `null` for one that would not build. Built
+## once: a mod builds a mesh at boot and draws it for the life of the process.
+var _meshes := {}
+## ...and texture handle -> the `ImageTexture`, on the same terms.
+var _textures := {}
 ## The per-frame instances, index-aligned with `commands`.
 var _instances: Array = []
 
@@ -79,6 +84,10 @@ func _node(index: int, command: Dictionary) -> Node3D:
 			var box := MeshInstance3D.new()
 			box.mesh = BoxMesh.new()
 			node = box
+		"mesh":
+			# A mod's own geometry: the `ArrayMesh` is the mod's, and it is built when the
+			# record is placed (`_place_mesh`), because the handle can change under a slot.
+			node = MeshInstance3D.new()
 		"model":
 			var handle: String = String(command.get("h", ""))
 			var packed: PackedScene = _model_scene(handle)
@@ -97,13 +106,37 @@ func _place(node: Node3D, command: Dictionary) -> void:
 	node.visible = true
 	node.position = Vector3(float(command.get("x", 0.0)), float(command.get("y", 0.0)),
 		float(command.get("z", 0.0)))
-	if String(command.get("k", "")) == "cube":
+	var kind: String = String(command.get("k", ""))
+	if kind == "cube":
 		_place_cube(node as MeshInstance3D, command)
+		return
+	if kind == "mesh":
+		_place_mesh(node as MeshInstance3D, command)
 		return
 	node.rotation = Vector3(0.0, float(command.get("yaw", 0.0)), 0.0)
 	var scale: float = float(command.get("scale", 1.0))
 	node.scale = Vector3(scale, scale, scale)
 	_apply_tint(node, _color(command.get("tint", null)))
+
+## A mod's own mesh (`goats.gfx.mesh`): the mod's geometry, its orientation and its material.
+##
+## The orientation is an **axis and an angle** rather than a yaw -- `goats.gfx.draw.mesh`'s whole
+## point, because a tumbling thing is not a turning one -- so the basis is set outright instead
+## of through `rotation`, which has no third axis to give.
+func _place_mesh(instance: MeshInstance3D, command: Dictionary) -> void:
+	var handle: String = String(command.get("h", ""))
+	if String(_meta(instance, "mod_mesh", "")) != handle:
+		instance.mesh = _mesh_for(handle)
+		instance.set_meta("mod_mesh", handle)
+	var scale: float = float(command.get("scale", 1.0))
+	var axis := Vector3(float(command.get("ax", 0.0)), float(command.get("ay", 1.0)),
+		float(command.get("az", 0.0)))
+	if axis.length_squared() < 1e-12:
+		# A degenerate axis is one the mod did not mean: the up axis is the yaw case.
+		axis = Vector3.UP
+	instance.basis = Basis(axis.normalized(), float(command.get("angle", 0.0))) \
+		.scaled(Vector3(scale, scale, scale))
+	_apply_mesh_material(instance, handle, _color(command.get("tint", null)))
 
 func _place_cube(box: MeshInstance3D, command: Dictionary) -> void:
 	# The size is the record's, so the mesh is this instance's own -- two cubes in one frame
@@ -170,6 +203,162 @@ func _model_scene(name: String) -> PackedScene:
 ## both of its keys on nodes that may not have them yet.
 static func _meta(node: Object, key: String, fallback: Variant) -> Variant:
 	return node.get_meta(key) if node.has_meta(key) else fallback
+
+## The material a mod's own mesh draws with: its per-vertex colours, the tint, and the texture
+## `goats.gfx.bind` gave it. Kept on the node and rebuilt only when either changes, which is
+## `_apply_tint`'s rule for `_apply_tint`'s reason -- a mod that tints the same shape the same
+## colour every frame should pay for it once.
+func _apply_mesh_material(instance: MeshInstance3D, handle: String, tint: Color) -> void:
+	var binding: String = ""
+	if host != null:
+		binding = String(host.call("mesh_binding", handle))
+	var stamp: Array = [tint, binding]
+	var last: Variant = _meta(instance, "mod_mesh_mat", null)
+	if last is Array and (last as Array) == stamp:
+		return
+	var material := StandardMaterial3D.new()
+	material.albedo_color = tint
+	# The mesh carries its own RGBA per vertex (`colors` in the arrays, `APIv1.md` section
+	# 4.19), so the material has to let them through or every shape draws white.
+	material.vertex_color_use_as_albedo = true
+	if not binding.is_empty():
+		var texture: Texture2D = _texture_for(binding)
+		if texture != null:
+			material.albedo_texture = texture
+	instance.material_override = material
+	instance.set_meta("mod_mesh_mat", stamp)
+
+## The `ArrayMesh` behind a mesh handle a mod built, or null. Built once and remembered --
+## including the `null` of one that would not build, so a bad mesh is reported once.
+func _mesh_for(handle: String) -> ArrayMesh:
+	if _meshes.has(handle):
+		return _meshes[handle]
+	var built: ArrayMesh = null
+	if host != null and not handle.is_empty():
+		var parsed: Variant = JSON.parse_string(String(host.call("mesh_data", handle)))
+		if parsed is Dictionary:
+			built = _build_mesh(parsed)
+		else:
+			print("mod: no mesh named ", handle)
+	_meshes[handle] = built
+	return built
+
+## An `ArrayMesh` from the arrays a mod handed `goats.gfx.mesh`.
+##
+## The one thing here that is **not** a transcription: the **winding is reversed.** The arrays
+## are authored for the reference client's culling, and raylib and Godot wind a front face in
+## *opposite* directions -- the finding that once cost this port an invisible ground (`PORT.md`
+## section 9). Which way a triangle faces is the client's business, not the mod's, so the
+## adaptation lives here rather than in every mod that builds a mesh.
+func _build_mesh(data: Dictionary) -> ArrayMesh:
+	var vertices: Array = data.get("v", [])
+	if vertices.size() < 9 or vertices.size() % 3 != 0:
+		print("mod: a mesh the mod built has no usable vertices")
+		return null
+	var count: int = vertices.size() / 3
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = _vec3s(vertices)
+	var indices: Variant = data.get("i")
+	if indices is Array and (indices as Array).size() >= 3:
+		arrays[Mesh.ARRAY_INDEX] = _triangles(indices, count)
+	else:
+		# A triangle soup: the corners are implied, and implied in the other order.
+		var implied := PackedInt32Array()
+		for at in range(0, count - count % 3, 3):
+			implied.append(at)
+			implied.append(at + 2)
+			implied.append(at + 1)
+		arrays[Mesh.ARRAY_INDEX] = implied
+	var normals: Variant = data.get("n")
+	if normals is Array and (normals as Array).size() == vertices.size():
+		arrays[Mesh.ARRAY_NORMAL] = _vec3s(normals)
+	var colors: Variant = data.get("c")
+	if colors is Array and (colors as Array).size() == count * 4:
+		arrays[Mesh.ARRAY_COLOR] = _colors(colors, count)
+	var uvs: Variant = data.get("uv")
+	if uvs is Array and (uvs as Array).size() == count * 2:
+		arrays[Mesh.ARRAY_TEX_UV] = _vec2s(uvs)
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	# `add_surface_from_arrays` returns nothing on 4.7, so the answer is whether a surface is
+	# there -- which is also the question, since a mesh with no surface draws nothing.
+	if mesh.get_surface_count() != 1:
+		print("mod: a mesh the mod built would not add a surface")
+		return null
+	return mesh
+
+## An index list with every triangle's corners reversed, and any triangle that reaches past the
+## vertices dropped -- a mod's own bug should cost its own shape and not the whole frame.
+static func _triangles(indices: Array, count: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for at in range(0, (indices.size() / 3) * 3, 3):
+		var a: int = int(indices[at])
+		var b: int = int(indices[at + 1])
+		var c: int = int(indices[at + 2])
+		if a < 0 or b < 0 or c < 0 or a >= count or b >= count or c >= count:
+			continue
+		out.append(a)
+		out.append(c)
+		out.append(b)
+	return out
+
+## The `ImageTexture` behind a texture handle a mod generated (`goats.gfx.texture`), or null.
+func _texture_for(handle: String) -> Texture2D:
+	if _textures.has(handle):
+		return _textures[handle]
+	var built: Texture2D = null
+	if host != null and not handle.is_empty():
+		var parsed: Variant = JSON.parse_string(String(host.call("texture_data", handle)))
+		if parsed is Dictionary:
+			built = _build_texture(parsed)
+	_textures[handle] = built
+	return built
+
+## An `ImageTexture` from `{size, pixels}`, where `pixels` is `size * size` eight-hex-digit
+## texels ("rrggbbaa") in row order -- the API's own encoding (`APIv1.md` section 4.19). A
+## string rather than bytes because a mod *generates* it (`birds` bakes its feather pattern from
+## its own noise), and a string is one crossing rather than a megabyte of array.
+func _build_texture(data: Dictionary) -> Texture2D:
+	var size: int = int(data.get("size", 0))
+	var pixels: String = String(data.get("pixels", ""))
+	if size <= 0 or pixels.length() != size * size * 8:
+		print("mod: a texture the mod generated has the wrong length")
+		return null
+	var bytes := PackedByteArray()
+	bytes.resize(size * size * 4)
+	for texel in size * size:
+		var at: int = texel * 8
+		for channel in 4:
+			bytes[texel * 4 + channel] = pixels.substr(at + channel * 2, 2).hex_to_int()
+	var image := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, bytes)
+	if image == null:
+		return null
+	return ImageTexture.create_from_image(image)
+
+## Flat number arrays as Godot's own. The API's shape is raylib's -- three numbers a vertex, four
+## bytes a colour -- and these three are the whole of the conversion.
+static func _vec3s(flat: Array) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	out.resize(flat.size() / 3)
+	for at in flat.size() / 3:
+		out[at] = Vector3(float(flat[at * 3]), float(flat[at * 3 + 1]), float(flat[at * 3 + 2]))
+	return out
+
+static func _vec2s(flat: Array) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	out.resize(flat.size() / 2)
+	for at in flat.size() / 2:
+		out[at] = Vector2(float(flat[at * 2]), float(flat[at * 2 + 1]))
+	return out
+
+static func _colors(flat: Array, count: int) -> PackedColorArray:
+	var out := PackedColorArray()
+	out.resize(count)
+	for at in count:
+		out[at] = Color8(int(flat[at * 4]), int(flat[at * 4 + 1]), int(flat[at * 4 + 2]),
+			int(flat[at * 4 + 3]))
+	return out
 
 ## A record's colour as a Godot `Color`: the API's `{r, g, b, a}` in 0..255, and a missing one is
 ## opaque white rather than an error.

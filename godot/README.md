@@ -26,7 +26,7 @@ plan.
 | `src/tuning.gd` | The tuning tree `goats.tuning.get` reads (`APIv1.md` §4.10), gathered leaf by leaf from the module that owns each constant — a subset, and an absent path throws |
 | `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, and the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`) (stages 1 and 8) |
 | `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
-| `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader (stage 1) |
+| `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader and a mod's **own** mesh built from its arrays into an `ArrayMesh` (stage 1, 8) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
 | `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
@@ -82,7 +82,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Twenty-seven headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Twenty-eight headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -114,6 +114,13 @@ Twenty-seven headless gates, all `SceneTree` scripts that exit non-zero on failu
 # them, with `terrainHeight` crossing the callback seam and every write refused (stage 8).
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mod_surface.gd
+
+# ...and a *mod* builds its own geometry: a mesh from flat arrays and an image from its own
+# pixels become an `ArrayMesh` and an `ImageTexture`, wound for this client's culling and
+# placed with an axis-angle rather than a yaw -- so a mod that generates its shapes reads
+# the API and not the engine's `rl` (stage 8).
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_mod_mesh.gd
 
 # Two Godot peers meet over iroh: host, join, roster, chat, goat snapshots -- and then a
 # third joins, so the world a host publishes, a client's adopted snapshot and both
@@ -233,7 +240,7 @@ Twenty-seven headless gates, all `SceneTree` scripts that exit non-zero on failu
     --script res://tools/verify_menu.gd
 ```
 
-All twenty-seven pass against Godot 4.7.2 today. Two more need a live session and are run by
+All twenty-eight pass against Godot 4.7.2 today. Two more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse) and `verify_peers_live.gd`
 (two clients, `interop.sh pair`).
 
@@ -449,8 +456,13 @@ and `mod_hud.gd` paints over the game's HUD; `goats.gfx.draw.cube` and `draw.mod
 `draw3d` hook become nodes in the world, with a model's glTF imported at runtime from the asset
 the mod declared. That is deliberately the API's own surface rather than the engine's — there is
 no `rl` in this build at all, because `rl` is raylib, and a mod written against it is a mod
-written against one client. A mod's own meshes and textures (`mesh()`/`texture()`, how `birds`
-builds its flock) are the next additions to the group.
+written against one client. A mod's **own** geometry and images are in too now: `goats.gfx.mesh`
+takes the flat vertex arrays the heightfield is built from, `goats.gfx.texture` a `size`×`size`
+block of pixels, `goats.gfx.bind` draws one in the other, and `goats.gfx.draw.mesh` places it with
+an **axis and an angle** rather than a yaw — so a mod that generates its shapes reads the API and
+never the engine library. What neither client exposes yet is a mod's own **sound**
+(`loadSound`/`playSound` and its volume and pitch), which is the last engine capability `birds` and
+`fatguy` still read through `rl`.
 
 **A mod reads the live world through the API's own accessors** (`APIv1.md` §4.5–4.12). The
 scene builds one snapshot of the world each frame — the goat, the camera, the weather and the

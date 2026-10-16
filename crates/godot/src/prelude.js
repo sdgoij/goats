@@ -166,6 +166,47 @@ if (typeof globalThis.goats === "undefined") {
             return node;
         }
 
+        // --- a mod's own geometry and images ---------------------------------
+        //
+        // `goats.gfx.mesh` / `texture` / `bind` (APIv1.md section 4.19) are the API's answer to
+        // the engine's `makeModel`/`makeTexture`/`setModelTexture`: a mod builds its own shapes
+        // and pictures and never reads an engine library, so each client renders them its own
+        // way. This client keeps what the mod built and hands it to Godot when a draw asks for
+        // it, which is the same division of labour `assets` has.
+        //
+        // The handle is minted here and the *data* is stored on the host, so a draw record stays
+        // a handle and a transform rather than a mesh -- a `draw3d` hook that draws a
+        // thousand-vertex mesh every frame must not ship a thousand vertices every frame.
+        let handleSeq = 0;
+
+        function store(kind, value) {
+            const handle = kind + ":" + (handleSeq++);
+            if (kind === "mesh") __goatsStoreMesh(handle, JSON.stringify(value));
+            else __goatsStoreTexture(handle, JSON.stringify(value));
+            return handle;
+        }
+
+        /** A flat number array with `stride` numbers per element, or null when it is not one. */
+        function flat(value, stride) {
+            if (!Array.isArray(value) || value.length === 0 || value.length % stride !== 0) {
+                return null;
+            }
+            for (let i = 0; i < value.length; i++) {
+                if (typeof value[i] !== "number") return null;
+            }
+            return value;
+        }
+
+        /**
+         * An optional flat array: `undefined` when it was not given, the array when it was
+         * and is well formed, `null` when it was given and is not -- so a mesh built with one
+         * bad array is refused rather than silently drawn without it.
+         */
+        function optional(value, stride) {
+            if (value === undefined || value === null) return undefined;
+            return flat(value, stride);
+        }
+
         return {
             /** id -> { id, commands, hooks }, in registration order. */
             __mods: {},
@@ -450,12 +491,77 @@ if (typeof globalThis.goats === "undefined") {
                         const token = String(name);
                         return __goatsHasAsset(token) ? token : null;
                     },
+
+                    /**
+                     * A mod's own geometry (`APIv1.md` section 4.19): a mesh built from flat
+                     * arrays, or `null` when the input is not one. `vertices` and `normals` are
+                     * `[x, y, z, ...]` in metres; `colors` is `[r, g, b, a, ...]` in 0..255 and
+                     * `texcoords` is `[u, v, ...]`, both per vertex; `indices` are triangle
+                     * corners into the vertices, and a triangle soup is the default. Only
+                     * `vertices` is required.
+                     *
+                     * The winding is the *reference* client's -- raylib's and Godot's front
+                     * faces disagree, so a client whose culling differs reverses it in its own
+                     * implementation, which is what the port does.
+                     */
+                    mesh: function (vertices, indices, normals, colors, texcoords) {
+                        const v = flat(vertices, 3);
+                        if (v === null || v.length < 9) return null;
+                        const i = optional(indices, 3);
+                        const n = optional(normals, 3);
+                        const c = optional(colors, 4);
+                        const uv = optional(texcoords, 2);
+                        if (i === null || n === null || c === null || uv === null) return null;
+                        return store("mesh", { v: v, i: i, n: n, c: c, uv: uv });
+                    },
+
+                    /**
+                     * A mod's own image: `size` x `size` texels, `pixels` as `size * size`
+                     * eight-hex-digit texels ("rrggbbaa"), row by row. `null` when the string
+                     * is not that length -- which is the same answer a client with no
+                     * renderer gives, so a mod's check is one `if` either way.
+                     */
+                    texture: function (size, pixels) {
+                        if (typeof size !== "number" || !Number.isInteger(size) || size <= 0
+                                || size > 2048) {
+                            return null;
+                        }
+                        if (typeof pixels !== "string" || pixels.length !== size * size * 8) {
+                            return null;
+                        }
+                        return store("texture", { size: size, pixels: pixels });
+                    },
+
+                    /** Draw a mesh in a texture -- `setModelTexture`, without the engine. */
+                    bind: function (mesh, texture) {
+                        if (mesh === undefined || mesh === null) return;
+                        if (texture === undefined || texture === null) return;
+                        __goatsBind(String(mesh), String(texture));
+                    },
+
                     draw: {
                         model: function (handle, x, y, z, yaw, scale, tint) {
                             if (handle === undefined || handle === null) return;
                             call({
                                 k: "model", h: handle, x: x, y: y, z: z,
                                 yaw: yaw === undefined ? 0 : yaw,
+                                scale: scale === undefined ? 1 : scale,
+                                tint: tint === undefined ? { r: 255, g: 255, b: 255, a: 255 } : tint,
+                            });
+                        },
+                        /**
+                         * Any handle at `(x, y, z)`, turned `angle` **radians** about the axis
+                         * `(ax, ay, az)`. `draw.model` is this with the axis fixed at +Y, and
+                         * the free axis is what a tumbling thing needs.
+                         */
+                        mesh: function (handle, x, y, z, ax, ay, az, angle, scale, tint) {
+                            if (handle === undefined || handle === null) return;
+                            call({
+                                k: "mesh", h: handle, x: x, y: y, z: z,
+                                ax: ax === undefined ? 0 : ax,
+                                ay: ay === undefined ? 1 : ay,
+                                az: az === undefined ? 0 : az,
+                                angle: angle === undefined ? 0 : angle,
                                 scale: scale === undefined ? 1 : scale,
                                 tint: tint === undefined ? { r: 255, g: 255, b: 255, a: 255 } : tint,
                             });

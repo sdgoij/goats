@@ -1339,6 +1339,45 @@ const goatsGfx = {
         return typeof handle === "number" && handle >= 0 ? handle : null;
     },
 
+    /**
+     * A mod's own geometry: a mesh built from flat arrays, or `null` when this
+     * client cannot build one. `vertices` and `normals` are `[x, y, z, ...]` in
+     * metres; `colors` is `[r, g, b, a, ...]` in 0..255 and `texcoords` is
+     * `[u, v, ...]`, both per vertex; `indices` are triangle corners into the
+     * vertices, and a triangle soup is the default.
+     *
+     * This is the API's answer to the engine's `makeModel` (`APIv1.md` section
+     * 4.19): a mod that builds its own shapes reads `goats.gfx` and never the
+     * engine library, so the port can implement the same member its own way
+     * instead of emulating raylib.
+     */
+    mesh: function (vertices, indices, normals, colors, texcoords) {
+        if (typeof rl.makeModel !== "function") return null;
+        const handle = rl.makeModel(vertices, indices, normals, colors, texcoords);
+        return typeof handle === "number" && handle >= 0 ? handle : null;
+    },
+
+    /**
+     * A mod's own image: `size` x `size` texels, `pixels` as `size * size`
+     * eight-hex-digit texels ("rrggbbaa") in row order. `null` when the string
+     * is not that length, which is the same answer a client with no renderer
+     * gives -- so a mod's check is one `if` either way.
+     */
+    texture: function (size, pixels) {
+        if (typeof rl.makeTexture !== "function") return null;
+        if (typeof size !== "number" || typeof pixels !== "string") return null;
+        const handle = rl.makeTexture(size, pixels);
+        return typeof handle === "number" && handle >= 0 ? handle : null;
+    },
+
+    /** Draw a mesh in a texture -- the API's `setModelTexture`, without the engine. */
+    bind: function (mesh, texture) {
+        if (typeof rl.setModelTexture !== "function") return;
+        if (mesh === undefined || mesh === null) return;
+        if (texture === undefined || texture === null) return;
+        rl.setModelTexture(mesh, 0, texture);
+    },
+
     /** World-space drawing. Valid inside the `"draw3d"` hook and nowhere else. */
     draw: {
         /**
@@ -1350,6 +1389,19 @@ const goatsGfx = {
             const s = scale === undefined ? 1 : scale;
             rl.drawModelEx(handle, x, y, z, 0, 1, 0, yaw * 180 / Math.PI, s, s, s,
                 tint === undefined ? goatsDraw.WHITE : tint);
+        },
+
+        /**
+         * Any handle at `(x, y, z)`, turned `angle` **radians** about the axis
+         * `(ax, ay, az)`. `draw.model` is this with the axis fixed at +Y, and the
+         * free axis is what a tumbling thing needs.
+         */
+        mesh: function (handle, x, y, z, ax, ay, az, angle, scale, tint) {
+            if (handle === undefined || handle === null) return;
+            const s = scale === undefined ? 1 : scale;
+            rl.drawModelEx(handle, x, y, z, ax === undefined ? 0 : ax, ay === undefined ? 1 : ay,
+                az === undefined ? 0 : az, (angle === undefined ? 0 : angle) * 180 / Math.PI,
+                s, s, s, tint === undefined ? goatsDraw.WHITE : tint);
         },
 
         /** A box `w` x `h` x `d` centred on `(x, y, z)`. */

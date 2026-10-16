@@ -951,8 +951,44 @@ goats.on("draw3d", function (cam) {
 | Member | Description |
 | --- | --- |
 | `goats.gfx.model(name)` | A model from an asset name -- usually `goats.assets.get(slot)` -- or `null` when the name resolves to nothing, or when this client cannot load models. |
+| `goats.gfx.mesh(vertices, indices, normals, colors, texcoords)` | A mesh built from flat arrays, or `null` when the input is not one. See below for the shape. |
+| `goats.gfx.texture(size, pixels)` | A `size` x `size` image from raw texels, or `null` when `pixels` is not `size * size` texels long. |
+| `goats.gfx.bind(mesh, texture)` | Draw that mesh in that image. |
 | `goats.gfx.draw.model(handle, x, y, z, yaw, scale, tint)` | The model at `(x, y, z)`, turned `yaw` **radians** about +Y, scaled by `scale` (a number, or 1), tinted by `tint` (or white). |
+| `goats.gfx.draw.mesh(handle, x, y, z, ax, ay, az, angle, scale, tint)` | The same placement with the axis free: `angle` **radians** about `(ax, ay, az)`. `draw.model` is this with the axis fixed at +Y. |
 | `goats.gfx.draw.cube(x, y, z, w, h, d, color)` | A box `w` x `h` x `d` centred on `(x, y, z)`. |
+
+**A mod's own geometry, without the engine.** `mesh()`/`texture()`/`bind()` are the
+API's answer to building shapes in JavaScript: a mod that generates them reads
+`goats.gfx` and never the engine's `rl`, so each client renders them the way its
+renderer wants. The arrays are flat numbers, in the shape raylib's `makeModel`
+(and the scene's own heightfield) uses:
+
+* `vertices` -- `[x, y, z, ...]`, metres. Required.
+* `indices` -- `[a, b, c, ...]`, triangle corners into the vertices. Optional;
+the default is a triangle soup.
+* `normals` -- `[nx, ny, nz, ...]`, per vertex. Optional.
+* `colors` -- `[r, g, b, a, ...]`, **bytes 0..255**, per vertex. Optional.
+* `texcoords` -- `[u, v, ...]`, per vertex. Optional.
+
+```js
+// A triangle the mod textured itself.
+const mesh = goats.gfx.mesh(
+    [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    [0, 1, 2],
+    [0, 0, 1, 0, 0, 1, 0, 0, 1],
+    [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255],
+    [0, 0, 1, 0, 0, 1]);
+const image = goats.gfx.texture(2, "ff0000ff00ff00ff0000ffffffffffff");
+goats.gfx.bind(mesh, image);
+```
+
+**The winding is the reference client's.** The scene draws its own terrain through
+these same arrays, so the shape is fixed; a client whose culling convention differs
+reverses it in its own implementation rather than making the mod care (raylib and
+Godot wind a front face in opposite directions). A `null` from `mesh()`/`texture()`
+is the documented "this client cannot build one" -- the same answer a host with no
+renderer gives -- so a mod's check is one `if` on every platform.
 
 **World space, not screen space.** `goats.draw` (§4.18) takes pixels of the surface
 `screen()` reports; this takes **metres of the world**, and its calls are valid inside
@@ -973,11 +1009,10 @@ dropped, the same as a 2D one.
 answers `null`, and a draw of `null` draws nothing -- so the `if` above is the whole of
 the check.
 
-**What is not here yet:** `mesh()` and `texture()` (a mod's own geometry and images, which
-is how `birds` builds its flock), `setModelTexture` (the shadow-map slot), `unload()`, and
-a rotation other than yaw -- `drawModelEx`'s axis and angle, which is what a flung goat's
-tumble needs. Until those land, a mod that builds its meshes in JavaScript rather than
-loading them from an asset can draw on one client only.
+**What is not here yet:** `unload()` (several implementations leave geometry alive for the life
+of the process rather than freeing it), the shadow-map `setModelTexture` slot, and a mod's own
+**sound** -- `loadSound`/`playSound` and its volume and pitch, which is the other half of the
+engine surface these members replace and the only one neither client exposes through the API yet.
 
 ## 5. Examples
 
