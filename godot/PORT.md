@@ -1566,15 +1566,28 @@ than a node of its own -- `push_voice`, `pull_voice`, `set_voice_gain` and `voic
 voice's bytes go out and come back through the session the bridge owns (M13b;
 `crates/godot/src/voice.rs`, section 3).
 
+The bridge is also the port's last piece of M18: **fetching what the host runs and this client
+lacks** (M18d). `join` takes a `pull` flag and consults a policy set once by `set_pull` -- the
+scene's `GOATS_PULL` and its mods directory -- and a refusal *about the world-mod set* lets
+`crates/pull` ask the host's fetch ALPN for its catalogue, verify and install the archive under the
+announced identity, and retry the join exactly once with the set re-derived off the disk. The
+installed mod is then *loaded mid-session* through `ModHost::add_pulled` (the host re-discovers the
+directory and runs the new entry in its own `goats.begin(id)` window), and `Mods.add_pulled` does
+the scene's half -- the table, the declared tuning, the sound slots re-read. The `pulled` event
+carries what arrived, in the `event_json` vocabulary beside every other line.
+
 Verified so far by `verify_net.gd` (two Godot peers) and by `interop.sh`
-(a Godot client against the shipping `goatsd`, in the join, refusal and modded-herd
-modes) — section 3. What the interop run adds over the peer check is that the far
+(a Godot client against the shipping `goatsd`, in the join, refusal, fetch-and-join and
+modded-herd modes) — section 3. What the interop run adds over the peer check is that the far
 end is a *separately built* binary: the digest handshake, the ticket, the framed
 handshake and the world datagrams all have to agree with code that shares no
 crate version with this one at link time. `host` and `join` carry this client's
 **world-mod set** (`ModHost::world_mod_refs`), so that handshake is the *same*
 `ModRef` digest `crates/mods` computes for the raylib client — a Godot peer and a
-raylib peer running the flock therefore agree rather than refuse one another.
+raylib peer running the flock therefore agree rather than refuse one another. The
+`pull` mode is the one that has a *second* connection in it: the fetch ALPN is a
+separate handshake on the same ticket, and the archive it hands back has to hash to
+the digest the first handshake announced.
 
 Two things this does *not* solve, both worth knowing now:
 

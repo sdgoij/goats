@@ -1,11 +1,11 @@
 # The interop gate: a Godot client joining the *shipping* host, `goatsd`.
 #
-#   GOATSD_TICKET=<ticket> GOATSD_EXPECT=join|refuse \
+#   GOATSD_TICKET=<ticket> GOATSD_EXPECT=join|refuse|pull \
 #     Godot --headless --path godot --script res://tools/verify_interop.gd
 #
 # `interop.sh` starts a real `goatsd` and runs this against it; the script itself
 # only needs the ticket, so it can also be pointed at a server someone else is
-# running. Two modes, because both outcomes are evidence:
+# running. Three modes, because all three outcomes are evidence:
 #
 #   join    -- `goatsd --no-mods` requires no world mods, so a client with none
 #              joins: a welcome, the roster, a chat echo, and the server's world
@@ -15,7 +15,25 @@
 #              refusal crossing two independent implementations is the
 #              compatibility handshake (`APIv1.md` section 6.3) working, and it
 #              is the failure mode a player actually hits.
+#   pull    -- the *same* modded host and the *same* modless client, but with the
+#              fetch consented to (M18d): the client asks the host what it runs,
+#              `crates/pull` verifies and installs the archive into a directory of
+#              its own, and the retried join is accepted. The archive is hashed
+#              back to the digest the host announced, so the retry's set is the
+#              host's rather than a re-derived approximation (`APIv1.md` section
+#              6.2). The pull directory is under `user://` and is wiped first, so a
+#              previous run cannot make the fetch a no-op.
+#
+# The client is a bare `NetBridge` with no `ModHost` behind it, so it presents
+# *nothing* -- which is precisely the case `refuse` and `pull` need.
 extends SceneTree
+
+## The prefix `crates/pull`'s `PREFIX` gives an installed archive, so a pulled file is recognised
+## without a second copy of the loader's naming here.
+const PULL_PREFIX := "pulled-"
+## Where a `pull` mode installs: a Godot path, globalised before it reaches the bridge (which
+## writes it with `std::fs`). Wiped at the start of the mode.
+const PULL_URI := "user://interop-pull"
 
 # Every line the bridge has produced, so nothing is lost between waits.
 var _buffer: Array = []
@@ -34,12 +52,12 @@ func _initialize() -> void:
 	var bridge: Object = ClassDB.instantiate("NetBridge")
 	print("mode: ", expect)
 	# The third argument is the world-mod set this client presents. A bare `NetBridge` has no
-	# `ModHost` behind it, so it presents *nothing* -- which is precisely the case `refuse` needs,
-	# and the reason `join` runs a host that requires nothing (`interop.sh --no-mods`). The scene
-	# is the one that presents the real set (`main.gd`'s verbs, `interop.sh herd`).
-	print("join -> ", bridge.call("join", ticket, "godot", ""))
+	# `ModHost` behind it, so it presents *nothing* -- which is precisely the case `refuse` and
+	# `pull` need, and the reason `join` runs a host that requires nothing (`interop.sh --no-mods`).
+	# The scene is the one that presents the real set (`main.gd`'s verbs, `interop.sh herd`).
 
 	if expect == "refuse":
+		print("join -> ", bridge.call("join", ticket, "godot", "", false))
 		var refusal: String = _wait(bridge, ["\"type\":\"error\""], 60000)
 		print("refusal: ", refusal)
 		if refusal.is_empty():
@@ -49,6 +67,36 @@ func _initialize() -> void:
 		_shutdown(bridge)
 		_report(failures, "the host refused the join by mod digest")
 		return
+
+	# `pull`: the same modded host and the same modless client, plus the consent. The directory is
+	# the bridge's to install into and this gate's to point at `user://`; the bridge re-derives its
+	# world-mod set from what lands there, so the retry presents the host's own set.
+	if expect == "pull":
+		var dir: String = ProjectSettings.globalize_path(PULL_URI)
+		_wipe(PULL_URI)
+		DirAccess.make_dir_recursive_absolute(PULL_URI)
+		bridge.call("set_pull", dir, true)
+		print("pull dir: ", dir)
+		print("join -> ", bridge.call("join", ticket, "godot", "", true))
+		var pulled: String = _wait(bridge, ["\"type\":\"pulled\""], 90000)
+		if pulled.is_empty():
+			var failed: String = _search(["\"type\":\"error\""])
+			failures.append("the refusal did not fetch and install the host's world mods: "
+				+ (failed if not failed.is_empty() else "no pulled event in 90s"))
+		else:
+			print("pulled: ", pulled)
+			_check_pull(pulled, PULL_URI, failures)
+			# The retried join is accepted because the retry presents the *installed* set, which is
+			# the host's -- the whole point of `pull::recover` re-deriving the digest off the disk.
+			var welcome: String = _wait(bridge, ["\"type\":\"welcome\"", "godot"], 60000)
+			print("welcome: ", welcome)
+			if welcome.is_empty():
+				failures.append("the retried join was not welcomed within 60s")
+		_shutdown(bridge)
+		_report(failures, "a client with no world mods fetched the host's, installed them and joined")
+		return
+
+	print("join -> ", bridge.call("join", ticket, "godot", "", false))
 
 	# 1. The joiner is welcomed under the name it asked for. `goatsd` stamps the
 	#    canonical one, so a difference here would show a name collision.
@@ -121,6 +169,51 @@ func _check_world(line: String, failures: Array) -> void:
 	# datagram, so its presence is not required -- only that the key is there.
 	if not world.has("eaten"):
 		failures.append("the world carries no eaten key: " + line)
+
+# `pull`'s check: the event named what arrived, and a verified archive is on disk. The archive
+# is there only because `crates/pull` loaded it with the same loader the digest comes from and
+# found its id, version and hash equal to the ones the host announced -- a mismatch is discarded,
+# never installed -- so the *presence* of the file is the verification's own evidence.
+func _check_pull(line: String, uri: String, failures: Array) -> void:
+	var event: Variant = JSON.parse_string(line)
+	if not (event is Dictionary):
+		failures.append("the pulled event is not JSON: " + line)
+		return
+	var text: String = String((event as Dictionary).get("text", ""))
+	var ids: Variant = (event as Dictionary).get("ids", [])
+	print("pulled text: ", text)
+	print("pulled ids:  ", ids)
+	if not text.begins_with("pulled "):
+		failures.append("the pulled event does not describe the fetch: " + text)
+	if not (ids is Array) or (ids as Array).is_empty():
+		failures.append("the pulled event names no mods: " + line)
+		return
+	var handle: DirAccess = DirAccess.open(uri)
+	if handle == null:
+		failures.append("the pull directory does not exist: " + uri)
+		return
+	var found: Array = []
+	for name in handle.get_files():
+		if String(name).begins_with(PULL_PREFIX):
+			found.append(String(name))
+	print("installed:   ", found)
+	if found.size() != (ids as Array).size():
+		failures.append("%d archive(s) for %d named mod(s)" % [found.size(), (ids as Array).size()])
+	for id in ids:
+		if not found.has(PULL_PREFIX + String(id) + ".zip"):
+			failures.append("no verified archive landed for " + String(id))
+
+# Remove a `user://` directory tree first, so a previous run's archive cannot make this run's
+# fetch a no-op (a client that already has the host's set is not refused, so nothing would pull).
+func _wipe(uri: String) -> void:
+	var dir: DirAccess = DirAccess.open(uri)
+	if dir == null:
+		return
+	for name in dir.get_directories():
+		_wipe(uri.path_join(name))
+	for name in dir.get_files():
+		DirAccess.remove_absolute(uri.path_join(name))
+	DirAccess.remove_absolute(uri)
 
 func _report(failures: Array, ok_message: String) -> void:
 	if failures.is_empty():

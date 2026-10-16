@@ -269,6 +269,12 @@ var _weather := {}
 ##                            the executable). `GOATS_NO_MODS` skips the search entirely -- the
 ##                            raylib client's `--mods`/`--no-mods`, spelled as the environment
 ##                            variables it already uses for the same two things.
+##   `GOATS_PULL`             the standing consent to fetch a host's world mods when a join is
+##                            refused because this client lacks them, install them, and retry once
+##                            (M18d) -- the raylib client's `--pull`. Without it, nothing is
+##                            fetched except by an explicit `connect <ticket> --pull`. The
+##                            directory a fetch lands in is the one the runtime found above, so a
+##                            pulled mod sits beside the game's own.
 var _forced_hour := -1.0
 var _forced_cloud := -1.0
 var _boom := false
@@ -478,6 +484,13 @@ func _ready() -> void:
 	# Decode the mods' declared sounds *here*, outside any hook: a `goats.sfx` call runs inside a
 	# mod's JavaScript, where the extension is borrowed and cannot be asked for bytes.
 	mod_audio.prepare()
+	# The `--pull` policy (M18d): where a fetched world mod would be installed, and whether a
+	# refused join may fetch without being asked. `GOATS_PULL` is the port's `--pull` -- the
+	# standing consent, for a script or a player who has decided to trust this host -- and the
+	# directory is the one the runtime found, so a fetch lands beside the game's own mods and a
+	# retried join presents them. Unset, the per-join `connect <ticket> --pull` is the only way to
+	# fetch, which is `APIv1.md` section 6.3's "consent, always".
+	bridge.call("set_pull", mods.dir, not OS.get_environment("GOATS_PULL").is_empty())
 	menu.mods_list = Callable(mods, "mod_table")
 	# The button's own callback: one argument, and it flips whatever the table says the mod is now.
 	menu.mod_toggle = Callable(mods, "toggle_mod")
@@ -529,7 +542,8 @@ func _ready() -> void:
 		bots.in_water = Callable(water, "in_water")
 		bots.set_herd_size(Bots.COUNT)
 		return
-	print("join -> ", bridge.call("join", ticket, "godot", mods.world_mod_refs()))
+	print("join -> ", bridge.call("join", ticket, "godot", mods.world_mod_refs(),
+		not OS.get_environment("GOATS_PULL").is_empty()))
 	# The scene is a *client* here, and a client is the one that publishes its goat: a
 	# host's own goat is already local to its owns scene (`NetBridge::pose`). The name lands
 	# when the `welcome` event arrives; until it does, this is the name that was asked for.
@@ -1647,6 +1661,22 @@ func _handle(line: String) -> void:
 			if contribution is Dictionary:
 				mods.apply_world_mods(JSON.stringify(contribution))
 				_mods_datagrams += 1
+		"pulled":
+			# The fetch (M18d). The host has already *run* what arrived -- an entry is Rust's to
+			# evaluate -- and this line arrives before the retried join's welcome, so by the time
+			# the world does, the mods it is built on are in the scene. What is left here is what
+			# the reference's Rust loop does with the same event (`pulled_ids` -> `load_pulled`),
+			# because the frame loop here is this scene: load the rows, merge their tuning and
+			# re-read the sound slots. The reference's `case "pulled"` only prints, because its
+			# loading already happened -- the line above is that loading, the line below is the
+			# report.
+			var ids: Variant = event.get("ids", [])
+			if ids is Array:
+				print("pulled: ", mods.add_pulled(ids))
+				# A pulled mod declared its sounds after the boot `prepare` ran, so the slot table
+				# is re-read here, outside any hook -- `mods.js`'s `reloadSfx`, from `sceneModAdd`.
+				mod_audio.prepare()
+			console.net_line("net: " + String(event.get("text", "")))
 		"notice", "error":
 			console.net_line("net: " + ("error " if String(event.get("type", "")) == "error" else "") \
 				+ String(event.get("text", "")))
@@ -1934,13 +1964,16 @@ func cmd_host(name: String) -> String:
 
 ## `connect`: join the session a ticket names. The scene joins on startup from
 ## `GOATSD_TICKET`; this is the console's own way in, and the one the prompt's answer lands in.
-func cmd_join(ticket: String, name: String) -> String:
+## `pull` is the console's per-join consent (`connect <ticket> --pull`), which the bridge joins
+## with its standing `GOATS_PULL` (M18d): with either set, a refusal for a missing world mod
+## fetches it, installs it, and retries once.
+func cmd_join(ticket: String, name: String, pull: bool = false) -> String:
 	if _joined or _hosting:
 		return "error already in a session (leave first)"
 	var asked: String = name if name != "" else "godot"
 	# The set is presented at the join, not the ticket: the host compares it with its own and
 	# refuses a mismatch, which is the whole point of the digest (`APIv1.md` section 6.3).
-	bridge.call("join", ticket, asked, mods.world_mod_refs())
+	bridge.call("join", ticket, asked, mods.world_mod_refs(), pull)
 	_net_ticket = ticket
 	_net_name = asked
 	_joined = true

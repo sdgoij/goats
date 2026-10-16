@@ -40,6 +40,11 @@ mods = { workspace = true }
 # section 7): the ALPN, the framed control messages, the packed datagrams and
 # the world-mod digest all come from here.
 session = { workspace = true }
+# The client half of mod sync (M18d, `APIv1.md` section 6.3): the fetch ALPN's catalogue/reply,
+# the verification of a fetched archive against the announced identity, and the install. The
+# *policy* -- consent, the retry, the report -- is the bridge's (`net.rs`), exactly as in
+# `crates/goats/src/net.rs`; this is the machinery both clients share rather than re-grow.
+pull = { workspace = true }
 # The codec for voice chat (M13b): the Opus coder, the speech gate and the resampler,
 # engine-free and shared with `crates/goats`. This is what makes a voice frame the same
 # bytes on this host as on the raylib client (`crate::voice` is the Godot-side glue).

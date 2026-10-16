@@ -53,6 +53,11 @@ const HELP_GROUPS := [
 	["flow", "pause resume step quit"],
 ]
 
+## The one flag `connect` takes, and the *whole* of the per-join consent to fetch a host's world
+## mods (M18d): `net.js`'s `NET_PULL_FLAG`. A mod is code, so it is only ever fetched because
+## somebody said so -- here or with the standing `GOATS_PULL` the bridge holds.
+const PULL_FLAG := "--pull"
+
 ## The console's clamps are *not* copies: the stats ceiling is the goat's own leaf
 ## (`PlayerGoat.STATS_MAX`) and the camera's are the tree's (`Tuning.CAMERA_*`), so a mod that
 ## raises `stats.max` or `camera.maxDist` moves what the console's own verbs allow too.
@@ -615,14 +620,21 @@ func _console(parts: PackedStringArray) -> String:
 		"lines": reported,
 	})
 
-## `connect <ticket> [name]`: join a session the ticket names, asking for a username in the
-## console when the line does not carry one -- which is what a ticket's length makes worth
-## having. A `--pull`-style flag is skipped anywhere after the verb, as `netJoinArgs` allows.
+## `connect <ticket> [name] [--pull]`: join a session the ticket names, asking for a username in
+## the console when the line does not carry one -- which is what a ticket's length makes worth
+## having. A `--pull`-style flag is skipped anywhere after the verb, as `netJoinArgs` allows, and
+## whether that one was seen is the *per-join* consent the bridge joins with its own standing
+## `GOATS_PULL` (M18d). The username prompt carries it through, so `connect T --pull` still fetches
+## after the name is typed -- `net.js`'s own re-composition in `sceneCommand`.
 func _connect(parts: PackedStringArray) -> String:
 	if _in_session():
 		return "error already in a session (leave first)"
 	var args := PackedStringArray()
+	var pull := false
 	for i in range(1, parts.size()):
+		if parts[i] == PULL_FLAG:
+			pull = true
+			continue
 		if not parts[i].begins_with("-"):
 			args.append(parts[i])
 	if args.is_empty():
@@ -630,10 +642,10 @@ func _connect(parts: PackedStringArray) -> String:
 	var ticket: String = args[0]
 	if args.size() < 2:
 		var action := func(answer: String) -> String:
-			return String(_call("cmd_join", [ticket, answer.strip_edges()]))
+			return String(_call("cmd_join", [ticket, answer.strip_edges(), pull]))
 		console.ask("Username?", action)
 		return "ok name?"
-	return String(_call("cmd_join", [ticket, args[1]]))
+	return String(_call("cmd_join", [ticket, args[1], pull]))
 
 ## `leave`: end the session.
 func _leave() -> String:

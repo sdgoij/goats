@@ -18,6 +18,7 @@
 //! `joined`, `left`, `chat`, `peer`, `notice` and `disconnected`.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
@@ -57,6 +58,35 @@ struct WorldIntent {
     spent: Option<Vec<session::Spent>>,
 }
 
+/// The `--pull` policy (M18d): where a fetched mod is installed, and whether a join fetches
+/// without being asked. This is `crates/goats/src/net.rs`'s `Pull`, ported -- the *policy* is
+/// the bridge's rather than the transport's, because the two things it decides are the client's:
+/// whether to fetch at all, and where to put what arrives.
+#[derive(Clone)]
+struct Pull {
+    /// Where a fetched mod is installed, and what the retry's digest is re-derived from. `None`
+    /// with no mods directory: nothing can be installed, and nothing can be served.
+    mods_dir: Option<PathBuf>,
+    /// The standing consent -- `GOATS_PULL`, the port's `--pull` on the command line: fetch on a
+    /// refusal that was about mods without the flag on the command.
+    always: bool,
+}
+
+impl Pull {
+    /// May this join fetch? `asked` is the console's per-command consent (`connect <ticket>
+    /// --pull`). A pull installs code the player did not choose, so it only ever happens
+    /// because somebody said so -- here or on the command line.
+    fn allowed(&self, asked: bool) -> bool {
+        self.mods_dir.is_some() && (self.always || asked)
+    }
+
+    /// Is there anywhere to install if the player did ask? This is the `can_pull` a refusal is
+    /// phrased with: the feature is a flag away only when there is a directory to put it in.
+    fn possible(&self) -> bool {
+        self.mods_dir.is_some()
+    }
+}
+
 /// One intent, from a GDScript call. The raylib client parses these out of JSON
 /// lines because its scene is the other side of the bridge; here the call *is*
 /// the parse, so the enum is built directly.
@@ -67,6 +97,10 @@ enum Command {
         /// common case -- a session with no world mods -- and is what the raylib client's
         /// `--no-mods` presents too.
         mods: Vec<ModRef>,
+        /// The pull policy, carried so a host can *serve* its own world mods to a fetching joiner
+        /// (M18d): a session hosted from the game window syncs a joiner the way `goatsd` does.
+        /// `mods_dir` is where the archives are packaged from; `always` is unused here.
+        pull: Pull,
     },
     Join {
         ticket: String,
@@ -74,6 +108,11 @@ enum Command {
         /// This client's world-mod set, which the host compares with its own and refuses a
         /// mismatch of (`APIv1.md` section 6.3).
         mods: Vec<ModRef>,
+        /// The console's per-command consent (`connect <ticket> --pull`). The standing consent
+        /// and the install directory are in `pull`.
+        asked: bool,
+        /// The `--pull` policy: where a fetched mod lands, and whether this join may fetch.
+        pull: Pull,
     },
     Say {
         text: String,
@@ -203,6 +242,11 @@ struct NetBridge {
     /// Encoded voice frames the session delivered, written by the runtime thread and drained
     /// by `pull_voice` on the frame thread.
     voice_in: VoiceQueue,
+    /// The `--pull` policy (M18d): where a fetched mod is installed and whether a join fetches
+    /// without being asked. Set once by the scene (`set_pull`) from its own knobs -- `GOATS_PULL`
+    /// and its mods directory -- and read at each `join`/`host`, so the fetch consent is the
+    /// player's rather than a default.
+    pull: Pull,
     /// The codec half (`crate::voice`): the speech gate, the Opus coder and the mix the scene
     /// plays. It lives on this node rather than a second one because the *wire* is here -- a
     /// captured frame goes out and a delivered one comes back through the same session, and
@@ -219,6 +263,10 @@ impl INode for NetBridge {
             thread: None,
             queue: Queue::default(),
             voice_in: VoiceQueue::default(),
+            pull: Pull {
+                mods_dir: None,
+                always: false,
+            },
             voice: crate::voice::Voice::new(),
         }
     }
@@ -246,25 +294,36 @@ impl NetBridge {
     /// every gate presents -- and it has to be *this* client's own set: a host that required
     /// anything else would refuse the peers it can actually agree with.
     ///
-    /// A host does *not* yet serve its archives to a joiner missing a world mod (M18's fetch)
-    /// as the raylib client's host does; a refused joiner is named and left to install it.
+    /// A host **serves** its own world mods to a fetching joiner (M18d): with a mods directory
+    /// (set by `set_pull`), the archives are packaged once here and the session's fetch surface
+    /// answers a joiner missing one -- so a session hosted from the game window syncs a joiner
+    /// the way `goatsd` does. With no directory there is nothing to hand over, which is a
+    /// limitation of that host rather than of the client.
     #[func]
     fn host(&mut self, name: GString, mods: GString) -> GString {
+        let pull = self.pull.clone();
         match parse_mod_refs(&mods.to_string()) {
             Ok(mods) => self.queue_command(Command::Host {
                 name: name.to_string(),
                 mods,
+                pull,
             }),
             Err(error) => crate::gstring(format!("error: {error}")),
         }
     }
 
     /// Join the session `ticket` names, asking to be called `name`, and presenting this client's
-    /// world-mod set `mods`.
+    /// world-mod set `mods`. With `pull`, a refusal *about the world-mod set* fetches what this
+    /// client lacks from the host, installs it, and retries once (M18d).
     ///
     /// `mods` is `ModHost::world_mod_refs`'s JSON (or empty for none). Without it a joiner could
     /// never enter a session whose host runs a world mod -- the host refuses a set that differs,
     /// and "nothing" is not the host's set.
+    ///
+    /// `pull` is the *per-join* consent, the console's `connect <ticket> --pull`. The standing
+    /// consent is [`NetBridge::set_pull`]'s `always`, and the directory a fetch installs into is
+    /// its `mods_dir`; both are read here, so a scene sets the policy once and a verb only has to
+    /// say whether *this* join asked.
     ///
     /// `join`, not `connect`: `Node` already has `connect` for signals, and a
     /// GDExtension method that shadows a base one is resolved by the static type
@@ -272,15 +331,39 @@ impl NetBridge {
     /// would silently reach the wrong method. godot-rust warns about it, and
     /// will make it an error.
     #[func]
-    fn join(&mut self, ticket: GString, name: GString, mods: GString) -> GString {
+    fn join(&mut self, ticket: GString, name: GString, mods: GString, pull: bool) -> GString {
+        let policy = self.pull.clone();
         match parse_mod_refs(&mods.to_string()) {
             Ok(mods) => self.queue_command(Command::Join {
                 ticket: ticket.to_string(),
                 name: name.to_string(),
                 mods,
+                asked: pull,
+                pull: policy,
             }),
             Err(error) => crate::gstring(format!("error: {error}")),
         }
+    }
+
+    /// Set the `--pull` policy (M18d): the directory a fetched world mod is installed into, and
+    /// whether a refused join fetches without being asked. The scene calls this once, at boot,
+    /// from its own mods directory and `GOATS_PULL` -- the port's spelling of the raylib client's
+    /// `--mods`/`--pull`.
+    ///
+    /// An empty `mods_dir` is "nowhere to install": a join is refused as it always was, and the
+    /// refusal says what it always said, because there is no flag that could help.
+    #[func]
+    fn set_pull(&mut self, mods_dir: GString, always: bool) -> GString {
+        let dir = mods_dir.to_string();
+        self.pull = Pull {
+            mods_dir: if dir.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(dir))
+            },
+            always,
+        };
+        GString::from("ok")
     }
 
     /// Say a line. A leading `@name` is a whisper; the routing is the
@@ -699,42 +782,56 @@ async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue, voice
 /// live (the caller has already closed it).
 async fn start(command: Command, queue: &Queue) -> Option<Live> {
     match command {
-        Command::Host { name, mods } => match Host::start_with_mods(&name, mods).await {
-            Ok(host) => {
-                push(
-                    queue,
-                    json!({"type": "hosting", "name": host.name()}).to_string(),
-                );
-                // The ticket is what a joiner needs; the console prints it too,
-                // but a game window cannot be selected, so it travels here.
-                push(
-                    queue,
-                    json!({"type": "ticket", "ticket": host.ticket()}).to_string(),
-                );
-                Some(Live::Host(host))
-            }
-            Err(error) => {
-                push(queue, error_event(&format!("could not host: {error}")));
-                None
-            }
-        },
-        Command::Join { ticket, name, mods } => {
-            match Client::join_with_mods(&ticket, &name, mods).await {
-                Ok(client) => {
-                    // The canonical name, which may differ from the one asked for:
-                    // names are first come, first served.
+        Command::Host { name, mods, pull } => {
+            // A host serves what it runs, so a joiner missing a world mod can fetch it here
+            // rather than from a status page (M18d). The packaging is a one-off read of the mods
+            // directory at the moment the player hosts, and the session's set is fixed at that
+            // same moment, so the two cannot drift.
+            let archives = match pull.mods_dir.as_deref() {
+                Some(dir) => mod_archives(dir),
+                None => Vec::new(),
+            };
+            match Host::start_with_mods_and_archives(&name, mods, archives).await {
+                Ok(host) => {
                     push(
                         queue,
-                        json!({"type": "welcome", "name": client.name()}).to_string(),
+                        json!({"type": "hosting", "name": host.name()}).to_string(),
                     );
-                    Some(Live::Client(client))
+                    // The ticket is what a joiner needs; the console prints it too,
+                    // but a game window cannot be selected, so it travels here.
+                    push(
+                        queue,
+                        json!({"type": "ticket", "ticket": host.ticket()}).to_string(),
+                    );
+                    Some(Live::Host(host))
                 }
                 Err(error) => {
-                    push(queue, error_event(&format!("could not join: {error}")));
+                    push(queue, error_event(&format!("could not host: {error}")));
                     None
                 }
             }
         }
+        Command::Join {
+            ticket,
+            name,
+            mods,
+            asked,
+            pull,
+        } => match join(&ticket, &name, mods, asked, &pull, queue).await {
+            Ok(client) => {
+                // The canonical name, which may differ from the one asked for:
+                // names are first come, first served.
+                push(
+                    queue,
+                    json!({"type": "welcome", "name": client.name()}).to_string(),
+                );
+                Some(Live::Client(client))
+            }
+            Err(error) => {
+                push(queue, error_event(&error));
+                None
+            }
+        },
         // Handled in `run`, which has the live session in hand.
         Command::Say { .. }
         | Command::Consume { .. }
@@ -745,6 +842,152 @@ async fn start(command: Command, queue: &Queue) -> Option<Live> {
         | Command::Voice { .. }
         | Command::Close => None,
     }
+}
+
+/// Join, and when the refusal was about the world-mod set, fetch what is missing and try exactly
+/// once more (M18d). This is `crates/goats/src/net.rs`'s `join`, ported -- the transport and the
+/// install are `session`'s and `pull`'s, and what is left here is the policy.
+///
+/// The retry is not a second guess: `pull::recover` asks the host what it runs, compares that with
+/// the set on disk, and installs only what is missing and verifies -- so a retry happens after
+/// something actually changed, and the digest it presents is the one the files now have.
+///
+/// Consent is settled before the host is asked anything: the default client fetches nothing, and
+/// the refusal is what tells the player which flag would change that. Pulling installs code the
+/// player did not choose, so the answer has to be theirs.
+async fn join(
+    ticket: &str,
+    name: &str,
+    mods: Vec<ModRef>,
+    asked: bool,
+    pull: &Pull,
+    queue: &Queue,
+) -> Result<Client, String> {
+    let refusal = match Client::join_with_mods(ticket, name, mods).await {
+        Ok(client) => return Ok(client),
+        Err(error) => error,
+    };
+    if !refusal.is_mod_mismatch() || !pull.allowed(asked) {
+        return Err(refusal_text(&refusal, pull.possible()));
+    }
+    // `allowed` implies a directory, so this is a guard rather than a case.
+    let Some(mods_dir) = pull.mods_dir.as_deref() else {
+        return Err(refusal_text(&refusal, false));
+    };
+
+    // What the player has, read straight off the disk: `pull` refuses an id that is already there
+    // rather than replacing it, and that verdict has to be about the directory as it is now, not
+    // as it was when this thread started.
+    let before = mods::Loader::discover_with(mods_dir, mods::AssetMode::HashOnly);
+    let fetched = match pull::recover(ticket, &before, mods_dir).await {
+        Ok(pull::Recovery::Pulled(report)) if !report.installed.is_empty() => report,
+        // Nothing was installed, so a retry would meet the same refusal: say what stopped it
+        // rather than dialing a second time for the same answer.
+        outcome => return Err(cannot_join(&refusal, outcome)),
+    };
+
+    let ids: Vec<String> = fetched
+        .installed
+        .iter()
+        .map(|reference| reference.id.clone())
+        .collect();
+    // The frame loop loads these before the retried join's welcome reaches the scene, so the mods
+    // and the world they describe arrive together: `pulled` is queued *before* the retried join,
+    // and a queue is read in order.
+    push(
+        queue,
+        json!({"type": "pulled", "text": fetched.describe(), "ids": ids}).to_string(),
+    );
+    // The digest the retry presents is the set on disk, which is what a fresh walk reads: the
+    // loader above was taken before the installs. It is re-derived here rather than asked of the
+    // scene, because the scene has not drained `pulled` yet and the retry is this thread's.
+    let world_mods = world_mod_refs(&mods::Loader::discover_with(
+        mods_dir,
+        mods::AssetMode::HashOnly,
+    ));
+    Client::join_with_mods(ticket, name, world_mods)
+        .await
+        .map_err(|error| format!("could not join after fetching: {error}"))
+}
+
+/// The console's line for a refusal this client will not act on. When fetching is possible but was
+/// not asked for, it says how to ask: the whole feature is one flag away, and the refusal is the
+/// one moment a player needs to hear about it.
+fn refusal_text(error: &session::Error, can_pull: bool) -> String {
+    let text = format!("could not join: {error}");
+    if can_pull && error.is_mod_mismatch() {
+        format!("{text}; `connect <ticket> --pull` fetches what is missing")
+    } else {
+        text
+    }
+}
+
+/// Why a fetch did not make a retried join worth attempting. The refusal stays in front -- it is
+/// the host's own line, and it names the ids -- and what follows is what this end found out when
+/// it looked at the two sets itself.
+fn cannot_join(refusal: &session::Error, outcome: Result<pull::Recovery, String>) -> String {
+    match outcome {
+        Ok(pull::Recovery::Pulled(report)) => {
+            format!("{refusal}; nothing was installed ({})", report.describe())
+        }
+        Ok(pull::Recovery::Matched) => {
+            format!("{refusal}; this client already runs the host's mods, so fetching cannot help")
+        }
+        Ok(pull::Recovery::Unfixable(mismatch)) => format!(
+            "could not join: {}; fetching cannot settle it: only you can add or drop a mod",
+            mismatch.describe()
+        ),
+        Ok(pull::Recovery::Unreachable(reason)) => {
+            format!("{refusal}; this host does not serve its mods ({reason})")
+        }
+        Err(error) => format!("{refusal}; the fetch failed ({error})"),
+    }
+}
+
+/// The world-mod set a loader presents, in the shape the handshake compares. The scene's own
+/// `world_mod_refs` reads its `ModHost`; this one is the bridge's, over a fresh walk of the
+/// directory the retry presents -- the same loader `crates/mods` builds the host's digest with.
+fn world_mod_refs(loader: &mods::Loader) -> Vec<ModRef> {
+    let mut refs: Vec<ModRef> = loader
+        .mods()
+        .iter()
+        .filter(|manifest| manifest.side == mods::Side::World)
+        .map(|manifest| ModRef {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            hash: manifest.hash,
+        })
+        .collect();
+    refs.sort_by(|a, b| a.id.cmp(&b.id));
+    refs
+}
+
+/// The archives a host serves a fetching joiner (M18): every world mod in its distributable form,
+/// so a fetch hands over exactly the mod the digest was taken over. Only world mods -- a client
+/// mod is local and never travels. The walk is `HashOnly` because `archive_source` re-reads the
+/// bytes from disk; this end only needs the digests. This is `crates/goats/src/lib.rs`'s
+/// `mod_archives` and `crates/server/src/main.rs`'s, over the same `mods` crate.
+fn mod_archives(dir: &Path) -> Vec<(ModRef, Vec<u8>)> {
+    let loader = mods::Loader::discover_with(dir, mods::AssetMode::HashOnly);
+    loader
+        .mods()
+        .iter()
+        .filter(|manifest| manifest.side == mods::Side::World)
+        .filter_map(|manifest| {
+            let reference = ModRef {
+                id: manifest.id.clone(),
+                version: manifest.version.clone(),
+                hash: manifest.hash,
+            };
+            match mods::archive_source(&manifest.source) {
+                Ok(bytes) => Some((reference, bytes)),
+                Err(error) => {
+                    eprintln!("[net] could not package {} for fetch: {error}", manifest.id);
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 /// A session event as the line the scene reads.

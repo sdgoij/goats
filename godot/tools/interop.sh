@@ -4,6 +4,7 @@
 #
 #   godot/tools/interop.sh          # a modless probe joins a --no-mods host
 #   godot/tools/interop.sh refuse   # the same probe is refused by a host requiring the repo's world mods
+#   godot/tools/interop.sh pull     # ...and with --pull it fetches them, installs them and joins
 #   godot/tools/interop.sh herd     # the scene (presenting the repo's world mods) joins a host running them
 #   godot/tools/interop.sh pair     # ...and *two* clients see each other's goat
 #   godot/tools/interop.sh death    # ...and the mirrored herd is still moving after a client dies and respawns
@@ -11,11 +12,16 @@
 #   godot/tools/interop.sh offline  # no server: the scene boots without a session
 #   godot/tools/interop.sh shot     # ...and a window renders it, with the herd in it
 #
-# All seven are evidence. `join` proves the transport, the join handshake, the chat
+# All nine are evidence. `join` proves the transport, the join handshake, the chat
 # routing and the world datagrams work against the *shipping* binary, not just
 # between two Godot peers. `refuse` proves the world-mod digest comparison
 # (`APIv1.md` section 6.3) crosses two independent implementations -- the failure
-# a player with the wrong mods actually sees. `herd` runs the real scene
+# a player with the wrong mods actually sees. `pull` is the other side of the same
+# refusal (M18d): the *same* host and the *same* modless probe, but with the fetch
+# consented to, so the probe asks the host what it runs, has `crates/pull` verify
+# and install the archive, and joins on the retry -- the last multiplayer gap, and
+# the one thing neither a Godot peer nor a unit test can show, because the archive
+# has to come off the wire and hash to the host's digest. `herd` runs the real scene
 # (`scenes/herd.tscn`) instead of a probe script, so it is the one that shows the
 # core doing something with the wire rather than only reading it -- *and* it is
 # where the digest **matches**: the scene presents the repository's own world set
@@ -46,9 +52,9 @@ log=$root/target/interop-goatsd.log
 
 mode=${1:-join}
 case "$mode" in
-    join|refuse|herd|pair|death|hostdeath|offline|shot) ;;
+    join|refuse|pull|herd|pair|death|hostdeath|offline|shot) ;;
     *)
-        echo "interop.sh: unknown mode '$mode' (want join, refuse, herd, pair, death, hostdeath, offline or shot)" >&2
+        echo "interop.sh: unknown mode '$mode' (want join, refuse, pull, herd, pair, death, hostdeath, offline or shot)" >&2
         exit 2
         ;;
 esac
@@ -158,12 +164,14 @@ fi
 # Which world-mod set `goatsd` requires. `join` and `refuse` run a bare
 # `verify_interop.gd` probe with no `ModHost` behind it, so it presents *nothing*:
 # `join` gives it a host that requires nothing (`--no-mods`), and `refuse` a host
-# that requires the repository's world mods -- the digest refusal. `herd`, `pair`
-# and `shot` run the real *scene*, which presents the repository's own set
-# (`mods.world_mod_refs`), so the host runs the same mods and the join is accepted.
+# that requires the repository's world mods -- the digest refusal. `pull` is the
+# same modless probe against that same modded host, but it *fetches* what the
+# refusal named (M18d), so it presents nothing and leaves running everything.
+# `herd`, `pair` and `shot` run the real *scene*, which presents the repository's own
+# set (`mods.world_mod_refs`), so the host runs the same mods and the join is accepted.
 case "$mode" in
     join) mods_flag=--no-mods ;;
-    herd|pair|shot|death|refuse) mods_flag= ;;
+    herd|pair|shot|death|refuse|pull) mods_flag= ;;
 esac
 
 server=${GOATSD_BIN:-$root/target/release/goatsd.exe}
@@ -242,6 +250,16 @@ elif [ "$mode" = "death" ]; then
     # death has to leave alone is the herd it mirrors, which is the host's.
     GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
         --script res://tools/verify_herd_death.gd
+    status=$?
+elif [ "$mode" = "pull" ]; then
+    # The same modless probe and the same modded host as `refuse`, plus the consent: the probe
+    # fetches the host's world mods into a directory of its *own* (`res://` is not written, and
+    # neither is the repository's `mods/`), and joins on the retry. Both ends are the shipping
+    # code -- the archive travels the fetch ALPN and `crates/pull` hashes it back to the digest
+    # the host announced -- which is why this is the evidence `refuse` alone cannot give.
+    GOATSD_TICKET="$ticket" GOATSD_EXPECT=pull \
+        "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+        --script res://tools/verify_interop.gd
     status=$?
 elif [ "$mode" = "shot" ]; then
     # The real scene, in a window, long enough for a populated world to arrive and

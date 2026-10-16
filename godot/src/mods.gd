@@ -277,6 +277,38 @@ func reload_mod(id: String) -> String:
 		_merge_one_tuning(id)
 	return reply
 
+## Add the mods a pull just installed, while the game is already running (M18d,
+## `APIv1.md` section 2.7). This is `mods.js`'s `sceneModAdd` -- the half of it the scene owns.
+##
+## The *entry* is the host's: `ModHost::add_pulled` re-discovers the directory the pull wrote
+## into, puts the new rows in its table, and runs each new mod's entry in its own
+## `goats.begin(id)` window. What is left here is the three things `sceneModAdd` does around
+## that: the table this node draws, the declared `tuning.json` merged (after the entry, as a
+## reload's is -- the reference merges it first, but the port's `tuning` group is a per-frame
+## push and an entry cannot read it mid-run either way), and -- back in `main.gd`, where the
+## sound node lives -- the slot table re-read, because a mod that arrives after the boot
+## `prepare` names sounds nobody has decoded. The asset slots need nothing here: the facade
+## reads the host's table live (`slotTable`), so a refresh is all a new declaration needs.
+##
+## Returns the host's own report -- `loaded <id> (n asset(s))` per mod -- or `error ...`, which
+## `main.gd` prints into the console beside the `pulled` line. An id the table already holds is
+## refused before the host is asked, which is `sceneModAdd`'s `modFind` guard: nothing is re-run,
+## because a second `goats.begin(id)` would reset a live mod's registrations.
+func add_pulled(ids: Array) -> String:
+	if host == null:
+		return "error the mod runtime is not loaded"
+	var wanted: Array = []
+	for id in ids:
+		var token: String = String(id)
+		if _meta(token) != null:
+			return "error already loaded: " + token
+		wanted.append(token)
+	var reply: String = String(host.call("add_pulled", JSON.stringify(wanted)))
+	table = parse_table(host.call("mods_json"))
+	for id in wanted:
+		_merge_one_tuning(String(id))
+	return reply
+
 ## Flip a mod, reading which way from the table -- `menu.js`'s Enable/Disable button, whose label
 ## follows `enabled` and whose callback is handed one argument.
 func toggle_mod(id: String) -> String:

@@ -64,8 +64,10 @@ func _initialize() -> void:
 	print("ticket: ", ticket.substr(0, 32), "...")
 
 	# 2. Join with it. The name comes back canonical, which may differ from the
-	#    one asked for -- names are first come, first served.
-	print("join -> ", _client.call("join", ticket, CLIENT_NAME, ""))
+	#    one asked for -- names are first come, first served. The fourth argument is the
+	#    per-join fetch consent (M18d): `false`, because this gate has no mods to pull and
+	#    presents none.
+	print("join -> ", _client.call("join", ticket, CLIENT_NAME, "", false))
 	var welcome: String = _wait(_client, ["\"type\":\"welcome\"", CLIENT_NAME], 60000)
 	print("welcome:        ", welcome)
 	if welcome.is_empty():
@@ -210,7 +212,7 @@ func _initialize() -> void:
 
 	# ...and the host relays it to everybody *but* the reporter, who has already felt it.
 	# That needs a third player, or the "everybody" is the reporter.
-	print("join carol ->   ", _carol.call("join", ticket, CAROL_NAME, ""))
+	print("join carol ->   ", _carol.call("join", ticket, CAROL_NAME, "", false))
 	var carol_welcome: String = _wait(_carol, ["\"type\":\"welcome\"", CAROL_NAME], 60000)
 	print("carol welcome:  ", carol_welcome)
 	if carol_welcome.is_empty():
@@ -244,7 +246,7 @@ func _initialize() -> void:
 	else:
 		var strict_ticket: String = JSON.parse_string(strict_line)["ticket"]
 		# A client presenting a *different* set is refused, and the mod it lacks is named.
-		print("mismatch ->     ", lax.call("join", strict_ticket, "lax", "[]"))
+		print("mismatch ->     ", lax.call("join", strict_ticket, "lax", "[]", false))
 		var refused: String = _wait(lax, ["\"type\":\"error\""], 60000)
 		print("refusal:        ", refused)
 		if refused.is_empty():
@@ -252,7 +254,7 @@ func _initialize() -> void:
 		elif not refused.contains("com.example.flock"):
 			failures.append("the refusal does not name the world mod: " + refused)
 		# ...and the same client presenting the *host's* set is let in.
-		print("match ->        ", lax.call("join", strict_ticket, "lax", flock))
+		print("match ->        ", lax.call("join", strict_ticket, "lax", flock, false))
 		var matched: String = _wait(lax, ["\"type\":\"welcome\"", "lax"], 60000)
 		print("matched:        ", matched)
 		if matched.is_empty():

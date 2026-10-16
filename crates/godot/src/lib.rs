@@ -493,6 +493,56 @@ impl ModHost {
         gstring(report.trim_end())
     }
 
+    /// Add the mods a pull just installed, while the game is already running (M18d,
+    /// `APIv1.md` section 2.7). This is `sceneModAdd`'s host half -- the reference's
+    /// `load_pulled`, ported: the *entry* is Rust's to evaluate, so only the host can run it.
+    ///
+    /// The scene's table was frozen at boot and closed to everything except a mod's own entry, so
+    /// a mod that arrives later goes in the way a reload does -- through its own `goats.begin(id)`
+    /// window, which `load_one` opens and `__entryDone` closes. The loader is a *fresh walk*
+    /// because a pulled mod is a file disk discovery has never seen: `Loader` has no way to add
+    /// one, which is the same reason `crates/goats/src/lib.rs` re-discovers. Only the ids asked
+    /// for are run, in the order the host answered.
+    ///
+    /// `ids` is the `pulled` event's own list, as JSON, and it is the scene's to pass on because
+    /// the scene is the frame loop here -- the reference's Rust loop reads the same ids off the
+    /// same event. The scene owns what this cannot: the table it draws, the tuning each new mod
+    /// declares (merged after, as a reload's is), and the sound slots re-read. `asset_names` and
+    /// the facade's `slotTable` need nothing, because both read the table this refreshes.
+    #[func]
+    fn add_pulled(&mut self, ids_json: GString) -> GString {
+        if let Err(error) = self.ensure_booted() {
+            return gstring(format!("error: {error}"));
+        }
+        let ids: Vec<String> = match serde_json::from_str(&ids_json.to_string()) {
+            Ok(ids) => ids,
+            Err(error) => return gstring(format!("error: {error}")),
+        };
+        let Some(dir) = self.mods_dir.clone() else {
+            return GString::from("error no mods directory to load a fetched mod from");
+        };
+        // A fresh walk: the pulled archive is a file discovery has never seen. Its bytes are
+        // kept (`AssetMode::Keep`) so `load_one` can hand them to the engine, exactly as at boot.
+        if let Some(module) = self.module.as_mut() {
+            module.loader = Some(mods::Loader::discover(&dir));
+        }
+        let mut report = String::new();
+        for id in &ids {
+            // The metadata first, so the row -- and the declared slots and tuning tree the entry
+            // resolves -- is in the table before the entry runs. This is the boot path's own order.
+            self.refresh_table();
+            let outcome = self.load_one(id);
+            self.record(id, &outcome);
+            match outcome {
+                Ok(line) => report.push_str(&line),
+                Err(error) => report.push_str(&format!("{id}: {error}")),
+            }
+            report.push('\n');
+        }
+        self.refresh_table();
+        gstring(report.trim_end())
+    }
+
     /// Turn one mod on or off for this session -- `APIv1.md` section 4.1's `modSetEnabled`,
     /// between `mods.js`'s toggle and the host's `handle_mod_intent`.
     ///
