@@ -974,14 +974,15 @@ func _place(bot: Bot) -> void:
 	if bot.anim == null:
 		return
 	var clip: String = clip_at(role, int(bot.variants.get(role, 0)))
-	if clip.is_empty():
+	if clip.is_empty() or bot.anim == null:
 		return
 	if clip != bot.clip:
 		bot.clip = clip
 		bot.anim.play(clip)
-	var animation: Animation = bot.anim.get_animation(clip)
-	if animation != null:
-		bot.anim.seek(fmod(pose, 1.0) * animation.length, true)
+	# The frame itself is `Pose`'s (`model.js` `poseModelOn`), and it is why a corpse lies where it
+	# fell: a death's fraction reaches 1.0 a few seconds in, well before `herd.deathLinger` gets
+	# the body up, and a clamped 1.0 is the clip's *last* frame.
+	Pose.on(bot.anim, clip, pose)
 
 ## Load one bot's rig and give it its coat. A golden-angle spread rings the player evenly
 ## for any herd size, which is why a bot is placed from its index rather than from a

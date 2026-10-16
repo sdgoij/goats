@@ -280,9 +280,10 @@ func _pose(goat: Dictionary, gait: String, phase: float) -> void:
 			anim.play(clip)
 	if anim != null and anim.has_animation(clip):
 		# The snapshot carries the fraction through the clip, which is the only thing that can
-		# pose a one-shot gait -- a jump, the death, the fling.
-		var length: float = anim.get_animation(clip).length
-		anim.seek(fposmod(phase, 1.0) * length, true)
+		# pose a one-shot gait -- a jump, the death, the fling -- and `Pose` is where it lands
+		# (`model.js` `poseModelOn`): the last frame at 1.0 and never a wrap to the first, so a
+		# remote goat on its death gait keeps the pose it fell in.
+		Pose.on(anim, clip, phase)
 
 ## Whether the model has a clip for a role. `role`'s own predicate, which is what makes the
 ## fallback chain testable with a model that is missing one.

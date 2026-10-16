@@ -311,6 +311,36 @@ hole. And the settings screen's own read of it was `bots.count()`, a herd of zer
 where the frame already answers that question for the tuning tree and for a mod
 (`_tuning_herd_count`) — one answer for all three now.
 
+**How a goat is posed** (`verify_pose.gd`, and `pose.gd`): `model.js` `poseModelOn` is the one
+function every drawer in the scene poses through — the player's goat, the bots, the peers, the
+mirrored herd — and it **clamps**:
+
+```
+function poseModelOn(handle, info, phase) {
+    const last = info.frames - 1;
+    let frame = phase * last;
+    if (frame > last) frame = last;
+    ...
+}
+```
+
+The port had that line inlined in four places with a `fmod` where the reference has a clamp, and
+the two differ at exactly one value — the one a death reaches: `fmod(1.0, 1.0)` is 0.0, so a
+corpse's fraction stopped at the *first* frame of its death clip a few seconds in and lay there
+standing until `herd.deathLinger` respawned it. Four transcriptions of one line is also what let it
+hide: `verify_bots` compares a bot's mode, phase and clip frame for frame and `verify_peers` a
+peer's gait and the clip `peerRole` picks, so nothing in the suite held the frame the
+`AnimationPlayer` was actually seeking to. `Pose.on` is the line once, the four modules call it, and
+the gate asks all four.
+
+Godot's own half of it is the same rule. A player sought to *exactly* `Animation.length` is treated
+as finished and **stopped**, and a stopped player poses nothing at all: the goat drops back to its
+rest pose, standing — the same report by a second route, and one this gate caught on its own first
+attempt, when the clamp alone left every corpse "posed by nothing". So the last frame is asked for
+a hair short of the end (`Pose.HELD`, a tenth of a millisecond: the last frame by any measure, and
+nowhere near the frame before it), and a case fails either way round — a goat still standing upright
+is either on the wrong frame or on no clip at all.
+
 **The other players** (`verify_peers.gd`, `interop.sh pair`): M21. The port mirrored the host's
 *bots* from the beginning and never the host's *people* -- a `peer` event fell through
 `main.gd`'s dispatch unused -- so two clients in one session could not see each other and a

@@ -776,14 +776,15 @@ func _pose_role() -> void:
 
 func _pose(role: String, fraction: float) -> void:
 	var clip: String = clip_for(role)
-	if clip.is_empty() or _anim == null:
+	if clip == "" or _anim == null:
 		return
 	if clip != _playing:
 		_playing = clip
 		_anim.play(clip)
-	var animation: Animation = _anim.get_animation(clip)
-	if animation != null:
-		_anim.seek(fmod(fraction, 1.0) * animation.length, true)
+	# Where in the clip the goat stands is `Pose`'s, which is `model.js` `poseModelOn` -- the one
+	# place the whole scene poses anything through, and the reason a dead goat keeps the pose it
+	# fell in while it lies there.
+	Pose.on(_anim, clip, fraction)
 
 ## Index the model's clips by role. The scene indexes its own CLIP table, built from
 ## the same model; here the table is the model's, so a re-export with a new variant

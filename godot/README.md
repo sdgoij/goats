@@ -92,7 +92,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Thirty-three headless gates, all `SceneTree` scripts that exit non-zero on failure:
+Thirty-four headless gates, all `SceneTree` scripts that exit non-zero on failure:
 
 ```sh
 # The model imports with every clip, bone, surface and texture the game needs.
@@ -240,6 +240,14 @@ Thirty-three headless gates, all `SceneTree` scripts that exit non-zero on failu
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_herd.gd
 
+# How a fraction through a clip becomes the frame a goat is drawn at: `model.js` `poseModelOn`,
+# which is a **clamp** -- a phase of 1.0 is the clip's *last* frame -- held against all four
+# places that pose a goat (the local one, a bot, a peer and a mirrored bot) and against the
+# loop's own far edge. It is also where the port's spelling of it shows: Godot *stops* a player
+# sought to exactly its length, so the last frame is asked for a hair short of the end.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_pose.gd
+
 # The wake: 120 frames of rings and drops (eighteen of them dry), the two water tests
 # told apart where they disagree, and the grass a deep pool hides against `water.js` and
 # `weather.js`.
@@ -291,7 +299,7 @@ Thirty-three headless gates, all `SceneTree` scripts that exit non-zero on failu
     --script res://tools/verify_voice.gd
 ```
 
-All thirty-three pass against Godot 4.7.2 today. Four more need a live session and are run by
+All thirty-four pass against Godot 4.7.2 today. Four more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse), `verify_peers_live.gd`
 (two clients, `interop.sh pair`), and the herd-death pair — `verify_herd_death.gd` (a client's own
 death and respawn against `goatsd`, `interop.sh death`) and `verify_herd_host.gd` (the same question

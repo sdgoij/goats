@@ -266,8 +266,11 @@ func _pose(goat: Dictionary, gait: String, phase: float) -> void:
 	if anim != null and anim.has_animation(clip):
 		# The snapshot carries the fraction through the clip, which is the only
 		# thing that can pose a one-shot gait -- a jump, the death.
-		var length: float = anim.get_animation(clip).length
-		anim.seek(fmod(phase, 1.0) * length, true)
+		#
+		# `Pose` is where it lands (`model.js` `poseModelOn`): the clip's *last* frame at a phase
+		# of 1.0 and never a wrap to its first, so a mirrored corpse keeps the pose it fell in
+		# until the host says something else.
+		Pose.on(anim, clip, phase)
 
 func _clip_for(gait: String) -> String:
 	match gait:
