@@ -410,11 +410,13 @@ reported, not silently ignored).
 > handed **one JSON snapshot of the world per frame** and the
 > facade answers every group out of it, so none of these reads crosses the language boundary --
 > the design `PORT.md` §6 records. `world.terrainHeight` is the one read that is a *function*
-> rather than a value, and it (and the writes, when they land) goes the other way through a
-> `Callable` the scene registers. What the port does **not** answer yet are the *writes*:
-> `world.setTime` and `world.setWeather` return the API's own `false` -- the answer this
-> section documents for a client that does not own the world -- and every other write throws an
-> error naming the member, rather than silently doing nothing. The port's `tuning` tree is also
+> rather than a value, and it -- and every write -- goes the other way through a `Callable` the
+> scene registers. The writes the scene owns are then in: `player`'s position, heading, mode and
+> restart, `camera.set` with its clamps, `settings.set`, the local-only `world.setTime`/`setWeather`,
+> `net.say`, `bots.setCount` and its four handles. Three families are still *thrown* rather than
+> answered -- `assets.override`/`add` (a pre-freeze pair, with no freeze to precede here),
+> `tuning.set`/`merge` and `explosions.armed` -- so a mod that tries one is named in its own hook
+> rather than silently doing nothing. The port's `tuning` tree is also
 > a **subset**: it gathers the port's own constants, and a path it has not got throws the same
 > "unknown path" a typo does, so a leaf the port never ported is never answered with a wrong
 > number.

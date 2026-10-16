@@ -36,9 +36,12 @@
 #      pays for: `list()` twice is the same array, and `get(0)` is the same object as `list()[0]`.
 #   5. **The one functional read crosses and answers** -- `terrainHeight` against `Terrain.height_at`,
 #      the scene's own function including the craters.
-#   6. **A write is refused, clearly.** The clock and the weather are the API's documented *safe*
-#      pair and answer `false`; every other write is a thrown error naming the member, which the
-#      mod's own hook isolation logs rather than swallowing (`APIv1.md` section 7).
+#   6. **The writes are the scene's** (`APIv1.md` sections 4.5-4.12). Each is applied and held
+#      against the *scene's own* field -- a position, a heading, a gait, a clamped camera, a gain,
+#      a clock, a herd size and a bot's own x/z/yaw -- because a write is a claim about the
+#      simulation and only the simulation can keep its invariants. The three families the port has
+#      still not got (`tuning.set`, `assets.override`, `explosions.armed`) are asserted as
+#      refusals with them, so a member that quietly became a no-op would show.
 #   7. **The asset slots have both of their owners** (`assets`, section 4.11). This is the one group
 #      two things supply -- the built-in half is the scene's own table and the declared half is the
 #      mods' -- so what is held is that both are visible, that a built-in slot's name really loads
@@ -132,16 +135,9 @@ const PROBE_JS := """
             name: goats.net.name(), roster: goats.net.roster().length,
         };
 
-        // The writes: the clock and the weather are the API's safe pair, and answer `false`;
-        // everything else is refused with a thrown error that names the member.
-        out.set_time = goats.world.setTime(3);
-        out.set_weather = goats.world.setWeather("rain");
-        try { goats.player.teleport(1, 2); out.teleport = "answered"; }
-        catch (error) { out.teleport = "threw"; }
-        try { goats.settings.set({ bgm: 10 }); out.setting = "answered"; }
-        catch (error) { out.setting = "threw"; }
-        try { goats.bots.get(0).zoomies(3); out.zoomies = "answered"; }
-        catch (error) { out.zoomies = "threw"; }
+        // The writes are a command of their own (`modwrite`, below), because they *change* the
+        // world the readings above describe: a gate that wrote before it read would be comparing
+        // the mod's own pre-write snapshot against a post-write scene.
 
         // The identity a mod reads before it reads anything else (APIv1.md section 4.1), and the
         // three ways it can say something.
@@ -310,6 +306,46 @@ const PROBE_JS := """
         }
         return JSON.stringify(out);
     });
+
+    // The writes (`APIv1.md` sections 4.5-4.12), a command of their own so they run *after* every
+    // reading above. Only their returns are collected here; the gate holds each against the
+    // scene's own field, which is the thing a write is a claim about -- the readable groups answer
+    // from the frame that was pushed before this ran, so a mod's own read cannot show the effect.
+    // `restart` comes first because it resets the goat, position and mode and all.
+    goats.command("modwrite", function () {
+        const out = {};
+        goats.player.restart();
+        const WX = 12.5, WZ = -7.25, WYAW = 0.75;
+        goats.player.teleport(WX, WZ);
+        goats.player.face(WYAW);
+        out.wrote = { x: WX, z: WZ, yaw: WYAW };
+        out.mode_gait = goats.player.setMode("trot");
+        out.mode_eat = goats.player.setMode("eat");
+        out.mode_dead = goats.player.setMode("dead");
+        goats.camera.set({ yaw: WYAW, pitch: 9.9, dist: -5 });
+        goats.settings.set({ bgm: 17, cloud: "high" });
+        out.set_time = goats.world.setTime(3);
+        out.set_weather = goats.world.setWeather("rain");
+        out.set_weather_bad = goats.world.setWeather("bogus");
+        out.say = goats.net.say("hello");
+        out.say_empty = goats.net.say("   ");
+        out.bot_count = goats.bots.setCount(3);
+        const b = goats.bots.get(0);
+        b.teleport(WX + 4, WZ - 3);
+        b.face(1.25);
+        b.zoomies(2);
+        b.startle();
+        out.bot_wrote = { x: WX + 4, z: WZ - 3, yaw: 1.25 };
+        // The three families still refused: a pre-freeze asset write, the tuning tree, and the
+        // core-armed flag.
+        try { goats.tuning.set("stats.max", 5); out.tune_write = "answered"; }
+        catch (error) { out.tune_write = "threw"; }
+        try { goats.assets.override("sfx.music", "mod:com.example:sfx.music.mp3"); out.asset_write = "answered"; }
+        catch (error) { out.asset_write = "threw"; }
+        try { goats.explosions.armed(false); out.armed_write = "answered"; }
+        catch (error) { out.armed_write = "threw"; }
+        return JSON.stringify(out);
+    });
 })();
 """
 
@@ -411,7 +447,6 @@ func _check() -> void:
 	_check_bots(read, bots)
 	_check_tuning(read, bots, reflect)
 	_check_calls(read)
-	_check_writes(read)
 	# A second frame, so anything the probe *said* is drained into the console before the identity
 	# check reads it: the first frame ran before the probe answered, and a log line lands in the
 	# host's queue when it is said and not when the frame is drawn.
@@ -422,6 +457,19 @@ func _check() -> void:
 	_check_entities(read, _main.get("console"))
 	_check_streams(host, mods)
 	_check_devices(host)
+	# ...and the writes, **last**, because they change the world every reading above describes.
+	# The probe's `restart` needs something to restore, or "a full goat is still full" is a check
+	# that cannot fail -- these are the scene's own fields, set the way the console's own
+	# `health`/`energy` verbs set them.
+	goat.set("health", 1.0)
+	goat.set("energy", 1.0)
+	goat.set("mode", "idle")
+	var wrote_raw: String = str(host.call("run_command", "modwrite", "modwrite"))
+	var wrote: Variant = JSON.parse_string(wrote_raw)
+	if not (wrote is Dictionary):
+		_failures.append("the write probe did not answer with a table: " + wrote_raw)
+	else:
+		_check_writes(wrote as Dictionary, _main)
 	_finished = true
 
 ## The asset slots (`APIv1.md` section 4.11), the one group that is a *merge* of two owners: the
@@ -988,18 +1036,119 @@ func _check_calls(read: Dictionary) -> void:
 		_failures.append("goats.net.name() is %s with no session" % net.get("name"))
 	print("net: ", net.get("mode"), "  localWorld ", net.get("local"))
 
-## 6. A write is refused, and the way each refusal reads is the one its signature documents.
-func _check_writes(read: Dictionary) -> void:
-	# The API's safe pair: safe to call, and `false` says it could not take effect.
-	if read.get("set_time") != false:
-		_failures.append("goats.world.setTime did not answer false: %s" % read.get("set_time"))
-	if read.get("set_weather") != false:
-		_failures.append("goats.world.setWeather did not answer false: %s" % read.get("set_weather"))
-	for member: String in ["teleport", "setting", "zoomies"]:
+## 6. The writes (`APIv1.md` sections 4.5-4.12), held against the **scene's own** fields -- which
+## is the whole of a write's contract: the simulation is the thing that has to keep its invariants.
+## The readable groups answer from the frame pushed *before* the probe ran, so a mod's own read one
+## instant later cannot show the effect; the scene can, and it is what the reference client's writes
+## move too. The three families the port has still not got are asserted as refusals with them, so a
+## member that quietly became a no-op would show.
+func _check_writes(read: Dictionary, main: Node) -> void:
+	var goat: Object = main.get("goat")
+	var bots: Object = main.get("bots")
+	var settings: Object = main.get("settings")
+	var weather: Object = main.get("weather")
+	var wrote: Dictionary = read.get("wrote", {})
+
+	# The player: `restart` first (a full goat, because a full goat restarting to full is a check
+	# that cannot fail), then a position, a heading and the modes a script may enter.
+	if not _near(float(goat.get("health")), PlayerGoat.STATS_MAX) \
+			or not _near(float(goat.get("energy")), PlayerGoat.STATS_MAX):
+		_failures.append("player.restart did not refill the goat: %s/%s"
+			% [goat.get("health"), goat.get("energy")])
+	if not _near(float(goat.get("px")), float(wrote.get("x", 0.0))) \
+			or not _near(float(goat.get("pz")), float(wrote.get("z", 0.0))):
+		_failures.append("player.teleport did not move the goat: (%s, %s)"
+			% [goat.get("px"), goat.get("pz")])
+	if not _near(float(goat.get("yaw")), float(wrote.get("yaw", 0.0))):
+		_failures.append("player.face did not turn the goat: %s" % goat.get("yaw"))
+	if read.get("mode_gait") != true:
+		_failures.append("player.setMode(\"trot\") answered %s" % read.get("mode_gait"))
+	if read.get("mode_eat") != false or read.get("mode_dead") != false:
+		_failures.append("player.setMode answered %s/%s for eat/dead -- the simulation's own"
+			% [read.get("mode_eat"), read.get("mode_dead")])
+	if str(goat.get("mode")) != "trot":
+		_failures.append("the gait write did not land: goat.mode is %s" % goat.get("mode"))
+
+	# The camera: partial, and the two clamps are the reference's own numbers.
+	var cam: Dictionary = main.call("cmd_camera")
+	if not _near(float(cam["yaw"]), float(wrote.get("yaw", 0.0))):
+		_failures.append("camera.set did not take the yaw: %s" % cam["yaw"])
+	if not _near(float(cam["pitch"]), Tuning.CAMERA_MAX_PITCH):
+		_failures.append("camera.set did not clamp the pitch to %s: %s"
+			% [Tuning.CAMERA_MAX_PITCH, cam["pitch"]])
+	if not _near(float(cam["dist"]), Tuning.CAMERA_MIN_DIST):
+		_failures.append("camera.set did not clamp the distance to %s: %s"
+			% [Tuning.CAMERA_MIN_DIST, cam["dist"]])
+
+	# The settings: a partial object, through the scene's own apply.
+	if int(round(float(settings.get("bgm")))) != 17:
+		_failures.append("settings.set did not take the gain: %s" % settings.get("bgm"))
+	if str(settings.get("cloud")) != "high":
+		_failures.append("settings.set did not take the cloud: %s" % settings.get("cloud"))
+
+	# The clock and the weather: local-only, and they answer rather than throw.
+	if read.get("set_time") != true or not _near(float(main.call("cmd_hours")), 3.0):
+		_failures.append("world.setTime did not take: %s / %s"
+			% [read.get("set_time"), main.call("cmd_hours")])
+	if read.get("set_weather") != true or str(weather.get("kind")) != "rain":
+		_failures.append("world.setWeather did not take: %s / %s"
+			% [read.get("set_weather"), weather.get("kind")])
+	if read.get("set_weather_bad") != false:
+		_failures.append("world.setWeather answered %s for a state it has not got"
+			% read.get("set_weather_bad"))
+
+	# The chat line: reported by value, and offline the *session* gate answers first -- which is the
+	# reference's own order (`netSay` checks the session before it looks at the text), so an empty
+	# line offline is the same refusal.
+	if str(read.get("say")) != "error not in a session":
+		_failures.append("net.say did not refuse with no session: %s" % read.get("say"))
+	if str(read.get("say_empty")) != "error not in a session":
+		_failures.append("net.say answered an empty line offline with: %s" % read.get("say_empty"))
+
+	# The herd: the size, and the four verbs on a live handle -- read back off the scene's own
+	# `report()`, because that is the live herd and not the snapshot the mod reads.
+	if int(read.get("bot_count", -1)) != 3 or int(bots.call("count")) != 3:
+		_failures.append("bots.setCount did not resize the herd: %s / %s"
+			% [read.get("bot_count"), bots.call("count")])
+	var report: Array = bots.call("report")
+	if report.is_empty():
+		_failures.append("the herd is empty after bots.setCount(3)")
+	else:
+		var one: Dictionary = report[0]
+		var bw: Dictionary = read.get("bot_wrote", {})
+		if not _near(float(one.get("x", 0.0)), float(bw.get("x", 0.0))) \
+				or not _near(float(one.get("z", 0.0)), float(bw.get("z", 0.0))) \
+				or not _near(float(one.get("yaw", 0.0)), float(bw.get("yaw", 0.0))):
+			_failures.append("a bot handle's teleport/face did not land: %s" % one)
+
+	# The three families that are still refused.
+	for member: String in ["tune_write", "asset_write", "armed_write"]:
 		if str(read.get(member)) != "threw":
-			_failures.append("a refused write (%s) did not throw: %s"
-				% [member, read.get(member)])
-	print("writes: setTime/setWeather false, and refused writes thrown")
+			_failures.append("a refused write (%s) did not throw: %s" % [member, read.get(member)])
+
+	# ...and the two local-only writes answer `false` for a *client*, which is the API's "could not
+	# take effect" rather than a refusal (`APIv1.md` section 4.7). The flag is the scene's own
+	# `_joined`, stood up here rather than bound to a real session, and each is asked through the
+	# seam the extension uses -- so this is a check on the real `_mod_call` and not on a copy of it.
+	main.set("_joined", true)
+	var before_hours: float = float(main.call("cmd_hours"))
+	if _seam(main, "world.setTime", [6.0]) != false:
+		_failures.append("world.setTime did not answer false for a client")
+	if _seam(main, "world.setWeather", ["clear"]) != false:
+		_failures.append("world.setWeather did not answer false for a client")
+	if not _near(float(main.call("cmd_hours")), before_hours):
+		_failures.append("a client's setTime moved the clock anyway: %s" % main.call("cmd_hours"))
+	main.set("_joined", false)
+	print("writes: player/camera/settings/world/net/bots took, the two local-only ones answer false " +
+		"for a client, and the rest are still refused")
+
+## One crossing through the scene's own `_mod_call`, the way the extension makes it, handing back
+## the `ok` value. A check on a write's *answer* goes through the real seam this way.
+func _seam(main: Node, name: String, args: Array) -> Variant:
+	var answer: Variant = JSON.parse_string(str(main.call("_mod_call", name, JSON.stringify(args))))
+	if not (answer is Dictionary):
+		return null
+	return (answer as Dictionary).get("ok", null)
 
 ## A float comparison that tolerates the JSON the readings crossed through.
 func _near(mine: float, live: float) -> bool:

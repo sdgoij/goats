@@ -867,6 +867,104 @@ func _mod_call(name: String, args_json: String) -> String:
 			water.enabled = args.is_empty() or args[0] != false
 			water.update()
 			return _mod_ok(water.enabled)
+		# ---- the writes (`APIv1.md` sections 4.5-4.12). Every one is the *scene's* own rule: the
+		# console's verb calls the same handler, because a write is a claim about the simulation and
+		# only the simulation can keep its invariants (the water a goat may not sleep in, the pitch a
+		# camera clamps, the gait `jump` outranks).
+		"player.teleport":
+			if args.size() < 2 or not _is_number(args[0]) or not _is_number(args[1]):
+				return _mod_err("player.teleport needs an x and a z")
+			goat.teleport(float(args[0]), float(args[1]))
+			return _mod_ok(null)
+		"player.face":
+			if args.size() < 1 or not _is_number(args[0]):
+				return _mod_err("player.face needs a yaw")
+			goat.face(float(args[0]))
+			return _mod_ok(null)
+		"player.setMode":
+			if args.is_empty():
+				return _mod_err("player.setMode needs a mode")
+			return _mod_ok(_mod_set_mode(str(args[0])))
+		"player.restart":
+			goat.restart()
+			return _mod_ok(null)
+		"camera.set":
+			# Partial by the API's own words: the facade sends the object as three slots, and a slot
+			# that is not a number is "not given" rather than a write to zero. `cmd_set_camera`
+			# clamps the pitch and the distance, which is the reference's own pair of clamps.
+			var cam: Dictionary = cmd_camera()
+			var want_yaw: float = float(cam["yaw"])
+			var want_pitch: float = float(cam["pitch"])
+			var want_dist: float = float(cam["dist"])
+			if args.size() > 0 and _is_number(args[0]):
+				want_yaw = float(args[0])
+			if args.size() > 1 and _is_number(args[1]):
+				want_pitch = float(args[1])
+			if args.size() > 2 and _is_number(args[2]):
+				want_dist = float(args[2])
+			cmd_set_camera(want_yaw, want_pitch, want_dist)
+			return _mod_ok(null)
+		"settings.set":
+			if args.is_empty() or not (args[0] is Dictionary):
+				return _mod_err("settings.set needs an object")
+			_mod_apply_settings(args[0])
+			return _mod_ok(null)
+		"world.setTime":
+			# Local-only, and *answered* rather than thrown (`APIv1.md` section 4.7): a client that
+			# joined does not own the clock, so it gets the API's own `false`. The wrap is the
+			# reference's (`((h % 24) + 24) % 24`).
+			if _joined:
+				return _mod_ok(false)
+			if args.is_empty() or not _is_number(args[0]):
+				return _mod_err("world.setTime needs an hour")
+			cmd_set_hours(fposmod(float(args[0]), 24.0))
+			return _mod_ok(true)
+		"world.setWeather":
+			if _joined:
+				return _mod_ok(false)
+			if args.is_empty():
+				return _mod_err("world.setWeather needs a state")
+			return _mod_ok(weather.go_to(str(args[0])))
+		"net.say":
+			# `netSay` reports by *value* rather than by throwing: the console prints nothing for an
+			# empty reply, and the two failures are strings a caller can read.
+			if not (_joined or _hosting):
+				return _mod_ok("error not in a session")
+			var chat: String = str(args[0]).strip_edges() if not args.is_empty() else ""
+			if chat == "":
+				return _mod_ok("error nothing to say")
+			cmd_say(chat)
+			return _mod_ok("")
+		"bots.setCount":
+			if args.is_empty() or not _is_number(args[0]):
+				return _mod_err("bots.setCount needs a count")
+			bots.set_herd_size(int(round(float(args[0]))))
+			return _mod_ok(bots.count())
+		"bots.zoomies":
+			if args.size() < 2 or not _is_number(args[0]) or not _is_number(args[1]):
+				return _mod_err("bots.get(i).zoomies needs seconds")
+			if not bots.zoomies_at(int(args[0]), float(args[1])):
+				return _mod_err("bots.get: no bot at that index")
+			return _mod_ok(null)
+		"bots.startle":
+			if args.is_empty() or not _is_number(args[0]):
+				return _mod_err("bots.get(i).startle needs an index")
+			if not bots.startle_at(int(args[0])):
+				return _mod_err("bots.get: no bot at that index")
+			return _mod_ok(null)
+		"bots.teleport":
+			if args.size() < 3 or not _is_number(args[0]) or not _is_number(args[1]) \
+					or not _is_number(args[2]):
+				return _mod_err("bots.get(i).teleport needs an x and a z")
+			if not bots.teleport_at(int(args[0]), float(args[1]), float(args[2])):
+				return _mod_err("bots.get: no bot at that index")
+			return _mod_ok(null)
+		"bots.face":
+			if args.size() < 2 or not _is_number(args[0]) or not _is_number(args[1]):
+				return _mod_err("bots.get(i).face needs a yaw")
+			if not bots.face_at(int(args[0]), float(args[1])):
+				return _mod_err("bots.get: no bot at that index")
+			return _mod_ok(null)
 	return _mod_err("goats." + name + ": this client does not answer that member")
 
 ## A successful `_mod_call` answer.
@@ -876,6 +974,70 @@ func _mod_ok(value: Variant) -> String:
 ## ...and a refusal, which the facade throws.
 func _mod_err(message: String) -> String:
 	return JSON.stringify({"err": message})
+
+## Whether one JSON argument is a number. A `null` is "not given" -- the facade's partial writes
+## send it -- and a `null` that reached `float()` would be a *script error* rather than a refusal,
+## which is the one thing this seam must never produce (`world.terrainHeight`'s own note above).
+func _is_number(value: Variant) -> bool:
+	return value is float or value is int
+
+## `player.setMode(next)` (`APIv1.md` section 4.5): only the modes a *script* may enter. `sleep`
+## goes through the scene's own water gate, the four gaits are the keys' own, and `jump`/`dead` are
+## the simulation's -- so everything else answers `false` rather than throwing, which is `mods.js`'s
+## own `setMode` line for line. `eat` is one of those: it needs a tuft the *scene* picked, which is
+## the `E` key and the `eat` verb, not a mode a caller can name.
+func _mod_set_mode(next: String) -> bool:
+	if next == "sleep":
+		return goat.start_sleep()
+	if next == "idle" or next == "walk" or next == "trot" or next == "run":
+		if goat.mode == "dead" or goat.mode == "jump" or goat.mode == "eat":
+			return false
+		goat.mode = next
+		return true
+	return false
+
+## `settings.set(options)` (`APIv1.md` section 4.9): a partial object, through the scene's own
+## `applySettings`. The reference assigns whatever it is handed; this build's settings are *typed*
+## -- booleans, names from the shadow/cloud lists, numbers -- so a value that is not the type its
+## field holds is ignored rather than assigned. Assigning it would be a script error at this seam
+## instead of a setting. An unknown key is ignored too, which is what the reference's own loop over
+## its key list does.
+func _mod_apply_settings(options: Dictionary) -> void:
+	if options.has("bgm"):
+		settings.bgm = clampf(roundf(_mod_number(options["bgm"], settings.bgm)), 0.0, 100.0)
+	if options.has("sfx"):
+		settings.sfx = clampf(roundf(_mod_number(options["sfx"], settings.sfx)), 0.0, 100.0)
+	if options.has("light"):
+		settings.light = _mod_setting_bool(options["light"], settings.light)
+	if options.has("sky"):
+		settings.sky = _mod_setting_bool(options["sky"], settings.sky)
+	if options.has("fullscreen"):
+		settings.fullscreen = _mod_setting_bool(options["fullscreen"], settings.fullscreen)
+	if options.has("shadow") and Settings.SHADOW_NAMES.has(str(options["shadow"])):
+		settings.shadow = str(options["shadow"])
+	if options.has("cloud") and Settings.CLOUD_NAMES.has(str(options["cloud"])):
+		settings.cloud = str(options["cloud"])
+	# `herd` is the API's convenience alias for `goats.bots.setCount` (`APIv1.md` section 4.9).
+	if options.has("herd") and _is_number(options["herd"]):
+		bots.set_herd_size(int(round(float(options["herd"]))))
+	settings.push()
+
+## A number, or the value already there -- the "ignored" half of a partial write.
+static func _mod_number(value: Variant, current: float) -> float:
+	if value is float or value is int:
+		return float(value)
+	return current
+
+## A boolean, or an `on`/`off`/`toggle` word, which is the console's own vocabulary for the same
+## field (`setting light on`). Anything else leaves the field alone.
+static func _mod_setting_bool(value: Variant, current: bool) -> bool:
+	if value is bool:
+		return value
+	if value is String:
+		var word: String = str(value)
+		if word == "on" or word == "off" or word == "toggle":
+			return Settings.toggle_word(current, word)
+	return current
 
 ## This frame's controls, in the form `PlayerGoat.step` wants. `sceneFrame` reads
 ## its keys the same way and combines them the same way: a held axis, a gait chosen

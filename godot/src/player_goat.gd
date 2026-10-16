@@ -598,6 +598,18 @@ func restart() -> void:
 	_fling_flight = 0.0
 	trip_stamp = 0
 
+## `goats.player.teleport(x, z)` (`APIv1.md` section 4.5). A *position*, not a move: the next
+## `step` places the goat from here, so the simulation's own rules -- the ground under it, the
+## water it is standing in -- apply from the new point rather than being bypassed. `mods.js`'s own
+## write is these two assignments.
+func teleport(x: float, z: float) -> void:
+	px = x
+	pz = z
+
+## `goats.player.face(heading)`, in radians -- the goat's heading, which the next `step` turns from.
+func face(heading: float) -> void:
+	yaw = heading
+
 ## The goat's own weather factor, which the HUD's `slowed` term is read from (`weather.js`
 ## `updateWeatherEffects` reads `weatherSpeed`). It is this frame's, settled in `step`, and it
 ## belongs to the goat because the belly takes the edge off the rain and nothing else knows the

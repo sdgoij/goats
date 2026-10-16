@@ -5,9 +5,10 @@
 # GDExtension over `crates/mods` and `crates/plugin`, and the embedded engine -- discovers,
 # validates, orders, runs and drives; the *scene* owns the table the UI draws, the per-frame hooks
 # a mod registered, the console's first refusal, and the one thing only it can know: whether there
-# is a session. What the port does not have yet of `mods.js`'s other half is the tuning *merge* (a
-# write), reload/watch and the asset-to-engine path. Those are stage 8 (`PORT.md` section 6, and
-# section 10's third item); the enable/disable toggle (`set_enabled`, with its session guard) is in.
+# is a session. What the port does not have yet of `mods.js`'s other half is the tuning *merge*, reload/watch
+# and the asset-to-engine path. Those are stage 8 (`PORT.md` section 6, and section 10's third
+# item); the writes the *scene* owns, and the enable/disable toggle (`set_enabled`, with its session
+# guard), are in.
 #
 # The **readable surface** is this file's other job now (`APIv1.md` section 4.5-4.12): every frame
 # the scene hands the host one JSON snapshot of the live world -- the goat, the camera, the

@@ -465,6 +465,50 @@ func fling_at(index: int, vx: float, vz: float, vy: float) -> void:
 	if index >= 0 and index < _bots.size():
 		start_fling(_bots[index], vx, vz, vy)
 
+## The four writes `goats.bots.get(i)` offers (`APIv1.md` section 4.8). They are `bots.js`'s own
+## four, field for field: `zoomies` is a spell of sprint (`zoom`, and the mode that spends it),
+## `startle` is the same run with the short decision timer a fright leaves, and `teleport`/`face`
+## are a position and a heading. They act on the **live** bot, because that is what the handle
+## names -- a client's herd is a mirror, so a write there is the reference's own too: it lands, and
+## the next snapshot overwrites it. `false` for an index the herd has not got, which is the same
+## case `goats.bots.get(i)` answers `null` for.
+func zoomies_at(index: int, seconds: float) -> bool:
+	var bot: Bot = _bot_at(index)
+	if bot == null:
+		return false
+	bot.zoom = seconds
+	bot.mode = "run"
+	return true
+
+func startle_at(index: int) -> bool:
+	var bot: Bot = _bot_at(index)
+	if bot == null:
+		return false
+	bot.mode = "run"
+	bot.timer = 0.2
+	return true
+
+func teleport_at(index: int, x: float, z: float) -> bool:
+	var bot: Bot = _bot_at(index)
+	if bot == null:
+		return false
+	bot.x = x
+	bot.z = z
+	return true
+
+func face_at(index: int, yaw: float) -> bool:
+	var bot: Bot = _bot_at(index)
+	if bot == null:
+		return false
+	bot.yaw = yaw
+	return true
+
+## The bot at `index`, or `null` -- the shared guard the four writes above and their reader use.
+func _bot_at(index: int) -> Bot:
+	if index < 0 or index >= _bots.size():
+		return null
+	return _bots[index]
+
 ## Take a bang's damage and, if the bot survives it, its throw. `bots.js` `blast`'s herd
 ## half, which is the one place a bot differs from the player: the same curve off the same
 ## radius, and **not** the player's `healthFloor`, which is the promise that a mine cannot

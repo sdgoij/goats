@@ -78,24 +78,25 @@ if (typeof globalThis.goats === "undefined") {
             return value !== null && typeof value === "object" ? value : {};
         }
 
-        // A write the port cannot perform. The port's simulation is GDScript and the only
-        // way to change it is a callback the scene has not built yet, so a write is refused
-        // *loudly* rather than silently ignored -- `APIv1.md` section 7's isolation logs it
-        // with the mod's id and the frame goes on, which is a failure a mod author can see
-        // instead of a goat that quietly never teleports. The readable half of the same
-        // member (if any) still works.
+        // A write the port has not got. `APIv1.md` section 7's isolation logs it with the mod's id
+        // and the frame goes on, which is a failure a mod author can see instead of a member that
+        // quietly did nothing. Three families are still here, and each for a reason of its own:
+        // `assets.override`/`add` are *pre-freeze* writes and this client has no freeze to precede;
+        // `tuning.set`/`merge` need the constants lifted into a mutable tree, which the scene still
+        // holds as constants; and `explosions.armed` owns a field the scene derives from the seed.
+        // The readable half of the same member (if any) still works.
         function refuse(member) {
             return function () {
                 throw new Error("goats." + member + ": this client has no write path to " +
-                    "the scene yet; the readable surface is in and the writes are not");
+                    "the scene for that member yet");
             };
         }
 
         /**
-         * A member that is a *question* rather than a value: `terrainHeight` today, and the
-         * writes when they land. The scene's own `Callable` answers, through the same
-         * `(name, args)` shape `__goatsDraw`'s records use -- `{"ok": ...}` or
-         * `{"err": "..."}`, which this turns into a value or a thrown error.
+         * A member that is a *question* rather than a value: `terrainHeight`, the devices, a sound,
+         * and now every write. The scene's own `Callable` answers, through the same `(name, args)`
+         * shape `__goatsDraw`'s records use -- `{"ok": ...}` or `{"err": "..."}`, which this turns
+         * into a value or a thrown error.
          */
         function ask(name, args) {
             let answer = null;
@@ -115,8 +116,8 @@ if (typeof globalThis.goats === "undefined") {
         // its own reason: `list()` is the one read a mod calls in a loop, and a handle is an
         // object and four closures, so rebuilding one per bot per call is allocation the
         // frame does not need. Here the numbers are refreshed from the frame's snapshot on
-        // every read; the verbs are refusals, because a client mirrors the herd rather than
-        // owning it.
+        // every read, and the four verbs *cross* -- they act on the live bot on the other side
+        // of the seam, which is where the herd actually is.
         const BOT_LIST = [];
         const BOT_VIEW = [];
 
@@ -125,10 +126,20 @@ if (typeof globalThis.goats === "undefined") {
             if (handle === undefined) {
                 handle = BOT_VIEW[index] = {
                     id: index, x: 0, z: 0, yaw: 0, mode: "idle", satiety: 0,
-                    zoomies: refuse("bots.get(" + index + ").zoomies"),
-                    startle: refuse("bots.get(" + index + ").startle"),
-                    teleport: refuse("bots.get(" + index + ").teleport"),
-                    face: refuse("bots.get(" + index + ").face"),
+                    // The index goes with the verb, because one handle per position is what the
+                    // loop keeps -- and `zoomies`'s own default of 3 seconds is `mods.js`'s.
+                    zoomies: function (seconds) {
+                        ask("bots.zoomies", [index, seconds === undefined ? 3 : Number(seconds)]);
+                    },
+                    startle: function () {
+                        ask("bots.startle", [index]);
+                    },
+                    teleport: function (x, z) {
+                        ask("bots.teleport", [index, Number(x), Number(z)]);
+                    },
+                    face: function (yaw) {
+                        ask("bots.face", [index, Number(yaw)]);
+                    },
                 };
             }
             return handle;
@@ -728,15 +739,13 @@ if (typeof globalThis.goats === "undefined") {
                     return __goatsWorldTime();
                 },
                 /**
-                 * `worldTime` is the core's, so a scene with no session runs it
-                 * and a client follows the host. The port has no write path to
-                 * the clock yet, and the API's own answer for a call that could
-                 * not take effect is `false` -- which is what a client in a
-                 * session gets here, so a mod that guards on it behaves the same
-                 * either way (`APIv1.md` section 4.7).
+                 * `worldTime` is the core's, so a scene with no session runs it and a client
+                 * follows the host. The write *crosses*, and it answers rather than throwing
+                 * (`APIv1.md` section 4.7): the scene says `false` where it does not own the
+                 * clock, so a mod that guards on it behaves the same on both sides.
                  */
-                setTime: function () {
-                    return false;
+                setTime: function (hours) {
+                    return ask("world.setTime", [Number(hours)]);
                 },
                 /** The weather machine's own values this frame. */
                 weather: function () {
@@ -749,9 +758,9 @@ if (typeof globalThis.goats === "undefined") {
                         speed: w.speed,
                     };
                 },
-                /** `setWeather`, refused the same way and for the same reason `setTime` is. */
-                setWeather: function () {
-                    return false;
+                /** `setWeather`, answered the same way `setTime` is and for the same reason. */
+                setWeather: function (kind) {
+                    return ask("world.setWeather", [String(kind)]);
                 },
                 /** The wind the frame derived: the gust's direction and its sway share. */
                 wind: function () {
@@ -891,8 +900,9 @@ if (typeof globalThis.goats === "undefined") {
             world: worldFor(null),
 
             /**
-             * The player's goat (`APIv1.md` section 4.5). `state()` is a snapshot of
-             * the frame the core pushed; every write is refused (see `refuse`).
+             * The player's goat (`APIv1.md` section 4.5). `state()` is a snapshot of the frame the
+             * core pushed; the writes cross, and each is the scene's own rule -- a position, a
+             * heading, a stat, a mode, a new life.
              */
             player: {
                 state: function () {
@@ -904,8 +914,12 @@ if (typeof globalThis.goats === "undefined") {
                         phase: p.phase, speed: p.speed, clip: p.clip,
                     };
                 },
-                teleport: refuse("player.teleport"),
-                face: refuse("player.face"),
+                teleport: function (x, z) {
+                    ask("player.teleport", [Number(x), Number(z)]);
+                },
+                face: function (yaw) {
+                    ask("player.face", [Number(yaw)]);
+                },
                 // The two the API lets a mod *give* rather than set (`APIv1.md` section 4.5): a
                 // bird perched on the goat's back is the caller they were added for, and the
                 // scene clamps and answers the new value. They cross, for the reason every write
@@ -916,32 +930,50 @@ if (typeof globalThis.goats === "undefined") {
                 giveHealth: function (amount) {
                     return ask("player.giveHealth", [Number(amount)]);
                 },
-                setMode: refuse("player.setMode"),
-                restart: refuse("player.restart"),
+                // Only the modes a script may enter, and the scene answers whether it took --
+                // `jump`/`dead` are the simulation's (`APIv1.md` section 4.5).
+                setMode: function (next) {
+                    return ask("player.setMode", [String(next)]);
+                },
+                restart: function () {
+                    ask("player.restart", []);
+                },
             },
 
             /**
              * The orbit camera (`APIv1.md` section 4.6). Cosmetic, and never part of the
-             * compatibility set, which is why only the read is in.
+             * compatibility set -- which is why `set` is the one write with no session gate.
              */
             camera: {
                 get: function () {
                     const c = group("camera");
                     return { yaw: c.yaw, pitch: c.pitch, dist: c.dist };
                 },
-                set: refuse("camera.set"),
+                // Partial, as the API documents: the scene merges over its own three numbers and
+                // clamps the pitch and the distance, so a key that is not a number is "not given".
+                set: function (options) {
+                    if (options === null || typeof options !== "object") return;
+                    ask("camera.set", [
+                        typeof options.yaw === "number" ? Number(options.yaw) : null,
+                        typeof options.pitch === "number" ? Number(options.pitch) : null,
+                        typeof options.dist === "number" ? Number(options.dist) : null,
+                    ]);
+                },
             },
 
             /**
-             * The herd (`APIv1.md` section 4.8). On a client the herd is the host's and
-             * these mirror the last snapshot; offline the scene simulates it. Either way
-             * the verbs are refused here, because a bot's state is the simulation's.
+             * The herd (`APIv1.md` section 4.8). On a client the herd is the host's and these
+             * mirror the last snapshot; offline the scene simulates it. Either way the writes
+             * cross to the live bots -- the reference's own shape, where a client's write lands
+             * and the next snapshot overwrites it.
              */
             bots: {
                 count: function () {
                     return botEntries().length;
                 },
-                setCount: refuse("bots.setCount"),
+                setCount: function (n) {
+                    return ask("bots.setCount", [Number(n)]);
+                },
                 list: function () {
                     const entries = botEntries();
                     const n = entries.length;
@@ -961,7 +993,8 @@ if (typeof globalThis.goats === "undefined") {
             /**
              * The settings the menu and the console both edit (`APIv1.md` section 4.9),
              * read back off the frame's own `Settings` object. `herd` is the alias for
-             * `bots.setCount` the API names, and reads the herd's size.
+             * `bots.setCount` the API names, and reads the herd's size -- and the write goes
+             * through the scene's own `applySettings`, so a slider and a mod are one path.
              */
             settings: {
                 get: function () {
@@ -972,7 +1005,17 @@ if (typeof globalThis.goats === "undefined") {
                         herd: s.herd,
                     };
                 },
-                set: refuse("settings.set"),
+                // Partial, and the scene ignores a value that is not its field's type rather than
+                // becoming a script error. An absent key is not a write, which is the API's word.
+                set: function (options) {
+                    if (options === null || typeof options !== "object") return;
+                    const keys = ["bgm", "sfx", "light", "shadow", "sky", "cloud", "fullscreen", "herd"];
+                    const wanted = {};
+                    for (let i = 0; i < keys.length; i++) {
+                        if (options[keys[i]] !== undefined) wanted[keys[i]] = options[keys[i]];
+                    }
+                    ask("settings.set", [wanted]);
+                },
             },
 
             /**
@@ -1044,8 +1087,9 @@ if (typeof globalThis.goats === "undefined") {
              * bang: `kind` is the core's own `"mine"` or `"trap"`, so the scene runs its own path --
              * the crater, the damage, the flash, the knock, the sound, the `"blast"` event and the
              * report -- which is what makes a world mod's bang the host's and visible to every peer.
-             * `armed` is the group's one write and is refused with the rest; neither example calls
-             * it, and the field it would take away is the scene's own.
+             * `armed` is the group's one write and is still refused: the field it would take away
+             * is derived in the scene from the seed, and a per-mod "my devices rule" flag belongs
+             * with the scene's own derivation rather than in the facade.
              */
             explosions: {
                 traps: function (x, z, range) {
@@ -1098,7 +1142,11 @@ if (typeof globalThis.goats === "undefined") {
                     const roster = group("net").roster;
                     return Array.isArray(roster) ? roster.slice() : [];
                 },
-                say: refuse("net.say"),
+                // Reported by *value* rather than by throwing: the console says nothing for an
+                // empty reply, and the two failures are strings a caller can read (`netSay`).
+                say: function (text) {
+                    return ask("net.say", [String(text)]);
+                },
             },
 
             /**

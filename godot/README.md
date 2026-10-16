@@ -541,13 +541,17 @@ seed through the same `sceneUseSeed` moment the scene derives its own four at. I
 travels on the **mods datagram** -- a second datagram of the mods' own, so a greedy mod loses only
 its own state -- and a joiner *adopts* the streams and takes the rows each extension published
 through `world.extend`, so the flock a host simulates is the flock a joiner goes on computing rather
-than a second one. The **writes are not in
-yet** —
-`goats.world.setTime` and
-`setWeather` answer `false`, which is what the API documents for a client that does not own the
-world, and every other write throws an error naming the member, so a mod that tries one fails
-loudly in its own hook rather than doing nothing quietly. The `tuning` tree is a subset of the
-API's: the leaves this build has answer, and a path it has not got throws.
+than a second one. **The writes are in** for every group the scene owns (`APIv1.md` §4.5–§4.12): a
+mod teleports and turns the goat, sets its mode and restarts it; moves the camera (partial, with
+the API's own clamps); sets any setting -- `herd` included -- through the scene's own
+`applySettings`; drives the clock and the weather (local-only, and they answer `false` for a client,
+which is what the API documents); says a chat line; and resizes the herd and works its four bot
+handles. Each crosses the same `Callable` seam `terrainHeight` does -- `main.gd`'s `_mod_call` -- so
+a slider in the menu, a line in the console and a mod's call are one code path. Three families are
+still not there, and each throws an error naming the member rather than doing nothing quietly:
+`assets.override`/`add` (a *pre-freeze* pair, and this client has no freeze to precede),
+`tuning.set`/`merge` (the tree is a subset of the API's and the leaves this build has answer, but
+it is still the scene's *constants* rather than something mutable), and `explosions.armed`.
 
 To play with somebody, point it at a host:
 
