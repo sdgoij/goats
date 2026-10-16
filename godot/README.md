@@ -24,6 +24,7 @@ plan.
 | `src/menu.gd` | The menu, drawn: `menu.js`'s four screens — main, settings, mods, keymap — as a layout a gate can hold, with the Escape walk (M25) |
 | `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
 | `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws and the first refusal a mod's console verb gets (stage 1) |
+| `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
 | `src/herd.gd` | The mirrored herd: one real goat per bot the host simulates, standing on the scene's ground |
 | `src/peers.gd` | The mirrored peers: one real goat per *player* the server relays, eased from their snapshots (M21) |
 | `src/bots.gd` | The herd's own AI: `bots.js`'s temperaments, grazing, zoomies, dozing, fleece and push-apart — the scene simulating its own goats when there is no host to mirror |
@@ -52,7 +53,8 @@ plan.
 see Godot. It exposes `NetBridge` (the networking bridge over `session` and
 `proto`: `host`, `join`, `say`, `consume`, `pose`, `world`, `blast`, `leave`,
 `poll_events`, `shutdown`) and `ModHost`
-(the embedded Slag engine plus the `goats`/`rl` facade a mod sees; the facade is
+(the embedded Slag engine plus the `goats` facade a mod sees, including
+`goats.draw`; the facade is
 `crates/godot/src/prelude.js`, and the loader it drives is the `crates/mods`
 crate; `mods.gd` in the scene is its only client). It is a workspace member rather
 than a project of its own so it inherits
@@ -422,8 +424,14 @@ console print the same table and the world-mod digest a host's refusal names.
 that throws costs its own row rather than the load — of the repository's five, four load and
 `birds` fails, because it reads a surface member the port has not built yet (`goats.mod`). A
 mod's `console.log` reaches the console and a mod's registered verb reaches the console first,
-so `hello world` answers the example's `hello`. What a mod *draws* through `rl` is counted, not
-painted: rendering it is the drawing shim proper, which is stage 8.
+so `hello world` answers the example's `hello`.
+
+**A mod draws through `goats.draw`, and the port paints it** (`APIv1.md` §4.18): the example's
+HUD clock is a `goats.draw.text` line, which becomes a record the extension queues and
+`mod_hud.gd` paints over the game's HUD. That is deliberately the API's own surface rather than
+the engine's — there is no `rl` in this build at all, because `rl` is raylib, and a mod written
+against it is a mod written against one client. The 2D half is what is in; a mod that draws a
+*model* in the world needs `goats.gfx`, which is the next group.
 
 To play with somebody, point it at a host:
 

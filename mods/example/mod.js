@@ -4,7 +4,10 @@
 //
 // It shows four things:
 //   * `goats.command` -- a new console verb, `hello`.
-//   * `goats.on("hud")` -- drawing over the HUD with the engine's `rl` surface.
+//   * `goats.on("hud")` -- drawing over the HUD with the API's own `goats.draw`
+//     surface (APIv1.md §4.18), which every client implements for itself. It is
+//     deliberately *not* the engine's `rl`: that is raylib, and a mod that reads
+//     it would only run on the raylib client.
 //   * a declared `assetAdds` entry (mod.json) -- bleat.wav and a scream join
 //     `sfx.bleat`, so the game's own bleats are still there and these two are on
 //     the end. (Use `assets` instead to *replace* a slot's list, or
@@ -20,11 +23,12 @@ goats.command("hello", function (parts) {
 });
 
 // The HUD hook receives the screen size. `goats.world.time()` is the in-game
-// clock in hours.
+// clock in hours, and `goats.draw` is the API's own drawing surface -- pixels of
+// the screen the hook was handed, `y` at the top of the line.
 goats.on("hud", function (screen) {
     const t = goats.world.time();
     const hh = String(Math.floor(t) % 24).padStart(2, "0");
     const mm = String(Math.floor((t - Math.floor(t)) * 60)).padStart(2, "0");
-    rl.drawText("example mod  " + hh + ":" + mm, screen.width - 380, 16, 20,
-        rl.color(255, 235, 160, 220));
+    goats.draw.text("example mod  " + hh + ":" + mm, screen.width - 380, 16, 20,
+        goats.draw.color(255, 235, 160, 220));
 });

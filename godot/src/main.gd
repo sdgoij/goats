@@ -177,6 +177,11 @@ var mods := Mods.new()
 ## against the devices -- the same reason the meadow's own search takes a filter.
 var _eat_trap := Callable()
 
+## What a mod draws goes here (`mod_hud.gd`): the API's `goats.draw` surface, painted. It is a
+## `Control` on the UI layer and not a 3D node, because the only pass a mod draws into is the
+## screen-space `hud` (`APIv1.md` section 4.18).
+var mod_hud := ModHud.new()
+
 ## Whether the scene is in a session as a *client*. It is what the herd mirror hangs on, and
 ## its window is the wire's. A client simulates no world: the host owns the bots, the weather and
 ## the meadow, and this scene adopts the snapshot instead (`net.js` `netWorldLocal`).
@@ -400,7 +405,12 @@ func _ready() -> void:
 	# the same reason the console and the menu are. The Mods screen draws the host's table
 	# (`mods_list`), which is the half of stage 1 the UI can see; the enable/disable toggle is
 	# `modSetEnabled`, which needs the session intents and is stage 8's (`menu.gd` says so).
+	#
+	# `mod_hud` goes on the UI layer *before* the console and the menu, so it paints over the
+	# game's HUD and under the overlays -- which is where a mod's `hud` drawing belongs.
+	$Ui.add_child(mod_hud)
 	mods.console = console
+	mods.surface = mod_hud
 	add_child(mods)
 	menu.mods_list = Callable(mods, "mod_table")
 

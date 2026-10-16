@@ -17,11 +17,12 @@
 #     `ModHost::mods_json` therefore merges `failed`/`error` into the loader's table, which is
 #     `mods.js`'s `sceneModResult` folded into `sceneMods`. Without it the Mods screen would draw
 #     five healthy rows and the game would be lying about four of them.
-#   * **A mod's `console.log` is a console line, and its draw is not.** A line the host queued is
-#     either the mod talking or a call it made through the engine's `rl` -- and the `rl` half is
-#     the Godot-backed drawing shim, whose *first* member (`drawText`) is queued as text today.
-#     Printing that would be one console line per draw per frame, so this counts the draws and
-#     renders none: rendering them is the shim proper (stage 8), and `_drain` says so.
+#   * **A mod's `console.log` is a console line, and its draw is a record.** The two arrive on
+#     different seams (`ModHost::poll_lines` and `ModHost::poll_draws`) because they are different
+#     things: a log is text for the player and a draw is a primitive for the renderer, and keeping
+#     them apart is what lets a mod's HUD be *painted* (`mod_hud.gd`) instead of printed as one
+#     console line per draw per frame. `goats.draw` is the API's own surface (`APIv1.md` section
+#     4.18), not the engine's -- the port has no raylib and says so.
 #   * **The search is the client's**, because a player who installs a mod into the directory the
 #     raylib client reads must find it loaded here too (`resolve_dir`).
 #
@@ -45,9 +46,12 @@ var dir := ""
 var table: Array = []
 ## The host's one-line report of the whole load, for the console. Empty until `load_all` has run.
 var report := ""
-## How many draws the mods have made through the engine's `rl`. Counted rather than printed (see
-## the header): it is the evidence the HUD hook ran, and the frame's own HUD is stage 8's.
+## How many draws the mods have made through `goats.draw`. The surface counts them as it paints
+## them, and this is the total -- the evidence a gate without a renderer can still check.
 var draws := 0
+## The control that paints them (`mod_hud.gd`), set by the frame. Without one the draws are
+## still drained and counted, which is what a build with no `Ui` layer would see.
+var surface: ModHud
 
 ## Instantiate the runtime and load whatever `mods/` holds. Discovery, every entry, and the table.
 ##
@@ -85,6 +89,13 @@ func frame(hours: float, screen: Vector2, hud: bool) -> void:
 	host.call("set_world_time", hours)
 	if hud:
 		host.call("emit_hud", screen.x, screen.y)
+	# The draws the hooks made, handed to the control that paints them. Drained whether or not
+	# the HUD is up -- the hook only fires when it is, so a frame with no HUD has nothing here --
+	# and counted either way, because a gate with no renderer still wants to know.
+	var records: PackedStringArray = host.call("poll_draws")
+	draws += records.size()
+	if surface != null:
+		surface.adopt(records)
 	for line in host.call("poll_lines"):
 		_drain(String(line))
 
@@ -131,13 +142,11 @@ static func parse_table(json: Variant) -> Array:
 		return parsed
 	return []
 
-## Route one queued line. `log ` is the mod talking; anything else is a draw it made through the
-## engine's `rl`, which is counted rather than printed (see the header).
+## Route one logged line. `log ` is the host's own marker for `console.log`, not part of what the
+## mod said, so it comes off. A mod's *draws* do not come through here at all: they are records
+## (`ModHost::poll_draws`) and the surface paints them.
 func _drain(line: String) -> void:
-	if line.begins_with("log "):
-		_line(line.substr(4))
-		return
-	draws += 1
+	_line(line.substr(4) if line.begins_with("log ") else line)
 
 ## One line to the console's own stream, if there is a console yet.
 func _line(text: String) -> void:

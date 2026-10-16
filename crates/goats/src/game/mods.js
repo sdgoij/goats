@@ -1198,6 +1198,10 @@ function goatsBegin(id) {
         explosions: modExplosionsFor(id),
         water: goatsWater,
         entities: modEntitiesFor(id),
+        // The API's own drawing surface. It is on the handle as well as on the base object
+        // because a mod's `goats` is this literal -- `goatsBegin` builds one rather than
+        // `Object.create`-ing the base -- so a member missing here is a member a mod cannot see.
+        draw: goatsDraw,
     };
     modInstances.set(id, handle);
     meta.enabled = true;
@@ -1255,6 +1259,62 @@ function modRun(text) {
     }
 }
 
+// ---- the drawing surface (APIv1.md section 4.18) ----------------------------
+//
+// A mod draws through this and not through the engine's own `rl`. The split is the
+// point: `rl` *is* raylib, so a mod that reads it is bound to one client, while this
+// is the API's own immediate-mode surface -- the raylib client implements it over
+// `rl` (right here), the Godot port implements it over its renderer, and a mod does
+// not know or care which it is on. `PORT.md` section 6 is the record of that change.
+//
+// Three conventions, and they are the contract rather than this client's habits:
+//
+//   * A **colour** is an opaque value from `color()` or one of the named constants.
+//     Never build one by hand: a platform is free to represent it its own way.
+//   * **`y` is the top of a line of text**, not its baseline, and every length is a
+//     pixel of the surface `screen()` reports.
+//   * Draw calls are valid **inside a hook** -- `"hud"` is the screen-space pass --
+//     and dropped outside one, because there is no frame to draw into.
+const goatsDraw = {
+    color: function (r, g, b, a) {
+        return rl.color(r, g, b, a === undefined ? 255 : a);
+    },
+    WHITE: rl.color(255, 255, 255, 255),
+    RAYWHITE: rl.color(245, 245, 245, 255),
+    BLACK: rl.color(0, 0, 0, 255),
+    RED: rl.color(230, 41, 55, 255),
+    GREEN: rl.color(0, 228, 48, 255),
+    BLUE: rl.color(0, 121, 241, 255),
+    YELLOW: rl.color(253, 249, 0, 255),
+    ORANGE: rl.color(255, 161, 0, 255),
+    GREY: rl.color(130, 130, 130, 255),
+    DARKGRAY: rl.color(80, 80, 80, 255),
+
+    /** The surface a draw lands on, in pixels: `{ width, height }`. */
+    screen: function () {
+        return { width: rl.getScreenWidth(), height: rl.getScreenHeight() };
+    },
+
+    text: function (text, x, y, size, color) {
+        rl.drawText(String(text), x, y, size, color);
+    },
+    rect: function (x, y, w, h, color) {
+        rl.drawRectangle(x, y, w, h, color);
+    },
+    rectLines: function (x, y, w, h, color) {
+        rl.drawRectangleLines(x, y, w, h, color);
+    },
+    line: function (x1, y1, x2, y2, color) {
+        rl.drawLine(x1, y1, x2, y2, color);
+    },
+    circle: function (cx, cy, radius, color) {
+        rl.drawCircle(cx, cy, radius, color);
+    },
+    circleLines: function (cx, cy, radius, color) {
+        rl.drawCircleLines(cx, cy, radius, color);
+    },
+};
+
 // The global. The host wraps an entry with `goats.begin(id)`, so a mod's own
 // `goats` is the per-mod handle; this base object is for the console and the
 // host.
@@ -1283,6 +1343,7 @@ const goats = {
     explosions: modExplosionsFor("-"),
     water: goatsWater,
     entities: modEntitiesFor("-"),
+    draw: goatsDraw,
 };
 
 // ---- the `mod` console verb ----------------------------------------------

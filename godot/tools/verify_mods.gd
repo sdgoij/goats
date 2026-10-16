@@ -66,20 +66,33 @@ func _initialize() -> void:
 	if missing != "":
 		failures.append("an unknown command should answer '', got '%s'" % missing)
 
-	# 6. The HUD hook reads the clock the core pushed and draws through `rl`,
-	#    which is the Godot-backed shim. The mod formats 14.5 as "14:30".
+	# 6. The HUD hook reads the clock the core pushed and draws through `goats.draw`
+	#    (`APIv1.md` section 4.18), which the extension queues as a *record* for the scene's
+	#    `ModHud` to paint. The mod formats 14.5 as "14:30".
 	host.call("set_world_time", 14.5)
 	host.call("emit_hud", 1280.0, 720.0)
-	var drawn: PackedStringArray = host.call("poll_lines")
-	print("the HUD hook produced ", drawn.size(), " line(s):")
+	var drawn: PackedStringArray = host.call("poll_draws")
+	print("the HUD hook produced ", drawn.size(), " draw(s):")
 	for line in drawn:
 		print("  ", line)
 	var saw_clock := false
 	for line in drawn:
-		if line.contains("drawText") and line.contains("example mod") and line.contains("14:30"):
-			saw_clock = true
+		var record: Variant = JSON.parse_string(String(line))
+		if not (record is Dictionary):
+			failures.append("a draw record is not JSON: " + String(line))
+			continue
+		if String(record.get("k", "")) != "text" \
+				or not String(record.get("s", "")).contains("example mod") \
+				or not String(record.get("s", "")).contains("14:30"):
+			continue
+		saw_clock = true
+		# The colour is the API's own `{r, g, b, a}` in 0..255 -- opaque data a platform
+		# is free to represent its own way, which is what lets one mod draw on both ends.
+		var col: Variant = record.get("col", null)
+		if not (col is Dictionary) or int(col.get("r", 0)) != 255:
+			failures.append("the draw's colour did not cross as the API's own shape")
 	if not saw_clock:
-		failures.append("the HUD hook did not draw the clock through rl.drawText")
+		failures.append("the HUD hook did not draw the clock through goats.draw")
 
 	# 7. A mod's assets are addressed by an opaque name, never a path
 	#    (`APIv1.md` section 0). The loader's names look like `mod:<id>:<file>`.

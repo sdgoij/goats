@@ -1,16 +1,21 @@
-// The `goats` handle and the engine's `rl` surface, as a mod sees them.
+// The `goats` handle, as a mod sees it.
 //
 // This is the JavaScript facade the extension evaluates once, before any mod
 // entry runs. It is deliberately thin: everything that needs to cross into
 // native code or into GDScript is an `__`-prefixed capability the Rust side
-// registers (`__goatsWorldTime`, `__rlDrawText`), and the rest is the shape a
-// mod expects from `APIv1.md` section 4.
+// registers (`__goatsWorldTime`, `__goatsDraw`, `__goatsScreenW`), and the rest
+// is the shape a mod expects from `APIv1.md` section 4.
 //
 // Splitting it this way is the bridge design from `godot/PORT.md` section 6:
 // the registries are a JS layer (as they are today, in the raylib client's
 // `mods.js`), while reads of the world and draws through the engine are native
 // calls -- and each of those is a place the design says to push a value or
 // register a callback rather than reimplement the world in JavaScript.
+//
+// **No engine library is exposed here.** A mod draws through `goats.draw`
+// (`APIv1.md` section 4.18) and never through `rl`: `rl` is raylib, so a mod that
+// read it would be bound to the raylib client, and the port would have to
+// emulate a C library to run it. What the port implements is the API's surface.
 
 // The registry keeps one state per mod rather than one shared bag, because that
 // is what `goats.begin(id)` means: `crates/mods` wraps every entry in
@@ -70,6 +75,63 @@ if (typeof globalThis.goats === "undefined") {
                 },
             },
 
+            /**
+             * The API's own drawing surface (`APIv1.md` section 4.18). A mod draws
+             * through this and never through an engine library, so one mod draws on
+             * every client: here each call is queued as a record and the frame's
+             * `ModHud` control paints it, while the raylib client implements the same
+             * members over `rl` (`PORT.md` section 6).
+             *
+             * A colour is an opaque value from `color()` or a named constant; a length
+             * is a pixel of the surface `screen()` reports; `y` is the top of a line of
+             * text. A draw outside a hook is dropped -- there is no frame to draw into.
+             */
+            draw: (function () {
+                function call(record) {
+                    __goatsDraw(JSON.stringify(record));
+                }
+                function color(r, g, b, a) {
+                    return { r: r, g: g, b: b, a: a === undefined ? 255 : a };
+                }
+                return {
+                    color: color,
+                    WHITE: color(255, 255, 255),
+                    RAYWHITE: color(245, 245, 245),
+                    BLACK: color(0, 0, 0),
+                    RED: color(230, 41, 55),
+                    GREEN: color(0, 228, 48),
+                    BLUE: color(0, 121, 241),
+                    YELLOW: color(253, 249, 0),
+                    ORANGE: color(255, 161, 0),
+                    GREY: color(130, 130, 130),
+                    DARKGRAY: color(80, 80, 80),
+
+                    /** The surface a draw lands on, in pixels: `{ width, height }`. */
+                    screen: function () {
+                        return { width: __goatsScreenW(), height: __goatsScreenH() };
+                    },
+
+                    text: function (text, x, y, size, col) {
+                        call({ k: "text", s: String(text), x: x, y: y, size: size, col: col });
+                    },
+                    rect: function (x, y, w, h, col) {
+                        call({ k: "rect", x: x, y: y, w: w, h: h, col: col });
+                    },
+                    rectLines: function (x, y, w, h, col) {
+                        call({ k: "rectLines", x: x, y: y, w: w, h: h, col: col });
+                    },
+                    line: function (x1, y1, x2, y2, col) {
+                        call({ k: "line", x: x1, y: y1, x2: x2, y: y2, col: col });
+                    },
+                    circle: function (cx, cy, radius, col) {
+                        call({ k: "circle", x: cx, y: cy, r: radius, col: col });
+                    },
+                    circleLines: function (cx, cy, radius, col) {
+                        call({ k: "circleLines", x: cx, y: cy, r: radius, col: col });
+                    },
+                };
+            })(),
+
             // --- host entry points (the `__` prefix marks them as the host's) ---
 
             /** Every state, the idle one first, then the mods in load order. */
@@ -120,22 +182,11 @@ if (typeof globalThis.goats === "undefined") {
 }
 
 // ---------------------------------------------------------------------------
-// The engine surface. A mod may build geometry and textures with this, so the
-// extension hosts a Godot-backed shim (PORT.md section 6, decision 2). Only the
-// two members the example mod uses are here so far; the rest of the surface the
-// scene exposes arrives with the drawing shim proper.
+// There is deliberately **no `rl` here.** `rl` *is* raylib, so an `rl` in this
+// extension would be a Godot emulation of a C library -- a shim that grows a
+// member at a time and never quite is what a mod was written against, and a mod
+// that used it would be bound to one client. The API's own drawing surface above
+// is what a mod uses instead, and each client implements it for itself; the
+// raylib client's `rl` is its engine binding and stays its business
+// (`PORT.md` section 6).
 // ---------------------------------------------------------------------------
-
-if (typeof globalThis.rl === "undefined") {
-    globalThis.rl = {
-        // A colour is plain data, so it needs no crossing.
-        color: function (r, g, b, a) {
-            return { r: r, g: g, b: b, a: a === undefined ? 255 : a };
-        },
-
-        // Drawing is not: this lands in the extension, which queues it for Godot.
-        drawText: function (text, x, y, size, color) {
-            __rlDrawText(String(text), x, y, size, color.r, color.g, color.b, color.a);
-        },
-    };
-}

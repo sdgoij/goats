@@ -6,8 +6,8 @@
 //!
 //! * [`net::NetBridge`] — the networking bridge over `session` and `proto` (see
 //!   `godot/PORT.md` section 7).
-//! * [`ModHost`] — the mod runtime: Slag, plus the `goats`/`rl` facade a mod
-//!   sees (`godot/PORT.md` section 6).
+//! * [`ModHost`] — the mod runtime: Slag, plus the `goats` facade a mod sees,
+//!   including the API's own drawing surface (`godot/PORT.md` section 6).
 //!
 //! Why these are Rust and not GDScript: iroh, the packed `proto` wire, the mod
 //! loader and the JavaScript engine are all Rust, and the port's claim to
@@ -16,7 +16,7 @@
 //! The scene is GDScript (`godot/PORT.md` section 4): Godot owns the loop and
 //! the renderer, and JavaScript is kept for mods only.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
@@ -46,14 +46,16 @@ fn gstring(text: impl AsRef<str>) -> GString {
 // ModHost: the embedded JavaScript engine, for mods.
 // ---------------------------------------------------------------------------
 
-/// Lines the extension has produced for the Godot side to drain: log output and
-/// queued draw calls.
-///
-/// They are queued rather than signalled, because a mod's JavaScript runs inside
-/// a `Context` this node owns, and emitting a Godot signal from there would
-/// re-enter the node while it is borrowed. Queuing and draining is the same
-/// shape the raylib client already uses for the network bridge
-/// (`sceneNetEvent` / `sceneNetDrain`).
+/**
+ * Lines the extension has produced for the Godot side to drain: log output and
+ * queued draw calls.
+ *
+ * They are queued rather than signalled, because a mod's JavaScript runs inside
+ * a `Context` this node owns, and emitting a Godot signal from there would
+ * re-enter the node while it is borrowed. Queuing and draining is the same
+ * shape the raylib client already uses for the network bridge
+ * (`sceneNetEvent` / `sceneNetDrain`).
+ */
 type LineQueue = Rc<RefCell<Vec<String>>>;
 
 /// The engine and the facade object, built once on first use.
@@ -82,8 +84,17 @@ struct Mod {
 #[class(base=Node)]
 struct ModHost {
     base: Base<Node>,
-    /// Drained by [`ModHost::poll_lines`].
+    /// Log lines, drained by [`ModHost::poll_lines`].
     lines: LineQueue,
+    /// Draw records a mod's `goats.draw` calls produced since the last
+    /// [`ModHost::poll_draws`]: one JSON object per call, in the order they were
+    /// made, so the scene's `ModHud` paints them in that order.
+    draws: LineQueue,
+    /// The surface the last [`ModHost::emit_hud`] named, which `goats.draw.screen()`
+    /// reads back. The *scene* owns the viewport, so this is only the value it
+    /// handed in -- the same push-the-readable-values design `PORT.md` section 6
+    /// records for the clock.
+    screen: Rc<Cell<(f64, f64)>>,
     /// The clock the core pushes; a mod reads it through `goats.world.time()`.
     world_time: Rc<RefCell<f64>>,
     /// Built on first use so a node can be created before the engine is wanted.
@@ -111,6 +122,8 @@ impl INode for ModHost {
         Self {
             base,
             lines: LineQueue::default(),
+            draws: LineQueue::default(),
+            screen: Rc::new(Cell::new((0.0, 0.0))),
             world_time: Rc::new(RefCell::new(0.0)),
             module: None,
             outcomes: HashMap::new(),
@@ -293,9 +306,12 @@ impl ModHost {
     }
 
     /// Fire the `"hud"` hooks for one frame with the screen size. A mod draws
-    /// through `rl`, so the output arrives via [`ModHost::poll_lines`].
+    /// through `goats.draw`, so the output arrives via [`ModHost::poll_draws`].
     #[func]
     fn emit_hud(&mut self, width: f64, height: f64) -> GString {
+        // The surface `goats.draw.screen()` reports, set before the hooks run, so a
+        // hook that asks for it gets the frame it is drawing into.
+        self.screen.set((width, height));
         let args = [JsValue::number(width), JsValue::number(height)];
         match self.call_goats("__fireHud", &args) {
             Ok(_) => GString::from("ok"),
@@ -311,12 +327,25 @@ impl ModHost {
         *self.world_time.borrow_mut() = hours;
     }
 
-    /// Drain the queued lines: a mod's `console.log`, and its draw calls (which
-    /// the Godot side will draw once the shim is more than two members).
+    /// Drain the lines the mods logged since the last call: a mod's
+    /// `console.log`, which is what `goats.log` and a bare `console.log` both
+    /// reach. A mod's *drawing* is [`ModHost::poll_draws`] instead.
     #[func]
     fn poll_lines(&mut self) -> PackedStringArray {
         let mut out = PackedStringArray::new();
         for line in self.lines.borrow_mut().drain(..) {
+            out.push(&gstring(line));
+        }
+        out
+    }
+
+    /// Drain the draw calls the mods made since the last call, as JSON records in
+    /// the order they were made. The scene's `ModHud` control parses and paints
+    /// them, which is what makes `goats.draw` visible rather than merely counted.
+    #[func]
+    fn poll_draws(&mut self) -> PackedStringArray {
+        let mut out = PackedStringArray::new();
+        for line in self.draws.borrow_mut().drain(..) {
             out.push(&gstring(line));
         }
         out
@@ -365,33 +394,44 @@ impl ModHost {
             )
             .map_err(|e| e.to_string())?;
 
-        // `rl.drawText(...)`: queue the draw for Godot. This is the first member
-        // of the Godot-backed drawing shim.
-        let draws = self.lines.clone();
+        // `goats.draw.*`: queue one draw record for Godot to paint (`ModHud` in the
+        // scene). One capability for every primitive, and the record is JSON: the two
+        // sides agree on a *shape* rather than an argument list, so the shim can grow a
+        // primitive without a signature here. This is the API's own drawing surface
+        // rather than raylib's, which is the point of having one (`PORT.md` section 6).
+        let draws = self.draws.clone();
         context
             .register_fn(
-                "__rlDrawText",
-                8,
+                "__goatsDraw",
+                1,
                 Box::new(move |call| {
-                    let text = call
+                    let record = call
                         .arg(0)
-                        .and_then(|v| call.to_string(&v).ok())
+                        .and_then(|value| call.to_string(&value).ok())
                         .unwrap_or_default();
-                    let number = |index: usize| -> f64 {
-                        call.arg(index).and_then(|v| v.as_number()).unwrap_or(0.0)
-                    };
-                    draws.borrow_mut().push(format!(
-                        "drawText \"{text}\" at ({:.0}, {:.0}) size {:.0} rgba({:.0}, {:.0}, {:.0}, {:.0})",
-                        number(1),
-                        number(2),
-                        number(3),
-                        number(4),
-                        number(5),
-                        number(6),
-                        number(7),
-                    ));
+                    draws.borrow_mut().push(record);
                     Ok(JsValue::undefined())
                 }),
+            )
+            .map_err(|e| e.to_string())?;
+
+        // `goats.draw.screen()`: the surface the frame's own `emit_hud` named. Two
+        // values rather than one object, because the crossing is the cost and a
+        // `screen()` call is rare.
+        let screen_w = self.screen.clone();
+        context
+            .register_fn(
+                "__goatsScreenW",
+                0,
+                Box::new(move |_call| Ok(JsValue::number(screen_w.get().0))),
+            )
+            .map_err(|e| e.to_string())?;
+        let screen_h = self.screen.clone();
+        context
+            .register_fn(
+                "__goatsScreenH",
+                0,
+                Box::new(move |_call| Ok(JsValue::number(screen_h.get().1))),
             )
             .map_err(|e| e.to_string())?;
 

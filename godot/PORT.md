@@ -1025,11 +1025,25 @@ the list** (a label and a button per mod, the failed row saying `FAILED`, and `m
 found" gone); and that the vocabulary reaches the mods both ways -- the example's own `hello` verb
 answers through the console's dispatch, and `mod list` / `mod key` answer from the host's table.
 
-Two things the slice decided and did not hide. **A mod's draw is counted, not painted**: the `rl`
-shim's first member queues `drawText` as a line, and rendering it is the shim proper (stage 8), so
-the HUD hook runs and its draws are the gate's evidence rather than pixels. And **`hud` fires only
-while the HUD is up**, which is `sceneFrame`'s own gate -- `modEmit("hud", ...)` is inside the
-`uiScreen === "hud"` branch -- so a menu silences a mod's HUD hook exactly as it silences the game's.
+And the drawing is **the API's own surface, not the engine's** — which is a correction to this
+slice's first cut, and worth naming. That cut queued a mod's `rl.drawText` as a line and rendered
+none of it, which was wrong twice: `rl` *is* raylib, so a mod reading it is bound to one client, and
+a draw that is only *counted* is not a draw. `goats.draw` (`APIv1.md` section 4.18) is the surface
+now — the raylib client implements it over `rl`, the port implements it over Godot — and the port
+has **no `rl` at all**: a mod that reads it fails, clearly and in isolation. A `goats.draw` call
+becomes a JSON *record* the extension queues, and `mod_hud.gd` — a `Control` over the game's HUD and
+under the console — paints a frame's records in `_draw`, so a mod's HUD is on the screen rather than
+in the console. The gate holds both halves:
+
+```
+hud hook draws: 6
+surface: 1 command(s), 5 paint(s)
+```
+
+`hud` fires only while the HUD is up, which is `sceneFrame`'s own gate — `modEmit("hud", ...)` is
+inside the `uiScreen === "hud"` branch — so a menu silences a mod's HUD hook exactly as it silences
+the game's, and `ModHud`'s list *is* the frame, so a hook that stops drawing is cleared rather than
+left standing.
 
 The hook is also *isolated* now, in `prelude.js`: one that throws is caught and named on the mod's
 own line rather than taking the frame with it, which is the guarantee `PORT.md` section 4 states
@@ -1171,13 +1185,27 @@ instance of the push half; `goats.command` and `goats.on` are the first of the
 callbacks. This is a design task in its own right, not a port, and it should be
 scoped as one.
 
-**Decided: a JS mod keeps an engine drawing surface.** Today a mod gets both
-`goats` *and* the engine's `rl`, so it can build geometry and textures in JS.
-Godot has no raylib, so the extension hosts a Godot-backed drawing shim and
-`rl` survives as a facade over it — which is what keeps `birds` and `fatguy`
-working unchanged. `crates/godot/src/prelude.js` is where that facade begins,
-with `rl.drawText` forwarding to the extension and Godot drawing the result; the
-remaining members arrive with the shim proper.
+**Decided, and then re-decided: the API owns the drawing surface, not the engine.**
+The first plan was a Godot-backed `rl` facade — `rl` surviving in the port as a shim
+over Godot, which would have kept `birds` and `fatguy` working unchanged. That is the
+wrong shape: `rl` *is* raylib, so the shim is an emulation of a C library that grows a
+member at a time and never quite is what a mod was written against, and every member of
+it is a promise the port has to keep forever. What a mod should read is the *API*.
+
+So `goats.draw` (`APIv1.md` §4.18) is the drawing surface, and each client implements
+it: the raylib client over `rl`, the port over Godot. The port has **no `rl` at all** —
+a mod that reads it fails, clearly and in isolation, which is the honest answer. Only
+the 2D half exists so far (`screen`, `color`, the named colours and six primitives);
+3D and assets are `goats.gfx`, the next group, and until it lands `birds` and `fatguy`
+are raylib-client-only.
+
+On the Godot side the crossing is one capability and one control. `goats.draw.text(…)`
+becomes a JSON *record* the extension queues (`ModHost::__goatsDraw`, drained by
+`poll_draws`), and `godot/src/mod_hud.gd` — a `Control` on the UI layer, over the game's
+HUD and under the console — parses a frame's records and paints them in `_draw`. Records
+rather than an argument list, so a primitive can be added on both ends without changing
+a signature here; one record per call, so the paint order is the call order; and drained
+once a frame, so the drawing belongs to the frame the mod was called for.
 
 ## 7. Multiplayer: wire-compatible by construction
 
@@ -1232,7 +1260,7 @@ Sizes are judgement, not measurement.
 | # | Stage | Done when | Size |
 | --- | --- | --- | --- |
 | 0 | Scaffold | model + extension gates green — **done** | — |
-| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the tuning merge, reload/watch, the asset-to-engine path, the wasm path and the other 16 member groups remain (stage 8) | 2–3 |
+| 1 | Mod host in the extension | the repository's mods are discovered by `crates/mods` and the example loads, registers, runs and draws back — **done, and the *scene* drives it as of stage 1** (`mods.gd` + `verify_scene_mods.gd`: the `ModHost` node, the directory, the per-frame push, the console's first refusal and the Mods screen's list, with the failures named); the API's own drawing surface is in too (`goats.draw`, §4.18, painted by `mod_hud.gd`); the tuning merge, reload/watch, the asset-to-engine path, the wasm path, 3D/assets (`goats.gfx`) and the other 16 member groups remain (stage 8) | 2–3 |
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the mods and voice paths remain | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
@@ -1737,8 +1765,11 @@ payload field for field against `proto`'s structs and then takes it through `Net
 method that *is* the schema check (`godot/tools/verify_hosting.gd`, M26); and runs a host, a client
 and a third player through a published world and both directions of a bang over real iroh
 endpoints, requiring the relayed bang to reach the third player and **not** the reporter who
-already felt it (`godot/tools/verify_net.gd`, M26); and runs the *scene's* mod runtime -- the host's
+already felt it (`godot/tools/verify_net.gd`, M26); runs the *scene's* mod runtime — the host's
 table with the one mod whose entry threw named in it, the Mods screen's row-per-mod layout, and a
-mod's own verb answered through the console (`godot/tools/verify_scene_mods.gd`, stage 1). Every one
+mod's own verb answered through the console (`godot/tools/verify_scene_mods.gd`, stage 1); and
+carries a mod's `goats.draw` calls from JavaScript to a record, and a record to a painted control,
+which is the whole of the API's own drawing surface (`godot/tools/verify_mods.gd`'s draw records and
+`verify_scene_mods.gd`'s `ModHud`). Every one
 of them exits zero.
 The rest is read from the tree.*

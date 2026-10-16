@@ -159,7 +159,23 @@ func _check() -> void:
 	var draws: int = int(mods.get("draws"))
 	print("hud hook draws: ", draws)
 	if draws < 1:
-		_failures.append("the example mod's HUD hook made no draws through rl")
+		_failures.append("the example mod's HUD hook made no draws through goats.draw")
+
+	# ...and the draws reached the control that paints them, in the API's own shape. This is the
+	# half the old `rl` shim could not do: a mod's drawing is *painted*, not counted.
+	var surface: Control = _main.get("mod_hud")
+	var commands: Array = surface.get("commands")
+	print("surface: ", commands.size(), " command(s), ", surface.get("paints"), " paint(s)")
+	if commands.is_empty():
+		_failures.append("the mod's draw never reached ModHud")
+	else:
+		var first: Dictionary = commands[0]
+		if String(first.get("k", "")) != "text":
+			_failures.append("ModHud's first command is not the text the mod drew: %s" % first)
+		elif not String(first.get("s", "")).contains("example mod"):
+			_failures.append("ModHud's text is not the mod's: %s" % first)
+	if int(surface.get("paints")) < 1:
+		_failures.append("ModHud adopted the mod's draws and never painted them")
 
 	# And the load report reached the player's console, which is the only place a failed mod is
 	# ever said out loud in a running game.

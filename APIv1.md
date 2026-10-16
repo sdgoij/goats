@@ -377,6 +377,12 @@ reported, not silently ignored).
 > **Added in M20f:** `goats.water` (`state`, `level`, `depthAt`, `pools`,
 > `setLevel`, `clear`, `enabled`, §4.17) -- the read-out over M20a-M20e's water, and
 > the door a mod drives the table through.
+>
+> **Added with the Godot port:** `goats.draw` (§4.18), the API's own drawing surface.
+> A mod used to draw with the engine's `rl`, which is raylib; the API now carries
+> its own members, each client implements them, and a mod that reads `rl` directly
+> runs only where raylib is the engine. Only the 2D half is in -- 3D and assets
+> (`goats.gfx`) is the next group.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
@@ -868,6 +874,54 @@ Rules that fall out of the shape:
   water cannot make the two ends disagree about it.
 
 ---
+
+### 4.18 Drawing
+
+```js
+goats.on("hud", function (screen) {
+    goats.draw.text("ammo  3", screen.width - 90, 16, 20, goats.draw.WHITE);
+    goats.draw.rect(8, 8, 120, 6, goats.draw.color(255, 235, 160, 220));
+});
+```
+
+| Member | Description |
+| --- | --- |
+| `goats.draw.screen()` | The surface a draw lands on, in pixels: `{ width, height }`. |
+| `goats.draw.color(r, g, b, a)` | A colour. `a` defaults to `255`. |
+| `goats.draw.WHITE` / `BLACK` / `RAYWHITE` / `RED` / `GREEN` / `BLUE` / `YELLOW` / `ORANGE` / `GREY` / `DARKGRAY` | Named colours. |
+| `goats.draw.text(text, x, y, size, color)` | A line of text. |
+| `goats.draw.rect(x, y, w, h, color)` | A filled rectangle. |
+| `goats.draw.rectLines(x, y, w, h, color)` | Its outline, one pixel. |
+| `goats.draw.line(x1, y1, x2, y2, color)` | A line. |
+| `goats.draw.circle(cx, cy, radius, color)` | A filled circle. |
+| `goats.draw.circleLines(cx, cy, radius, color)` | Its outline. |
+
+**This is the API's own surface and not the engine's.** A mod could draw with the
+engine's `rl`, which *is* raylib -- and that binds it to one client, so the API
+carries its own members instead: the raylib client implements them over `rl`, a
+Godot build implements them over its own renderer, and a mod does not know which
+one it is on. **Use `goats.draw`.** A mod that reads `rl` directly runs only where
+raylib is the engine.
+
+Three conventions, and they are the contract:
+
+- A **colour** is an opaque value from `color()` or a named constant. Never build
+  one by hand: a platform is free to represent it its own way.
+- **`y` is the top of a line of text**, not its baseline, and every length is a
+  pixel of the surface `screen()` reports.
+- Draw calls are valid **inside a hook**. `"hud"` (§4.2) is the screen-space pass
+  and it receives the surface's size; a draw outside a hook is dropped, because
+  there is no frame to draw into.
+
+The surface is **immediate mode**: the calls one hook makes are that frame's
+drawing, and a hook that draws nothing leaves nothing behind. Coordinates are the
+platform's own pixels, so a mod that lays itself out against `screen()` is right
+everywhere and one that hard-codes a size is right on one client.
+
+What is **not here yet** is 3D and assets: a mod that puts a model, a cube or a
+texture in the world still needs `goats.gfx` -- handles minted from
+`goats.assets`, and `draw.model` / `draw.cube` to place them -- and until that
+group exists those mods are raylib-client-only.
 
 ## 5. Examples
 
