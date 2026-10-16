@@ -724,40 +724,24 @@ func _grass(parts: PackedStringArray) -> String:
 func _traps(parts: PackedStringArray) -> String:
 	var range: Variant = ctl_arg(parts, 1)
 	var reach: float = float(range) if range != null else 30.0
-	var range2: float = reach * reach
-	var r: int = int(ceil(reach / 2.0)) + 1
-	var centre: Vector2i = Meadow.cell_at(goat.px, goat.pz)
+	# The derivation is `Explosions.traps_near`'s, and deliberately the *same* function a mod reaches
+	# through `goats.explosions.traps` (`APIv1.md` section 4.15): a mine detector a mod writes and
+	# the console's own verb would otherwise be two transcriptions of `sceneTraps`, and the one that
+	# drifted would be the one nobody happened to look at. Only the rounding is this verb's, because
+	# a console line is prose and a mod's numbers are not.
+	var near: Dictionary = explosions.traps_near(goat.px, goat.pz, reach)
 	var mines: Array = []
+	for mine: Dictionary in near["mines"]:
+		mines.append({
+			"x": mine["x"], "z": mine["z"], "key": mine["key"],
+			"dist": ctl_round(mine["dist"]), "moved": mine["moved"],
+		})
 	var traps: Array = []
-	for cx in range(centre.x - r, centre.x + r + 1):
-		for cz in range(centre.y - r, centre.y + r + 1):
-			var key_value: int = Meadow.key(cx, cz)
-			var mx: float = float(cx * 2 + 1)
-			var mz: float = float(cz * 2 + 1)
-			var dx: float = mx - goat.px
-			var dz: float = mz - goat.pz
-			if dx * dx + dz * dz <= range2 and explosions.mine_armed(cx, cz):
-				mines.append({
-					"x": mx, "z": mz, "key": key_value,
-					"dist": ctl_round(sqrt(dx * dx + dz * dz)),
-					"moved": explosions.moved.has(key_value),
-				})
-			if not explosions.trap_at(cx, cz):
-				continue
-			if meadow.eaten.has(key_value):
-				continue
-			var t: Dictionary = meadow.tuft_in(cx, cz)
-			if t.is_empty():
-				continue
-			var tdx: float = float(t["x"]) - goat.px
-			var tdz: float = float(t["z"]) - goat.pz
-			if tdx * tdx + tdz * tdz > range2:
-				continue
-			traps.append({
-				"x": ctl_round(float(t["x"])), "z": ctl_round(float(t["z"])), "key": key_value,
-				"dist": ctl_round(sqrt(tdx * tdx + tdz * tdz)),
-				"moved": explosions.trap_moved.has(key_value),
-			})
+	for trap: Dictionary in near["traps"]:
+		traps.append({
+			"x": ctl_round(trap["x"]), "z": ctl_round(trap["z"]), "key": trap["key"],
+			"dist": ctl_round(trap["dist"]), "moved": trap["moved"],
+		})
 	return "ok " + json_of({
 		"range": reach,
 		"mines": mines,

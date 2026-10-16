@@ -17,7 +17,7 @@
 # HUD and the wire take theirs from. A snapshot that drifted from the world would be a mod reading
 # a second, wrong world -- which no amount of "the call arrived" would catch.
 #
-# Ten things, and the order is the order of the ways they can be faked:
+# Eleven things, and the order is the order of the ways they can be faked:
 #
 #   0. **Every mod knows who it is and can speak.** `goats.api`, `goats.game`, `goats.mods()`,
 #      a handle's own `goats.mod` -- held against the *scene's* table, which is the one the Mods
@@ -51,6 +51,11 @@
 #      section 4.13), so it is held against the reference's derivation transcribed into this file --
 #      FNV-1a, xorshift32, and one shared draw per stream from the session seed -- rather than
 #      against a second copy of the port. The seed itself goes through the scene's own path.
+#  10. **A mod's bang is the core's bang** (`explosions`, section 4.15). `traps` is held against
+#      `Explosions.traps_near`, which is the derivation the console's own verb prints, at a point
+#      the gate *finds* rather than guesses; and `blast` is held against the scene's own counters --
+#      the blast count rises, the device is spent so the cell is armed nowhere afterwards -- because
+#      "through the core's own path" is the whole of the member's contract.
 #
 # **The sentinel.** GDScript has no `try`, so a runtime error inside a check aborts that function
 # and leaves the failure it was about to record unrecorded -- a gate that would print `OK` having
@@ -274,6 +279,30 @@ const PROBE_JS := """
         }
         return JSON.stringify(out);
     });
+
+    // The devices (`APIv1.md` section 4.15). The coordinates come from the command line rather than
+    // from the source, because the field is derived from the seed and the gate has to pick a point
+    // that actually holds a device.
+    goats.command("moddevices", function (args) {
+        const x = Number(args[1]);
+        const z = Number(args[2]);
+        const out = {};
+        const near = goats.explosions.traps(x, z, 40);
+        out.mines = near.mines.length;
+        out.traps = near.traps.length;
+        out.mine = near.mines.length > 0 ? near.mines[0] : null;
+        // The bang goes through the *core's* path, so the scene's own count rises and the device is
+        // spent -- and a spent device is a cell that is armed nowhere, which the query below says.
+        out.blast = goats.explosions.blast(x, z, "mine");
+        out.single = goats.explosions.traps(x, z, 1).mines.length;
+        try {
+            goats.explosions.armed(false);
+            out.armed = "answered";
+        } catch (error) {
+            out.armed = "threw";
+        }
+        return JSON.stringify(out);
+    });
 })();
 """
 
@@ -385,6 +414,7 @@ func _check() -> void:
 	_check_assets(read)
 	_check_entities(read, _main.get("console"))
 	_check_streams(host, mods)
+	_check_devices(host)
 	_finished = true
 
 ## The asset slots (`APIv1.md` section 4.11), the one group that is a *merge* of two owners: the
@@ -654,6 +684,60 @@ func _streams_match(got: Variant, want: Array, what: String) -> void:
 		if absf(float(row[i]) - float(want[i])) > 1e-12:
 			_failures.append("%s: draw %d is %s and the reference derives %s"
 				% [what, i, row[i], want[i]])
+
+## A point with an armed mine on it, found by scanning the derived field rather than guessed: the
+## layout comes from the seed, so a hard-coded point can easily be one of the empty ones -- and a
+## check that asked about an empty cell would pass for a `traps` that answered nothing.
+func _armed_point(devices: Object) -> Vector2:
+	for cx: int in range(-48, 49):
+		for cz: int in range(-48, 49):
+			if bool(devices.call("mine_armed", cx, cz)):
+				return Vector2(float(cx * 2 + 1), float(cz * 2 + 1))
+	return Vector2.ZERO
+
+## The devices (`APIv1.md` section 4.15). `traps` is the scene's *own* derivation -- the one the
+## `traps` console verb prints, factored out so a mod and the console cannot drift -- and `blast`
+## has to be the core's bang, which is a claim about the scene's own state rather than about a
+## return value: the counter rises and the cell is armed nowhere afterwards.
+func _check_devices(host: Object) -> void:
+	var devices: Object = _main.get("explosions")
+	var found: Vector2 = _armed_point(devices)
+	if found == Vector2.ZERO:
+		_failures.append("the derived field has no armed mine in reach to ask about")
+		return
+	var cell: Vector2i = Meadow.cell_at(found.x, found.y)
+	var want: Dictionary = devices.call("traps_near", found.x, found.y, 40.0)
+	var before: int = int(devices.get("blasts"))
+	var answer: Dictionary = _mod_command(host, "moddevices",
+		"moddevices %f %f" % [found.x, found.y])
+	if answer.is_empty():
+		_failures.append("the devices probe did not answer with a table")
+		return
+	if int(answer.get("mines", -1)) != (want["mines"] as Array).size():
+		_failures.append("goats.explosions.traps found %s mine(s) where the scene's own derivation has %d"
+			% [answer.get("mines"), (want["mines"] as Array).size()])
+	if int(answer.get("traps", -1)) != (want["traps"] as Array).size():
+		_failures.append("goats.explosions.traps found %s trap(s) where the scene's own derivation has %d"
+			% [answer.get("traps"), (want["traps"] as Array).size()])
+	var mine: Variant = answer.get("mine")
+	if not (mine is Dictionary) or not (mine as Dictionary).has("x") \
+			or not (mine as Dictionary).has("key") or not (mine as Dictionary).has("dist"):
+		_failures.append("goats.explosions.traps answered no usable mine row at a point that has one: %s"
+			% answer.get("mine"))
+	if answer.get("blast") != true:
+		_failures.append("goats.explosions.blast did not answer true: %s" % answer.get("blast"))
+	if int(devices.get("blasts")) != before + 1:
+		_failures.append("a mod's bang did not reach the scene's own blast path (%d -> %s)"
+			% [before, devices.get("blasts")])
+	if bool(devices.call("mine_armed", cell.x, cell.y)):
+		_failures.append("the device a mod set off is still armed in its own cell")
+	if int(answer.get("single", -1)) != 0:
+		_failures.append("the cell is still armed a moment after the bang (%s found)"
+			% answer.get("single"))
+	if str(answer.get("armed")) != "threw":
+		_failures.append("goats.explosions.armed did not throw: %s" % answer.get("armed"))
+	print("devices: ", answer.get("mines"), " mine(s)  ", answer.get("traps"), " trap(s)  blast ",
+		answer.get("blast"), "  blasts ", devices.get("blasts"))
 
 ## The identity and logging members (`APIv1.md` section 4.1): the API major, the game's version,
 ## the table, a mod's own row, and the three ways to say something -- each held against the

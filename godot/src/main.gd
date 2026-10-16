@@ -760,6 +760,29 @@ func _mod_call(name: String, args_json: String) -> String:
 				float(args[1]) if args.size() > 1 else 1.0,
 				float(args[2]) if args.size() > 2 else 1.0)
 			return _mod_ok(null)
+		"explosions.traps":
+			# The scene's own derivation (`Explosions.traps_near`), crossing rather than being
+			# pushed because the field *moves*: a device spent a frame ago is not in the answer.
+			if args.size() < 3:
+				return _mod_err("explosions.traps needs x, z and a range")
+			var tx: float = float(args[0])
+			var tz: float = float(args[1])
+			var reach: float = float(args[2])
+			if is_nan(tx) or is_nan(tz) or is_nan(reach) or reach < 0.0:
+				return _mod_err("explosions.traps needs a point and a range")
+			return _mod_ok(explosions.traps_near(tx, tz, reach))
+		"explosions.blast":
+			# A mod's bang, through the core's own path (`Explosions.mod_blast`): the crater, the
+			# damage, the flash, the knock, the sound, the `blast` event and -- in a session -- the
+			# report, which `net_fired` is already wired to. A bang nobody else hears is a bang that
+			# did not happen.
+			if args.size() < 3:
+				return _mod_err("explosions.blast needs x, z and a kind")
+			var bx: float = float(args[0])
+			var bz: float = float(args[1])
+			if is_nan(bx) or is_nan(bz):
+				return _mod_err("explosions.blast needs two numbers")
+			return _mod_ok(explosions.mod_blast(String(args[2]), bx, bz))
 	return _mod_err("goats." + name + ": this client does not answer that member")
 
 ## A successful `_mod_call` answer.

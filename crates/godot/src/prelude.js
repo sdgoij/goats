@@ -806,6 +806,31 @@ if (typeof globalThis.goats === "undefined") {
             entities: entitiesFor("-"),
 
             /**
+             * The devices (`APIv1.md` section 4.15): `traps(x, z, range)` is the derived field near
+             * a point and `blast(x, z, kind)` sets one off. Both *cross*, and each for
+             * `terrainHeight`'s reason -- `traps` is a function of the world rather than a statement
+             * about it (the field moves as devices are spent), and `blast` is a thing to *do* rather
+             * than a value.
+             *
+             * The other half of the group's contract is that a mod's bang is not a *new kind* of
+             * bang: `kind` is the core's own `"mine"` or `"trap"`, so the scene runs its own path --
+             * the crater, the damage, the flash, the knock, the sound, the `"blast"` event and the
+             * report -- which is what makes a world mod's bang the host's and visible to every peer.
+             * `armed` is the group's one write and is refused with the rest; neither example calls
+             * it, and the field it would take away is the scene's own.
+             */
+            explosions: {
+                traps: function (x, z, range) {
+                    return ask("explosions.traps", [Number(x), Number(z), Number(range)]);
+                },
+                blast: function (x, z, kind) {
+                    return ask("explosions.blast",
+                        [Number(x), Number(z), kind === undefined ? "mine" : String(kind)]);
+                },
+                armed: refuse("explosions.armed"),
+            },
+
+            /**
              * The game's constants (`APIv1.md` section 4.10), read as a tree of dotted
              * paths. `get` throws on an unknown path, which is the API's own contract and
              * is what makes a typo -- or a leaf this client has not ported -- loud rather

@@ -287,6 +287,74 @@ func device_at(kind: String, cx: int, cz: int) -> Dictionary:
 		return {}
 	return {"cx": cx, "cz": cz, "x": cx * 2 + 1, "z": cz * 2 + 1, "d2": 0.0}
 
+## The devices near `(x, z)`, which is `sceneTraps` (`explosions.js`) transcribed -- and it is the
+## *same* derivation the `traps` console verb prints and the trigger question the goat's own step
+## asks, which is the whole point of exposing it: a mine detector is a mod, and a "clear the field"
+## tool is another.
+##
+## The two devices are judged differently and deliberately. A mine sits at its cell's centre, so
+## that centre *is* its position and filtering the cell by the distance is right for it; a trapped
+## tuft sits at the tuft -- up to 1.4 m from the centre above -- so it is reported and judged at the
+## tuft, and a cell the centre keeps out of range can hold a tuft that is in it. A tuft that has
+## been eaten is not a device any more.
+##
+## Raw numbers, not rounded ones: a console line is prose and rounds, while
+## `goats.explosions.traps` hands a mod the scene's own values (`APIv1.md` section 4.15). The
+## parameter is `reach` rather than the reference's `range`, because `range` is a GDScript built-in.
+func traps_near(x: float, z: float, reach: float) -> Dictionary:
+	var out: Dictionary = {"mines": [], "traps": []}
+	var range2: float = reach * reach
+	var r: int = int(ceilf(reach / 2.0)) + 1
+	var centre: Vector2i = Meadow.cell_at(x, z)
+	for cx: int in range(centre.x - r, centre.x + r + 1):
+		for cz: int in range(centre.y - r, centre.y + r + 1):
+			var key_value: int = Meadow.key(cx, cz)
+			var mx: float = float(cx * 2 + 1)
+			var mz: float = float(cz * 2 + 1)
+			var dx: float = mx - x
+			var dz: float = mz - z
+			if dx * dx + dz * dz <= range2 and mine_armed(cx, cz):
+				out["mines"].append({
+					"x": mx, "z": mz, "key": key_value,
+					"dist": sqrt(dx * dx + dz * dz), "moved": moved.has(key_value),
+				})
+			if not trap_at(cx, cz):
+				continue
+			if meadow.eaten.has(key_value):
+				continue
+			var t: Dictionary = meadow.tuft_in(cx, cz)
+			if t.is_empty():
+				continue
+			var tdx: float = float(t["x"]) - x
+			var tdz: float = float(t["z"]) - z
+			if tdx * tdx + tdz * tdz > range2:
+				continue
+			out["traps"].append({
+				"x": float(t["x"]), "z": float(t["z"]), "key": key_value,
+				"dist": sqrt(tdx * tdx + tdz * tdz), "moved": trap_moved.has(key_value),
+			})
+	return out
+
+## A bang a mod asked for (`goats.explosions.blast`, `APIv1.md` section 4.15), which is `modBlast`
+## transcribed: the device in the cell is spent **here** as well as on every other process, and then
+## the bang goes through the scene's own path -- the crater, the damage, the flash, the camera knock,
+## the sound, the `blast` event and, in a session, the report (`net_fired`) -- so a world mod's bang
+## is the host's and everybody sees it.
+##
+## Spending it here is what keeps the cell armed *nowhere*: every other process spends it from the
+## key in the report, so an origin that skipped this would leave the device standing where the bang
+## happened and whatever the mod sent over it would trip the same device on the way back.
+##
+## The **kind** is the core's own enum -- `"mine"` or `"trap"` -- and it is only which core
+## behaviour the bang follows: anything else a mod's own device *is* belongs on `world.extend`,
+## which is where a world mod already publishes its own state.
+func mod_blast(kind: String, x: float, z: float) -> bool:
+	var what: String = "trap" if kind == "trap" else "mine"
+	var cell: Vector2i = Meadow.cell_at(x, z)
+	spend(what, cell.x, cell.y)
+	blast(what, x, z, Terrain.value_hash(x * 7.1 + z * 3.3), 0, Meadow.key(cell.x, cell.y))
+	return true
+
 ## Take a device out of the field: it has gone off, so it is spent -- a derived cell
 ## stays empty for the session -- and a replacement is placed elsewhere. False when
 ## there is nothing armed there, which is what makes it safe to call for a device that
