@@ -1288,7 +1288,20 @@ impl Client {
             // The parts of a split world snapshot, gathered here so a client only ever sees a
             // whole one (`WorldGather`).
             let mut gather = WorldGather::default();
-            while let Ok(bytes) = snapshot_connection.read_datagram().await {
+            loop {
+                // A read error is the *connection's*, not a lost snapshot's: `read_datagram`
+                // yields a `ConnectionError`, so there is nothing left to read and no value in
+                // skipping it. This channel is the whole of the world, the peers and the voice,
+                // so the task announces its own end rather than depending on the control-stream
+                // reader beside it to notice -- either may be first, and a client that heard it
+                // twice merely resets twice (both bridges do that idempotently).
+                let bytes = match snapshot_connection.read_datagram().await {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        let _ = snapshot_events.send(Event::Disconnected);
+                        break;
+                    }
+                };
                 if bytes.len() > proto::MAX_DATAGRAM_BYTES {
                     continue;
                 }
@@ -1702,6 +1715,44 @@ mod tests {
                 }
             );
             host.close().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_client_is_told_when_the_host_goes_away() {
+        // The world, the peers and the voice all arrive on the datagram channel, which is a task
+        // of its own beside the control-stream reader. When the host disappears, a client has to
+        // hear it rather than sit on the last snapshot it got with the channel gone -- that is the
+        // "frozen world" a player reports as a hang. Either task may be the one to notice first,
+        // so the contract is that the client is told promptly by one of them, which is what this
+        // pins; a regression that left *both* silent would hang here until the deadline.
+        within(async {
+            let host = Host::start("host").await.expect("host");
+            let mut alice = Client::join(host.ticket(), "alice").await.expect("join");
+            // Drain the opening events -- the seed and the roster -- so the next one is the end.
+            loop {
+                match alice.next_event().await {
+                    Some(Event::Disconnected) => panic!("disconnected before the host closed"),
+                    Some(Event::Roster { .. }) | None => break,
+                    Some(_) => continue,
+                }
+            }
+
+            host.close().await;
+
+            let ended = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match alice.next_event().await {
+                        Some(Event::Disconnected) => break true,
+                        Some(_) => continue,
+                        None => break false,
+                    }
+                }
+            })
+            .await;
+            assert_eq!(ended.ok(), Some(true), "the client heard the host leave");
+            alice.close().await;
         })
         .await;
     }
