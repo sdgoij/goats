@@ -1196,6 +1196,11 @@ func _place_camera(camera: Camera3D) -> void:
 ##
 ## The gait name is the goat's mode, which is the vocabulary the wire's `Gait` enum
 ## and the scene's own `net.js` both use.
+##
+## The phase is the goat's `one_shot_fraction()`, which is `net.js`'s `netPeerPhase`: the loop's
+## own `phase` for a gait, and the fraction through the clip for a one-shot. `phase` stands still
+## for the whole of a jump (or a meal, or a death, or the arc), so publishing it there sent a
+## stale number and a remote goat held one frozen pose right through the jump.
 func _publish_pose(delta: float) -> void:
 	if not _joined and not _hosting:
 		return
@@ -1203,8 +1208,8 @@ func _publish_pose(delta: float) -> void:
 	if _pose_timer < POSE_INTERVAL:
 		return
 	_pose_timer = 0.0
-	bridge.call("pose", goat.px, goat.pz, goat.yaw, goat.phase, goat.speed, goat.mode,
-		goat.py)
+	bridge.call("pose", goat.px, goat.pz, goat.yaw, goat.one_shot_fraction(), goat.speed,
+		goat.mode, goat.py)
 
 ## Publish the server's world, about ten times a second -- `net.js` `netMaybePublishWorld`, which
 ## is a *host's* alone: a client simulates no world and mirrors one instead. It is the whole of

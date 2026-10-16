@@ -289,7 +289,14 @@ Godot client could not see a raylib one. `peers.gd` is `net.js`'s peer half, and
 straight from the phase the wire carried (`netPeerShot`) with no easing and no wrap, a looped
 phase wraps so `0.9 -> 0.1` is a tenth of a lap *forward*, a yaw takes the short way round, and
 the flung height is applied outright -- a parabola whose apex is smoothed is a lower arc, and a
-mirrored goat would fly through a trajectory its owner never did. The gate asks `peerRole`'s
+mirrored goat would fly through a trajectory its owner never did. **What a peer is *told* is
+`netPeerPhase`**, which the port had left out: `net.js` publishes the loop's own `phase` for a gait
+and the *fraction through the clip* for a one-shot, while the scene published `goat.phase` for
+everything -- and `phase` stands still for the whole of a jump, so a Godot client's leap arrived as
+one frozen pose on every other screen. `PlayerGoat.one_shot_fraction` is the `netPeerPhase`
+transcription, `_pose_role` poses the local goat with the same number, and `_publish_pose` sends it;
+`verify_goat.gd` compares it against the oracle's own every frame of its tape, whose mid-run jump is
+the frame that catches a regression. The gate asks `peerRole`'s
 `flung -> jump -> walk` chain of every model that could be a clip short rather than only of this
 one, and the three easing lines over 384 rows:
 

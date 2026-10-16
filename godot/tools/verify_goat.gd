@@ -16,7 +16,11 @@
 #      time -- idle, walk, run, a turn, a jump mid-run, back to a trot, a sleep and a
 #      wake, a walk backwards, long enough at a run to exhaust the goat and long
 #      enough idle afterwards for it to fall asleep on its own -- and the position,
-#      yaw, phase, mode, energy, health and speed are compared every frame.
+#      yaw, phase, mode, energy, health and speed are compared every frame -- and so is the
+#      phase the *wire* carries (`net.js` `netPeerPhase`), which is the loop's own phase for a
+#      gait and the fraction through the clip for a one-shot. `phase` is frozen for the whole of
+#      a jump, so publishing it sent a stale number and a remote goat held one pose right
+#      through it; the tape's mid-run jump is the frame that catches a regression.
 #
 # The tape is expanded here and handed to both sides as one literal, so they are
 # reacting to one script rather than to two generators that happen to agree.
@@ -85,6 +89,17 @@ function clipRole() {
 }
 function loopDuration() { return clipDuration(clipRole()); }
 function jumpDuration() { const d = clipDuration("jump"); return d > 0 ? d : 0.6; }
+// `net.js` `netPeerPhase`: the phase the wire carries. A one-shot is posed from its own clock
+// while `goat.phase` stands still, so the loop phase there is a stale number -- publishing it
+// left a remote goat holding one frozen pose right through the jump, which is this tape's
+// mid-run jump. The flung branch needs `flingProgress`, which this oracle does not model (the
+// tape never flings); a meal and a death are the same `min(timer / duration, 1)` shape.
+function netPeerPhase() {
+    if (mode === "jump" && hasRole("jump")) return Math.min(jumpTime / jumpDuration(), 1);
+    if (mode === "dead" && hasRole("death")) return Math.min(deathTime / clipDuration("death"), 1);
+    if (mode === "eat" && hasRole("eat")) return Math.min(eatTime / clipDuration("eat"), 1);
+    return goat.phase;
+}
 function groundSpeed() {
     if (mode === "sleep" || mode === "dead") return 0;
     let base = walkSpeed();
@@ -174,7 +189,7 @@ for (let i = 0; i < TAPE.length; i++) {
     goat.py = 0;
     console.log('F ' + i + ' ' + mode + ' ' + clipRole() + ' ' + goat.px + ' ' + goat.pz + ' ' +
         goat.yaw + ' ' + goat.phase + ' ' + stats.energy + ' ' + stats.health + ' ' + speed +
-        ' ' + (exhausted ? 1 : 0));
+        ' ' + (exhausted ? 1 : 0) + ' ' + netPeerPhase());
 }
 """
 
@@ -294,6 +309,9 @@ func _initialize() -> void:
 	var frames := 0
 	var role_mismatches := 0
 	var first_role_mismatch := ""
+	var wire_compared := 0
+	var wire_mismatches := 0
+	var first_wire_mismatch := ""
 	for segment: Array in TAPE:
 		for i in int(segment[0]):
 			var controls := {
@@ -309,7 +327,7 @@ func _initialize() -> void:
 				frames += 1
 				continue
 			var parts: PackedStringArray = String(oracle[frames]).split(" ")
-			if parts.size() != 11:
+			if parts.size() != 12:
 				frames += 1
 				continue
 			var wanted_mode: String = parts[1]
@@ -335,6 +353,18 @@ func _initialize() -> void:
 				if first_role_mismatch == "":
 					first_role_mismatch = "frame %d (mode %s): scene poses %s, port poses %s" % [
 						frames, wanted_mode, wanted_role, goat.clip_role()]
+			# ...and the phase the *wire* carries (`net.js` `netPeerPhase`): the loop's own phase
+			# for a gait, and the fraction through the clip for a one-shot. `goat.phase` is frozen
+			# for the whole of a jump, so publishing it told every other client to hold one pose
+			# right through it -- which is what this checks, on the tape's own mid-run jump.
+			var wanted_wire: float = float(parts[11])
+			var got_wire: float = goat.one_shot_fraction()
+			wire_compared += 1
+			if absf(got_wire - wanted_wire) > TOLERANCE:
+				wire_mismatches += 1
+				if first_wire_mismatch == "":
+					first_wire_mismatch = "frame %d (mode %s): scene %.6f, port %.6f" % [
+						frames, wanted_mode, wanted_wire, got_wire]
 			for k in got.size():
 				var difference: float = absf(got[k] - wanted[k])
 				compared += 1
@@ -354,6 +384,9 @@ func _initialize() -> void:
 	print("clip-role mismatches: ", role_mismatches)
 	if first_role_mismatch != "":
 		print("  first: ", first_role_mismatch)
+	print("wire-phase comparisons: %d, mismatches: %d" % [wire_compared, wire_mismatches])
+	if first_wire_mismatch != "":
+		print("  first: ", first_wire_mismatch)
 	print("the port's goat ended as: %s at (%.3f, %.3f), energy %.2f, health %.2f"
 		% [goat.mode, goat.px, goat.pz, goat.energy, goat.health])
 
@@ -369,6 +402,11 @@ func _initialize() -> void:
 		failures.append("the state machine diverged %d time(s)" % mode_mismatches)
 	if role_mismatches != 0:
 		failures.append("the goat posed the wrong clip %d time(s)" % role_mismatches)
+	if wire_compared != tape.size():
+		failures.append("compared the wire phase %d time(s), expected %d"
+			% [wire_compared, tape.size()])
+	if wire_mismatches != 0:
+		failures.append("the goat published the wrong phase %d time(s)" % wire_mismatches)
 	if worst > TOLERANCE:
 		failures.append("the goat disagrees with the scene by %f (limit %f)"
 			% [worst, TOLERANCE])

@@ -742,20 +742,37 @@ func _integrate(delta: float, move: int, gait: String) -> void:
 			pz += -sin(yaw) * move * speed * delta
 	py = 0.0
 
+## The fraction through its clip this frame is posed at: the loop's own `phase` for a gait, and
+## the one-shot's clamped fraction for a jump, a meal, a death or the arc -- the only thing that
+## can pose a clip that is not a loop.
+##
+## `phase` stands still for the whole of a one-shot, so the *fraction* is the only number that
+## means anything there -- which is why this is also what the wire carries (`net.js`
+## `netPeerPhase`, published by `netMaybePublish`): sending the loop phase instead was a stale
+## number, and a remote goat held one frozen pose right through the jump.
+func one_shot_fraction() -> float:
+	if mode == "flung":
+		return fling_progress()
+	if mode == "jump":
+		return minf(_jump_time / jump_duration(), 1.0)
+	if mode == "dead":
+		return minf(_death_time / maxf(clip_length("death"), 0.001), 1.0)
+	if mode == "eat":
+		return minf(_eat_time / eat_duration(), 1.0)
+	return phase
+
 ## Pose the goat for this frame: the loop's own phase for a gait, and the one-shot's
 ## clamped fraction for a jump, a meal or a death -- the only thing that can pose a
 ## clip that is not a loop.
 func _pose_role() -> void:
 	if mode == "flung":
-		_pose("flung" if has_role("flung") else "jump", fling_progress())
-	elif mode == "jump":
-		_pose(clip_role(), minf(_jump_time / jump_duration(), 1.0))
+		_pose("flung" if has_role("flung") else "jump", one_shot_fraction())
 	elif mode == "dead":
-		_pose("death", minf(_death_time / maxf(clip_length("death"), 0.001), 1.0))
+		_pose("death", one_shot_fraction())
 	elif mode == "eat":
-		_pose("eat", minf(_eat_time / eat_duration(), 1.0))
+		_pose("eat", one_shot_fraction())
 	else:
-		_pose(clip_role(), phase)
+		_pose(clip_role(), one_shot_fraction())
 
 func _pose(role: String, fraction: float) -> void:
 	var clip: String = clip_for(role)
