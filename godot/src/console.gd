@@ -254,7 +254,10 @@ func handle_key(event: InputEventKey) -> bool:
 		# A release or a key repeat is not an edit; only the press is.
 		return true
 	var code: int = event.physical_keycode
-	if code == KEY_ESCAPE:
+	# The scene opens the panel on this key (`main.gd`), but while it is up the key arrives
+	# here like every other one. Closing here is what the panel's own line promises --
+	# "backquote or ESC closes" -- and why the key must not fall through to the text arm.
+	if code == KEY_ESCAPE or code == KEY_QUOTELEFT:
 		close()
 		return true
 	if event.ctrl_pressed and code == KEY_V:

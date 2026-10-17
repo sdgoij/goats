@@ -579,9 +579,29 @@ func _check_shell() -> void:
 	var last: String = String(asked.lines[asked.lines.size() - 1]["text"])
 	_expect(last == "hello bob", "a pending question takes the next line as its answer")
 
+	# The toggle key closes while open (`console.js`'s own line: "backquote or ESC
+	# closes"). The bug this pins: a backquote that fell through to the text arm
+	# inserted ` into the line and left the panel up.
+	var keys := Console.new()
+	keys.toggle()
+	_expect(keys.open, "toggle opens the console")
+	var backquote := InputEventKey.new()
+	backquote.physical_keycode = KEY_QUOTELEFT
+	backquote.unicode = 96
+	backquote.pressed = true
+	keys.handle_key(backquote)
+	_expect(not keys.open, "backquote closes the console while it is open")
+	_expect(keys.input_text.is_empty(), "the closing backquote is not typed into the line")
+	var escape := InputEventKey.new()
+	escape.physical_keycode = KEY_ESCAPE
+	escape.pressed = true
+	keys.toggle()
+	keys.handle_key(escape)
+	_expect(not keys.open, "escape still closes the console")
+
 	# A `Control` owns `CanvasItem` RIDs even outside the tree, so every shell this gate builds
 	# is handed back -- a leak is a warning, and a warning in a passing gate is noise.
-	for control: Console in [shell, line, full, hist, quiet, empty, asked]:
+	for control: Console in [shell, line, full, hist, quiet, empty, asked, keys]:
 		control.free()
 
 ## The dispatch table: one line in, the reply it must give out.
