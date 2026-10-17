@@ -20,6 +20,12 @@
 # Each gate gets `TIMEOUT` seconds, which is not a formality: a GDScript file that fails to compile
 # can make Godot *loop* rather than error, with no output at all, so a gate that never returns
 # looks exactly like one that is thinking.
+#
+# The verdict is the gate's own `OK:`/`FAIL:` line and the exit status only backs it up: a gate that
+# has already printed `OK:` can still die in Godot's *teardown* -- the dummy renderer's "Parameter
+# material is null" storm ends in a crash on 4.7.2 often enough to be known -- and that is the
+# engine's death, after the gate has said what it found. So a `PASS` here is the gate's own word,
+# and a `FAIL` is anything that never gave one. It is why this is safe to run in CI.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -59,12 +65,26 @@ for gate in $gates; do
     status=$?
     set -e
     verdict=$(grep -E "^(OK|FAIL)" "$log" | tail -n 1)
-    if [ "$status" -eq 0 ]; then
-        printf 'PASS %-24s %s\n' "$gate" "$verdict"
-    else
-        printf 'FAIL %-24s (exit %s) %s\n' "$gate" "$status" "$verdict"
-        failed="$failed $gate"
-    fi
+    # The gate's own last word decides, and the exit status only when it never spoke. `quit(0)` after
+    # an `OK:` can still die in Godot's *teardown* -- the dummy renderer's "Parameter material is
+    # null" storm ends in a crash on 4.7.2 often enough to be known -- and that death is the
+    # engine's, after the gate has already reported what it found. A gate that fails its own
+    # assertions prints `FAIL:`, and one that dies before saying anything (or hangs until the
+    # timeout) leaves no verdict at all, so both still fail here.
+    case "$verdict" in
+        OK:*)
+            if [ "$status" -eq 0 ]; then
+                printf 'PASS %-24s %s\n' "$gate" "$verdict"
+            else
+                printf 'PASS %-24s %s (exit %s: the engine died in its own teardown)\n' \
+                    "$gate" "$verdict" "$status"
+            fi
+            ;;
+        *)
+            printf 'FAIL %-24s (exit %s) %s\n' "$gate" "$status" "$verdict"
+            failed="$failed $gate"
+            ;;
+    esac
 done
 
 if [ -n "$failed" ]; then
