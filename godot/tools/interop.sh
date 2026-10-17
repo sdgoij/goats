@@ -62,6 +62,15 @@ root=$(cd "$here/../.." && pwd)
 godot_dir=$root/godot
 log=$root/target/interop-goatsd.log
 
+# A release binary carries the platform's suffix -- `.exe` on Windows, nothing elsewhere -- so the
+# default path is derived from `uname` rather than hard-coded, the way `crates/godot/build.sh` picks
+# its platform. That is what lets the same script run the Linux CI job (`crates/godot/build.sh`'s
+# `MINGW*` case, one spelling over).
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows*) exe_suffix=.exe ;;
+    *) exe_suffix= ;;
+esac
+
 mode=${1:-join}
 case "$mode" in
     join|refuse|pull|herd|pair|death|hostdeath|jsjoin|offline|shot) ;;
@@ -181,7 +190,7 @@ fi
 # red. It needs a window (the joiner is a raylib app), and there is no `goatsd` in it at all, so it
 # returns here rather than falling through to the server the other modes start.
 if [ "$mode" = "jsjoin" ]; then
-    goats_bin=${GOATS_BIN:-$root/target/release/goats.exe}
+    goats_bin=${GOATS_BIN:-$root/target/release/goats$exe_suffix}
     if [ ! -x "$goats_bin" ]; then
         echo "interop.sh: $goats_bin is not built; run:" >&2
         echo "    cargo build --release -p goats" >&2
@@ -259,7 +268,7 @@ case "$mode" in
     herd|pair|shot|death|refuse|pull) mods_flag= ;;
 esac
 
-server=${GOATSD_BIN:-$root/target/release/goatsd.exe}
+server=${GOATSD_BIN:-$root/target/release/goatsd$exe_suffix}
 if [ ! -x "$server" ]; then
     echo "interop.sh: $server is not built; run:" >&2
     echo "    cargo build --release -p server" >&2

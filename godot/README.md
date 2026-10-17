@@ -470,6 +470,64 @@ godot/tools/interop.sh shot
 It reads `GODOT_BIN`, `GOATSD_BIN` and `GOATS_BIN` (the reference client, `jsjoin`) if the
 defaults do not fit.
 
+## Building the client
+
+The extension (`crates/godot/build.sh`) is a *developer* build: Godot loads it out of the project
+while you work. The **client** a player gets is a Godot **export**, which packs the project, the
+assets and the extension library into one directory:
+
+```sh
+# The library the export bundles, for the target platform, into the descriptor's own path.
+sh crates/godot/build.sh release
+
+# `export_presets.cfg` has one preset per target the reference client ships for -- `Windows
+# Desktop`, `Linux x86_64`, `Linux arm64` -- and their names say the platform and the
+# architecture. The templates for the editor's own version are installed once (`Editor >
+# Manage Export Templates`, or the `.tpz` unpacked into the editor's `export_templates/`).
+Godot --headless --path godot --export-release "Windows Desktop" dist/goats.exe
+Godot --headless --path godot --export-release "Linux x86_64"   dist/goats
+```
+
+The client is **`goats`** -- the same name the raylib client's binary has, and `goats.exe` on
+Windows: the export's output path is what names the binary, not the project's own "Slag Goat".
+Beside it the export writes its `.pck` (the preset leaves `embed_pck` off), the extension library the
+descriptor names for that platform (`goats_godot.dll`, `libgoats_godot.so`) copied in, and, on
+Windows, `goats.console.exe`, the preset's console wrapper.
+
+A client that *boots* without the bridge is as broken as one that does not boot, so there is a smoke
+check. The console wrapper on Windows and the plain binary on Linux -- an export is GUI-subsystem on
+Windows, and a shell that launches one does not wait for it:
+
+```sh
+./dist/goats.console.exe --headless --quit-after 120   # ...`dist/goats` on Linux
+# Initialize godot-rust (API v4.7.stable.official, runtime v4.7.2.stable.official, ...)
+# offline: no GOATSD_TICKET, so there is no session to mirror
+```
+
+The first line is the extension loading; the second is the scene running. Both, and a zero exit, are
+what CI asserts.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs the port for the same three desktop targets the reference client
+ships for -- `windows-x86_64`, `linux-x86_64`, `linux-aarch64` -- in two jobs, and in this order:
+
+* **`godot`** (every push and pull request, and only once the scene's own Rust tests are green:
+  `needs: test`) is the *tests*: the extension built in release, Godot installed by release and
+  digest, one `--import` pass so the descriptor is registered, `tools/gates.sh` (35 gates) and the
+  session modes that need no window (`tools/interop.sh join refuse herd pair death hostdeath pull
+  offline`). The extension and every gate log are uploaded, so a red run can be read without
+  reproducing it.
+* **`godot-build`** (on `v*` tags and by hand, and only once the job above is green) is the *build*:
+  the same extension, the export templates, the export above, the smoke check, and a package with
+  what a reference release carries -- `goats`, `goatsd`, `README.md`, `LICENSE.md`, `APIv1.md`, and
+  `mods/` with the two example mods zipped and the same `README.txt` -- plus the `.pck` and the
+  extension library the Godot client itself needs.
+
+The two modes that need a display -- `shot`, which renders a window, and `jsjoin`, whose joiner is
+the raylib reference client -- are left to a machine that has one. The reference client's fourth
+release target, Android, is not one the port has: there is no touch layer and no Android preset here.
+
 ## Running the scene
 
 Pressing play with no `GOATSD_TICKET` is the normal way to play it: **a session is

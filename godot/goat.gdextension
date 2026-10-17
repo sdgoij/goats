@@ -17,7 +17,13 @@ reloadable = true
 
 windows.debug.x86_64 = "res://addons/goats_godot/bin/windows/goats_godot.dll"
 windows.release.x86_64 = "res://addons/goats_godot/bin/windows/goats_godot.dll"
+; Both Linux architectures land at the same path: `crates/godot/build.sh` names the
+; platform from `uname` (`linux`) rather than from the machine's architecture, and a given
+; checkout holds one build. The two tags differ only in which one Godot resolves -- without
+; the `arm64` pair an aarch64 Godot finds no library and the extension never loads.
 linux.debug.x86_64 = "res://addons/goats_godot/bin/linux/libgoats_godot.so"
 linux.release.x86_64 = "res://addons/goats_godot/bin/linux/libgoats_godot.so"
+linux.debug.arm64 = "res://addons/goats_godot/bin/linux/libgoats_godot.so"
+linux.release.arm64 = "res://addons/goats_godot/bin/linux/libgoats_godot.so"
 macos.debug = "res://addons/goats_godot/bin/macos/libgoats_godot.dylib"
 macos.release = "res://addons/goats_godot/bin/macos/libgoats_godot.dylib"

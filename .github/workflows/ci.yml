@@ -1,7 +1,9 @@
 name: CI
 
 # Tests run on every push and pull request. Tagged pushes (`v*`) additionally
-# build the three release binaries and publish them as a GitHub Release.
+# build the release artifacts -- the three desktop binaries, the phone APK, and the
+# Godot client for the same three desktop targets -- and publish them as a GitHub
+# Release.
 #
 # The action majors below are the first of each action that run on Node 24: Node
 # 20 is removed from the runners on 2026-09-23. See github.blog/changelog,
@@ -59,6 +61,113 @@ jobs:
       # command.
       - name: Test the scene on the engine
         run: cargo test --release -p harness -- --include-ignored --nocapture
+
+  # The Godot client, tested for the same three desktop targets the reference client ships for
+  # (`build`'s matrix). None of this ran in CI before: the port was only ever checked by hand on the
+  # machine it was written on, which is how a `PROTOCOL_VERSION` mismatch -- a stale extension; the
+  # library is git-ignored and rebuilt -- stayed invisible until a player met it. The `jsjoin` mode,
+  # whose joiner is the reference client itself, is the one that turns that into a red run.
+  #
+  # The reference's fourth target, Android, is deliberately absent: the port has no touch layer and no
+  # Android preset, so there is nothing to build for it yet.
+  #
+  # `needs: test`, so it starts only once the scene's own tests and the crates that need no engine
+  # are green: there is no point testing and building a client for a scene whose tests are failing.
+  #
+  # The steps are `sh` on all three runners rather than `sh` on Linux and PowerShell on Windows: the
+  # gates are POSIX scripts, and the Windows runner's Git Bash translates the paths Godot (a native
+  # binary) is handed -- the same reason the port is developed under MSYS. `timeout`, `unzip`,
+  # `sha256sum` and `cygpath` all come with it; on Linux `unzip` is installed below, and the
+  # `unzip`/`tar` fallbacks cover a runner that has only one of them.
+  godot:
+    name: Godot client (${{ matrix.name }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            asset: Godot_v4.7.2-stable_linux.x86_64.zip
+            exe: Godot_v4.7.2-stable_linux.x86_64
+            sha256: cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            asset: Godot_v4.7.2-stable_linux.arm64.zip
+            exe: Godot_v4.7.2-stable_linux.arm64
+            sha256: 5dd0d86405cf7e8adf79fb6377b38ba682a2846cb378ffe5364f38c01ad29b9d
+          - name: windows-x86_64
+            os: windows-latest
+            asset: Godot_v4.7.2-stable_win64.exe.zip
+            exe: Godot_v4.7.2-stable_win64.exe
+            sha256: 731980f9608d61333e5baf54a2ef17210acc7a538446c0cb9969f002aca1e953
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # What the extension needs beyond Rust: a C toolchain and cmake for the bundled libopus
+      # behind `crates/voice`, and libclang for Slag's bindgen. The raylib and Wayland packages the
+      # `build` job installs are not needed here -- `crates/godot` takes Slag without the `raylib`
+      # feature, because Godot draws.
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang libclang-dev unzip
+      # The engine every gate is run by, by release *and* digest. `--headless` is the whole of the
+      # need: a gate is a `SceneTree` script, and Godot's build links nothing but the C library --
+      # the display, audio and input drivers are all `dlopen`ed -- so no X, no GPU and no extra
+      # packages. `--version` doubles as a load test: a missing library fails here, not in a gate.
+      - name: Install Godot
+        shell: bash
+        run: |
+          curl -fsSLo godot.zip "https://github.com/godotengine/godot/releases/download/4.7.2-stable/${{ matrix.asset }}"
+          echo "${{ matrix.sha256 }}  godot.zip" | sha256sum -c -
+          mkdir -p godot-bin
+          if command -v unzip >/dev/null 2>&1; then
+            unzip -q godot.zip -d godot-bin
+          else
+            tar -xf godot.zip -C godot-bin
+          fi
+          chmod +x "godot-bin/${{ matrix.exe }}"
+          echo "GODOT_BIN=$PWD/godot-bin/${{ matrix.exe }}" >> "$GITHUB_ENV"
+          "godot-bin/${{ matrix.exe }}" --version
+      # The extension *first*: a godot-rust library is not registered until Godot has scanned the
+      # descriptor, so the import pass has to follow the build rather than precede it.
+      - name: Build the GDExtension
+        shell: bash
+        run: sh crates/godot/build.sh release
+      - name: Import the project
+        shell: bash
+        run: |
+          "$GODOT_BIN" --headless --path godot --import
+      - name: Run the gates
+        shell: bash
+        run: sh godot/tools/gates.sh
+      # The session modes that need no window: `shot` renders in one and `jsjoin` joins with the
+      # raylib reference client, so both are left to a machine with a display.
+      - name: Run the session modes
+        shell: bash
+        run: |
+          cargo build --release -p server
+          for mode in join refuse herd pair death hostdeath pull offline; do
+            echo "::group::interop.sh $mode"
+            sh godot/tools/interop.sh "$mode"
+            echo "::endgroup::"
+          done
+      # The extension and every gate log, so a red run can be read without reproducing it.
+      - name: Upload the extension and the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: godot-extension-${{ matrix.name }}
+          path: |
+            godot/addons/goats_godot/bin/
+            target/gate-logs/
+          if-no-files-found: ignore
 
   # The game embeds every asset it needs, so each release is a single binary.
   build:
@@ -255,13 +364,202 @@ jobs:
           path: goats-android-arm64-v8a.apk
           if-no-files-found: error
 
+  # The Godot client's *build*: the same three targets, exported and packaged with what a
+  # reference-client release carries.
+  #
+  # The client's own files cannot match the raylib one's -- a Godot export is the game packed into a
+  # `.pck` beside the binary and the GDExtension library the descriptor names -- but everything that
+  # *travels with* the client does, because those are the things a player needs: the server
+  # (`goatsd`) to host a session of their own, the licence and the API reference, and the two example
+  # mods as zips in `mods/`, for the release to exercise on its first run. The port's loader looks
+  # for `mods/` beside the executable, the same place the reference's does.
+  #
+  # It needs the export templates (a ~1.2 GB download covering every platform at once, cached per OS
+  # so only the first run pays for it) and the GDExtension built for the target, so it does both.
+  #
+  # `needs: godot` -- the test job above -- so nothing is packaged from a tree whose gates are red,
+  # and it is off the PR path because the template download is large and an export is the one step a
+  # PR cannot exercise cheaply.
+  godot-build:
+    name: Godot build (${{ matrix.name }})
+    needs: godot
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            asset: Godot_v4.7.2-stable_linux.x86_64.zip
+            exe: Godot_v4.7.2-stable_linux.x86_64
+            sha256: cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4
+            preset: Linux x86_64
+            out: goats
+            smoke: dist/goats
+            package: goats-godot-linux-x86_64.tar.gz
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            asset: Godot_v4.7.2-stable_linux.arm64.zip
+            exe: Godot_v4.7.2-stable_linux.arm64
+            sha256: 5dd0d86405cf7e8adf79fb6377b38ba682a2846cb378ffe5364f38c01ad29b9d
+            preset: Linux arm64
+            out: goats
+            smoke: dist/goats
+            package: goats-godot-linux-aarch64.tar.gz
+          - name: windows-x86_64
+            os: windows-latest
+            asset: Godot_v4.7.2-stable_win64.exe.zip
+            exe: Godot_v4.7.2-stable_win64.exe
+            sha256: 731980f9608d61333e5baf54a2ef17210acc7a538446c0cb9969f002aca1e953
+            preset: Windows Desktop
+            out: goats.exe
+            smoke: dist/goats.console.exe
+            package: goats-godot-windows-x86_64.zip
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang libclang-dev unzip
+      # The editor that does the export, by release and digest: a CI run that silently picked up a
+      # different engine would be building against something the port is not written for.
+      - name: Install Godot
+        shell: bash
+        run: |
+          curl -fsSLo godot.zip "https://github.com/godotengine/godot/releases/download/4.7.2-stable/${{ matrix.asset }}"
+          echo "${{ matrix.sha256 }}  godot.zip" | sha256sum -c -
+          mkdir -p godot-bin
+          if command -v unzip >/dev/null 2>&1; then
+            unzip -q godot.zip -d godot-bin
+          else
+            tar -xf godot.zip -C godot-bin
+          fi
+          chmod +x "godot-bin/${{ matrix.exe }}"
+          echo "GODOT_BIN=$PWD/godot-bin/${{ matrix.exe }}" >> "$GITHUB_ENV"
+          "godot-bin/${{ matrix.exe }}" --version
+
+      # The templates the export packs with, by digest, into the directory Godot looks in -- and that
+      # path is not the same on Linux and on Windows. One key per OS, and both Linux arches share it:
+      # the `.tpz` carries every platform's templates, so the directory it unpacks to is identical.
+      - name: Restore the export templates
+        id: templates
+        uses: actions/cache@v4
+        with:
+          path: "${{ runner.os == 'Windows' && '~/AppData/Roaming/Godot/export_templates/4.7.2.stable' || '~/.local/share/godot/export_templates/4.7.2.stable' }}"
+          key: godot-templates-${{ runner.os }}-4.7.2.stable
+
+      - name: Install the export templates
+        if: steps.templates.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -fsSLo templates.tpz "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz"
+          echo "f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011  templates.tpz" | sha256sum -c -
+          rm -rf templates t
+          mkdir -p t
+          if command -v unzip >/dev/null 2>&1; then
+            unzip -q templates.tpz -d t
+          else
+            tar -xf templates.tpz -C t
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            dir="$HOME/AppData/Roaming/Godot/export_templates/4.7.2.stable"
+          else
+            dir="$HOME/.local/share/godot/export_templates/4.7.2.stable"
+          fi
+          mkdir -p "$(dirname "$dir")"
+          rm -rf "$dir"
+          mv t/templates "$dir"
+          ls "$dir" | head -6
+
+      # The extension the export bundles, into the path the descriptor names for this platform.
+      - name: Build the GDExtension
+        shell: bash
+        run: sh crates/godot/build.sh release
+
+      # The export proper. A Godot export writes the client, its `.pck`, and the extension library
+      # copied in beside them -- and on Windows a console wrapper too, from the preset's own setting.
+      - name: Export the client
+        shell: bash
+        run: |
+          mkdir -p dist
+          "$GODOT_BIN" --headless --path godot --export-release "${{ matrix.preset }}" "dist/${{ matrix.out }}"
+          ls -1 dist
+
+      # A packed client that never boots is a bad release, and the extension is the piece most likely
+      # to be missing or built for the wrong platform. `--quit-after` a few frames rather than a
+      # `timeout`: the scene says it is offline when it has no ticket and the bridge announces itself
+      # as it loads, so those two lines are a boot *and* a loaded GDExtension. The target is the
+      # console wrapper on Windows, because that export is GUI-subsystem and a shell does not wait
+      # for it -- the plain `.exe` would report an empty exit code and no output at all.
+      - name: Smoke the export
+        shell: bash
+        run: |
+          "${{ matrix.smoke }}" --headless --quit-after 120 > smoke.log 2>&1
+          code=$?
+          cat smoke.log
+          if [ "$code" -ne 0 ]; then echo "::error::the exported client exited $code"; exit 1; fi
+          grep -q "Initialize godot-rust" smoke.log || { echo "::error::the client never loaded the extension"; exit 1; }
+          grep -q "offline: no GOATSD_TICKET" smoke.log || { echo "::error::the client never ran the scene"; exit 1; }
+
+      - name: Build the server
+        shell: bash
+        run: cargo build --release -p server
+
+      # The same contents a reference release carries, plus the files the Godot export itself needs
+      # (the `.pck` and the extension library). A tarball on Linux, because the two binaries' execute
+      # bits have to survive it; a zip on Windows, like the reference's own archive.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pkg\mods | Out-Null
+          Copy-Item dist/* pkg/
+          Copy-Item target/release/goatsd.exe pkg/
+          Copy-Item README.md, LICENSE.md, APIv1.md pkg/
+          Compress-Archive -Path mods/birds/* -DestinationPath pkg/mods/birds.zip -Force
+          Compress-Archive -Path mods/fatguy/* -DestinationPath pkg/mods/fatguy.zip -Force
+          Set-Content pkg/mods/README.txt "birds.zip is a bundled world mod and fatguy.zip a bundled client mod; both load from this directory. Delete them (or run with --no-mods) for an unmodded game."
+          Compress-Archive -Path pkg/* -DestinationPath ${{ matrix.package }} -Force
+          Get-ChildItem pkg
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p pkg/mods
+          cp dist/* pkg/
+          cp target/release/goatsd pkg/
+          cp README.md LICENSE.md APIv1.md pkg/
+          if command -v zip >/dev/null; then
+            ( cd mods/birds && zip -qr ../../pkg/mods/birds.zip . )
+            ( cd mods/fatguy && zip -qr ../../pkg/mods/fatguy.zip . )
+          else
+            python3 -c "import shutil; shutil.make_archive('pkg/mods/birds', 'zip', 'mods/birds'); shutil.make_archive('pkg/mods/fatguy', 'zip', 'mods/fatguy')"
+          fi
+          echo "birds.zip is a bundled world mod and fatguy.zip a bundled client mod; both load from this directory. Delete them (or run with --no-mods) for an unmodded game." > pkg/mods/README.txt
+          tar -czf ${{ matrix.package }} -C pkg .
+          ls -1 pkg
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: godot-${{ matrix.name }}
+          path: ${{ matrix.package }}
+          if-no-files-found: error
+
   # Only a tag publishes; ordinary pushes just build and keep the artifacts.
   release:
     name: Publish release
-    # `android` as well: the APK is one of the four assets, and the desktop build
-    # finishing says nothing about the phone one -- without this edge the release
-    # could publish before `android` had even started, or after it had failed.
-    needs: [build, android]
+    # `android` as well: the APK is one of the release assets, and the desktop build finishing says
+    # nothing about the phone one -- without this edge the release could publish before `android`
+    # had even started, or after it had failed. `godot-build` is the same argument for the Godot
+    # client, which is a client of its own rather than a fourth desktop archive.
+    needs: [build, android, godot-build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -270,12 +568,12 @@ jobs:
       # By `name` rather than by `pattern` or by taking every artifact: one step per
       # asset, which is also the input that fails when an artifact is missing. A
       # `pattern` is a single glob handed to minimatch, so a newline-separated list
-      # of these four names is one pattern that matches nothing -- download-artifact
+      # of these names is one pattern that matches nothing -- download-artifact
       # then reports success having downloaded zero artifacts and never creates
       # `path` at all, which is how `dist` came to not exist. `name` also keeps a
       # future job's artifacts out of the release, which is the point of listing
-      # them: the three desktop archives and the phone APK (debug-signed -- see the
-      # `android` job).
+      # them: the three desktop archives, the phone APK (debug-signed -- see the
+      # `android` job), and the Godot client for the same three desktop targets.
       - uses: actions/download-artifact@v8
         with:
           name: windows-x86_64
@@ -291,6 +589,18 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: android-arm64-v8a
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: godot-windows-x86_64
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: godot-linux-x86_64
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: godot-linux-aarch64
           path: dist
       - name: List the assets
         run: ls -la dist

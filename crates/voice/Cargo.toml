@@ -6,10 +6,15 @@
 # the same codec on every host -- which a raylib peer and a Godot peer need before they can
 # hear each other at all.
 #
-# `libopus_sys` with `bundled` compiles libopus from source, so there is no system codec to
-# install. A browser has no such build and no microphone to feed it, so the target below
-# leaves the dependency out and the crate compiles to nothing there -- the same shape
-# `crates/mods` leaves its file watcher in (WASM.md section 5).
+# `libopus_sys` with `bundled` compiles libopus from source, and `static` links that source
+# *into* the host binary. Both are needed: `static` is what `bundled` already means on
+# Windows, macOS and Android, but on Linux/gnu `libopus_sys` defaults to a *dynamic* link,
+# which leaves `libopus.so.0` in the DT_NEEDED of anything that embeds this crate. A Godot
+# extension that names it then fails to load on a machine without the system codec, and
+# every gate reports "ModHost is not registered" -- which is exactly what CI found. A browser
+# has no such build and no microphone to feed it, so the target below leaves the dependency
+# out and the crate compiles to nothing there -- the same shape `crates/mods` leaves its file
+# watcher in (WASM.md section 5).
 [package]
 name = "voice"
 version = "0.1.0"
@@ -17,4 +22,4 @@ edition = "2024"
 license = "MIT"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-libopus_sys = { workspace = true, features = ["bundled"] }
+libopus_sys = { workspace = true, features = ["bundled", "static"] }
