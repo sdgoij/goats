@@ -24,14 +24,24 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 use godot::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
 use mods::watch::ModWatcher;
+#[cfg(not(target_arch = "wasm32"))]
 use plugin::{PluginSet, Side as PluginSide};
 use slag::{Context, HostCallbacks, JsObject, JsValue};
 
+// The browser has no transport to put behind `NetBridge` (`godot/WEB.md`), so
+// the class is a stub there; the scene that calls it is unchanged.
+#[cfg(not(target_arch = "wasm32"))]
 mod net;
+#[cfg(target_arch = "wasm32")]
+#[path = "net_web.rs"]
+mod net;
+#[cfg(not(target_arch = "wasm32"))]
 mod voice;
 
 /// The JavaScript facade (`goats`, `rl`) evaluated once, before any mod runs.
@@ -164,16 +174,19 @@ struct ModHost {
     /// is a plain field rather than an `Rc`-shared cell because nothing in the JavaScript
     /// facade reaches it: a plugin's imports are served inside `crates/plugin`, not through
     /// Slag.
+    #[cfg(not(target_arch = "wasm32"))]
     plugins: PluginSet,
     /// The directory `load_mods` was given. Kept so the file watcher can watch it: a change event
     /// carries an *absolute* path, and a mod is found by the source that contains it.
     mods_dir: Option<PathBuf>,
     /// The file watcher, when the scene asked for one (`GOATS_WATCH`, the port's `--watch`).
     /// Dropping it stops the watch.
+    #[cfg(not(target_arch = "wasm32"))]
     watcher: Option<ModWatcher>,
     /// Watched mods whose files changed recently, waiting for the writes to stop -- the same
     /// coalescing the raylib client does, and for the same reason: an editor writes a file in
     /// pieces, and a half-written entry must not be evaluated.
+    #[cfg(not(target_arch = "wasm32"))]
     settling: HashMap<String, Instant>,
 }
 
@@ -204,9 +217,12 @@ impl INode for ModHost {
             scene_call: Rc::new(RefCell::new(None)),
             module: None,
             outcomes: HashMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             plugins: PluginSet::new(),
             mods_dir: None,
+            #[cfg(not(target_arch = "wasm32"))]
             watcher: None,
+            #[cfg(not(target_arch = "wasm32"))]
             settling: HashMap::new(),
         }
     }
@@ -253,6 +269,7 @@ impl ModHost {
     /// How long a watched mod's files must stop changing before it is reloaded (`APIv1.md` section
     /// 2.5): one save is a burst of writes, and a half-written entry must not be evaluated. The raylib
     /// client's own settle.
+    #[cfg(not(target_arch = "wasm32"))]
     const WATCH_SETTLE: Duration = Duration::from_millis(250);
 
     /// `mod reload <id>` (`APIv1.md` section 2.5): read the mod again from disk and run it again.
@@ -283,15 +300,22 @@ impl ModHost {
     /// aid: a world mod is part of the compatibility set fixed at join, so a server watches nothing.
     #[func]
     fn watch_mods(&mut self) -> GString {
-        let Some(dir) = self.mods_dir.clone() else {
-            return GString::from("error no mods directory to watch");
-        };
-        match ModWatcher::new(&dir) {
-            Ok(watcher) => {
-                self.watcher = Some(watcher);
-                gstring(format!("ok watching {}", dir.display()))
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(dir) = self.mods_dir.clone() else {
+                return GString::from("error no mods directory to watch");
+            };
+            match ModWatcher::new(&dir) {
+                Ok(watcher) => {
+                    self.watcher = Some(watcher);
+                    gstring(format!("ok watching {}", dir.display()))
+                }
+                Err(error) => gstring(format!("error {error}")),
             }
-            Err(error) => gstring(format!("error {error}")),
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            GString::from("error the browser has no directory to watch")
         }
     }
 
@@ -300,42 +324,51 @@ impl ModHost {
     /// costs one `Option` test.
     #[func]
     fn poll_watch(&mut self) -> GString {
-        let now: Instant = Instant::now();
-        let paths: Vec<PathBuf> = match self.watcher.as_ref() {
-            Some(watcher) => watcher.take_changed(),
-            None => return GString::new(),
-        };
-        // The loader owns the path-to-mod mapping, so the ids come from there: a change belongs to a
-        // mod when the mod's own source contains it.
-        let mut touched: Vec<String> = Vec::new();
-        if let Some(loader) = self
-            .module
-            .as_ref()
-            .and_then(|module| module.loader.as_ref())
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            for path in &paths {
-                touched.extend(loader.mods_touching(path));
+            let now: Instant = Instant::now();
+            let paths: Vec<PathBuf> = match self.watcher.as_ref() {
+                Some(watcher) => watcher.take_changed(),
+                None => return GString::new(),
+            };
+            // The loader owns the path-to-mod mapping, so the ids come from there: a change belongs to a
+            // mod when the mod's own source contains it.
+            let mut touched: Vec<String> = Vec::new();
+            if let Some(loader) = self
+                .module
+                .as_ref()
+                .and_then(|module| module.loader.as_ref())
+            {
+                for path in &paths {
+                    touched.extend(loader.mods_touching(path));
+                }
             }
-        }
-        for id in touched {
-            self.settling.insert(id, now);
-        }
-        let mut ready: Vec<String> = self
-            .settling
-            .iter()
-            .filter(|(_, at)| now.duration_since(**at) >= Self::WATCH_SETTLE)
-            .map(|(id, _)| id.clone())
-            .collect();
-        ready.sort();
-        let mut report = String::new();
-        for id in ready {
-            self.settling.remove(&id);
-            match self.reload_one(&id) {
-                Ok(_) => report.push_str(&format!("{id}\n")),
-                Err(error) => eprintln!("[mods] {id} changed on disk but did not reload: {error}"),
+            for id in touched {
+                self.settling.insert(id, now);
             }
+            let mut ready: Vec<String> = self
+                .settling
+                .iter()
+                .filter(|(_, at)| now.duration_since(**at) >= Self::WATCH_SETTLE)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ready.sort();
+            let mut report = String::new();
+            for id in ready {
+                self.settling.remove(&id);
+                match self.reload_one(&id) {
+                    Ok(_) => report.push_str(&format!("{id}\n")),
+                    Err(error) => {
+                        eprintln!("[mods] {id} changed on disk but did not reload: {error}")
+                    }
+                }
+            }
+            gstring(report)
         }
-        gstring(report)
+        #[cfg(target_arch = "wasm32")]
+        {
+            GString::new()
+        }
     }
 
     /// The one reload: tear the live instance down, re-read the source, run the entry again. A read
@@ -603,6 +636,7 @@ impl ModHost {
             // An id the facade never began answers `error mod not loaded`, which is not a failure
             // worth a line: a disable that has nothing to tear down has still done its job.
             let _ = self.call_goats("__end", &[JsValue::string(id.clone())]);
+            #[cfg(not(target_arch = "wasm32"))]
             self.plugins.remove(&id);
             if let Some(module) = self.module.as_mut()
                 && let Some(loader) = module.loader.as_mut()
@@ -661,6 +695,7 @@ impl ModHost {
         // scene's own derivation, which is `goatsd`'s own order (`crates/server/src/headless.rs`).
         // A client mod's streams do not re-derive at all (`ABIv1.md` section 3.5), so this is
         // inert for the fixture that ships today.
+        #[cfg(not(target_arch = "wasm32"))]
         self.plugins.seed_all(seed as i32);
         answer
     }
@@ -686,16 +721,24 @@ impl ModHost {
     /// which is ten times a second rather than sixty.
     #[func]
     fn drive_wasm(&mut self, dt: f64, tick_world: bool, belly: f64) -> GString {
-        if self.plugins.is_empty() {
-            return GString::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.plugins.is_empty() {
+                return GString::new();
+            }
+            self.plugins.set_belly(belly as f32);
+            self.plugins.tick_all(dt as f32, tick_world);
+            // `crates/plugin` builds the bridge as JSON already -- `{id: fill}`, the shape the HUD
+            // reads -- so it is parsed back only to be a value the scene can take apart.
+            let hud: serde_json::Value = serde_json::from_str(&self.plugins.hud_json())
+                .unwrap_or_else(|_| serde_json::json!({}));
+            gstring(serde_json::json!({ "hud": hud }).to_string())
         }
-        self.plugins.set_belly(belly as f32);
-        self.plugins.tick_all(dt as f32, tick_world);
-        // `crates/plugin` builds the bridge as JSON already -- `{id: fill}`, the shape the HUD
-        // reads -- so it is parsed back only to be a value the scene can take apart.
-        let hud: serde_json::Value = serde_json::from_str(&self.plugins.hud_json())
-            .unwrap_or_else(|_| serde_json::json!({}));
-        gstring(serde_json::json!({ "hud": hud }).to_string())
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (dt, tick_world, belly);
+            GString::new()
+        }
     }
 
     /// What one compiled mod's module reports about itself: the ABI it negotiated, the
@@ -704,9 +747,17 @@ impl ModHost {
     /// the same JSON the raylib client shows through `modWasmInfo`.
     #[func]
     fn wasm_describe(&mut self, id: GString) -> GString {
-        match self.plugins.describe_json(id.to_string().as_str()) {
-            Some(json) => gstring(json),
-            None => GString::from("null"),
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match self.plugins.describe_json(id.to_string().as_str()) {
+                Some(json) => gstring(json),
+                None => GString::from("null"),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = id;
+            GString::from("null")
         }
     }
 
@@ -774,8 +825,11 @@ impl ModHost {
                 String::new()
             }
         };
+        #[cfg(not(target_arch = "wasm32"))]
         let compiled: serde_json::Value = serde_json::from_str(&self.plugins.published_json())
             .unwrap_or_else(|_| serde_json::json!({}));
+        #[cfg(target_arch = "wasm32")]
+        let compiled: serde_json::Value = serde_json::json!({});
         let nothing_compiled = compiled
             .as_object()
             .map(|map| map.is_empty())
@@ -818,6 +872,7 @@ impl ModHost {
         let Some(data) = state.get("data").and_then(|data| data.as_object()) else {
             return GString::from("ok");
         };
+        #[cfg(not(target_arch = "wasm32"))]
         for (id, value) in data {
             let Some(encoded) = value.as_str() else {
                 continue;
@@ -835,6 +890,8 @@ impl ModHost {
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        let _ = data;
         GString::from("ok")
     }
 
@@ -858,7 +915,10 @@ impl ModHost {
         // A compiled mod's instance goes with its mod, and the scene is going down: the module's
         // store is dropped here rather than left to the process, so nothing a plugin owns outlives
         // the frame it was driven in.
-        self.plugins = PluginSet::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.plugins = PluginSet::new();
+        }
         match self.call_goats("__fireShutdown", &[]) {
             Ok(_) => GString::from("ok"),
             Err(error) => gstring(format!("error: {error}")),
@@ -1497,6 +1557,7 @@ impl ModHost {
                 .map(|wasm| (wasm.bytes.clone(), manifest.side))
         });
 
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut note = match loader.get(id).and_then(|manifest| manifest.entry_js()) {
             Some(js) => {
                 // Mapped to an owned error first, so the module's borrow ends before the facade is
@@ -1517,6 +1578,7 @@ impl ModHost {
             // the assets and the tuning tree are the whole of it.
             None => format!("loaded {id} ({asset_count} asset(s), no entry)"),
         };
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some((bytes, side)) = compiled {
             // An ABI this build does not know, a missing import or a file that is not a module
             // fails *here*, before any of the mod's code runs, and is named like any other broken
@@ -1533,6 +1595,8 @@ impl ModHost {
                 .map_err(|error| format!("{id}: {error}"))?;
             note = format!("loaded {id} ({asset_count} asset(s), a compiled module)");
         }
+        #[cfg(target_arch = "wasm32")]
+        let _ = compiled;
         Ok(note)
     }
 }

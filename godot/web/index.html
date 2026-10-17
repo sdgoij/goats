@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slag Goat</title>
+    <style>
+      /* The shell around the client. The game itself is an iframe at a 16:9
+         stage, about the width of a YouTube player; everything else on this
+         page is chrome, not the client. Keep it dependency-free: this file is
+         copied beside the export rather than built. */
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d10;
+        --panel: #12161c;
+        --line: #232a33;
+        --ink: #c8d0da;
+        --dim: #7d8794;
+        --accent: #8ec07c;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        display: flex;
+        flex-direction: column;
+      }
+      header.bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--line);
+        flex-wrap: wrap;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-weight: 650;
+        letter-spacing: 0.14em;
+        font-size: 13px;
+      }
+      .brand .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 10px rgb(142 192 124 / 70%);
+      }
+      .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .field { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); }
+      select, button {
+        font: inherit;
+        color: var(--ink);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 6px 11px;
+      }
+      select:disabled, button:disabled { opacity: 0.45; }
+      button { cursor: pointer; }
+      button:not(:disabled):hover { border-color: #3a4552; }
+      button.primary { border-color: #3f5c39; color: #dff0d8; }
+      main {
+        flex: 1;
+        width: 100%;
+        padding: 24px 20px 40px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+      }
+      /* The stage: what a viewer thinks of as "the game". */
+      #player {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+      }
+      .stage {
+        width: min(100%, 1120px);
+        aspect-ratio: 16 / 9;
+        background: #000;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 18px 60px rgb(0 0 0 / 55%);
+      }
+      .stage iframe {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: #000;
+      }
+      .stage:fullscreen {
+        width: 100vw;
+        height: 100vh;
+        aspect-ratio: auto;
+        border: 0;
+        border-radius: 0;
+        display: grid;
+        place-items: center;
+        background: #000;
+      }
+      .stage:fullscreen iframe {
+        width: min(100vw, calc(100vh * 16 / 9));
+        height: min(100vh, calc(100vw * 9 / 16));
+      }
+      .caption {
+        width: min(100%, 1120px);
+        margin: 0;
+        color: var(--dim);
+        font-size: 12.5px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .caption a { color: var(--accent); text-decoration: none; }
+      .caption a:hover { text-decoration: underline; }
+
+      /* The mod editor scaffold. Inline with the player, same width, so the
+         16:9 stage stays the page's only fixed-size box. */
+      #mods {
+        width: min(100%, 1120px);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+        overflow: hidden;
+      }
+      .panel-head {
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .panel-head h2 { margin: 0; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; }
+      .panel-head p { margin: 0; color: var(--dim); font-size: 12.5px; }
+      .mods-grid { display: grid; grid-template-columns: 220px 1fr; min-height: 360px; }
+      @media (max-width: 720px) { .mods-grid { grid-template-columns: 1fr; } }
+      .mods-side {
+        padding: 14px;
+        border-right: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      @media (max-width: 720px) {
+        .mods-side { border-right: 0; border-bottom: 1px solid var(--line); }
+      }
+      .mod-list { list-style: none; margin: 8px 0 0; padding: 0; flex: 1; }
+      .mod-list li {
+        padding: 7px 9px;
+        border-radius: 6px;
+        color: var(--dim);
+        font-size: 12.5px;
+      }
+      .mod-list .empty { border: 1px dashed var(--line); text-align: center; }
+      .mods-main { display: flex; flex-direction: column; min-width: 0; }
+      .tabline {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 9px 14px;
+        border-bottom: 1px solid var(--line);
+        color: var(--dim);
+        font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .badge {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 1px 8px;
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      #mod-source {
+        flex: 1;
+        min-height: 240px;
+        resize: vertical;
+        padding: 14px;
+        border: 0;
+        outline: 0;
+        background: #0d1014;
+        color: #b9c4d0;
+        font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        tab-size: 4;
+      }
+      .editor-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-top: 1px solid var(--line);
+      }
+      .editor-actions .hint { color: var(--dim); font-size: 12px; margin-left: auto; }
+      footer {
+        padding: 0 20px 22px;
+        color: var(--dim);
+        font-size: 12px;
+        text-align: center;
+      }
+      footer a { color: var(--accent); text-decoration: none; }
+      footer a:hover { text-decoration: underline; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand"><span class="dot"></span> SLAG GOAT</div>
+      <div class="controls">
+        <label class="field">
+          Client
+          <select id="client" aria-label="Client">
+            <option value="godot" selected>Godot (WebAssembly)</option>
+            <!-- The reference client's browser build is planned; point its
+                 entry at e.g. "reference/index.html" and drop `disabled`. -->
+            <option value="reference" disabled>Reference (soon)</option>
+          </select>
+        </label>
+        <button id="mods-toggle" aria-expanded="false" aria-controls="mods">Mod editor</button>
+        <button id="fullscreen">Fullscreen</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="player" aria-label="Game client">
+        <div class="stage" id="stage">
+          <iframe
+            id="frame"
+            src="client/index.html"
+            title="Slag Goat — Godot client"
+            allow="autoplay; fullscreen; microphone; gamepad"
+          ></iframe>
+        </div>
+        <p class="caption">
+          <span id="client-name">Godot client</span>
+          <a id="open-tab" href="client/index.html" target="_blank" rel="noopener">open in a new tab</a>
+        </p>
+      </section>
+
+      <!-- Scaffold: the editor exists so its place in the page is settled. Its
+           controls are deliberately disabled until the mod API and a storage
+           story (import from disk, save, export) are wired to the game. -->
+      <section id="mods" hidden aria-labelledby="mods-title">
+        <div class="panel-head">
+          <h2 id="mods-title">Mod editor</h2>
+          <p>Scaffold only — not yet connected to the running client.</p>
+        </div>
+        <div class="mods-grid">
+          <aside class="mods-side">
+            <button class="primary" disabled title="Not wired yet">New mod</button>
+            <button disabled title="Not wired yet">Import…</button>
+            <ul class="mod-list"><li class="empty">No mods loaded</li></ul>
+          </aside>
+          <div class="mods-main">
+            <div class="tabline"><span>untitled.mod.js</span><span class="badge">unsaved</span></div>
+            <textarea id="mod-source" spellcheck="false" aria-label="Mod source">// A mod is a Slag program that registers itself with the game.
+// This template is placeholder text until the editor is wired.
+//
+// goats.mod({
+//   name: "untitled",
+//   setup(api) {
+//     // api.draw, api.world, api.audio, ...
+//   },
+// });
+</textarea>
+            <div class="editor-actions">
+              <button disabled title="Not wired yet">Run</button>
+              <button disabled title="Not wired yet">Save</button>
+              <button disabled title="Not wired yet">Export</button>
+              <span class="hint">Planned: import / customize / create / save / export.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      Clients: <a href="https://godotengine.org/" target="_blank" rel="noopener">Godot</a> (WebAssembly)
+      &middot; Reference (planned) &middot; mods run on
+      <a href="https://github.com/sdgoij/slag" target="_blank" rel="noopener">Slag</a>.
+    </footer>
+
+    <script>
+      // One place to teach the shell about a client. `src` is relative to this
+      // page; the Godot export is packaged under client/ (see
+      // godot/tools/package_web.sh), and the reference client will go under
+      // reference/ once its browser build exists.
+      const CLIENTS = {
+        godot: { label: "Godot client", src: "client/index.html" },
+        reference: { label: "Reference client", src: "reference/index.html" },
+      };
+
+      const frame = document.getElementById("frame");
+      const select = document.getElementById("client");
+      const clientName = document.getElementById("client-name");
+      const openTab = document.getElementById("open-tab");
+      const stage = document.getElementById("stage");
+
+      select.addEventListener("change", () => {
+        const client = CLIENTS[select.value];
+        if (!client) return;
+        frame.src = client.src;
+        frame.title = "Slag Goat — " + client.label;
+        clientName.textContent = client.label;
+        openTab.href = client.src;
+      });
+
+      document.getElementById("fullscreen").addEventListener("click", () => {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else stage.requestFullscreen?.();
+      });
+
+      const mods = document.getElementById("mods");
+      const modsToggle = document.getElementById("mods-toggle");
+      modsToggle.addEventListener("click", () => {
+        const open = mods.hidden;
+        mods.hidden = !open;
+        modsToggle.setAttribute("aria-expanded", String(open));
+        if (open) mods.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    </script>
+  </body>
+</html>

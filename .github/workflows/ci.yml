@@ -1,6 +1,8 @@
 name: CI
 
-# Tests run on every push and pull request. Tagged pushes (`v*`) additionally
+# Tests run on every push and pull request. A push to `main` whose tests pass
+# also builds the Godot client's browser export and deploys the shell page
+# (`godot/web/index.html`) to GitHub Pages. Tagged pushes (`v*`) additionally
 # build the release artifacts -- the three desktop binaries, the phone APK, and the
 # Godot client for the same three desktop targets -- and publish them as a GitHub
 # Release.
@@ -8,8 +10,9 @@ name: CI
 # The action majors below are the first of each action that run on Node 24: Node
 # 20 is removed from the runners on 2026-09-23. See github.blog/changelog,
 # "Deprecation of Node 20 on GitHub Actions runners". (checkout v5,
-# setup-java v5, upload-artifact v7, download-artifact v8, action-gh-release v3,
-# setup-android v4.)
+# setup-java v5, cache v6, upload-artifact v7, download-artifact v8,
+# action-gh-release v3, setup-android v4; the Pages and emsdk actions below are
+# already on Node 24.)
 on:
   push:
     branches: [main]
@@ -168,6 +171,131 @@ jobs:
             godot/addons/goats_godot/bin/
             target/gate-logs/
           if-no-files-found: ignore
+
+  # The browser client: the GDExtension as an Emscripten side module, Godot's
+  # Web export, and the shell page (`godot/web/index.html`) wrapped around it.
+  # It is built on every push and pull request once the scene's tests and the
+  # desktop client's gates are green -- a PR should prove the browser build, not
+  # discover it is broken on merge. Only `main` (and a manual run) deploys: a
+  # pull request has no business publishing over the live page.
+  #
+  # The wasm side is pinned twice, because both halves have moved: emsdk 5.0.7
+  # is the Emscripten the extension is linked with, and `nightly-2026-08-29` is
+  # the nightly whose `rust-src`/`-Zbuild-std` the port was checked against.
+  web:
+    name: Web build
+    needs: [test, godot]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      # gdext's wasm support is nightly-only, and `-Zbuild-std` needs rust-src.
+      # `WEB_TOOLCHAIN` is the name build_web.sh asks cargo for, so this is a
+      # pin rather than a second, ignored installation.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-29
+          components: rust-src
+          targets: wasm32-unknown-emscripten
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang libclang-dev unzip
+      # The action caches the SDK under `emsdk-cache`; the version is the one the
+      # module's link flags are written for, not "latest".
+      - name: Install emsdk
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: 5.0.7
+          actions-cache-folder: emsdk-cache
+      # The exporter, by release and digest -- the same editor the desktop job
+      # uses, because the preset and the templates are the same ones.
+      - name: Install Godot
+        shell: bash
+        run: |
+          curl -fsSLo godot.zip "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip"
+          echo "cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4  godot.zip" | sha256sum -c -
+          mkdir -p godot-bin
+          unzip -q godot.zip -d godot-bin
+          chmod +x godot-bin/Godot_v4.7.2-stable_linux.x86_64
+          echo "GODOT_BIN=$PWD/godot-bin/Godot_v4.7.2-stable_linux.x86_64" >> "$GITHUB_ENV"
+          godot-bin/Godot_v4.7.2-stable_linux.x86_64 --version
+      # The `web_dlink` templates the Web preset selects. The Linux key is the
+      # one `godot-build` uses, so the two jobs share a populated cache.
+      - name: Restore the export templates
+        id: templates
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/share/godot/export_templates/4.7.2.stable
+          key: godot-templates-${{ runner.os }}-4.7.2.stable
+      - name: Install the export templates
+        if: steps.templates.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -fsSLo templates.tpz "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz"
+          echo "f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011  templates.tpz" | sha256sum -c -
+          rm -rf t
+          mkdir -p t
+          unzip -q templates.tpz -d t
+          dir="$HOME/.local/share/godot/export_templates/4.7.2.stable"
+          mkdir -p "$(dirname "$dir")"
+          rm -rf "$dir"
+          mv t/templates "$dir"
+      - name: Build the web extension
+        shell: bash
+        env:
+          WEB_TOOLCHAIN: nightly-2026-08-29
+        run: sh godot/tools/build_web.sh
+      # The export into `client/` and the shell at the root, which is the layout
+      # `godot/web/index.html` names (`client/index.html`).
+      - name: Export and wrap the client
+        shell: bash
+        run: sh godot/tools/package_web.sh dist-web
+      # A static host serves whatever it is handed; the four files below are the
+      # ones whose absence would produce a blank frame rather than a red build.
+      - name: Check the package
+        shell: bash
+        run: |
+          test -f dist-web/index.html
+          grep -q 'src="client/index.html"' dist-web/index.html
+          test -f dist-web/client/index.pck
+          test -f dist-web/client/index.side.wasm
+          test -f dist-web/client/goats_godot.wasm
+          ls -lh dist-web dist-web/client
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist-web
+
+  # Publishing is its own job for the two permissions it needs (`pages: write`
+  # and an OIDC token) and because the build above also runs on pull requests.
+  deploy-web:
+    name: Deploy to GitHub Pages
+    needs: web
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # A deployment is ordered: a later run waits rather than cancelling one
+    # already publishing.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5
 
   # The game embeds every asset it needs, so each release is a single binary.
   build:
@@ -449,7 +577,7 @@ jobs:
       # the `.tpz` carries every platform's templates, so the directory it unpacks to is identical.
       - name: Restore the export templates
         id: templates
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: "${{ runner.os == 'Windows' && '~/AppData/Roaming/Godot/export_templates/4.7.2.stable' || '~/.local/share/godot/export_templates/4.7.2.stable' }}"
           key: godot-templates-${{ runner.os }}-4.7.2.stable

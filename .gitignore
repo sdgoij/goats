@@ -9,6 +9,9 @@ target/
 #*.pyc
 web/dist
 
+# The browser export and the shell copy `godot/tools/package_web.sh` produces.
+/dist-web/
+
 # A world mod a host fetched at join time (M18). Local to this checkout, and the
 # game writes it wherever `mods/` is.
 mods/pulled-*

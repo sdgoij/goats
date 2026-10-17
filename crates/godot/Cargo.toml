@@ -23,6 +23,17 @@ publish = false
 # than an rlib.
 crate-type = ["cdylib"]
 
+[features]
+# The web (Emscripten) build. `experimental-wasm` is gdext's opt-in, and
+# `lazy-function-tables` is not an optimization: gdext's eager function table makes
+# the wasm link take many minutes. Passed only by `godot/tools/build_web.sh`; the
+# native builds never see it.
+web = [
+    "godot/experimental-wasm",
+    "godot/experimental-wasm-nothreads",
+    "godot/lazy-function-tables",
+]
+
 [dependencies]
 # `api-4-7` selects the bundled Godot 4.7 extension API. Without it, gdext looks
 # for a Godot binary to dump `extension_api.json` from at build time, which a
@@ -34,6 +45,31 @@ godot = { workspace = true, features = ["api-4-7"] }
 # JavaScript facade (`godot/PORT.md` section 6).
 mods = { workspace = true }
 
+# `serde`, for the one intent that is a *shape* rather than a scalar: the world a host
+# publishes. It is the same derive `crates/goats/src/net.rs` uses to parse the same JSON,
+# which is what keeps the two engines' world one object.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Everything below needs a UDP socket, a thread, a microphone or a module host a
+# browser tab does not have (`godot/WEB.md`): iroh is QUIC over UDP, tokio runs a
+# multi-threaded session loop, `libopus_sys` is a native C build and
+# `crates/plugin` drives Slag's wasm path. Gated by target rather than by a
+# feature, so the desktop, the phone and the harness keep all of it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The JavaScript engine, for **mods only** (`godot/PORT.md` section 6). The game
+# is GDScript; JavaScript does not run the frame.
+#
+# * `jit` is the reason Slag was chosen over a small interpreter: a mod runs at
+#   JavaScript speed rather than interpreter speed. It is native-only -- the JIT
+#   allocates RWX memory a wasm sandbox does not grant, so the browser build names
+#   the same crate without it and runs the interpreter (`godot/WEB.md`).
+# * `wasm` (a default feature) keeps the WebAssembly JS API, which the
+#   compiled-mod path (`crates/plugin`, `ABIv1.md`) needs.
+# * Deliberately **not** `raylib`: Godot draws. There is no `rl` in the facade at
+#   all -- a mod uses the API's own `goats.draw` / `goats.gfx` (`godot/PORT.md`
+#   section 6).
+slag = { workspace = true, features = ["jit"] }
 # The session layer: iroh transport, tickets, the join handshake and the roster.
 # These are the *same* crates the raylib client and `goatsd` use, which is what
 # makes the wire compatible by construction rather than by care (`godot/PORT.md`
@@ -52,30 +88,19 @@ pull = { workspace = true }
 # *into* this library, so the extension has no system codec to find when Godot dlopens it.
 # (`static` is not implied by `bundled` on Linux/gnu; see `crates/voice/Cargo.toml`.)
 voice = { workspace = true }
-# `serde`, for the one intent that is a *shape* rather than a scalar: the world a host
-# publishes. It is the same derive `crates/goats/src/net.rs` uses to parse the same JSON,
-# which is what keeps the two engines' world one object.
-serde = { workspace = true }
-serde_json = { workspace = true }
 # The runtime the session lives on. It gets a thread of its own
 # (`godot/native`'s sibling concern: a frame loop must never await).
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
-
-# The JavaScript engine, for **mods only** (`godot/PORT.md` section 6). The game
-# is GDScript; JavaScript does not run the frame.
-#
-# * `jit` is the reason Slag was chosen over a small interpreter: a mod runs at
-#   JavaScript speed rather than interpreter speed.
-# * `wasm` (a default feature) keeps the WebAssembly JS API, which the
-#   compiled-mod path (`crates/plugin`, `ABIv1.md`) needs.
-# * Deliberately **not** `raylib`: Godot draws. There is no `rl` in the facade at
-#   all -- a mod uses the API's own `goats.draw` / `goats.gfx` (`godot/PORT.md`
-#   section 6).
-slag = { workspace = true, features = ["jit"] }
 
 # The compiled-mod host (`ABIv1.md`, M17b): a mod that ships a `.wasm` module and no
 # JavaScript is decoded, instantiated and driven from Rust, so its frame path has no
 # JavaScript in front of it. This is the *same* crate the raylib client and `goatsd`
 # drive -- reused rather than re-grown, like `mods`, `session` and `proto` above -- which
-# is what makes a compiled mod behave identically on all three hosts.
+# is what makes a compiled mod behave identically on all three hosts. A tab has no
+# module host for it (`godot/WEB.md`), so the browser build leaves it out.
 plugin = { workspace = true }
+
+# The browser's Slag: the same engine, the interpreter instead of the JIT. The
+# target-specific declaration replaces the `jit` one above for `wasm32`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+slag = { workspace = true }

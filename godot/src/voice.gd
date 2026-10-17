@@ -46,6 +46,13 @@ var _playback: AudioStreamGeneratorPlayback = null
 var _muted := false
 
 func _ready() -> void:
+	# Nothing to do in the browser: voice's codec is compiled out on wasm, and opening the
+	# microphone is impossible without the capture driver anyway. It matters beyond that,
+	# though -- the capture bus must not be added: Godot's web audio library mishandles the
+	# `at_position = -1` that `AudioServer.add_bus()` passes on, reordering its bus array so
+	# the later `set_bus_mute` lands on the *master* bus and silences the whole game.
+	if OS.has_feature("web"):
+		return
 	var index := AudioServer.get_bus_index(BUS)
 	if index < 0:
 		AudioServer.add_bus()

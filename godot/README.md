@@ -51,7 +51,8 @@ plan.
 | `src/water_splash.gd` | The splashes, drawn: `water.js`'s pooled drops off a fixed `SPLASH_MAX` slot table, as one `MultiMeshInstance3D` |
 | `src/water_reflect.gd` | The reflection's setting: `water.js`'s three tiers, the leaf's clamp and the promise a build can keep |
 | `src/water_mirror.gd` | The reflection's pass: `renderWaterMirror`'s second camera, in a `SubViewport` sharing the scene's world (M20e) |
-| `tools/` | Headless verification scripts, and `interop.sh` |
+| `web/index.html` | The shell the browser build is served in: the client in a 16:9 stage, the client switcher and the mod editor scaffold (`WEB.md`) |
+| `tools/` | Headless verification scripts, `interop.sh`, and the web build/package scripts (`build_web.sh`, `package_web.sh`) |
 
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
 see Godot. It exposes `NetBridge` (the networking bridge over `session` and
@@ -481,9 +482,10 @@ assets and the extension library into one directory:
 sh crates/godot/build.sh release
 
 # `export_presets.cfg` has one preset per target the reference client ships for -- `Windows
-# Desktop`, `Linux x86_64`, `Linux arm64` -- and their names say the platform and the
-# architecture. The templates for the editor's own version are installed once (`Editor >
-# Manage Export Templates`, or the `.tpz` unpacked into the editor's `export_templates/`).
+# Desktop`, `Linux x86_64`, `Linux arm64` -- plus `Web`, which is the Godot client's own
+# (see `WEB.md`). Their names say the platform and the architecture. The templates for the
+# editor's own version are installed once (`Editor > Manage Export Templates`, or the
+# `.tpz` unpacked into the editor's `export_templates/`).
 Godot --headless --path godot --export-release "Windows Desktop" dist/goats.exe
 Godot --headless --path godot --export-release "Linux x86_64"   dist/goats
 ```
@@ -507,10 +509,26 @@ Windows, and a shell that launches one does not wait for it:
 The first line is the extension loading; the second is the scene running. Both, and a zero exit, are
 what CI asserts.
 
+## The browser
+
+The Godot client also runs in a tab: `crates/godot` builds as an Emscripten side
+module, `export_presets.cfg`'s `Web` preset packs it, and the project switches to
+Godot's Compatibility renderer under the `web` feature tag. `WEB.md` is the whole
+of it -- the build script, the flags, what is compiled out and why, and how to
+serve the result. The networking, voice and compiled-mod crates are gated out for
+`wasm32`; the scene itself is unchanged and runs offline.
+
+The export is wrapped in `godot/web/index.html`, a dependency-free shell that
+frames the client at a 16:9 stage (YouTube-player sized), carries a client
+switcher with a disabled slot for the reference client, and holds the mod
+editor's place in the page. `godot/tools/package_web.sh` exports into `client/`
+and copies the shell to the root of the served directory.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs the port for the same three desktop targets the reference client
-ships for -- `windows-x86_64`, `linux-x86_64`, `linux-aarch64` -- in two jobs, and in this order:
+ships for -- `windows-x86_64`, `linux-x86_64`, `linux-aarch64` -- in two desktop jobs plus a browser
+job, and in this order:
 
 * **`godot`** (every push and pull request, and only once the scene's own Rust tests are green:
   `needs: test`) is the *tests*: the extension built in release, Godot installed by release and
@@ -518,7 +536,12 @@ ships for -- `windows-x86_64`, `linux-x86_64`, `linux-aarch64` -- in two jobs, a
   session modes that need no window (`tools/interop.sh join refuse herd pair death hostdeath pull
   offline`). The extension and every gate log are uploaded, so a red run can be read without
   reproducing it.
-* **`godot-build`** (on `v*` tags and by hand, and only once the job above is green) is the *build*:
+* **`web`** (every push and pull request, and only once `test` and `godot` are green) is the
+  *browser build*: Emscripten 5.0.7 and a pinned nightly build the extension; the Web export and
+  the shell page are packaged under `dist-web/` and uploaded as a GitHub Pages artifact.
+  **`deploy-web`** (a push to `main`, or a manual run) publishes it to GitHub Pages -- the shell at
+  the site root, the client under `/client/`. Pull requests build the page but do not deploy it.
+* **`godot-build`** (on `v*` tags and by hand, and only once `godot` is green) is the *release build*:
   the same extension, the export templates, the export above, the smoke check, and a package with
   what a reference release carries -- `goats`, `goatsd`, `README.md`, `LICENSE.md`, `APIv1.md`, and
   `mods/` with the two example mods zipped and the same `README.txt` -- plus the `.pck` and the

@@ -29,8 +29,16 @@ scene={
 
 ; The microphone: `voice.gd` plays an `AudioStreamMicrophone` onto its capture bus, and without
 ; this Godot never opens the input device (so the capture is silence rather than an error).
+; A browser tab is different: voice is compiled out of the web build (`WEB.md`), and asking for
+; the microphone at startup is a permission prompt and a `NotAllowedError` for nothing.
 driver/enable_input=true
+driver/enable_input.web=false
 
 [rendering]
 
+; Desktop keeps Forward+; the browser can only run Godot's Compatibility
+; (WebGL 2) renderer, and the `web` feature tag picks that at load time
+; (`godot/WEB.md`).
+renderer/rendering_method="forward_plus"
+renderer/rendering_method.web="gl_compatibility"
 anti_aliasing/quality/msaa_3d=2

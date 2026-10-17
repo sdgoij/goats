@@ -27,3 +27,8 @@ linux.debug.arm64 = "res://addons/goats_godot/bin/linux/libgoats_godot.so"
 linux.release.arm64 = "res://addons/goats_godot/bin/linux/libgoats_godot.so"
 macos.debug = "res://addons/goats_godot/bin/macos/libgoats_godot.dylib"
 macos.release = "res://addons/goats_godot/bin/macos/libgoats_godot.dylib"
+; The browser's side module (`godot/WEB.md`). The build is single-threaded, so
+; one pair serves the export; a threaded export would need a `.threads.wasm32`
+; pair built with `+atomics` and both binaries shipped.
+web.debug.wasm32 = "res://addons/goats_godot/bin/web/goats_godot.wasm"
+web.release.wasm32 = "res://addons/goats_godot/bin/web/goats_godot.wasm"
