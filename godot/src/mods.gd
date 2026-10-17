@@ -40,6 +40,14 @@
 class_name Mods
 extends Node
 
+## The browser's mods directory. Godot's `user://` is IndexedDB-backed, so an
+## editor save survives a reload; the desktop keeps reading the reference
+## client's `mods/` (`resolve_dir`).
+const WEB_MODS := "user://mods"
+## The build's own mods, staged as zips by `godot/tools/package_web.sh` and packed
+## into the `.pck` by the Web preset's `bundled_mods/*` filter.
+const BUNDLED_MODS := "res://bundled_mods"
+
 ## The `ModHost` node, or null when the extension did not load. A node and not a bare object
 ## because a mod may draw, and drawing is the frame's.
 var host: Object
@@ -82,13 +90,20 @@ var world: ModWorld
 ## is built in `_ready` and needs it at once. A `Callable` and not a reference to the frame, for
 ## the reason `PlayerGoat.bleat` is one: this file does not link against the world modules.
 var scene_call: Callable = Callable()
+## The JavaScript callbacks the browser's mod editor calls. Kept so the
+## `JavaScriptObject` functions are not collected while `window` holds them.
+var _web_callbacks: Array = []
+## The `window` object the callbacks were installed on, so each call can publish
+## its answer for a caller that only has the property, not the return value.
+var _web_window: Variant = null
 ## The frame's own `netInSession()`: true while this client is in a session, as host or joiner. A
 ## `Callable` for the reason `scene_call` is one -- this file does not link against the net module --
 ## and it is the guard `modSetEnabled` needs: a world mod's side is fixed at join, so changing one
 ## mid-session would desync a joiner.
 var in_session: Callable = Callable()
 
-## Instantiate the runtime and load whatever `mods/` holds. Discovery, every entry, and the table.
+## Instantiate the runtime and load whatever the platform has: `mods/` on disk,
+## or `user://mods` in a tab. Discovery, every entry, and the table.
 ##
 ## A missing extension is not an error and not a crash: it is a build without the mod runtime,
 ## which is what `verify_mods` gates and what a probe without the library would see.
@@ -98,17 +113,127 @@ func _ready() -> void:
 	var node: Object = ClassDB.instantiate("ModHost")
 	add_child(node as Node)
 	host = node
-	dir = resolve_dir()
-	if dir == "":
-		_line("mod: no mods directory found")
+	_install_web_bridge()
+	if not _discover():
 		# Nothing to register, but the freeze is still the boot's shape: there is no entry left to
 		# run, so registration has nothing to be open *for* (`APIv1.md` section 4.4).
 		host.call("freeze")
 		return
+	_run()
+
+## Find the mods the platform has. The desktop walks the directory the reference
+## client walks; a tab reads `user://mods`, because a browser has no filesystem to
+## hand the Rust loader.
+func _discover() -> bool:
+	if OS.has_feature("web"):
+		return _discover_web()
+	dir = resolve_dir()
+	if dir == "":
+		_line("mod: no mods directory found")
+		return false
 	_line("mod: scanning " + dir)
 	# `load_mods` discovers and validates; `load_all` runs every entry, isolating the ones that
 	# throw -- so a broken mod costs its own row and not the load (`APIv1.md` section 7).
 	host.call("load_mods", dir)
+	return true
+
+## The browser's discovery: the build's own zips first, then `user://mods/<name>/`
+## with `mod.json` at its root and every file beneath it. Each mod is handed to
+## the host as a dictionary of manifest-relative names to bytes, which is the
+## same parser a directory takes. A zip a user imports is extracted by the
+## editor; this only unwraps the build's own bundles.
+func _discover_web() -> bool:
+	if not OS.get_environment("GOATS_NO_MODS").is_empty():
+		return false
+	dir = WEB_MODS
+	# Bundled first, then user: the loader replaces an id, so an edited copy saved
+	# under `user://mods` wins over the build's own copy on the next boot.
+	var added := _load_bundled_mods()
+	added = _load_user_mods() or added
+	if not added:
+		_line("mod: no mods in " + BUNDLED_MODS + " or " + WEB_MODS)
+	return added
+
+## The release's two mods, packed as zips in the project. `ZIPReader` gives back
+## the same bytes the loader would read from a directory -- a raw `.glb`/`.mp3`
+## under `res://` would have been imported by Godot instead.
+func _load_bundled_mods() -> bool:
+	if not DirAccess.dir_exists_absolute(BUNDLED_MODS):
+		return false
+	var zips: Array = []
+	for file: String in DirAccess.get_files_at(BUNDLED_MODS):
+		if file.get_extension().to_lower() == "zip":
+			zips.append(file)
+	zips.sort()
+	if zips.is_empty():
+		return false
+	_line("mod: scanning " + BUNDLED_MODS)
+	var added := false
+	for file: String in zips:
+		var files := _read_zip(BUNDLED_MODS.path_join(file))
+		if files.is_empty():
+			_line("mod: " + file + ": no files")
+			continue
+		var answer: String = String(host.call("load_mod_files", file.get_basename(), files))
+		if answer.begins_with("ok "):
+			added = true
+		else:
+			_line("mod: " + answer)
+	return added
+
+## The user's own mods, saved by the editor or imported into `user://mods`.
+func _load_user_mods() -> bool:
+	if not DirAccess.dir_exists_absolute(WEB_MODS):
+		return false
+	var names: Array = DirAccess.get_directories_at(WEB_MODS)
+	names.sort()
+	if names.is_empty():
+		return false
+	_line("mod: scanning " + WEB_MODS)
+	var added := false
+	for name: String in names:
+		var files := _read_memory_files(WEB_MODS.path_join(name), "")
+		if files.is_empty():
+			continue
+		var answer: String = String(host.call("load_mod_files", name, files))
+		if answer.begins_with("ok "):
+			added = true
+		else:
+			_line("mod: " + answer)
+	return added
+
+## A bundled `.zip` as the dictionary `ModHost::load_mod_files` takes. The archive
+## root is the mod root (`mod.json` at the top), the same layout the release ships.
+static func _read_zip(path: String) -> Dictionary:
+	var reader := ZIPReader.new()
+	if reader.open(path) != OK:
+		return {}
+	var files: Dictionary = {}
+	for name: String in reader.get_files():
+		if name.ends_with("/"):
+			continue
+		files[name] = reader.read_file(name)
+	reader.close()
+	return files
+
+## Every file under `path`, keyed by its path relative to the mod's root -- the shape
+## `ModHost::load_mod_files` takes. Binary assets ride as `PackedByteArray`.
+static func _read_memory_files(path: String, prefix: String) -> Dictionary:
+	var files: Dictionary = {}
+	for file: String in DirAccess.get_files_at(path):
+		var access := FileAccess.open(path.path_join(file), FileAccess.READ)
+		if access == null:
+			continue
+		files[prefix + file] = access.get_buffer(access.get_length())
+		access.close()
+	for child: String in DirAccess.get_directories_at(path):
+		files.merge(_read_memory_files(path.path_join(child), prefix + child + "/"))
+	return files
+
+## Run what `_discover` found: merge declared tuning, run every entry, freeze, and
+## hand the table to the scene. The order is the boot's own whether the manifests
+## came from disk or from memory.
+func _run() -> void:
 	# A mod's declared `tuning.json` merges *before* any entry runs (`APIv1.md` section 3.4). The table
 	# is the host's and the tree is the scene's, so the scene does the merge -- here, between
 	# discovery and the run. Its changes are dropped rather than queued, because no entry has
@@ -123,14 +248,167 @@ func _ready() -> void:
 	for line in report.split("\n"):
 		_line(line)
 	# `GOATS_WATCH` (not empty): reload a mod when its files change on disk (`APIv1.md` section 2.5),
-	# the port's `--watch`. A development aid, so it is a knob rather than a verb.
-	if not OS.get_environment("GOATS_WATCH").is_empty():
+	# the port's `--watch`. A development aid, so it is a knob rather than a verb -- and a tab has
+	# no directory to watch, so the web build skips it.
+	if not OS.has_feature("web") and not OS.get_environment("GOATS_WATCH").is_empty():
 		_line("mod: " + String(host.call("watch_mods")))
 	table = parse_table(host.call("mods_json"))
 	# The scene's own entry point for `goats` calls, registered once the host exists. An invalid
 	# `Callable` -- a gate driving the runtime with no frame behind it -- is handed over as it is,
 	# and the host answers a call with a clear error rather than panicking.
 	host.call("set_scene_call", scene_call)
+
+# ---------------------------------------------------------------------------
+# The browser's editor bridge
+# ---------------------------------------------------------------------------
+#
+# The shell page (`godot/web/index.html`) is a parent document; this scene is an
+# iframe, and the mod editor lives in the parent. Same-origin makes the seam a
+# few globals on `window`, installed here and called as
+# `frame.contentWindow.goatsModsSave(...)`:
+#
+#   goatsModsSave(request)   write `<name>/...` under `user://mods`, then run it
+#   goatsModsReload(request) run an unsaved buffer without writing it
+#   goatsModsRead(name)      the saved files, JSON with base64 values
+#   goatsModsState()         the mod table, exactly `mods_json`
+#
+# A request is JSON (`JSON.stringify` on the page): `{name, files: {relative
+# name: base64}}`. Base64 is the one representation both ends already have;
+# `PackedByteArray` cannot cross the JavaScript bridge as an object. The host
+# still parses and validates everything -- the bridge is storage and invocation,
+# not a second manifest reader.
+
+## Install the four callbacks in a tab. On any other platform there is no
+## JavaScriptBridge singleton and nothing to do.
+func _install_web_bridge() -> void:
+	if not OS.has_feature("web"):
+		return
+	var bridge: Object = Engine.get_singleton("JavaScriptBridge")
+	if bridge == null:
+		return
+	var window: Variant = bridge.call("get_interface", "window")
+	if window == null:
+		return
+	_web_window = window
+	_web_callbacks = [
+		bridge.call("create_callback", Callable(self, "_web_save")),
+		bridge.call("create_callback", Callable(self, "_web_reload")),
+		bridge.call("create_callback", Callable(self, "_web_read")),
+		bridge.call("create_callback", Callable(self, "_web_state")),
+	]
+	window.goatsModsSave = _web_callbacks[0]
+	window.goatsModsReload = _web_callbacks[1]
+	window.goatsModsRead = _web_callbacks[2]
+	window.goatsModsState = _web_callbacks[3]
+
+## `goatsModsSave`: write the request's files under `user://mods/<name>/`, then
+## insert/replace and run the mod. `user://` is IndexedDB-backed in a tab, so the
+## next page load discovers it in `_discover_web`.
+func _web_save(args: Array) -> String:
+	var request := _web_request(args)
+	if request.has("error"):
+		return _web_respond(String(request["error"]))
+	var name: String = request["name"]
+	var files: Dictionary = request["files"]
+	var root: String = WEB_MODS.path_join(name)
+	for file: String in files:
+		if not file.is_relative_path() or file.contains(".."):
+			return _web_respond("error file '%s' is not a relative name" % file)
+		var path: String = root.path_join(file)
+		var parent := path.get_base_dir()
+		DirAccess.make_dir_recursive_absolute(parent)
+		if not DirAccess.dir_exists_absolute(parent):
+			return _web_respond("error cannot create '%s'" % parent)
+		var access := FileAccess.open(path, FileAccess.WRITE)
+		if access == null:
+			return _web_respond("error cannot write '%s'" % path)
+		access.store_buffer(files[file])
+		access.close()
+	return _web_finish(String(host.call("reload_mod_files", name, files)))
+
+## `goatsModsReload`: run an unsaved buffer. The save path is the same call after
+## the files have been written.
+func _web_reload(args: Array) -> String:
+	var request := _web_request(args)
+	if request.has("error"):
+		return _web_respond(String(request["error"]))
+	return _web_finish(String(host.call(
+		"reload_mod_files", request["name"], request["files"]
+	)))
+
+## `goatsModsRead`: the files of a saved mod, for the editor to open. Values are
+## base64, the inverse of the save request.
+func _web_read(args: Array) -> String:
+	if args.is_empty():
+		return _web_respond("error no mod name")
+	var name := String(args[0])
+	if not _web_name_ok(name):
+		return _web_respond("error invalid mod name")
+	var files: Dictionary = {}
+	var root: String = WEB_MODS.path_join(name)
+	if DirAccess.dir_exists_absolute(root):
+		files = _read_memory_files(root, "")
+	else:
+		# A bundled mod is a zip in the project; opening it here is what lets the
+		# editor customize a mod the build shipped without saving a copy first.
+		var zip: String = BUNDLED_MODS.path_join(name + ".zip")
+		if not FileAccess.file_exists(zip):
+			return _web_respond("error no mod named '%s'" % name)
+		files = _read_zip(zip)
+	var encoded: Dictionary = {}
+	for file: String in files:
+		encoded[file] = Marshalls.raw_to_base64(files[file])
+	return _web_respond(JSON.stringify({"name": name, "files": encoded}))
+
+## `goatsModsState`: the table the Mods screen draws, so the editor's list and the
+## game's list are one table.
+func _web_state(_args: Array) -> String:
+	return _web_respond(String(host.call("mods_json")))
+
+## Decode `{name, files: {relative: base64}}`. The request is JSON text because a
+## JavaScript object's nested values do not cross the bridge as typed data.
+func _web_request(args: Array) -> Dictionary:
+	if args.is_empty():
+		return {"error": "error no request"}
+	var parsed: Variant = JSON.parse_string(String(args[0]))
+	if not (parsed is Dictionary):
+		return {"error": "error the request is not a JSON object"}
+	var name := String((parsed as Dictionary).get("name", ""))
+	if not _web_name_ok(name):
+		return {"error": "error invalid mod name"}
+	var encoded: Variant = (parsed as Dictionary).get("files", null)
+	if not (encoded is Dictionary):
+		return {"error": "error the request needs a files object"}
+	var files: Dictionary = {}
+	for file: String in encoded:
+		var text: Variant = encoded[file]
+		if not (text is String):
+			return {"error": "error file '%s' is not base64 text" % file}
+		files[file] = Marshalls.base64_to_raw(text)
+	return {"name": name, "files": files}
+
+## A mod's folder name, which is not its manifest id: the id is validated by the
+## loader, while this must stay a single path segment under `user://mods`.
+static func _web_name_ok(name: String) -> bool:
+	return not name.is_empty() and name != "." and name != ".." \
+		and not name.contains("/") and not name.contains("\\")
+
+## The scene's own table and tuning follow a saved or previewed mod, exactly as
+## they follow a reload (`APIv1.md` section 3.4). The host has already run it.
+func _web_finish(answer: String) -> String:
+	table = parse_table(host.call("mods_json"))
+	if answer.begins_with("ok mod reload "):
+		_merge_one_tuning(answer.trim_prefix("ok mod reload "))
+	return _web_respond(answer)
+
+## Publish the answer on `window.goatsModsLast` as well as returning it. Godot's
+## callback wrapper does pass a return value back, but a caller on the parent page
+## can read this property regardless of how the wrapper was invoked, and it makes
+## the bridge's contract explicit in one place.
+func _web_respond(answer: String) -> String:
+	if _web_window != null:
+		_web_window.goatsModsLast = answer
+	return answer
 
 ## Merge every discovered mod's declared `tuning.json` into the tree (`APIv1.md` section 3.4), in
 ## load order, before any entry runs. An unknown key is a warning, not a failure: the tree stops at

@@ -27,6 +27,40 @@ mkdir -p "$out/client"
 # so make `out` absolute before handing the file path over.
 out=$(CDPATH= cd -- "$out" && pwd)
 
+# The two mods the desktop release carries, staged as zips for the export's
+# `bundled_mods/*` include filter. A zip is what keeps the mod's raw bytes
+# (`mod.js`, a `.glb`, `.mp3`): Godot imports a raw media file into its own
+# resource, so the loader would otherwise never see the file the manifest names.
+# `mods.gd` reads these back with `ZIPReader` on boot.
+stage=$godot_dir/bundled_mods
+rm -rf "$stage"
+mkdir -p "$stage"
+trap 'rm -rf "$stage"' EXIT INT TERM
+python_bin=""
+for candidate in "${PYTHON:-}" python3 python py; do
+    [ -n "$candidate" ] || continue
+    if "$candidate" -c 'import shutil' >/dev/null 2>&1; then
+        python_bin=$candidate
+        break
+    fi
+done
+if [ -z "$python_bin" ]; then
+    echo "package_web.sh: need python3 (or python/py) with shutil for the bundled mod zips" >&2
+    exit 1
+fi
+for mod in birds fatguy; do
+    if [ ! -d "$root/mods/$mod" ]; then
+        echo "package_web.sh: missing $root/mods/$mod" >&2
+        exit 1
+    fi
+    "$python_bin" -c 'import shutil,sys; shutil.make_archive(sys.argv[1], "zip", sys.argv[2])' \
+        "$stage/$mod" "$root/mods/$mod"
+    if [ ! -f "$stage/$mod.zip" ]; then
+        echo "package_web.sh: $mod.zip was not created" >&2
+        exit 1
+    fi
+done
+
 # Godot wants a host path; MSYS/Git Bash paths (`/c/...`) are not it.
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)

@@ -24,7 +24,7 @@ plan.
 | `src/menu.gd` | The menu, drawn: `menu.js`'s four screens — main, settings, mods, keymap — as a layout a gate can hold, with the Escape walk (M25) |
 | `src/settings.gd` | `core.js`'s `SETTINGS` as one object the console, the menu and the HUD all read and write (M25) |
 | `src/tuning.gd` | The tuning tree `goats.tuning` reads *and writes* (`APIv1.md` §4.10): every leaf is a `static var` on the module that owns it, `get`/`set`/`merge` are a view of those constants and never a second copy, a write is validated against the value it replaces and routed back to its owner — a subset, and an absent path throws |
-| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory, the table the Mods screen draws, the first refusal a mod's console verb gets, the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`, and the built-in half of `goats.assets`), and the per-frame drive of the **compiled** mods `crates/plugin` instantiates (stages 1 and 8) |
+| `src/mods.gd` | The mod runtime the scene drives: the extension's `ModHost`, the `mods/` directory (or `user://mods` in a tab, handed over as bytes with the browser's save/reload bridge), the table the Mods screen draws, the first refusal a mod's console verb gets, the per-frame push of the world snapshot a mod reads (`goats.player`, `world`, `bots`, `settings`, `tuning`, `net`, and the built-in half of `goats.assets`), and the per-frame drive of the **compiled** mods `crates/plugin` instantiates (stages 1 and 8) |
 | `src/mod_hud.gd` | The mods' drawing, painted: `goats.draw`'s records (`APIv1.md` §4.18) as a `Control` over the game's HUD (stage 1) |
 | `src/mod_world.gd` | The mods' drawing, placed: `goats.gfx`'s records (`APIv1.md` §4.19) as a node per call, models imported at runtime with Godot's glTF loader and a mod's **own** mesh built from its arrays into an `ArrayMesh` (stage 1, 8) |
 | `src/mod_audio.gd` | The mods' sound: `goats.sfx` (`APIv1.md` §4.20) — every sound the loaded mods declared decoded at boot, played through a pool of players, and a *built-in* slot's own name loaded from `res://` on demand (stage 8) |
@@ -93,7 +93,7 @@ crates/godot/build.sh release    # release
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot --import
 ```
 
-Thirty-four headless gates, all `SceneTree` scripts that exit non-zero on failure. `tools/gates.sh`
+Thirty-six headless gates, all `SceneTree` scripts that exit non-zero on failure. `tools/gates.sh`
 runs every gate that needs no server -- discovered rather than listed, so a new one is picked up
 existing, with a timeout each:
 
@@ -115,6 +115,11 @@ sh godot/tools/gates.sh              # GODOT_BIN=…, GATE_TIMEOUT=… if the de
 # The embedded engine runs the repository's mods and calls back into the host.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_mods.gd
+
+# ...and a mod discovered from **memory** -- the browser's and the editor's source, with no
+# directory behind it -- is validated, run, edited and reloaded through the same parser.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_mod_source.gd
 
 # ...and the *scene* runs them: the runtime `main.gd` wires, the failures the host names in
 # the table the Mods screen draws, and a mod's own verb reaching the console (stage 1).
@@ -524,6 +529,13 @@ switcher with a disabled slot for the reference client, and holds the mod
 editor's place in the page. `godot/tools/package_web.sh` exports into `client/`
 and copies the shell to the root of the served directory.
 
+Mods in a tab are the build's own **birds** and **fatguy** (staged as zips by
+`package_web.sh`) plus anything in `user://mods` (IndexedDB-backed): `mods.gd`
+hands each to `ModHost::load_mod_files`, and `crates/mods` parses the same
+manifest a directory does through its in-memory source. The page's editor talks
+to the client over `window.goatsModsSave` / `goatsModsReload` / `goatsModsRead` /
+`goatsModsState`; `WEB.md` has the request shape.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs the port for the same three desktop targets the reference client
@@ -532,7 +544,7 @@ job, and in this order:
 
 * **`godot`** (every push and pull request, and only once the scene's own Rust tests are green:
   `needs: test`) is the *tests*: the extension built in release, Godot installed by release and
-  digest, one `--import` pass so the descriptor is registered, `tools/gates.sh` (35 gates) and the
+  digest, one `--import` pass so the descriptor is registered, `tools/gates.sh` (36 gates) and the
   session modes that need no window (`tools/interop.sh join refuse herd pair death hostdeath pull
   offline`). The extension and every gate log are uploaded, so a red run can be read without
   reproducing it.

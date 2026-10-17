@@ -12,7 +12,8 @@ the ones `WASM.md` describes.
 A **single-player** game, the same world the desktop client runs: the terrain,
 the meadow, the herd, the weather, the water, the HUD and the console. JavaScript
 mods run on Slag's **interpreter** (the JIT needs RWX memory a wasm sandbox does
-not grant), so the mod API and the two example mods work.
+not grant), so the mod API and any imported JavaScript mod work (see
+[Mods in the browser](#mods-in-the-browser) for where they live).
 
 What is **not** there, by construction of a tab rather than by choice:
 
@@ -26,6 +27,40 @@ The scene is unchanged: `NetBridge` keeps its class and every method, but the
 `wasm32` arm (`crates/godot/src/net_web.rs`) has no transport behind it and
 answers the same "no session" an offline desktop scene gets. `main.gd` creates it
 as it always does.
+
+## Mods in the browser
+
+A tab has no filesystem, so the browser does not walk a `mods/` directory. The
+sources are the build's own zips and `user://mods/<folder>/` (Godot persists the
+latter to IndexedDB), and both reach Rust as bytes:
+
+- `godot/tools/package_web.sh` stages the release's two mods -- **birds** (world)
+  and **fatguy** (client) -- as zips under `res://bundled_mods/`, and the Web
+  preset's `bundled_mods/*` filter packs them. A zip keeps the mod's raw bytes:
+  Godot would otherwise import a `.glb`/`.mp3` and the loader would never see the
+  file the manifest names.
+- `mods.gd` reads the bundled zips with `ZIPReader`, then walks `user://mods/`.
+  Each mod becomes a dictionary of manifest-relative names to
+  `PackedByteArray`s, handed to `ModHost::load_mod_files`. Bundled first, user
+  second: the loader replaces by id, so an edited copy saved through the editor
+  wins on the next boot.
+- `crates/mods` has a `ModSource::Memory` and `Manifest::from_files` for exactly
+  this. The manifest, digest, assets, tuning and load order come from the same
+  parser a directory or a zip goes through; nothing is re-implemented in
+  GDScript.
+- `ModHost::reload_mod_files` adds or replaces a mod and runs its entry. A known
+  id is torn down first (`__end`, as a disk reload does), and an unknown one is
+  inserted and run, so one call is enough for a new buffer.
+- `mods.gd` also installs the editor bridge on `window`: `goatsModsSave`,
+  `goatsModsReload`, `goatsModsRead` and `goatsModsState`. A save/reload request
+  is JSON `{name, files: {relative name: base64}}`; every answer is returned and
+  also published on `window.goatsModsLast`. `goatsModsRead` opens a saved copy
+  first and falls back to the bundled zip, so the editor can customize a build's
+  own mod.
+
+An import is the editor's job: Godot's `ZIPReader` extracts a picked archive into
+that same dictionary, and a save writes it under `user://mods`. Compiled `.wasm`
+mods remain out -- a tab has no module host (`crates/plugin`).
 
 ## Building the extension
 
@@ -166,10 +201,9 @@ not the desktop frame.
 
 ## Known gaps
 
-- **Mods on disk.** The loader reads a `mods/` directory, and a tab has no
-  filesystem. Bundled mods need to travel in the `.pck` (and be handed to Rust as
-  bytes, since `crates/mods` takes paths) or be fetched/file-picked. Until then
-  the browser build runs without mods, and the Mods screen shows none.
+- **Mods.** The build's own **birds** and **fatguy** travel as zips in
+  `res://bundled_mods/`; user edits and imports live in `user://mods` (IndexedDB)
+  and win by id. Compiled `.wasm` mods are still out.
 - **Audio needs a gesture.** Web audio only starts after a user interaction; a
   headless run reports streams that cannot be sampled until the page is clicked.
 - **Microphone.** Voice chat is compiled out on wasm (`session`, `pull`, `voice`),

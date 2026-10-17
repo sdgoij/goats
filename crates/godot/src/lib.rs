@@ -21,7 +21,7 @@
 //! the renderer, and JavaScript is kept for mods only.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,6 +58,24 @@ unsafe impl ExtensionLibrary for GoatsGodot {}
 /// every message here is built with `format!`.
 fn gstring(text: impl AsRef<str>) -> GString {
     GString::from(text.as_ref())
+}
+
+/// A Godot dictionary of manifest-relative names to bytes, as `crates/mods`
+/// wants one. The two callers are `mods.gd` (reading `user://` in a tab) and the
+/// editor (an unsaved buffer), so a wrong key or value is named rather than
+/// coerced into something the loader would misread.
+fn memory_files(files: &VarDictionary) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut out = BTreeMap::new();
+    for (key, value) in files.iter_shared() {
+        let key: GString = key
+            .try_to()
+            .map_err(|_| "a mod file name is not a string".to_string())?;
+        let value: PackedByteArray = value
+            .try_to()
+            .map_err(|_| format!("mod file '{}' is not a PackedByteArray", key))?;
+        out.insert(key.to_string(), value.to_vec());
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +449,102 @@ impl ModHost {
         // put in the cell as soon as discovery has run rather than waiting for the scene to ask.
         self.refresh_table();
         gstring(report)
+    }
+
+    /// Discover one mod from files already in memory, keyed by its
+    /// manifest-relative names (`mod.json`, the entry, `tuning.json`, assets).
+    ///
+    /// This is the browser's source and the editor's: a tab has no filesystem, and
+    /// an unsaved buffer has no path. `mods.gd` reads `user://mods/` and hands over
+    /// a dictionary of `PackedByteArray`s; validation, hashing, ordering and the
+    /// table are the same `crates/mods` path a directory takes.
+    ///
+    /// Discovery only -- the entry is not run. The boot path follows with
+    /// `load_all`; an edit follows with [`ModHost::reload_mod_files`]. A second call
+    /// for an id already known replaces its manifest but leaves the running instance
+    /// alone until that reload.
+    #[func]
+    fn load_mod_files(&mut self, name: GString, files: VarDictionary) -> GString {
+        if let Err(error) = self.ensure_booted() {
+            return gstring(format!("error: {error}"));
+        }
+        let name = name.to_string();
+        let files = match memory_files(&files) {
+            Ok(files) => files,
+            Err(error) => return gstring(format!("error {name}: {error}")),
+        };
+        let manifest = match mods::Manifest::from_files(&name, files, mods::AssetMode::Keep) {
+            Ok(manifest) => manifest,
+            Err(error) => return gstring(format!("error {name}: {}", error.message)),
+        };
+        let id = manifest.id.clone();
+        {
+            let module = self.module.as_mut().expect("booted above");
+            module
+                .loader
+                .get_or_insert_with(mods::Loader::empty)
+                .insert(manifest);
+        }
+        self.outcomes.remove(&id);
+        self.refresh_table();
+        gstring(format!("ok {id}"))
+    }
+
+    /// Add or replace a mod from memory and run its entry. This is the editor's
+    /// live-edit path: the manifest is parsed *before* anything is torn down, so a
+    /// source that will not validate leaves the running mod alone.
+    ///
+    /// A known id is replaced in place -- its entry's `__end` fires first, as a
+    /// reload's does -- and an unknown one is inserted and run, which is what makes
+    /// one call enough for a new buffer. The id is the manifest's, and a changed id
+    /// is a different mod (a rename needs a fresh discovery, as on disk).
+    #[func]
+    fn reload_mod_files(&mut self, name: GString, files: VarDictionary) -> GString {
+        if let Err(error) = self.ensure_booted() {
+            return gstring(format!("error: {error}"));
+        }
+        let name = name.to_string();
+        let files = match memory_files(&files) {
+            Ok(files) => files,
+            Err(error) => return gstring(format!("error {name}: {error}")),
+        };
+        let manifest = match mods::Manifest::from_files(&name, files, mods::AssetMode::Keep) {
+            Ok(manifest) => manifest,
+            Err(error) => return gstring(format!("error {name}: {}", error.message)),
+        };
+        let id = manifest.id.clone();
+        let known = self
+            .module
+            .as_ref()
+            .and_then(|module| module.loader.as_ref())
+            .is_some_and(|loader| loader.get(&id).is_some());
+        if known {
+            // The live instance goes first, exactly as `reload_one` does: `__end` fires the
+            // mod's shutdown hook and drops the registrations its entry made.
+            let _ = self.call_goats("__end", &[JsValue::string(id.clone())]);
+        }
+        {
+            let module = self.module.as_mut().expect("booted above");
+            let loader = module.loader.get_or_insert_with(mods::Loader::empty);
+            if known {
+                if let Err(error) = loader.replace(&id, manifest) {
+                    return gstring(format!("error {id}: {}", error.message));
+                }
+            } else {
+                loader.insert(manifest);
+            }
+        }
+        self.outcomes.remove(&id);
+        // The table before the entry runs, so `goats.mod` inside it reads the new
+        // manifest rather than the one it replaces.
+        self.refresh_table();
+        let outcome = self.load_one(&id);
+        self.record(&id, &outcome);
+        self.refresh_table();
+        match outcome {
+            Ok(_) => gstring(format!("ok mod reload {id}")),
+            Err(error) => gstring(format!("error {id}: {error}")),
+        }
     }
 
     /// The metadata table the core would hand the scene: id, name, version,

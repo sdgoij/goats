@@ -106,18 +106,27 @@ pub enum AssetMode {
 }
 
 /// Where a mod's files live. A directory is the editable form; a `.zip` is the
-/// distributable one, with `mod.json` at the archive root.
+/// distributable one, with `mod.json` at the archive root. [`ModSource::Memory`]
+/// is the browser's and the editor's: files that never touch a filesystem, keyed
+/// by their manifest-relative names (`mod.json`, the entry, `assets/...`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModSource {
     Dir(PathBuf),
     Zip(PathBuf),
+    Memory {
+        /// The name diagnostics use, e.g. the mod id or its `user://` folder.
+        name: String,
+        files: BTreeMap<String, Vec<u8>>,
+    },
 }
 
 impl ModSource {
-    /// The path to watch or report: the directory, or the archive file.
+    /// The path to watch or report: the directory, or the archive file. A memory
+    /// source has no path, so its name stands in for one.
     pub fn path(&self) -> &Path {
         match self {
             ModSource::Dir(path) | ModSource::Zip(path) => path,
+            ModSource::Memory { name, .. } => Path::new(name),
         }
     }
 
@@ -126,6 +135,8 @@ impl ModSource {
         match self {
             ModSource::Dir(dir) => changed.starts_with(dir),
             ModSource::Zip(zip) => changed == zip,
+            // Nothing on disk can change a mod that is not on disk.
+            ModSource::Memory { .. } => false,
         }
     }
 
@@ -137,6 +148,19 @@ impl ModSource {
                 read_capped(&path, max, what)
             }
             ModSource::Zip(zip) => read_zip_entry(zip, relative, max, what),
+            ModSource::Memory { name, files } => {
+                valid_relative(relative)?;
+                let bytes = files.get(relative).ok_or_else(|| {
+                    format!("{what} '{relative}' not found in in-memory mod '{name}'")
+                })?;
+                if bytes.len() as u64 > max {
+                    return Err(format!(
+                        "{what} '{relative}' is {} bytes (limit {max})",
+                        bytes.len()
+                    ));
+                }
+                Ok(bytes.clone())
+            }
         }
     }
 }
@@ -174,9 +198,31 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// The directory or archive the mod was read from.
+    /// The directory or archive the mod was read from (or, for a memory source, the
+    /// name it was given).
     pub fn path(&self) -> &Path {
         self.source.path()
+    }
+
+    /// Validate one mod from files already in memory, keyed by their
+    /// manifest-relative names (`mod.json`, the entry, `tuning.json`, assets).
+    ///
+    /// This is the browser's source and the mod editor's: a tab has no filesystem,
+    /// and an unsaved buffer has no path. It goes through the same parser as a
+    /// directory or a zip, so the manifest, the hash, the assets and the entry
+    /// wrapper are the ones a desktop client would load.
+    pub fn from_files(
+        name: &str,
+        files: BTreeMap<String, Vec<u8>>,
+        mode: AssetMode,
+    ) -> Result<Manifest, LoadError> {
+        load_source(
+            &ModSource::Memory {
+                name: name.to_string(),
+                files,
+            },
+            mode,
+        )
     }
 
     /// `slot -> opaque engine names` for the slots the mod *fills*, for the
@@ -388,6 +434,53 @@ impl Loader {
         }
         manifest.enabled = enabled;
         self.mods[index] = manifest;
+        Ok(())
+    }
+
+    /// Add a manifest that did not come from a walk -- the browser's memory source
+    /// (`Manifest::from_files`), or one an editor is about to run. An id already in
+    /// the loader is replaced: an edit is not a second copy of the same mod. The load
+    /// order is recomputed. Returns the id that was inserted.
+    ///
+    /// `order`'s complaints (a `loadAfter` naming a mod that is not installed) are
+    /// deliberately not added to this loader's discovery errors: they are about the
+    /// set as a whole, and an editor adding one mod at a time would collect the same
+    /// warning on every keystroke.
+    pub fn insert(&mut self, manifest: Manifest) -> String {
+        let id = manifest.id.clone();
+        self.mods.retain(|existing| existing.id != id);
+        self.mods.push(manifest);
+        let mut ignored = Vec::new();
+        let mods = std::mem::take(&mut self.mods);
+        self.mods = order(mods, &mut ignored);
+        id
+    }
+
+    /// Replace one mod's manifest with a freshly parsed one, for the editor's live
+    /// edit. The id must not have changed -- a rename needs a fresh discovery and a
+    /// restart, exactly as a disk reload does -- and the enabled flag is runtime
+    /// state, so it survives the replacement.
+    pub fn replace(&mut self, id: &str, mut manifest: Manifest) -> Result<(), LoadError> {
+        let index = self
+            .mods
+            .iter()
+            .position(|existing| existing.id == id)
+            .ok_or_else(|| LoadError {
+                path: manifest.path().to_path_buf(),
+                message: format!("unknown mod '{id}'"),
+            })?;
+        if manifest.id != id {
+            return Err(LoadError {
+                path: manifest.path().to_path_buf(),
+                message: format!(
+                    "reloaded '{id}' now declares id '{}'; restart to rename it",
+                    manifest.id
+                ),
+            });
+        }
+        manifest.enabled = self.mods[index].enabled;
+        self.mods.remove(index);
+        self.insert(manifest);
         Ok(())
     }
 
@@ -805,8 +898,9 @@ fn read_asset_source(source: &ModSource, file: &str, keep: bool) -> Result<(Vec<
             let path = safe_join(dir, file)?;
             read_asset(&path, keep)
         }
-        ModSource::Zip(_) => {
-            // A zip entry cannot be streamed without decompressing it first.
+        ModSource::Zip(_) | ModSource::Memory { .. } => {
+            // A zip entry cannot be streamed without decompressing it first, and an
+            // in-memory file is already bytes.
             let bytes = source.read(file, MAX_ASSET_BYTES, "asset")?;
             let mut hash = FNV_OFFSET;
             fnv1a(&mut hash, &bytes);
@@ -1073,7 +1167,27 @@ pub fn archive_source(source: &ModSource) -> Result<Vec<u8>, String> {
     match source {
         ModSource::Dir(dir) => archive_dir(dir),
         ModSource::Zip(zip) => {
-            std::fs::read(zip).map_err(|error| format!("'{}': {error}", zip.display()))
+            std::fs::read(zip).map_err(|error| format!("{}: {error}", zip.display()))
+        }
+        // The editor's export: the same archive a directory mod produces. `files` is a
+        // `BTreeMap`, so the archive is deterministic without a second sort.
+        ModSource::Memory { files, .. } => {
+            use std::io::Write as _;
+
+            let cursor = std::io::Cursor::new(Vec::new());
+            let mut archive = zip::ZipWriter::new(cursor);
+            for (name, bytes) in files {
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                archive
+                    .start_file(name.as_str(), options)
+                    .map_err(|error| format!("zip '{name}': {error}"))?;
+                archive
+                    .write_all(bytes)
+                    .map_err(|error| format!("zip '{name}': {error}"))?;
+            }
+            let cursor = archive.finish().map_err(|error| format!("zip: {error}"))?;
+            Ok(cursor.into_inner())
         }
     }
 }
@@ -2106,6 +2220,123 @@ mod tests {
             loader.get("hot").unwrap().entry_source.as_deref(),
             Some("2\n")
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn memory_files(entries: &[(&str, &[u8])]) -> BTreeMap<String, Vec<u8>> {
+        entries
+            .iter()
+            .map(|(name, bytes)| ((*name).to_string(), bytes.to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn a_memory_source_loads_the_same_manifest_as_a_directory() {
+        // The browser's source and a directory must be one mod: same id, same
+        // digest, same entry text, same asset bytes and opaque names. Otherwise a
+        // mod authored in the editor would not be the one the desktop client loads.
+        let root = workspace("memory-same");
+        let manifest = r#"{ "id": "com.example.memory", "name": "Memory", "version": "1.0.0",
+            "api": 1, "side": "world", "entry": "mod.js", "tuning": "tuning.json",
+            "assets": { "model.memory": "asset.bin" } }"#;
+        write_mod(&root, "memory", manifest);
+        let source = "let n = 1;\nreturn n;\n";
+        let tuning = "{\n  \"camera\": { \"dist\": 6.5 }\n}\n";
+        let asset = b"\x00\x01memory\xff";
+        write(&root.join("memory").join("mod.js"), source);
+        write(&root.join("memory").join("tuning.json"), tuning);
+        std::fs::write(root.join("memory").join("asset.bin"), asset).unwrap();
+
+        let from_dir = Loader::discover(&root);
+        let a = from_dir
+            .get("com.example.memory")
+            .expect("the directory mod");
+
+        let files = memory_files(&[
+            ("mod.json", manifest.as_bytes()),
+            ("mod.js", source.as_bytes()),
+            ("tuning.json", tuning.as_bytes()),
+            ("asset.bin", asset),
+        ]);
+        let b = Manifest::from_files("memory", files, AssetMode::Keep).expect("the memory mod");
+
+        assert_eq!(a.hash, b.hash);
+        assert_eq!(a.entry_source, b.entry_source);
+        assert_eq!(a.tuning_json, b.tuning_json);
+        assert_eq!(a.assets.len(), 1);
+        assert_eq!(a.assets[0].name, b.assets[0].name);
+        assert_eq!(a.assets[0].bytes, b.assets[0].bytes);
+        assert_eq!(a.assets[0].content_hash, b.assets[0].content_hash);
+
+        let mut loader = Loader::empty();
+        assert_eq!(loader.insert(b), "com.example.memory");
+        assert!(loader.get("com.example.memory").is_some());
+        assert!(loader.errors().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn inserting_the_same_id_replaces_it_and_keeps_load_order() {
+        let make = |name: &str, version: &str, after: &str| {
+            let manifest = format!(
+                r#"{{ "id": "{name}", "name": "{name}", "version": "{version}",
+                    "api": 1, "entry": "mod.js", "loadAfter": [{after}] }}"#
+            );
+            let files = memory_files(&[
+                ("mod.json", manifest.as_bytes()),
+                ("mod.js", "1;\n".as_bytes()),
+            ]);
+            Manifest::from_files(name, files, AssetMode::Keep).expect("a manifest")
+        };
+
+        let mut loader = Loader::empty();
+        // The dependent first: `order` has to move it after the mod it names.
+        loader.insert(make("b", "1", "\"a\""));
+        loader.insert(make("a", "1", ""));
+        assert_eq!(loader.ids(), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(loader.mods().len(), 2);
+
+        loader.insert(make("a", "2", ""));
+        assert_eq!(loader.ids(), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(loader.mods().len(), 2, "an edit is not a second copy");
+        assert_eq!(loader.get("a").unwrap().version, "2");
+    }
+
+    #[test]
+    fn a_memory_entry_cannot_escape_its_source() {
+        let manifest = r#"{ "id": "com.example.escape", "name": "Escape", "version": "1",
+            "api": 1, "entry": "../outside.js" }"#;
+        let files = memory_files(&[
+            ("mod.json", manifest.as_bytes()),
+            ("../outside.js", "1;\n".as_bytes()),
+        ]);
+        let error =
+            Manifest::from_files("escape", files, AssetMode::Keep).expect_err("must refuse");
+        assert!(
+            error.message.contains("must not contain '..'"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_memory_mod_archives_and_then_loads_as_a_zip() {
+        let manifest = r#"{ "id": "com.example.export", "name": "Export", "version": "1",
+            "api": 1, "entry": "mod.js", "assets": { "model.export": "asset.bin" } }"#;
+        let files = memory_files(&[
+            ("mod.json", manifest.as_bytes()),
+            ("mod.js", "1;\n".as_bytes()),
+            ("asset.bin", b"bytes"),
+        ]);
+        let from_memory = Manifest::from_files("export", files, AssetMode::Keep).expect("the mod");
+        let archive = archive_source(&from_memory.source).expect("the archive");
+
+        let root = workspace("memory-zip");
+        let path = root.join("export.zip");
+        std::fs::write(&path, archive).unwrap();
+        let from_zip = load_zip(&path).expect("the zipped mod");
+        assert_eq!(from_memory.id, from_zip.id);
+        assert_eq!(from_memory.hash, from_zip.hash);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
