@@ -437,6 +437,13 @@ As on the phone, the testable half is the half that would otherwise rot:
    passes 65536 to the reference client, and the Godot `ModHost` sets the same
    threshold on the mods' context (`crates/godot`), so neither starts from the
    8192 default.
+
+   The defect is fixed upstream in `0851f84` (`fix(gc): bound the wasm stack
+   scan at the stack top`). `SLAG-GC.md` has the standalone reproduction and
+   both traces: pre-fix `swept=0` with `stack_words` in the hundreds of millions
+   and 0.6-0.8 s pauses; post-fix `swept` is non-zero, `stack_words` stays around
+   2k and the pauses are 0-3 ms. On the machine that took the Godot client to
+   ~80 fps and the reference client to ~40.
 2. **The ES3 link line, and raylib itself on wasm.** *Answered and closed.*
    `-lGLESv2` and `-lglfw` resolve under Emscripten; `-lGLdispatch` does not, and
    the fix is the gate Android already had (`raylib-sys/build.rs:188-190`)

@@ -472,16 +472,18 @@
       // cannot read this page's globals).
       function bootReference() {
         const [width, height] = stageSize();
+        // The browser is the embedder with the least headroom: Slag's default
+        // young cohort (8192 boxes) collects about once a second, each pause a
+        // few hundred milliseconds on a busy world (`WASM.md` risk 1). Fewer,
+        // longer collections are the right trade here; `?nursery=N` still tunes
+        // it per load, and `?gctrace=1` prints one line per collection.
+        const args = [
+          "--viewport", width + "x" + height,
+          "--nursery-threshold", params.get("nursery") || "65536",
+        ];
+        if (params.get("gctrace") === "1") args.push("--gc-trace");
         window.Module = {
-          // The browser is the embedder with the least headroom: Slag's default
-          // young cohort (8192 boxes) collects about once a second, each pause a
-          // few hundred milliseconds on a busy world (`WASM.md` risk 1). Fewer,
-          // longer collections are the right trade here; `?nursery=N` still tunes
-          // it per load.
-          arguments: [
-            "--viewport", width + "x" + height,
-            "--nursery-threshold", params.get("nursery") || "65536",
-          ],
+          arguments: args,
           canvas: canvas,
           locateFile: function (path) {
             // The glue lives in `reference/`, but this page is the shell at the
