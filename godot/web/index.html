@@ -29,6 +29,10 @@
         flex-direction: column;
       }
       header.bar {
+        position: sticky;
+        top: 0;
+        z-index: 60;
+        background: var(--bg);
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -151,50 +155,203 @@
       .caption a { color: var(--accent); text-decoration: none; }
       .caption a:hover { text-decoration: underline; }
 
-      /* The mod editor scaffold. Inline with the player, same width, so the
-         16:9 stage stays the page's only fixed-size box. */
-      #mods {
-        width: min(100%, 1120px);
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        background: var(--panel);
-        overflow: hidden;
-      }
-      .panel-head {
-        padding: 14px 18px;
-        border-bottom: 1px solid var(--line);
-        display: flex;
-        align-items: baseline;
-        gap: 12px;
-        flex-wrap: wrap;
-      }
-      .panel-head h2 { margin: 0; font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; }
-      .panel-head p { margin: 0; color: var(--dim); font-size: 12.5px; }
-      .mods-grid { display: grid; grid-template-columns: 220px 1fr; min-height: 360px; }
-      @media (max-width: 720px) { .mods-grid { grid-template-columns: 1fr; } }
-      .mods-side {
-        padding: 14px;
-        border-right: 1px solid var(--line);
+      /* The mod editor: a DevTools-style dock on the right. Fixed to the
+         viewport's right edge, below the sticky header, so opening it never
+         resizes the 16:9 stage. Width, tab and open state are remembered. */
+      #panel {
+        position: fixed;
+        top: var(--panel-top, 68px);
+        right: 0;
+        bottom: 0;
+        z-index: 40;
+        width: var(--panel-w, clamp(360px, 46vw, 720px));
+        min-width: 340px;
+        max-width: 92vw;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        background: #0e1217;
+        border-left: 1px solid var(--line);
+        box-shadow: -20px 0 60px rgb(0 0 0 / 60%);
+        container-type: inline-size;
       }
-      @media (max-width: 720px) {
-        .mods-side { border-right: 0; border-bottom: 1px solid var(--line); }
+      #panel.max { width: 92vw; max-width: 92vw; }
+      .panel-resize {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -4px;
+        width: 8px;
+        cursor: ew-resize;
+        touch-action: none;
       }
-      .mod-list { list-style: none; margin: 8px 0 0; padding: 0; flex: 1; }
-      .mod-list li {
-        padding: 7px 9px;
+      .panel-resize::after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 2px;
+        width: 3px;
+        height: 44px;
+        margin-top: -22px;
+        border-radius: 2px;
+        background: #2b3440;
+      }
+      .panel-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 4px 10px 4px 14px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+      }
+      .panel-tabs { display: flex; gap: 2px; flex: 1; overflow-x: auto; }
+      .panel-tabs button {
+        border: 0;
+        background: transparent;
+        color: var(--dim);
+        border-radius: 6px 6px 0 0;
+        padding: 8px 12px;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+      }
+      .panel-tabs button[aria-selected="true"] {
+        color: var(--ink);
+        background: #161b22;
+        box-shadow: inset 0 -2px 0 var(--accent);
+      }
+      .panel-actions { display: flex; align-items: center; gap: 6px; }
+      .panel-state {
+        color: var(--dim);
+        font-size: 11.5px;
+        max-width: 38ch;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      @container (max-width: 520px) {
+        .panel-state { display: none; }
+      }
+      @container (max-width: 560px) {
+        .mod-meta { display: none; }
+      }
+      .panel-body { flex: 1; min-height: 0; display: flex; }
+      .panel button { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
+      .tab-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+
+      /* Console */
+      .console-toolbar, .tuning-toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--line);
+        flex-wrap: wrap;
+      }
+      .console-toolbar input, .tuning-toolbar input {
+        background: #0a0d11;
+        border: 1px solid var(--line);
         border-radius: 6px;
+        color: var(--ink);
+        padding: 4px 8px;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .console-lines {
+        flex: 1;
+        overflow: auto;
+        padding: 8px 12px;
+        font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .console-line { display: flex; gap: 8px; }
+      .console-line .tag { color: #55606c; font-size: 10px; flex: 0 0 auto; padding-top: 1px; }
+      .console-line.kind-echo .text { color: #94969e; }
+      .console-line.kind-local .text { color: #b8dcb8; }
+      .console-line.kind-net .text { color: #96c8ff; }
+      .console-line.kind-system .text { color: #d8be8c; }
+      .console-line.kind-input .text { color: #ececec; }
+      .console-line.level-error .text { color: #e06c75; }
+      .console-line.level-warn .text { color: #e5c07b; }
+      .console-line.level-info .text { color: #8ec07c; }
+      .console-line.level-debug .text { color: #7d8794; }
+      .console-input {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-top: 1px solid var(--line);
+      }
+      .console-prompt { color: var(--accent); font: 13px ui-monospace, monospace; }
+      .console-input input {
+        flex: 1;
+        background: #0a0d11;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--ink);
+        padding: 6px 9px;
+        font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .console-input input::placeholder { color: #5a6572; }
+
+      /* Files: the mod list down the left, the tree above the editor on the
+         right. The dock is narrow, so the editor gets the full width under the
+         two lists rather than a third column. */
+      .files-grid {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: clamp(150px, 36%, 260px) minmax(0, 1fr);
+        grid-template-rows: minmax(120px, 34%) minmax(0, 1fr);
+      }
+      .files-side {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+      .files-side:first-child {
+        grid-column: 1;
+        grid-row: 1 / 3;
+        border-bottom: 0;
+      }
+      .files-side:nth-child(2) {
+        grid-column: 2;
+        grid-row: 1;
+        border-right: 0;
+      }
+      .pane-head {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--line);
+        color: var(--dim);
+        font-size: 11.5px;
+      }
+      .pane-head .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .mod-list, .file-tree {
+        list-style: none;
+        margin: 0;
+        padding: 6px;
+        overflow: auto;
+        flex: 1;
+      }
+      .mod-list .empty {
+        border: 1px dashed var(--line);
+        border-radius: 6px;
+        text-align: center;
+        padding: 7px 9px;
         color: var(--dim);
         font-size: 12.5px;
       }
-      .mod-list .empty { border: 1px dashed var(--line); text-align: center; }
+      .mod-row { display: flex; gap: 4px; align-items: stretch; }
       .mod-item {
         display: flex;
         align-items: baseline;
         gap: 8px;
-        width: 100%;
+        flex: 1;
+        min-width: 0;
         padding: 7px 9px;
         border: 1px solid transparent;
         border-radius: 6px;
@@ -205,6 +362,7 @@
         cursor: pointer;
       }
       .mod-item:hover, .mod-item.open { border-color: var(--line); background: #161a20; }
+      .mod-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .mod-dot {
         width: 7px;
         height: 7px;
@@ -214,13 +372,56 @@
       }
       .mod-dot.loaded { background: var(--accent); }
       .mod-dot.failed { background: #d1554a; }
-      .mod-meta { margin-left: auto; color: var(--dim); font-size: 10.5px; }
-      .mods-main { display: flex; flex-direction: column; min-width: 0; }
+      .mod-meta { margin-left: auto; color: var(--dim); font-size: 10.5px; white-space: nowrap; flex: 0 0 auto; }
+      .mod-power {
+        width: 24px;
+        border: 1px solid transparent;
+        background: transparent;
+        color: var(--dim);
+        padding: 0;
+      }
+      .mod-power:hover { border-color: var(--line); color: var(--ink); }
+      .mod-power.off { color: #6b4a45; }
+      .file-tree .folder, .file-tree .file {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        padding: 4px 7px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--ink);
+        font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        text-align: left;
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .file-tree .folder { color: var(--dim); cursor: default; }
+      .file-tree .file:hover, .file-tree .file.open { background: #161a20; }
+      .file-tree .indent { display: inline-block; }
+      .file-main { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; grid-column: 2; grid-row: 2; }
+      .file-main.dropping::after {
+        content: "Drop files to add them to this mod";
+        position: absolute;
+        inset: 8px;
+        z-index: 5;
+        border: 2px dashed var(--accent);
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        color: var(--accent);
+        background: rgb(11 13 16 / 84%);
+        font-size: 13px;
+        pointer-events: none;
+      }
       .tabline {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 9px 14px;
+        padding: 6px 12px;
         border-bottom: 1px solid var(--line);
         color: var(--dim);
         font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -233,26 +434,135 @@
         letter-spacing: 0.06em;
         text-transform: uppercase;
       }
-      #mod-source {
-        flex: 1;
-        min-height: 240px;
-        resize: vertical;
-        padding: 14px;
+      .editor-wrap { flex: 1; min-height: 0; display: flex; background: #0a0d11; }
+      .gutter {
+        flex: 0 0 auto;
+        padding: 8px 6px 8px 10px;
+        text-align: right;
+        color: #4b5663;
+        font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        user-select: none;
+        overflow: hidden;
+        white-space: pre;
+      }
+      .code { position: relative; flex: 1; min-width: 0; }
+      .code pre, .code textarea {
+        position: absolute;
+        inset: 0;
+        margin: 0;
+        padding: 8px 12px;
         border: 0;
-        outline: 0;
-        background: #0d1014;
-        color: #b9c4d0;
-        font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre;
         tab-size: 4;
       }
+      .code pre { overflow: hidden; color: #b9c4d0; pointer-events: none; }
+      .code textarea {
+        resize: none;
+        outline: none;
+        background: transparent;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        caret-color: #e6edf3;
+        overflow: auto;
+      }
+      .code textarea::selection { background: rgb(142 192 124 / 30%); }
+      .tok-comment { color: #5c6a76; font-style: italic; }
+      .tok-string { color: #c3e88d; }
+      .tok-number { color: #f78c6c; }
+      .tok-keyword { color: #82aaff; }
+      .tok-literal { color: #c792ea; }
+      .preview {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        place-items: center;
+        padding: 14px;
+        color: var(--dim);
+        font-size: 12.5px;
+      }
+      .preview img, .preview video { max-width: 100%; max-height: 100%; border-radius: 6px; }
+      .preview audio { width: min(100%, 460px); }
       .editor-actions {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 10px 14px;
+        padding: 7px 12px;
         border-top: 1px solid var(--line);
+        flex-wrap: wrap;
       }
       .editor-actions .hint { color: var(--dim); font-size: 12px; margin-left: auto; }
+
+      /* Details */
+      .details { flex: 1; overflow: auto; padding: 14px 16px; }
+      .details-grid {
+        display: grid;
+        grid-template-columns: 90px minmax(0, 1fr);
+        gap: 8px 12px;
+        align-items: center;
+        max-width: 980px;
+      }
+      .details-grid .full { grid-column: 1 / -1; }
+      .details-grid label { color: var(--dim); font-size: 12px; }
+      .details-grid input, .details-grid select, .details-grid textarea {
+        width: 100%;
+        background: #0a0d11;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--ink);
+        padding: 5px 8px;
+        font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .details-grid textarea { min-height: 66px; resize: vertical; }
+      .details-actions { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+
+      /* Tuning */
+      .tuning-tree { flex: 1; overflow: auto; padding: 8px 12px; }
+      .tuning-section {
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        margin: 0 0 8px;
+        background: #10151b;
+      }
+      .tuning-section > summary {
+        cursor: pointer;
+        padding: 6px 10px;
+        font-size: 12.5px;
+        letter-spacing: 0.04em;
+        color: #d6dee8;
+      }
+      .tune-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1.3fr) minmax(90px, 1fr) 26px;
+        gap: 8px;
+        align-items: center;
+        padding: 3px 10px 3px 18px;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .tune-row.changed { background: rgb(142 192 124 / 9%); }
+      .tune-row .tune-label { color: #a7b1bd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tune-controls { display: flex; gap: 6px; align-items: center; min-width: 0; }
+      .tune-controls input[type="range"] { flex: 2 1 50px; min-width: 0; accent-color: var(--accent); }
+      .tune-controls input[type="number"], .tune-controls input[type="text"] {
+        flex: 1 1 76px;
+        min-width: 0;
+        width: auto;
+        background: #0a0d11;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: var(--ink);
+        padding: 2px 6px;
+        font: 11.5px ui-monospace, monospace;
+      }
+      .tune-row button { padding: 1px 6px; }
+
+      /* The dock takes width from the page while the 16:9 stage still has room;
+         `layoutPanel` drops the class and lets it overlay when the remaining
+         width would be less than the stage's minimum. */
+      body.panel-push main { padding-right: calc(20px + var(--panel-actual, 0px)); }
+      body.panel-push footer { padding-right: calc(20px + var(--panel-actual, 0px)); }
+
       footer {
         padding: 0 20px 22px;
         color: var(--dim);
@@ -278,7 +588,7 @@
             <option value="reference" disabled>Reference (raylib / WASM)</option>
           </select>
         </label>
-        <button id="mods-toggle" aria-expanded="false" aria-controls="mods">Mod editor</button>
+        <button id="mods-toggle" aria-expanded="false" aria-controls="panel">Mod editor</button>
         <button id="fullscreen">Fullscreen</button>
       </div>
     </header>
@@ -302,37 +612,124 @@
         </p>
       </section>
 
-      <!-- The running client's mod table. The list and the editor talk to the
-           client over the bridge each one installs on its window: `mods.gd` for
-           the Godot client, and the reference build's `mod_editor.rs` exports
-           for the raylib one. -->
-      <section id="mods" hidden aria-labelledby="mods-title">
-        <div class="panel-head">
-          <h2 id="mods-title">Mod editor</h2>
-          <p>The running client's mod table.</p>
+    </main>
+
+    <!-- The mod editor: a DevTools-style dock over the page, so the running
+         client keeps its 16:9 stage. Both clients install the same bridge on
+         `window` (`mods.gd` and the reference build's `mod_editor.rs`). -->
+    <section id="panel" hidden aria-label="Mod editor">
+      <div class="panel-resize" id="panel-resize" role="separator" aria-label="Resize the mod editor"></div>
+      <div class="panel-bar">
+        <div class="panel-tabs" role="tablist" aria-label="Mod editor tabs">
+          <button role="tab" type="button" data-tab="console" aria-selected="false">Console</button>
+          <button role="tab" type="button" data-tab="files" aria-selected="true">Files</button>
+          <button role="tab" type="button" data-tab="details" aria-selected="false">Details</button>
+          <button role="tab" type="button" data-tab="tuning" aria-selected="false">Tuning</button>
         </div>
-        <div class="mods-grid">
-          <aside class="mods-side">
-            <button class="primary" id="mod-new" type="button">New mod</button>
-            <button id="mod-import" type="button" disabled title="Not wired yet">Import…</button>
-            <ul class="mod-list"><li class="empty">Waiting for the client…</li></ul>
-          </aside>
-          <div class="mods-main">
-            <div class="tabline"><span id="mod-file">untitled/mod.js</span><span class="badge" id="mod-badge">unsaved</span></div>
-            <textarea id="mod-source" spellcheck="false" aria-label="Mod source">// A mod entry receives the live `goats` handle (APIv1.md).
-//
-// goats.command("hello", function () { return "ok hello"; });
-</textarea>
-            <div class="editor-actions">
-              <button id="mod-run" type="button" disabled>Run</button>
-              <button id="mod-save" type="button" disabled>Save</button>
-              <button id="mod-export" type="button" disabled title="Not wired yet">Export</button>
-              <span class="hint" id="mod-hint">Open a mod to edit its entry.</span>
+        <div class="panel-actions">
+          <span class="panel-state" id="panel-state">waiting for the client…</span>
+          <button id="panel-max" type="button" title="Maximize">▣</button>
+          <button id="panel-close" type="button" title="Close (Ctrl+Shift+E)">×</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <section class="tab-pane" data-pane="console" hidden>
+          <div class="console-toolbar">
+            <label class="field">Source
+              <select id="console-source">
+                <option value="game" selected>Game</option>
+                <option value="host">Host / browser</option>
+                <option value="all">Both</option>
+              </select>
+            </label>
+            <label class="field">Filter
+              <input id="console-filter" type="search" placeholder="text or /regex/" aria-label="Filter console lines">
+            </label>
+            <label class="field"><input id="console-follow" type="checkbox" checked> Follow</label>
+            <button id="console-clear" type="button">Clear</button>
+          </div>
+          <div class="console-lines" id="console-lines" role="log" aria-live="polite"></div>
+          <form class="console-input" id="console-form">
+            <span class="console-prompt" id="console-prompt">&gt;</span>
+            <input id="console-line" autocomplete="off" spellcheck="false" placeholder="Command (Enter to run, ↑ history)" aria-label="Console command">
+            <button type="submit">Run</button>
+          </form>
+        </section>
+
+        <section class="tab-pane" data-pane="files">
+          <div class="files-grid">
+            <aside class="files-side">
+              <div class="pane-head">
+                <button id="mod-new" type="button" class="primary">New</button>
+                <button id="mod-import" type="button">Import</button>
+                <button id="mod-export" type="button">Export</button>
+              </div>
+              <ul class="mod-list" id="mod-list"><li class="empty">Waiting for the client…</li></ul>
+            </aside>
+            <aside class="files-side">
+              <div class="pane-head">
+                <span class="grow" id="file-mod">No mod open</span>
+                <button id="file-new" type="button" disabled>+ File</button>
+              </div>
+              <ul class="file-tree" id="file-tree"></ul>
+            </aside>
+            <div class="file-main" id="file-main">
+              <div class="tabline"><span id="file-path">—</span><span class="badge" id="file-badge"></span></div>
+              <div class="editor-wrap" id="editor-wrap">
+                <div class="gutter" id="gutter">1</div>
+                <div class="code">
+                  <pre id="highlight" aria-hidden="true"></pre>
+                  <textarea id="file-source" wrap="off" spellcheck="false" aria-label="File source"></textarea>
+                </div>
+              </div>
+              <div class="preview" id="file-preview" hidden></div>
+              <div class="editor-actions">
+                <button id="file-run" type="button" disabled>Run</button>
+                <button id="file-save" type="button" disabled>Save</button>
+                <button id="file-revert" type="button" disabled>Revert</button>
+                <button id="file-rename" type="button" disabled>Rename</button>
+                <button id="file-delete" type="button" disabled>Delete</button>
+                <span class="hint" id="file-hint">Open or create a mod.</span>
+              </div>
             </div>
           </div>
-        </div>
-      </section>
-    </main>
+        </section>
+
+        <section class="tab-pane" data-pane="details" hidden>
+          <div class="details">
+            <form id="details-form">
+              <div class="details-grid">
+                <label for="details-id">Id</label><input id="details-id" name="id">
+                <label for="details-name">Name</label><input id="details-name" name="name">
+                <label for="details-version">Version</label><input id="details-version" name="version">
+                <label for="details-api">API</label><input id="details-api" name="api" type="number" min="1" step="1">
+                <label for="details-side">Side</label>
+                <select id="details-side" name="side"><option value="client">client</option><option value="world">world</option></select>
+                <label for="details-entry">Entry</label><input id="details-entry" name="entry">
+                <label class="full" for="details-description">Description</label>
+                <textarea class="full" id="details-description" name="description"></textarea>
+                <label class="full" for="details-assets">Assets (JSON)</label>
+                <textarea class="full" id="details-assets" name="assets"></textarea>
+              </div>
+              <div class="details-actions">
+                <button type="submit" class="primary">Save mod.json</button>
+                <span class="hint" id="details-hint">No mod open.</span>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="tab-pane" data-pane="tuning" hidden>
+          <div class="tuning-toolbar">
+            <input id="tuning-filter" type="search" placeholder="Filter paths" aria-label="Filter tuning paths">
+            <button id="tuning-refresh" type="button">Refresh</button>
+            <button id="tuning-save" type="button">Write tuning.json</button>
+            <span class="hint" id="tuning-hint">Waiting for the client…</span>
+          </div>
+          <div class="tuning-tree" id="tuning-tree"></div>
+        </section>
+      </div>
+    </section>
 
     <footer>
       Clients: <a href="https://godotengine.org/" target="_blank" rel="noopener">Godot</a> (WebAssembly)
@@ -367,6 +764,37 @@
       const params = new URLSearchParams(window.location.search);
 
       let active = CLIENTS[params.get("client")] ? params.get("client") : "godot";
+
+      // The browser console, captured for the panel's Host source. The
+      // reference client's Rust `eprintln!`, Godot's `print` and the scene's own
+      // `console.log` diagnostics all land here. The wrapper forwards unchanged;
+      // the panel only reads the ring (`hostLog`) and its counter.
+      const hostLog = [];
+      let hostVersion = 0;
+      const hostText = (value) => {
+        if (typeof value === "string") return value;
+        if (value instanceof Error) return value.stack || value.message;
+        try { return JSON.stringify(value); } catch (error) { return String(value); }
+      };
+      for (const level of ["log", "info", "warn", "error", "debug"]) {
+        const original = console[level];
+        console[level] = function (...args) {
+          hostLog.push({ level, text: args.map(hostText).join(" ") });
+          if (hostLog.length > 500) hostLog.shift();
+          hostVersion += 1;
+          original.apply(console, args);
+        };
+      }
+      window.addEventListener("error", (event) => {
+        hostLog.push({ level: "error", text: String(event.message || "error") });
+        if (hostLog.length > 500) hostLog.shift();
+        hostVersion += 1;
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        hostLog.push({ level: "error", text: String(event.reason) });
+        if (hostLog.length > 500) hostLog.shift();
+        hostVersion += 1;
+      });
 
       // The caption follows the selected client.
       function describe(name) {
@@ -460,7 +888,7 @@
             )
             .then(() => {
               hideStatus();
-              refreshMods();
+              pullMods();
             }, (error) => notice(error instanceof Error ? error.message : String(error)));
         };
         script.onerror = () => notice("client/index.js did not load");
@@ -474,24 +902,82 @@
       //
       // The build preloads the repository's `mods/` at `/mods`, so the client's
       // own discovery finds them; an edit saved from the editor is written into
-      // the same in-memory tree by `mods_editor.rs`. The text files an edit
-      // touches are also kept in `localStorage` and written back in `preRun`, so
-      // a reload keeps them -- a browser has no `user://`.
-      const MOD_STORE = "goats.mods.v1";
-      const MOD_TEXT_FILE = /\.(js|json|md|txt|css|html|svg)$/i;
+      // the same in-memory tree by `mod_editor.rs`. The files an edit touches are
+      // also kept in IndexedDB and written back in `preRun`, so a reload keeps a
+      // PNG or a GLB as well as a script -- a browser has no `user://`.
+      // The reference build has no `user://`, so the page keeps the files the
+      // editor saved in IndexedDB and writes them back into the preloaded
+      // `/mods` in `preRun`. That is what lets an asset (PNG/GLB/MP3) survive a
+      // reload as well as a text file; the old localStorage store held text only.
+      const MOD_DB = "goats.mods.v2";
+      const MOD_DB_STORE = "mods";
+      let restoredMods = {};
 
-      // The reference build has no IndexedDB filesystem, so its own storage is a
-      // small text-only copy of what the editor saved. Assets stay as packaged.
+      function openModDb() {
+        return new Promise((resolve) => {
+          try {
+            const request = indexedDB.open(MOD_DB, 1);
+            request.onupgradeneeded = () => {
+              request.result.createObjectStore(MOD_DB_STORE, { keyPath: "name" });
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => resolve(null);
+          } catch (error) {
+            resolve(null);
+          }
+        });
+      }
+
+      // Read every stored mod once, before the module boots. `preRun` cannot
+      // await IndexedDB, so the boot waits here and `restoreMods` is the
+      // synchronous write that follows.
+      async function loadRestoredMods() {
+        restoredMods = {};
+        // Migrate the text-only v1 store if it is still there.
+        try {
+          const old = JSON.parse(localStorage.getItem("goats.mods.v1") || "null");
+          if (old && typeof old === "object") {
+            const db = await openModDb();
+            if (db) {
+              const tx = db.transaction(MOD_DB_STORE, "readwrite");
+              for (const mod of Object.values(old)) {
+                if (mod && mod.name && mod.files) {
+                  tx.objectStore(MOD_DB_STORE).put(mod);
+                }
+              }
+              tx.oncomplete = () => db.close();
+            }
+            localStorage.removeItem("goats.mods.v1");
+          }
+        } catch (error) {
+          // A corrupt old store is not a reason to fail the boot.
+        }
+        const db = await openModDb();
+        if (!db) return;
+        await new Promise((resolve) => {
+          const tx = db.transaction(MOD_DB_STORE, "readonly");
+          const request = tx.objectStore(MOD_DB_STORE).getAll();
+          request.onsuccess = () => {
+            for (const mod of request.result || []) {
+              if (mod && mod.name && mod.files) restoredMods[mod.name] = mod.files;
+            }
+            resolve();
+          };
+          request.onerror = () => resolve();
+        });
+        db.close();
+      }
+
       function rememberMod(request) {
         try {
           const parsed = JSON.parse(request);
-          const files = {};
-          for (const [file, data] of Object.entries(parsed.files || {})) {
-            if (MOD_TEXT_FILE.test(file)) files[file] = data;
-          }
-          const store = JSON.parse(localStorage.getItem(MOD_STORE) || "{}");
-          store[parsed.name] = { name: parsed.name, files };
-          localStorage.setItem(MOD_STORE, JSON.stringify(store));
+          if (!parsed || !parsed.name || !parsed.files) return;
+          openModDb().then((db) => {
+            if (!db) return;
+            const tx = db.transaction(MOD_DB_STORE, "readwrite");
+            tx.objectStore(MOD_DB_STORE).put({ name: parsed.name, files: parsed.files });
+            tx.oncomplete = () => db.close();
+          });
         } catch (error) {
           // Storage is a convenience; the in-memory write still happened.
         }
@@ -502,10 +988,9 @@
       // back without a second discovery pass.
       function restoreMods() {
         try {
-          const store = JSON.parse(localStorage.getItem(MOD_STORE) || "{}");
-          for (const mod of Object.values(store)) {
-            for (const [file, data] of Object.entries(mod.files || {})) {
-              const path = "/mods/" + mod.name + "/" + file;
+          for (const [name, files] of Object.entries(restoredMods)) {
+            for (const [file, data] of Object.entries(files || {})) {
+              const path = "/mods/" + name + "/" + file;
               const parent = path.slice(0, path.lastIndexOf("/"));
               try { Module.FS.mkdirTree(parent); } catch (error) {}
               const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
@@ -558,7 +1043,8 @@
         }
       }
 
-      function bootReference() {
+      async function bootReference() {
+        await loadRestoredMods();
         const [width, height] = stageSize();
         // The browser is the embedder with the least headroom: Slag's default
         // young cohort (8192 boxes) collects about once a second, each pause a
@@ -636,41 +1122,25 @@
       });
 
       // ---- The mod editor ---------------------------------------------------
-      // The running client installs `goatsModsSave` / `goatsModsReload` /
-      // `goatsModsRead` / `goatsModsState` on its window: `mods.gd` for the Godot
-      // client, the reference build's `mod_editor.rs` exports behind
-      // `installReferenceMods` for the raylib one. Both publish every answer on
-      // `goatsModsLast` as well. Same-origin means the shell reads that property
-      // directly; a callback's own return value is not reliable across browsers.
-      const mods = document.getElementById("mods");
-      const modsToggle = document.getElementById("mods-toggle");
-      const modList = document.querySelector(".mod-list");
-      const modSource = document.getElementById("mod-source");
-      const modFile = document.getElementById("mod-file");
-      const modBadge = document.getElementById("mod-badge");
-      const modNew = document.getElementById("mod-new");
-      const modRun = document.getElementById("mod-run");
-      const modSave = document.getElementById("mod-save");
-      const modHint = document.getElementById("mod-hint");
+      //
+      // The dock's four tabs share one bridge contract (see `mod_editor.rs` and
+      // `mods.gd`): `goatsMods*`, `goatsConsole*` and `goatsTuning*`. A call is
+      // synchronous and publishes its answer on `window.goatsModsLast`; the
+      // client may boot after the panel opens, so every poll tolerates a missing
+      // bridge. Height, tab and open state live in localStorage.
+      const PANEL_KEY = "goats.panel.v1";
+      const panel = document.getElementById("panel");
+      const panelToggle = document.getElementById("mods-toggle");
+      const panelState = document.getElementById("panel-state");
+      const panelClose = document.getElementById("panel-close");
+      const panelMax = document.getElementById("panel-max");
+      const panelResize = document.getElementById("panel-resize");
+      const panelTabs = Array.from(panel.querySelectorAll(".panel-tabs button"));
+      const panes = {};
+      for (const pane of panel.querySelectorAll(".tab-pane")) panes[pane.dataset.pane] = pane;
+      let activeTab = "files";
 
-      let openName = "";
-      let openEntry = "mod.js";
-      let openFiles = {};
-      let modRefresh = 0;
-
-      const modB64 = (text) => {
-        const bytes = new TextEncoder().encode(text);
-        let binary = "";
-        for (const byte of bytes) binary += String.fromCharCode(byte);
-        return btoa(binary);
-      };
-      const modText = (text) =>
-        new TextDecoder().decode(Uint8Array.from(atob(text), (c) => c.charCodeAt(0)));
-
-      // The client's bridge, installed by whichever client is booted in this
-      // document. Both the call and the read are synchronous; a missing bridge is
-      // simply null, which is what the editor polls for while a client boots.
-      function modCall(fn, arg) {
+      function bridgeCall(fn, arg) {
         if (typeof window[fn] !== "function") return null;
         try {
           window.goatsModsLast = "";
@@ -682,160 +1152,1380 @@
         }
       }
 
-      // The folder name a mod is saved under is not in the table (only its id and
-      // display name are), so the editor names a copy after the display name and
-      // falls back to the id's last segment for a build's own mod.
-      function modSlug(row) {
-        return String(row.name || "")
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "");
+      function panelSay(text) {
+        panelState.textContent = text;
       }
 
-      function renderMods(rows) {
+      function describeClient() {
+        return active === "reference" ? "reference" : "godot";
+      }
+
+      function savePanelState() {
+        try {
+          localStorage.setItem(PANEL_KEY, JSON.stringify({
+            open: !panel.hidden,
+            tab: activeTab,
+            width: document.documentElement.style.getPropertyValue("--panel-w") || "",
+            max: panel.classList.contains("max"),
+          }));
+        } catch (error) {
+          // The dock still works; it just forgets where it was.
+        }
+      }
+
+      function setTab(name) {
+        if (!panes[name]) name = "files";
+        activeTab = name;
+        for (const button of panelTabs) {
+          button.setAttribute("aria-selected", String(button.dataset.tab === name));
+        }
+        for (const [key, pane] of Object.entries(panes)) pane.hidden = key !== name;
+        savePanelState();
+        if (name === "console") pullConsole();
+        if (name === "tuning") pullTuning(true);
+      }
+
+      function showPanel(open) {
+        panel.hidden = !open;
+        panelToggle.setAttribute("aria-expanded", String(open));
+        if (open) {
+          setTab(activeTab);
+          pullMods();
+        }
+        layoutPanel();
+        savePanelState();
+      }
+
+      panelToggle.addEventListener("click", () => showPanel(panel.hidden));
+      panelClose.addEventListener("click", () => showPanel(false));
+      panelMax.addEventListener("click", () => {
+        panel.classList.toggle("max");
+        document.documentElement.style.removeProperty("--panel-w");
+        layoutPanel();
+        savePanelState();
+      });
+      for (const button of panelTabs) {
+        button.addEventListener("click", () => setTab(button.dataset.tab));
+      }
+
+      // Drag the left edge; a maximized panel drops back to the dragged width.
+      panelResize.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        panelResize.setPointerCapture(event.pointerId);
+        const startX = event.clientX;
+        const startWidth = panel.getBoundingClientRect().width;
+        const move = (moveEvent) => {
+          const width = Math.max(
+            340,
+            Math.min(window.innerWidth * 0.92, startWidth + startX - moveEvent.clientX),
+          );
+          panel.classList.remove("max");
+          document.documentElement.style.setProperty("--panel-w", width + "px");
+          layoutPanel();
+        };
+        const up = () => {
+          panelResize.removeEventListener("pointermove", move);
+          panelResize.removeEventListener("pointerup", up);
+          savePanelState();
+        };
+        panelResize.addEventListener("pointermove", move);
+        panelResize.addEventListener("pointerup", up);
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "e") {
+          event.preventDefault();
+          showPanel(panel.hidden);
+          return;
+        }
+        if (event.key === "Escape" && !panel.hidden && panel.contains(document.activeElement)) {
+          showPanel(false);
+          return;
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" &&
+            !panel.hidden && activeTab === "files" && currentFile) {
+          event.preventDefault();
+          writeMod("goatsModsSave", "Save");
+        }
+      });
+
+      // ---- encoding ---------------------------------------------------------
+      const b64FromBytes = (bytes) => {
+        let binary = "";
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+        }
+        return btoa(binary);
+      };
+      const bytesFromB64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+      const b64FromText = (text) => b64FromBytes(new TextEncoder().encode(text));
+      const textFromB64 = (text) => new TextDecoder().decode(bytesFromB64(text || ""));
+
+      // ---- zip --------------------------------------------------------------
+      // Export is a stored (method 0) archive, which is a zip the browser can
+      // write without a dependency. Import understands stored and deflate-raw
+      // entries -- the two a normal `zip` produces.
+      const CRC_TABLE = (() => {
+        const table = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+          table[n] = c >>> 0;
+        }
+        return table;
+      })();
+
+      function crc32(bytes) {
+        let crc = 0xffffffff;
+        for (let i = 0; i < bytes.length; i++) {
+          crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+        }
+        return (crc ^ 0xffffffff) >>> 0;
+      }
+
+      function zipBytes(files) {
+        const encoder = new TextEncoder();
+        const local = [];
+        const central = [];
+        const names = Object.keys(files);
+        const now = new Date();
+        const dosTime = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff;
+        const dosDate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
+        let offset = 0;
+        for (const path of names) {
+          const bytes = files[path];
+          const name = encoder.encode(path);
+          const crc = crc32(bytes);
+          const header = new DataView(new ArrayBuffer(30));
+          header.setUint32(0, 0x04034b50, true);
+          header.setUint16(4, 20, true);
+          header.setUint16(6, 0x0800, true);
+          header.setUint16(8, 0, true);
+          header.setUint16(10, dosTime, true);
+          header.setUint16(12, dosDate, true);
+          header.setUint32(14, crc, true);
+          header.setUint32(18, bytes.length, true);
+          header.setUint32(22, bytes.length, true);
+          header.setUint16(26, name.length, true);
+          header.setUint16(28, 0, true);
+          local.push(new Uint8Array(header.buffer), name, bytes);
+          const entry = new DataView(new ArrayBuffer(46));
+          entry.setUint32(0, 0x02014b50, true);
+          entry.setUint16(4, 20, true);
+          entry.setUint16(6, 20, true);
+          entry.setUint16(8, 0x0800, true);
+          entry.setUint16(10, 0, true);
+          entry.setUint16(12, dosTime, true);
+          entry.setUint16(14, dosDate, true);
+          entry.setUint32(16, crc, true);
+          entry.setUint32(20, bytes.length, true);
+          entry.setUint32(24, bytes.length, true);
+          entry.setUint16(28, name.length, true);
+          entry.setUint32(42, offset, true);
+          central.push(new Uint8Array(entry.buffer), name);
+          offset += 30 + name.length + bytes.length;
+        }
+        const centralSize = central.reduce((sum, part) => sum + part.length, 0);
+        const end = new DataView(new ArrayBuffer(22));
+        end.setUint32(0, 0x06054b50, true);
+        end.setUint16(8, names.length, true);
+        end.setUint16(10, names.length, true);
+        end.setUint32(12, centralSize, true);
+        end.setUint32(16, offset, true);
+        return new Blob([...local, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+      }
+
+      async function unzipBytes(buffer) {
+        const view = new DataView(buffer);
+        const bytes = new Uint8Array(buffer);
+        let end = -1;
+        for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 0xffff); i--) {
+          if (view.getUint32(i, true) === 0x06054b50) {
+            end = i;
+            break;
+          }
+        }
+        if (end < 0) throw new Error("not a zip archive");
+        const count = view.getUint16(end + 10, true);
+        let at = view.getUint32(end + 16, true);
+        const files = {};
+        for (let n = 0; n < count; n++) {
+          if (view.getUint32(at, true) !== 0x02014b50) throw new Error("bad central directory");
+          const method = view.getUint16(at + 10, true);
+          const compressed = view.getUint32(at + 20, true);
+          const nameLength = view.getUint16(at + 28, true);
+          const extraLength = view.getUint16(at + 30, true);
+          const commentLength = view.getUint16(at + 32, true);
+          const localAt = view.getUint32(at + 42, true);
+          const name = new TextDecoder().decode(bytes.subarray(at + 46, at + 46 + nameLength));
+          at += 46 + nameLength + extraLength + commentLength;
+          if (name.endsWith("/")) continue;
+          if (view.getUint32(localAt, true) !== 0x04034b50) throw new Error("bad local header");
+          const localName = view.getUint16(localAt + 26, true);
+          const localExtra = view.getUint16(localAt + 28, true);
+          const start = localAt + 30 + localName + localExtra;
+          const raw = bytes.subarray(start, start + compressed);
+          if (method === 0) {
+            files[name] = raw.slice();
+          } else if (method === 8) {
+            const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+            files[name] = new Uint8Array(await new Response(stream).arrayBuffer());
+          } else {
+            throw new Error("unsupported zip compression " + method);
+          }
+        }
+        // A zip made by "Compress Folder" has one top-level folder; strip it so
+        // `mod.json` is where the loader expects it.
+        const names = Object.keys(files);
+        const tops = new Set(names.map((name) => name.split("/")[0]));
+        if (names.length > 0 && tops.size === 1 && names.every((name) => name.includes("/"))) {
+          const prefix = Array.from(tops)[0] + "/";
+          const stripped = {};
+          for (const name of names) stripped[name.slice(prefix.length)] = files[name];
+          return stripped;
+        }
+        return files;
+      }
+
+      // ---- files state ------------------------------------------------------
+      let modRows = null;
+      let openName = "";
+      let openId = "";
+      let openFiles = {};
+      let currentFile = "";
+      let currentSaved = "";
+      let currentDirty = false;
+      let currentKind = "text";
+      let modPending = false;
+
+      const modList = document.getElementById("mod-list");
+      const fileTree = document.getElementById("file-tree");
+      const fileMod = document.getElementById("file-mod");
+      const filePath = document.getElementById("file-path");
+      const fileBadge = document.getElementById("file-badge");
+      const fileMain = document.getElementById("file-main");
+      const editorWrap = document.getElementById("editor-wrap");
+      const filePreview = document.getElementById("file-preview");
+      const fileSource = document.getElementById("file-source");
+      const highlightBlock = document.getElementById("highlight");
+      const gutter = document.getElementById("gutter");
+      const fileHint = document.getElementById("file-hint");
+      const fileRun = document.getElementById("file-run");
+      const fileSave = document.getElementById("file-save");
+      const fileRevert = document.getElementById("file-revert");
+      const fileRename = document.getElementById("file-rename");
+      const fileDelete = document.getElementById("file-delete");
+      const fileNew = document.getElementById("file-new");
+      const modNew = document.getElementById("mod-new");
+      const modImport = document.getElementById("mod-import");
+      const modExport = document.getElementById("mod-export");
+
+      const importInput = document.createElement("input");
+      importInput.type = "file";
+      importInput.accept = ".zip,application/zip";
+      importInput.hidden = true;
+      document.body.append(importInput);
+
+      const languageOf = (path) => {
+        const ext = (path.split(".").pop() || "").toLowerCase();
+        if (ext === "json") return "json";
+        if (["js", "mjs", "cjs"].includes(ext)) return "js";
+        if (ext === "gd") return "gd";
+        if (["glsl", "frag", "vert", "shader", "gdshader", "inc"].includes(ext)) return "glsl";
+        if (ext === "md") return "md";
+        return "text";
+      };
+      const kindOf = (path) => {
+        const ext = (path.split(".").pop() || "").toLowerCase();
+        if (["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext)) return "image";
+        if (["mp3", "ogg", "wav", "m4a", "flac"].includes(ext)) return "audio";
+        if (["js", "mjs", "cjs", "json", "md", "txt", "css", "html", "svg", "gd", "glsl", "frag", "vert", "shader", "gdshader", "inc", "toml", "yml", "yaml", "csv"].includes(ext)) return "text";
+        return "binary";
+      };
+      const mimeOf = (path) => {
+        const ext = (path.split(".").pop() || "").toLowerCase();
+        return {
+          png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+          webp: "image/webp", bmp: "image/bmp", mp3: "audio/mpeg", ogg: "audio/ogg",
+          wav: "audio/wav", m4a: "audio/mp4", flac: "audio/flac",
+        }[ext] || "application/octet-stream";
+      };
+      const escapeHtml = (text) => String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+      const KEYWORDS = {
+        js: "as async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield",
+        json: "true false null",
+        gd: "and as assert await break class class_name const continue elif else enum extends false for func if in is match not null or pass return self signal static true var void while yield",
+        glsl: "attribute bool break case const continue default discard do else false float for if in inout int mat2 mat3 mat4 out precision return sampler2D struct true uniform vec2 vec3 vec4 void while",
+      };
+
+      function highlight(text, language) {
+        if (language === "md" || language === "text") return escapeHtml(text);
+        const words = (KEYWORDS[language] || "").trim().split(/\s+/).filter(Boolean);
+        const source = [
+          "\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/",
+          language === "gd" ? "#[^\\n]*" : "",
+          "\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`",
+          "\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b",
+          words.length ? "\\b(?:" + words.join("|") + ")\\b" : "",
+        ].filter(Boolean).join("|");
+        const pattern = new RegExp(source, "g");
+        let html = "";
+        let last = 0;
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+          html += escapeHtml(text.slice(last, match.index));
+          const token = match[0];
+          let kind = "tok-keyword";
+          if (token.startsWith("//") || token.startsWith("/*") || token.startsWith("#")) kind = "tok-comment";
+          else if (/^["'`]/.test(token)) kind = "tok-string";
+          else if (/^\d/.test(token)) kind = "tok-number";
+          else if (/^(?:true|false|null|undefined)$/.test(token)) kind = "tok-literal";
+          html += '<span class="' + kind + '">' + escapeHtml(token) + "</span>";
+          last = pattern.lastIndex;
+        }
+        html += escapeHtml(text.slice(last));
+        return html;
+      }
+
+      function renderEditor() {
+        highlightBlock.innerHTML = highlight(fileSource.value, languageOf(currentFile)) + "\n";
+        highlightBlock.scrollTop = fileSource.scrollTop;
+        highlightBlock.scrollLeft = fileSource.scrollLeft;
+        const count = fileSource.value.split("\n").length;
+        gutter.textContent = Array.from({ length: count }, (_, i) => i + 1).join("\n");
+        gutter.scrollTop = fileSource.scrollTop;
+      }
+
+      function updateFileBadge() {
+        if (!currentFile) {
+          fileBadge.textContent = "";
+          return;
+        }
+        if (currentDirty) fileBadge.textContent = "modified";
+        else fileBadge.textContent = currentKind === "text" ? languageOf(currentFile) : currentKind;
+      }
+
+      fileSource.addEventListener("input", () => {
+        currentDirty = fileSource.value !== currentSaved;
+        renderEditor();
+        updateFileBadge();
+      });
+      fileSource.addEventListener("scroll", () => {
+        highlightBlock.scrollTop = fileSource.scrollTop;
+        highlightBlock.scrollLeft = fileSource.scrollLeft;
+        gutter.scrollTop = fileSource.scrollTop;
+      });
+      fileSource.addEventListener("keydown", (event) => {
+        if (event.key !== "Tab") return;
+        event.preventDefault();
+        fileSource.setRangeText("  ", fileSource.selectionStart, fileSource.selectionEnd, "end");
+        currentDirty = true;
+        renderEditor();
+        updateFileBadge();
+      });
+
+      function modSlug(row) {
+        return String(row.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+      }
+
+      function renderMods() {
         modList.textContent = "";
-        if (!rows || rows.length === 0) {
+        if (!modRows || modRows.length === 0) {
           const li = document.createElement("li");
           li.className = "empty";
-          li.textContent = rows
-            ? "No mods loaded"
-            : "Waiting for the client…";
+          li.textContent = modRows ? "No mods loaded" : "Waiting for the client…";
           modList.append(li);
           return;
         }
-        for (const row of rows) {
+        for (const row of modRows) {
           const li = document.createElement("li");
+          const wrap = document.createElement("div");
+          wrap.className = "mod-row";
           const button = document.createElement("button");
           button.type = "button";
-          button.className = "mod-item";
+          button.className = "mod-item" + (openId && String(row.id) === openId ? " open" : "");
           button.title = String(row.id || "") + " — " + String(row.description || "");
           const dot = document.createElement("span");
           dot.className = "mod-dot";
           if (row.failed) dot.classList.add("failed");
           else if (row.loaded) dot.classList.add("loaded");
-          const label = document.createElement("span");
-          label.textContent = String(row.name || row.id || "mod");
+          const name = document.createElement("span");
+          name.className = "name";
+          name.textContent = String(row.name || row.id || "mod");
           const meta = document.createElement("span");
           meta.className = "mod-meta";
           meta.textContent = String(row.side || "") + (row.version ? " " + row.version : "");
-          button.append(dot, label, meta);
-          button.addEventListener("click", () => openMod(row, button));
-          li.append(button);
+          button.append(dot, name, meta);
+          button.addEventListener("click", () => openMod(row));
+          const power = document.createElement("button");
+          power.type = "button";
+          power.className = "mod-power" + (row.enabled === false ? " off" : "");
+          power.textContent = row.enabled === false ? "○" : "●";
+          power.title = row.enabled === false ? "Enable this mod" : "Disable this mod";
+          power.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const verb = row.enabled === false ? "enable" : "disable";
+            bridgeCall("goatsConsoleRun", "mod " + verb + " " + row.id);
+            panelSay("mod " + verb + " " + row.id);
+            setTimeout(pullMods, 900);
+          });
+          wrap.append(button, power);
+          li.append(wrap);
           modList.append(li);
         }
       }
 
-      function refreshMods() {
-        clearInterval(modRefresh);
-        let tries = 0;
-        const pull = () => {
-          const text = modCall("goatsModsState");
-          if (text !== null) {
-            clearInterval(modRefresh);
-            try {
-              const rows = JSON.parse(text);
-              renderMods(Array.isArray(rows) ? rows : []);
-            } catch (error) {
-              renderMods([]);
-            }
-            return;
+      function pullMods() {
+        if (modPending) return;
+        modPending = true;
+        const text = bridgeCall("goatsModsState");
+        modPending = false;
+        if (text === null) {
+          if (modRows === null) {
+            modList.textContent = "";
+            const li = document.createElement("li");
+            li.className = "empty";
+            li.textContent = "Waiting for the client…";
+            modList.append(li);
           }
-          if (++tries > 80) {
-            clearInterval(modRefresh);
-            renderMods(null);
-          }
-        };
-        pull();
-        modRefresh = setInterval(pull, 250);
-      }
-
-      function openMod(row, button) {
-        const candidates = [modSlug(row), String(row.id || "").split(".").pop()].filter(
-          (name, index, all) => name && all.indexOf(name) === index,
-        );
-        for (const name of candidates) {
-          const text = modCall("goatsModsRead", name);
-          if (text === null || text.startsWith("error")) continue;
-          let data = null;
-          try { data = JSON.parse(text); } catch (error) { continue; }
-          if (!data || !data.files) continue;
-          openName = name;
-          openFiles = data.files;
-          openEntry = Object.keys(openFiles).find((file) => file.endsWith(".js")) || "mod.js";
-          modSource.value = openFiles[openEntry] ? modText(openFiles[openEntry]) : "";
-          modFile.textContent = name + "/" + openEntry;
-          modBadge.textContent = String(row.side || "client");
-          modRun.disabled = false;
-          modSave.disabled = false;
-          modHint.textContent =
-            "Run reloads this buffer without saving; Save writes it to the client's storage.";
-          for (const item of modList.querySelectorAll(".mod-item")) {
-            item.classList.toggle("open", item === button);
-          }
+          panelSay("waiting for the client…");
           return;
         }
-        modHint.textContent = "Could not read " + (row.name || row.id);
+        try {
+          const rows = JSON.parse(text);
+          if (Array.isArray(rows)) {
+            modRows = rows;
+            renderMods();
+            panelSay(describeClient() + " · " + rows.length + " mod(s)" + (openName ? " · " + openName : ""));
+          }
+        } catch (error) {
+          if (modRows === null) modRows = [];
+        }
+      }
+
+      function renderFileTree() {
+        fileTree.textContent = "";
+        if (!openName) return;
+        const paths = Object.keys(openFiles).sort();
+        if (paths.length === 0) {
+          const li = document.createElement("li");
+          li.className = "empty";
+          li.textContent = "No files";
+          fileTree.append(li);
+          return;
+        }
+        const render = (prefix, depth) => {
+          const children = new Set();
+          for (const path of paths) {
+            if (prefix === "") {
+              const head = path.split("/")[0];
+              children.add(path.includes("/") ? head + "/" : path);
+            } else if (path.startsWith(prefix + "/")) {
+              const rest = path.slice(prefix.length + 1);
+              const head = rest.split("/")[0];
+              children.add(rest.includes("/") ? head + "/" : rest);
+            }
+          }
+          for (const child of Array.from(children).sort()) {
+            const li = document.createElement("li");
+            const row = document.createElement("button");
+            row.type = "button";
+            row.style.paddingLeft = 7 + depth * 12 + "px";
+            const full = prefix === "" ? child.replace(/\/$/, "") : prefix + "/" + child.replace(/\/$/, "");
+            if (child.endsWith("/")) {
+              row.className = "folder";
+              row.textContent = "▸ " + child.slice(0, -1);
+              li.append(row);
+              fileTree.append(li);
+              render(full, depth + 1);
+            } else {
+              row.className = "file" + (full === currentFile ? " open" : "");
+              row.textContent = child;
+              row.title = full;
+              row.addEventListener("click", () => openFile(full));
+              li.append(row);
+              fileTree.append(li);
+            }
+          }
+        };
+        render("", 0);
+      }
+
+      function openMod(row) {
+        const candidates = [modSlug(row), String(row.id || "").split(".").pop()]
+          .filter((name, index, all) => name && all.indexOf(name) === index);
+        for (const name of candidates) {
+          const text = bridgeCall("goatsModsRead", name);
+          if (text === null || text.startsWith("error")) continue;
+          let data = null;
+          try {
+            data = JSON.parse(text);
+          } catch (error) {
+            continue;
+          }
+          if (!data || !data.files) continue;
+          openName = name;
+          openId = String(row.id || "");
+          openFiles = data.files;
+          currentFile = "";
+          currentKind = "text";
+          currentSaved = "";
+          currentDirty = false;
+          fileSource.value = "";
+          fileMod.textContent = name;
+          filePath.textContent = "—";
+          updateFileBadge();
+          renderMods();
+          renderFileTree();
+          fillDetails();
+          const preferred = [
+            "mod.json",
+            Object.keys(openFiles).find((path) => /\.(js|mjs|cjs|gd)$/i.test(path)),
+            Object.keys(openFiles)[0],
+          ].find((path) => path && openFiles[path] !== undefined);
+          if (preferred) openFile(preferred);
+          panelSay(describeClient() + " · " + name);
+          return;
+        }
+        fileHint.textContent = "Could not read " + (row.name || row.id);
+      }
+
+      function openFile(path) {
+        currentFile = path;
+        currentKind = kindOf(path);
+        const encoded = openFiles[path] || "";
+        filePath.textContent = openName + "/" + path;
+        fileRun.disabled = false;
+        fileSave.disabled = currentKind !== "text";
+        fileRevert.disabled = true;
+        fileRename.disabled = false;
+        fileDelete.disabled = false;
+        if (currentKind === "text") {
+          currentSaved = textFromB64(encoded);
+          fileSource.value = currentSaved;
+          currentDirty = false;
+          editorWrap.hidden = false;
+          filePreview.hidden = true;
+          filePreview.textContent = "";
+          renderEditor();
+        } else {
+          currentSaved = "";
+          currentDirty = false;
+          editorWrap.hidden = true;
+          filePreview.hidden = false;
+          filePreview.textContent = "";
+          if (currentKind === "image") {
+            const url = URL.createObjectURL(new Blob([bytesFromB64(encoded)], { type: mimeOf(path) }));
+            const img = document.createElement("img");
+            img.src = url;
+            img.onload = () => URL.revokeObjectURL(url);
+            img.alt = path;
+            filePreview.append(img);
+          } else if (currentKind === "audio") {
+            const audio = document.createElement("audio");
+            audio.controls = true;
+            audio.src = URL.createObjectURL(new Blob([bytesFromB64(encoded)], { type: mimeOf(path) }));
+            filePreview.append(audio);
+          } else {
+            filePreview.textContent = "Binary file — " + bytesFromB64(encoded).length + " bytes";
+          }
+        }
+        updateFileBadge();
+        renderFileTree();
+        fileHint.textContent = "Run reloads without writing; Save writes the whole mod.";
       }
 
       function modRequest() {
-        const files = Object.assign({}, openFiles);
-        files[openEntry] = modB64(modSource.value);
-        return JSON.stringify({ name: openName, files });
+        if (currentFile && currentKind === "text") {
+          openFiles[currentFile] = b64FromText(fileSource.value);
+        }
+        return JSON.stringify({ name: openName, files: openFiles });
       }
 
-      function modAnswer(action, fn) {
-        if (!openName) return;
-        const answer = modCall(fn, modRequest());
+      function writeMod(fn, label) {
+        if (!openName) {
+          fileHint.textContent = "No mod open.";
+          return null;
+        }
+        const answer = bridgeCall(fn, modRequest());
         if (answer === null) {
-          modHint.textContent = action + " failed: the client's bridge is not there";
+          fileHint.textContent = label + " failed: the client's bridge is not there.";
+          return null;
+        }
+        fileHint.textContent = answer.startsWith("error") ? label + " failed: " + answer : answer;
+        if (answer.startsWith("ok")) {
+          // Run previews the buffer without keeping it; only Save writes it.
+          if (fn === "goatsModsSave" && currentFile && currentKind === "text") {
+            currentSaved = fileSource.value;
+            currentDirty = false;
+            updateFileBadge();
+          }
+          fileRevert.disabled = true;
+          setTimeout(pullMods, 250);
+          if (activeTab === "tuning") setTimeout(() => pullTuning(true), 250);
+        }
+        return answer;
+      }
+
+      function newMod() {
+        const taken = new Set((modRows || []).map((row) => String(row.name || "").toLowerCase()));
+        let name = "untitled";
+        let index = 2;
+        while (taken.has(name)) name = "untitled" + index++;
+        openName = name;
+        openId = "";
+        openFiles = {
+          "mod.json": b64FromText(JSON.stringify({
+            id: "com.example." + name,
+            name: "Untitled",
+            version: "1.0.0",
+            api: 1,
+            side: "client",
+            description: "",
+            entry: "mod.js",
+            assets: {},
+          }, null, 2) + "\n"),
+          "mod.js": b64FromText(
+            '// A mod entry receives the live `goats` handle (APIv1.md).\n' +
+            'goats.command("hello", function () { return "ok hello"; });\n',
+          ),
+        };
+        fileMod.textContent = name;
+        currentFile = "mod.js";
+        currentKind = "text";
+        currentSaved = textFromB64(openFiles["mod.js"]);
+        fileSource.value = currentSaved;
+        currentDirty = true;
+        editorWrap.hidden = false;
+        filePreview.hidden = true;
+        fileRun.disabled = false;
+        fileSave.disabled = false;
+        fileRevert.disabled = true;
+        fileRename.disabled = false;
+        fileDelete.disabled = false;
+        renderEditor();
+        updateFileBadge();
+        renderFileTree();
+        fillDetails();
+        renderMods();
+        fileHint.textContent = "Unsaved new mod — Save writes it to the client.";
+      }
+
+      fileSource.addEventListener("input", () => {
+        fileRevert.disabled = fileSource.value === currentSaved;
+      });
+
+      fileRun.addEventListener("click", () => writeMod("goatsModsReload", "Run"));
+      fileSave.addEventListener("click", () => writeMod("goatsModsSave", "Save"));
+      fileRevert.addEventListener("click", () => {
+        if (!currentFile || currentKind !== "text") return;
+        fileSource.value = currentSaved;
+        currentDirty = false;
+        fileRevert.disabled = true;
+        renderEditor();
+        updateFileBadge();
+      });
+      fileNew.addEventListener("click", () => {
+        if (!openName) return;
+        const path = prompt("New file path (relative to the mod):", "notes.md");
+        if (!path) return;
+        if (path.startsWith("/") || path.includes("..") || path.includes("\\")) {
+          fileHint.textContent = "Invalid path.";
           return;
         }
-        modHint.textContent = answer.startsWith("error") ? action + " failed: " + answer : answer;
-        refreshMods();
-      }
-
-      modRun.addEventListener("click", () => modAnswer("Run", "goatsModsReload"));
-      modSave.addEventListener("click", () => modAnswer("Save", "goatsModsSave"));
-
-      modNew.addEventListener("click", () => {
-        const manifest = {
-          id: "com.example.untitled",
-          name: "Untitled",
-          version: "1.0.0",
-          api: 1,
-          side: "client",
-          description: "",
-          entry: "mod.js",
-          assets: {},
-        };
-        const entry =
-          '// A mod entry receives the live `goats` handle (APIv1.md).\n' +
-          'goats.command("hello", function () { return "ok hello"; });\n';
-        openName = "untitled";
-        openEntry = "mod.js";
-        openFiles = {
-          "mod.json": modB64(JSON.stringify(manifest, null, 2) + "\n"),
-          "mod.js": modB64(entry),
-        };
-        modSource.value = entry;
-        modFile.textContent = "untitled/mod.js";
-        modBadge.textContent = "unsaved";
-        modRun.disabled = false;
-        modSave.disabled = false;
-        modHint.textContent =
-          "Run reloads this buffer without saving; Save writes it to the client's storage.";
+        if (openFiles[path] !== undefined) {
+          fileHint.textContent = path + " already exists.";
+          return;
+        }
+        openFiles[path] = b64FromText("");
+        openFile(path);
+        fileHint.textContent = "New file — Save writes it.";
+      });
+      fileRename.addEventListener("click", () => {
+        if (!currentFile) return;
+        const next = prompt("Rename " + currentFile + " to:", currentFile);
+        if (!next || next === currentFile) return;
+        if (next.startsWith("/") || next.includes("..") || next.includes("\\")) {
+          fileHint.textContent = "Invalid path.";
+          return;
+        }
+        if (openFiles[next] !== undefined) {
+          fileHint.textContent = next + " already exists.";
+          return;
+        }
+        if (currentKind === "text") openFiles[currentFile] = b64FromText(fileSource.value);
+        openFiles[next] = openFiles[currentFile];
+        delete openFiles[currentFile];
+        openFile(next);
+        fileHint.textContent = "Renamed — Save applies it.";
+      });
+      fileDelete.addEventListener("click", () => {
+        if (!currentFile) return;
+        if (!confirm("Delete " + currentFile + " from " + openName + "?")) return;
+        const gone = currentFile;
+        delete openFiles[currentFile];
+        currentFile = "";
+        currentKind = "text";
+        currentSaved = "";
+        currentDirty = false;
+        fileSource.value = "";
+        filePath.textContent = "—";
+        editorWrap.hidden = false;
+        filePreview.hidden = true;
+        fileRun.disabled = true;
+        fileSave.disabled = true;
+        fileRevert.disabled = true;
+        fileRename.disabled = true;
+        fileDelete.disabled = true;
+        renderEditor();
+        updateFileBadge();
+        renderFileTree();
+        fileHint.textContent = "Deleted " + gone + " — Save applies it.";
       });
 
-      modsToggle.addEventListener("click", () => {
-        const open = mods.hidden;
-        mods.hidden = !open;
-        modsToggle.setAttribute("aria-expanded", String(open));
-        if (open) {
-          refreshMods();
-          mods.scrollIntoView({ behavior: "smooth", block: "start" });
+      modNew.addEventListener("click", newMod);
+      modExport.addEventListener("click", () => {
+        if (!openName) {
+          fileHint.textContent = "No mod open.";
+          return;
+        }
+        if (currentFile && currentKind === "text") openFiles[currentFile] = b64FromText(fileSource.value);
+        const files = {};
+        for (const [path, data] of Object.entries(openFiles)) files[path] = bytesFromB64(data);
+        const url = URL.createObjectURL(zipBytes(files));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = openName + ".zip";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 8000);
+        fileHint.textContent = "Exported " + openName + ".zip";
+      });
+      modImport.addEventListener("click", () => importInput.click());
+      importInput.addEventListener("change", () => {
+        const file = importInput.files && importInput.files[0];
+        importInput.value = "";
+        if (file) importZip(file);
+      });
+
+      async function importZip(file) {
+        try {
+          const files = await unzipBytes(await file.arrayBuffer());
+          const encoded = {};
+          for (const [path, bytes] of Object.entries(files)) encoded[path] = b64FromBytes(bytes);
+          let name = file.name.replace(/\.zip$/i, "").replace(/[^a-z0-9]+/gi, "").toLowerCase() || "imported";
+          if (files["mod.json"]) {
+            try {
+              const manifest = JSON.parse(new TextDecoder().decode(files["mod.json"]));
+              const tail = String(manifest.id || "").split(".").pop();
+              if (tail) name = tail.replace(/[^a-z0-9]+/gi, "").toLowerCase() || name;
+            } catch (error) {
+              // A malformed manifest still imports; the client will name it.
+            }
+          }
+          const answer = bridgeCall("goatsModsSave", JSON.stringify({ name, files: encoded }));
+          fileHint.textContent = answer || "Import failed: the client's bridge is not there.";
+          if (answer && answer.startsWith("ok")) {
+            setTimeout(pullMods, 400);
+            const row = (modRows || []).find((item) =>
+              String(item.id).split(".").pop() === name || String(item.id).endsWith("." + name));
+            if (row) openMod(row);
+          }
+        } catch (error) {
+          fileHint.textContent = "Import failed: " + error;
+        }
+      }
+
+      async function filesFromDrop(dataTransfer) {
+        const out = {};
+        const items = Array.from(dataTransfer.items || []);
+        if (items.length > 0 && typeof items[0].webkitGetAsEntry === "function") {
+          const walk = async (entry, prefix) => {
+            if (entry.isFile) {
+              const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+              const path = (prefix + entry.name).replace(/^\/+/, "");
+              out[path] = new Uint8Array(await file.arrayBuffer());
+              return;
+            }
+            if (!entry.isDirectory) return;
+            const reader = entry.createReader();
+            let batch = [];
+            do {
+              batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+              for (const child of batch) await walk(child, prefix + entry.name + "/");
+            } while (batch.length > 0);
+          };
+          for (const item of items) {
+            const entry = item.webkitGetAsEntry();
+            if (entry) await walk(entry, "");
+          }
+          return out;
+        }
+        for (const file of Array.from(dataTransfer.files || [])) {
+          out[file.name] = new Uint8Array(await file.arrayBuffer());
+        }
+        return out;
+      }
+
+      async function addDropped(dataTransfer) {
+        const droppedFiles = Array.from(dataTransfer.files || []);
+        if (droppedFiles.length === 1 && /\.zip$/i.test(droppedFiles[0].name)) {
+          await importZip(droppedFiles[0]);
+          return;
+        }
+        const dropped = await filesFromDrop(dataTransfer);
+        const paths = Object.keys(dropped);
+        if (paths.length === 0) return;
+        const accepted = paths.filter((path) => dropped[path].length <= 16 * 1024 * 1024);
+        if (!openName) {
+          if (!dropped["mod.json"]) {
+            fileHint.textContent = "Open or create a mod first (or drop a folder with mod.json).";
+            return;
+          }
+          let name = "imported";
+          try {
+            const manifest = JSON.parse(new TextDecoder().decode(dropped["mod.json"]));
+            const tail = String(manifest.id || "").split(".").pop();
+            if (tail) name = tail.replace(/[^a-z0-9]+/gi, "").toLowerCase() || name;
+          } catch (error) {}
+          openName = name;
+          openId = "";
+          openFiles = {};
+        }
+        for (const path of accepted) openFiles[path] = b64FromBytes(dropped[path]);
+        if (currentFile && currentKind === "text") openFiles[currentFile] = b64FromText(fileSource.value);
+        fileMod.textContent = openName;
+        renderFileTree();
+        fillDetails();
+        if (accepted.length !== paths.length) {
+          fileHint.textContent = "Added " + accepted.length + " file(s); " +
+            (paths.length - accepted.length) + " over 16 MB were skipped.";
+        } else {
+          fileHint.textContent = "Added " + accepted.length + " file(s) — Save to write them.";
+        }
+        if (!currentFile && openFiles["mod.js"]) openFile("mod.js");
+      }
+
+      let dragDepth = 0;
+      fileMain.addEventListener("dragenter", (event) => {
+        event.preventDefault();
+        dragDepth += 1;
+        fileMain.classList.add("dropping");
+      });
+      fileMain.addEventListener("dragover", (event) => event.preventDefault());
+      fileMain.addEventListener("dragleave", () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) fileMain.classList.remove("dropping");
+      });
+      fileMain.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        dragDepth = 0;
+        fileMain.classList.remove("dropping");
+        try {
+          await addDropped(event.dataTransfer);
+        } catch (error) {
+          fileHint.textContent = "Drop failed: " + error;
         }
       });
 
-      refreshMods();
+      // ---- details ----------------------------------------------------------
+      const detailsForm = document.getElementById("details-form");
+      const detailsId = document.getElementById("details-id");
+      const detailsName = document.getElementById("details-name");
+      const detailsVersion = document.getElementById("details-version");
+      const detailsApi = document.getElementById("details-api");
+      const detailsSide = document.getElementById("details-side");
+      const detailsEntry = document.getElementById("details-entry");
+      const detailsDescription = document.getElementById("details-description");
+      const detailsAssets = document.getElementById("details-assets");
+      const detailsHint = document.getElementById("details-hint");
+
+      function fillDetails() {
+        if (!openName) {
+          detailsHint.textContent = "No mod open.";
+          return;
+        }
+        if (openFiles["mod.json"] === undefined) {
+          detailsHint.textContent = "mod.json is not in this mod.";
+          return;
+        }
+        let manifest = null;
+        try {
+          manifest = JSON.parse(textFromB64(openFiles["mod.json"]));
+        } catch (error) {
+          detailsHint.textContent = "mod.json is not valid JSON — edit it in Files.";
+          return;
+        }
+        detailsId.value = manifest.id || "";
+        detailsName.value = manifest.name || "";
+        detailsVersion.value = manifest.version || "";
+        detailsApi.value = String(manifest.api || 1);
+        detailsSide.value = manifest.side === "world" ? "world" : "client";
+        detailsEntry.value = manifest.entry || "";
+        detailsDescription.value = manifest.description || "";
+        detailsAssets.value = JSON.stringify(manifest.assets || {}, null, 2);
+        detailsHint.textContent = openName + "/mod.json";
+      }
+
+      detailsForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!openName) return;
+        let assets = {};
+        try {
+          assets = JSON.parse(detailsAssets.value || "{}");
+        } catch (error) {
+          detailsHint.textContent = "Assets is not valid JSON.";
+          return;
+        }
+        const manifest = {
+          id: detailsId.value.trim(),
+          name: detailsName.value.trim(),
+          version: detailsVersion.value.trim(),
+          api: Number(detailsApi.value) || 1,
+          side: detailsSide.value,
+          description: detailsDescription.value,
+          entry: detailsEntry.value.trim(),
+          assets,
+        };
+        if (!manifest.id || !manifest.name || !manifest.version || !manifest.entry) {
+          detailsHint.textContent = "id, name, version and entry are required.";
+          return;
+        }
+        if (openFiles[manifest.entry] === undefined) {
+          detailsHint.textContent = "Entry '" + manifest.entry + "' is not in this mod.";
+          return;
+        }
+        openFiles["mod.json"] = b64FromText(JSON.stringify(manifest, null, 2) + "\n");
+        openId = manifest.id;
+        const answer = bridgeCall("goatsModsSave", JSON.stringify({ name: openName, files: openFiles }));
+        detailsHint.textContent = answer || "Save failed: the client's bridge is not there.";
+        if (answer && answer.startsWith("ok")) {
+          if (currentFile === "mod.json") openFile("mod.json");
+          renderFileTree();
+          setTimeout(pullMods, 250);
+        }
+      });
+
+      // ---- tuning -----------------------------------------------------------
+      let tuning = null;
+      let tuningBaseline = null;
+      let tuningClient = "";
+      let tuningRows = [];
+      const tuningTree = document.getElementById("tuning-tree");
+      const tuningFilter = document.getElementById("tuning-filter");
+      const tuningHint = document.getElementById("tuning-hint");
+
+      const cloneJson = (value) => JSON.parse(JSON.stringify(value));
+      const getPath = (root, path) => path.split(".").reduce((node, key) => node && node[key], root);
+      function setPath(root, path, value) {
+        const parts = path.split(".");
+        let node = root;
+        for (let i = 0; i < parts.length - 1; i++) {
+          node[parts[i]] = node[parts[i]] || {};
+          node = node[parts[i]];
+        }
+        node[parts[parts.length - 1]] = value;
+      }
+      function leavesOf(node, prefix, out) {
+        for (const [key, value] of Object.entries(node || {})) {
+          const path = prefix ? prefix + "." + key : key;
+          if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+            leavesOf(value, path, out);
+          } else {
+            out.push(path);
+          }
+        }
+        return out;
+      }
+
+      function pullTuning(force) {
+        if (panel.hidden || activeTab !== "tuning") return;
+        const text = bridgeCall("goatsTuningState");
+        if (text === null) {
+          tuningHint.textContent = "Waiting for the client…";
+          return;
+        }
+        let state = null;
+        try {
+          state = JSON.parse(text);
+        } catch (error) {
+          return;
+        }
+        if (!state || !state.tree) return;
+        if (tuningClient !== describeClient()) {
+          tuningClient = describeClient();
+          tuningBaseline = cloneJson(state.tree);
+          tuning = state;
+          renderTuning();
+          return;
+        }
+        const moved = !tuning || state.version !== tuning.version;
+        tuning = state;
+        if (moved || force) renderTuning();
+      }
+
+      function writeTuning(path, value) {
+        const answer = bridgeCall("goatsTuningWrite", JSON.stringify({ path, value }));
+        if (answer === null || answer.startsWith("error")) {
+          tuningHint.textContent = answer || "The client's tuning bridge is not there.";
+          return;
+        }
+        tuningHint.textContent = "Queued " + path;
+        setTimeout(() => pullTuning(false), 350);
+      }
+
+      function renderTuning() {
+        if (!tuning) return;
+        tuningTree.textContent = "";
+        tuningRows = [];
+        const leaves = leavesOf(tuning.tree, "", []);
+        if (tuning.last && tuning.last.path && tuning.last.error) {
+          tuningHint.textContent = tuning.last.path + ": " + tuning.last.error;
+        } else if (tuning.last && tuning.last.path) {
+          tuningHint.textContent = tuning.last.path + " = " + JSON.stringify(tuning.last.value);
+        } else {
+          tuningHint.textContent = describeClient() + " · " + leaves.length + " leaves";
+        }
+        const groups = new Map();
+        for (const path of leaves) {
+          const head = path.split(".")[0];
+          if (!groups.has(head)) groups.set(head, []);
+          groups.get(head).push(path);
+        }
+        for (const [head, paths] of groups) {
+          const section = document.createElement("details");
+          section.className = "tuning-section";
+          section.open = true;
+          const summary = document.createElement("summary");
+          summary.textContent = head + " (" + paths.length + ")";
+          section.append(summary);
+          for (const path of paths) {
+            const row = tuneRow(path);
+            section.append(row);
+            tuningRows.push({ path, row });
+          }
+          tuningTree.append(section);
+        }
+        applyTuningFilter();
+      }
+
+      function tuneRow(path) {
+        const value = getPath(tuning.tree, path);
+        const base = getPath(tuningBaseline, path);
+        const bounds = tuning.clamp[path];
+        const integer = Boolean(tuning.int[path]);
+        const row = document.createElement("div");
+        row.className = "tune-row";
+        if (JSON.stringify(value) !== JSON.stringify(base)) row.classList.add("changed");
+        row.dataset.path = path;
+
+        const label = document.createElement("span");
+        label.className = "tune-label";
+        label.textContent = path;
+        label.title = path;
+
+        const range = document.createElement("input");
+        range.type = "range";
+        const number = document.createElement("input");
+        number.type = "number";
+        let text = null;
+        if (typeof value === "number") {
+          number.value = String(value);
+          number.step = integer ? "1" : "any";
+          if (bounds) {
+            range.min = String(bounds[0]);
+            range.max = String(bounds[1]);
+            range.step = integer ? "1" : "any";
+            range.value = String(value);
+            range.addEventListener("input", () => {
+              number.value = range.value;
+            });
+            range.addEventListener("change", () => writeTuning(path, Number(range.value)));
+          } else {
+            range.hidden = true;
+          }
+          number.addEventListener("change", () => {
+            const next = Number(number.value);
+            if (!Number.isFinite(next)) {
+              number.value = String(value);
+              return;
+            }
+            if (bounds) range.value = String(next);
+            writeTuning(path, next);
+          });
+        } else {
+          range.hidden = true;
+          number.hidden = true;
+          text = document.createElement("input");
+          text.type = "text";
+          text.value = JSON.stringify(value);
+          text.addEventListener("change", () => {
+            let next;
+            try {
+              next = JSON.parse(text.value);
+            } catch (error) {
+              tuningHint.textContent = path + ": " + error;
+              text.value = JSON.stringify(value);
+              return;
+            }
+            writeTuning(path, next);
+          });
+        }
+
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.textContent = "↺";
+        reset.title = "Reset to this session's starting value";
+        reset.addEventListener("click", () => writeTuning(path, base));
+        const controls = document.createElement("div");
+        controls.className = "tune-controls";
+        controls.append(range);
+        controls.append(text || number);
+        row.append(label, controls, reset);
+        return row;
+      }
+
+      function applyTuningFilter() {
+        const query = tuningFilter.value.trim().toLowerCase();
+        for (const { path, row } of tuningRows) {
+          row.hidden = query !== "" && !path.toLowerCase().includes(query);
+        }
+      }
+
+      tuningFilter.addEventListener("input", applyTuningFilter);
+      document.getElementById("tuning-refresh").addEventListener("click", () => pullTuning(true));
+      document.getElementById("tuning-save").addEventListener("click", () => {
+        if (!openName || !tuning) {
+          tuningHint.textContent = "Open a mod in Files first.";
+          return;
+        }
+        const diff = {};
+        for (const path of leavesOf(tuning.tree, "", [])) {
+          const current = getPath(tuning.tree, path);
+          const base = getPath(tuningBaseline, path);
+          if (JSON.stringify(current) !== JSON.stringify(base)) setPath(diff, path, current);
+        }
+        if (Object.keys(diff).length === 0) {
+          tuningHint.textContent = "No changes from the session's starting values.";
+          return;
+        }
+        openFiles["tuning.json"] = b64FromText(JSON.stringify(diff, null, 2) + "\n");
+        const answer = bridgeCall("goatsModsSave", JSON.stringify({ name: openName, files: openFiles }));
+        tuningHint.textContent = answer || "Save failed: the client's bridge is not there.";
+        renderFileTree();
+      });
+
+      // ---- console ----------------------------------------------------------
+      const consoleLinesEl = document.getElementById("console-lines");
+      const consoleSource = document.getElementById("console-source");
+      const consoleFilter = document.getElementById("console-filter");
+      const consoleFollow = document.getElementById("console-follow");
+      const consoleForm = document.getElementById("console-form");
+      const consoleInput = document.getElementById("console-line");
+      const consolePrompt = document.getElementById("console-prompt");
+      document.getElementById("console-clear").addEventListener("click", () => {
+        gameLog = [];
+        hostLog.length = 0;
+        if (consoleState) consoleSeen = consoleState.version;
+        renderConsole();
+      });
+
+      let consoleState = null;
+      let consoleSeen = -1;
+      let consoleClient = "";
+      let hostSeen = -1;
+      let gameLog = [];
+      let consoleHistory = [];
+      let consoleHistoryAt = 0;
+
+      function pullConsole() {
+        if (panel.hidden || activeTab !== "console") return;
+        const text = bridgeCall("goatsConsoleState");
+        if (text === null) {
+          consolePrompt.textContent = ">";
+          consoleInput.placeholder = "Waiting for the client…";
+          return;
+        }
+        let state = null;
+        try {
+          state = JSON.parse(text);
+        } catch (error) {
+          return;
+        }
+        if (!state || state.error) {
+          consolePrompt.textContent = "!";
+          consoleInput.placeholder = state && state.error ? state.error : "Console not ready";
+          return;
+        }
+        if (consoleClient !== describeClient()) {
+          consoleClient = describeClient();
+          consoleSeen = -1;
+          gameLog = [];
+        }
+        const moved = state.version !== consoleSeen;
+        consoleState = state;
+        if (moved) {
+          const delta = Math.max(0, state.version - consoleSeen);
+          if (consoleSeen < 0 || delta > state.lines.length) gameLog = state.lines.slice();
+          else if (delta > 0) gameLog = gameLog.concat(state.lines.slice(-delta));
+          if (gameLog.length > 500) gameLog = gameLog.slice(gameLog.length - 500);
+          consoleSeen = state.version;
+          consoleHistory = Array.isArray(state.history) ? state.history.slice() : consoleHistory;
+          consoleHistoryAt = consoleHistory.length;
+          renderConsole();
+        }
+        consolePrompt.textContent = state.prompt ? "?" : ">";
+        consoleInput.placeholder = state.prompt
+          ? state.prompt
+          : "Command (Enter to run, ↑ history)";
+      }
+
+      function consoleFilterMatches(text) {
+        const filter = consoleFilter.value.trim();
+        if (!filter) return true;
+        const regex = filter.match(/^\/(.*)\/([a-z]*)$/);
+        try {
+          if (regex) return new RegExp(regex[1], regex[2]).test(text);
+          return text.toLowerCase().includes(filter.toLowerCase());
+        } catch (error) {
+          return true;
+        }
+      }
+
+      function renderConsole() {
+        const source = consoleSource.value;
+        const follow = consoleFollow.checked;
+        consoleLinesEl.textContent = "";
+        const append = (entry, host) => {
+          if (!consoleFilterMatches(entry.text)) return;
+          const row = document.createElement("div");
+          row.className = "console-line " + (host ? "level-" + (entry.level || "log") : "kind-" + (entry.kind || "local"));
+          if (source === "all") {
+            const tag = document.createElement("span");
+            tag.className = "tag";
+            tag.textContent = host ? entry.level || "log" : entry.kind || "local";
+            row.append(tag);
+          }
+          const text = document.createElement("span");
+          text.className = "text";
+          text.textContent = entry.text;
+          row.append(text);
+          consoleLinesEl.append(row);
+        };
+        if (source !== "host") {
+          for (const entry of gameLog) append(entry, false);
+        }
+        if (source === "all" && hostLog.length > 0) {
+          const divider = document.createElement("div");
+          divider.className = "console-line";
+          const text = document.createElement("span");
+          text.className = "text";
+          text.style.color = "#55606c";
+          text.textContent = "— host / browser —";
+          divider.append(text);
+          consoleLinesEl.append(divider);
+        }
+        if (source !== "game") {
+          for (const entry of hostLog) append(entry, true);
+        }
+        if (follow) consoleLinesEl.scrollTop = consoleLinesEl.scrollHeight;
+      }
+
+      consoleSource.addEventListener("change", renderConsole);
+      consoleFilter.addEventListener("input", renderConsole);
+
+      consoleForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const line = consoleInput.value.trim();
+        if (!line) return;
+        consoleHistory.push(line);
+        if (consoleHistory.length > 64) consoleHistory.shift();
+        consoleHistoryAt = consoleHistory.length;
+        consoleInput.value = "";
+        const answer = bridgeCall("goatsConsoleRun", line);
+        if (answer === null) panelSay("console bridge is not there");
+        setTimeout(pullConsole, 180);
+      });
+      consoleInput.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowUp" && consoleHistory.length > 0) {
+          event.preventDefault();
+          if (consoleHistoryAt > 0) consoleHistoryAt -= 1;
+          consoleInput.value = consoleHistory[consoleHistoryAt] || "";
+          consoleInput.setSelectionRange(consoleInput.value.length, consoleInput.value.length);
+        } else if (event.key === "ArrowDown") {
+          event.preventDefault();
+          if (consoleHistoryAt < consoleHistory.length) consoleHistoryAt += 1;
+          consoleInput.value = consoleHistoryAt < consoleHistory.length
+            ? consoleHistory[consoleHistoryAt] || ""
+            : "";
+        }
+      });
+
+      // ---- boot -------------------------------------------------------------
+      // The dock starts below the sticky header, whose height changes when the
+      // header wraps. Measure it rather than hard-coding it.
+      function fitPanel() {
+        const bar = document.querySelector("header.bar");
+        const top = bar ? Math.round(bar.getBoundingClientRect().height) : 0;
+        panel.style.setProperty("--panel-top", top + "px");
+        layoutPanel();
+      }
+
+      // Take the dock's width out of the page while the stage can still be at
+      // least `MIN_STAGE` wide; below that, let the panel overlay it.
+      const MIN_STAGE = 480;
+      function layoutPanel() {
+        if (panel.hidden) {
+          document.body.classList.remove("panel-push");
+          return;
+        }
+        const width = panel.getBoundingClientRect().width;
+        const room = document.documentElement.clientWidth - width - 40;
+        const push = room >= MIN_STAGE;
+        document.documentElement.style.setProperty("--panel-actual", width + "px");
+        document.body.classList.toggle("panel-push", push);
+      }
+
+      fitPanel();
+      window.addEventListener("resize", fitPanel);
+
+      try {
+        const stored = JSON.parse(localStorage.getItem(PANEL_KEY) || "null");
+        if (stored) {
+          activeTab = stored.tab || "files";
+          if (stored.width) document.documentElement.style.setProperty("--panel-w", stored.width);
+          if (stored.max) panel.classList.add("max");
+          if (stored.open) panel.hidden = false;
+          panelToggle.setAttribute("aria-expanded", String(!panel.hidden));
+        }
+      } catch (error) {
+        // A corrupt dock state is not a reason to fail the page.
+      }
+      layoutPanel();
+      setTab(activeTab);
+      pullMods();
+      pullConsole();
+      setInterval(() => {
+        if (!panel.hidden && activeTab === "console") {
+          pullConsole();
+          // The host log has no version the client publishes; the wrapper in the
+          // page keeps one, and this is where a new line reaches the pane.
+          if (consoleSource.value !== "game" && hostVersion !== hostSeen) {
+            hostSeen = hostVersion;
+            renderConsole();
+          }
+        }
+      }, 500);
+      setInterval(() => {
+        if (!panel.hidden && activeTab === "tuning") pullTuning(false);
+      }, 900);
+      setInterval(() => {
+        if (!panel.hidden) pullMods();
+      }, 2500);
     </script>
   </body>
 </html>

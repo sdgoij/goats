@@ -183,6 +183,32 @@ function sceneModEnd(id) {
     return "ok";
 }
 
+// The host re-read a mod's manifest (a Save/reload or the file watcher). The
+// entry is re-evaluated separately; this is the table's half, so a name, version
+// or description edit is visible without a restart. Runtime state the host did
+// not re-send stays as it was.
+function sceneModMeta(id, json) {
+    const meta = modFind(id);
+    if (meta === null) return "error unknown mod: " + id;
+    let row;
+    try {
+        row = JSON.parse(String(json));
+    } catch (error) {
+        return "error meta: " + String(error);
+    }
+    const next = modEntry(row);
+    next.enabled = meta.enabled;
+    next.loaded = meta.loaded;
+    next.failed = meta.failed;
+    next.error = meta.error;
+    const at = MODS.indexOf(meta);
+    if (at >= 0) MODS[at] = next;
+    // A manifest may re-point an asset slot. Re-applying every accepted slot is
+    // what undoes the old fill; the engine still needs a restart for new bytes.
+    modApplyAssets();
+    return "ok";
+}
+
 // Re-apply a mod's `tuning.json` after the host re-read it from disk (a reload,
 // or the file watcher). `sceneMods` applies it at load; this is the same merge,
 // for a tree that changed. A typo warns rather than failing.

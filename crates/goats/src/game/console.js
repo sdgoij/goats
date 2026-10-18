@@ -35,8 +35,8 @@ let consoleOpen = false;
 let consoleInput = "";
 let consoleCaret = 0;
 let consoleLines = [];          // { text, kind }
-// Bumped by every push, so a host that mirrors the scrollback (the browser
-// panel) can poll one number instead of serialising the ring every frame.
+// Bumped by every line, so a host that mirrors the scrollback (the browser
+// panel) can read the delta from its own last count.
 let consoleVersion = 0;
 let consoleHistory = [];
 let consoleHistoryAt = 0;
@@ -51,11 +51,11 @@ function consolePush(text, kind) {
     const parts = String(text).split("\n");
     for (let i = 0; i < parts.length; i++) {
         consoleLines.push({ text: parts[i], kind: kind || "local" });
+        consoleVersion += 1;
     }
     if (consoleLines.length > CONSOLE_MAX_LINES) {
         consoleLines.splice(0, consoleLines.length - CONSOLE_MAX_LINES);
     }
-    consoleVersion += 1;
 }
 
 // A line from the session (M10/M11): chat, joins, errors.

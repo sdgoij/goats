@@ -51,7 +51,7 @@ plan.
 | `src/water_splash.gd` | The splashes, drawn: `water.js`'s pooled drops off a fixed `SPLASH_MAX` slot table, as one `MultiMeshInstance3D` |
 | `src/water_reflect.gd` | The reflection's setting: `water.js`'s three tiers, the leaf's clamp and the promise a build can keep |
 | `src/water_mirror.gd` | The reflection's pass: `renderWaterMirror`'s second camera, in a `SubViewport` sharing the scene's world (M20e) |
-| `web/index.html` | The shell the browser build is served in: the client in a 16:9 stage, the client switcher and the mod editor scaffold (`WEB.md`) |
+| `web/index.html` | The shell the browser build is served in: the client in a 16:9 stage, the client switcher, and the mod editor dock (`WEB.md`) |
 | `tools/` | Headless verification scripts, `interop.sh`, and the web build/package scripts (`build_web.sh`, `package_web.sh`) |
 
 `crates/godot` is the GDExtension itself — the only crate in the tree that can
@@ -525,19 +525,20 @@ serve the result. The networking, voice and compiled-mod crates are gated out fo
 
 The export is wrapped in `godot/web/index.html`, a dependency-free shell that
 frames the client at a 16:9 stage (YouTube-player sized), carries a client
-switcher, and holds the mod editor's place in the page. The switcher's second
-entry is the raylib client's own browser build (`sh web/build.sh client` ->
-`web/dist/`), which `godot/tools/package_web.sh` stages as `reference/` when it
-is present; a HEAD probe leaves the option disabled for a Godot-only package.
-The export goes into `client/` and the shell to the root of the served
-directory.
+switcher, and docks the mod editor (Console, Files, Details, Tuning) along the
+right edge of the page. The switcher's second entry is the raylib client's own
+browser build (`sh web/build.sh client` -> `web/dist/`), which
+`godot/tools/package_web.sh` stages as `reference/` when it is present; a HEAD
+probe leaves the option disabled for a Godot-only package. The export goes into
+`client/` and the shell to the root of the served directory.
 
 Mods in a tab are the build's own **birds** and **fatguy** (staged as zips by
 `package_web.sh`) plus anything in `user://mods` (IndexedDB-backed): `mods.gd`
 hands each to `ModHost::load_mod_files`, and `crates/mods` parses the same
-manifest a directory does through its in-memory source. The page's editor talks
-to the client over `window.goatsModsSave` / `goatsModsReload` / `goatsModsRead` /
-`goatsModsState`; `WEB.md` has the request shape.
+manifest a directory does through its in-memory source. The page's dock talks to
+the client over `window.goatsModsSave` / `goatsModsReload` / `goatsModsRead` /
+`goatsModsState`, plus `goatsConsoleState` / `goatsConsoleRun` and
+`goatsTuningState` / `goatsTuningWrite`; `WEB.md` has the request shapes.
 
 ## Continuous integration
 

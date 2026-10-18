@@ -565,6 +565,16 @@ pub(crate) fn reload_and_eval(
     if let Err(error) = loader.reload(id, AssetMode::Keep) {
         eprintln!("[mods] {error}");
     }
+    // A reload can change anything in the manifest, not just the entry. The
+    // scene's table is what the mod list and the console read, so the new
+    // metadata lands before the entry is evaluated.
+    if let Some(meta) = loader.get(id).map(|manifest| manifest.json().to_string()) {
+        call_scene(
+            context,
+            "sceneModMeta",
+            &[JsValue::string(id), JsValue::string(meta)],
+        );
+    }
     // The entry is evaluated fresh; its tuning tree is merged again, so a
     // `tuning.json` edit lands too. Assets are re-read for the digest but not
     // re-registered, so an asset change still needs a restart.

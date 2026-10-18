@@ -72,8 +72,8 @@ var input_text := ""
 var caret := 0
 ## The scrollback: one `{ text, kind }` per row, oldest first. `consoleLines`.
 var lines: Array[Dictionary] = []
-## Bumped by every push, so the browser's Console tab can poll one number instead of
-## serialising the ring every frame (`mods.gd`'s `_web_console_state`).
+## Bumped by every line, so the browser's Console tab can read the delta from its own
+## last count (`mods.gd`'s `_web_console_state`).
 var version := 0
 ## Submitted lines, oldest first, and the cursor into them for Up/Down. `consoleHistory`,
 ## `consoleHistoryAt`. The cursor at `history.size()` means "the line being typed".
@@ -115,9 +115,9 @@ func _process(_delta: float) -> void:
 func push(text: Variant, kind: String = "local") -> void:
 	for part in String(text).split("\n"):
 		lines.append({"text": part, "kind": kind})
+		version += 1
 	while lines.size() > MAX_LINES:
 		lines.pop_front()
-	version += 1
 	queue_redraw()
 
 ## A line from the session: chat, joins, errors. `consoleNet`.

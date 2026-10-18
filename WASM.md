@@ -269,10 +269,10 @@ holes. Playback stays.
 mods` puts the directory in Emscripten's virtual FS, and the loader reads it
 exactly as it reads the desktop's, so the release's mods load and one loader is
 kept rather than a browser-only asset path. A mod the editor changes is written
-into the same `/mods` tree and re-run on the next frame (`mod_editor.rs`); its
-text files are also kept in the shell's `localStorage` and written back in
-`preRun`, so a reload keeps an edit. `--watch` and a *fetched* world mod stay
-desktop concerns (the latter goes out with networking, D4).
+into the same `/mods` tree and re-run on the next frame (`mod_editor.rs`); the
+saved files -- assets included -- are also kept in the page's IndexedDB and
+written back in `preRun`, so a reload keeps an edit. `--watch` and a *fetched*
+world mod stay desktop concerns (the latter goes out with networking, D4).
 
 **D7 -- Shipping is a static directory and a `web` job.** Unlike Android, this
 needs no entry crate: raylib's Android backend calls a C-ABI `main`, which is why

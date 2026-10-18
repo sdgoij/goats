@@ -68,13 +68,11 @@ latter to IndexedDB), and both reach Rust as bytes:
   `goatsTuningWrite` takes `{path, value}` and returns `{ok, value}` or
   `{err}` from `Tuning.write`, the same validated path a mod uses.
 
-An import is the editor's job: Godot's `ZIPReader` extracts a picked archive into
-that same dictionary, and a save writes it under `user://mods`. The shell's Mod
-editor is wired to the bridge for the rest: it lists the client's table, opens a
-mod's entry with `goatsModsRead`, and runs or saves the edited buffer with
-`goatsModsReload` / `goatsModsSave`. Import and export are the remaining half (a
-file picker and a download). Compiled `.wasm` mods remain out -- a tab has no
-module host (`crates/plugin`).
+The shell's Mod editor owns import and export: it reads a picked `.zip` with its
+own reader (`DecompressionStream` for deflate entries) and writes one with stored
+entries, then hands the files to `goatsModsSave`. The same dictionary is what a
+drop of files or a folder augments. Compiled `.wasm` mods remain out -- a tab has
+no module host (`crates/plugin`).
 
 ## Building the extension
 
@@ -186,17 +184,35 @@ The page is the seam for two things:
   page. A `HEAD` probe on `reference/goats.js` enables the reference option only
   when that build is packaged -- a Godot-only package leaves it disabled rather
   than loading a 404.
-- **Mod editor.** The panel lists the running client's mod table, and a row
-  opens that mod's entry in the textarea. Both clients expose the same eight
-  globals: `goatsModsState`, `goatsModsRead`, `goatsModsSave`,
-  `goatsModsReload`, `goatsConsoleState`, `goatsConsoleRun`,
+- **Mod editor.** A DevTools-style dock on the right edge of the page: drag its
+  left edge to resize, maximize it, `Ctrl+Shift+E` toggles it, and the width, tab
+  and open state are remembered in `localStorage`. While the 16:9 stage can stay
+  at least 480 px wide the dock takes its width out of `main`, so the stage
+  shrinks and moves left; below that the dock overlays the page instead. Four
+  tabs:
+  - **Console** mirrors the game's scrollback (and the page's own `console`, for
+    the host), with a source filter, text or `/regex/` search, follow, clear,
+    command history, and the pending question as the input's placeholder.
+  - **Files** lists the running client's mod table (with enable/disable through
+    the `mod enable`/`mod disable` verbs), a file tree, and a line-numbered,
+    syntax-highlighted editor. Files can be created, renamed and deleted; files
+    or folders dropped on the pane are added to the open mod (a dropped `.zip`
+    is imported); Import/Export read and write stored `.zip` archives.
+  - **Details** is a form over `mod.json` (id, name, version, api, side,
+    description, entry, assets) with the same validation the loader applies.
+  - **Tuning** is the live tree with the clients' own `INT`/`CLAMP` bounds,
+    filter, per-leaf reset, and "write tuning.json", which writes only the
+    leaves changed from the session's starting values.
+
+  Both clients expose the same eight globals: `goatsModsState`, `goatsModsRead`,
+  `goatsModsSave`, `goatsModsReload`, `goatsConsoleState`, `goatsConsoleRun`,
   `goatsTuningState`, `goatsTuningWrite`. `mods.gd` installs them for the Godot
   client, and the reference build's `goats_*` exports behind
   `installReferenceMods` for the raylib one. Run reloads the buffer without
-  keeping it; Save also keeps an edit's text files in `localStorage`, because
-  the reference build has no `user://` and writes its mods back in `preRun` on
-  the next load. Asset files stay as packaged. Import and export are disabled
-  until the file picker and download are wired.
+  keeping it; Save writes the whole mod. The reference build has no `user://`,
+  so the page keeps every saved file -- assets included -- in IndexedDB and
+  writes them back into `/mods` in `preRun`. The Godot client's own `user://mods`
+  is already IndexedDB-backed.
 
 `?client=reference` selects the reference client (default: Godot).
 
