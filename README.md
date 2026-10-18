@@ -1,4 +1,4 @@
-# Slag Goat
+# Goats
 
 [![CI](https://github.com/sdgoij/goats/actions/workflows/ci.yml/badge.svg)](https://github.com/sdgoij/goats/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/sdgoij/goats?include_prereleases&sort=semver&label=release)](https://github.com/sdgoij/goats/releases)
@@ -21,12 +21,13 @@ cargo run --release
 
 ## Demo
 
-A short clip of the sandbox in motion:
+**Play it in the browser: [sdgoij.github.io/goats](https://sdgoij.github.io/goats)** --
+the Godot client built for WebAssembly, with the reference client available in
+the same page.
 
-<video src="goats.mp4" controls muted loop width="100%"></video>
+![Two goats and the fat-guy mod in the meadow under a clear noon sky](screenshot1.png)
 
-*If the player above does not appear, [`goats.mp4`](goats.mp4) opens on its file
-page, where GitHub plays it.*
+![A goat standing in the meadow under a cloudy afternoon sky](screenshot2.png)
 
 ## Features
 
@@ -372,7 +373,7 @@ event into a character — so only the on-screen keyboard reaches it.
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
 | `goat_animated.glb` | Exported model (14 clips, textures embedded) — embedded into the binary |
 | `goat.blend` | Blender source: armature rig, actions, materials (its `.blend1` auto-backup is git-ignored) |
-| `goats.mp4` | The demo clip for the README (22 s, 1280×720, H.264) |
+| `goats.mp4` | The old demo clip (22 s, 1280×720, H.264; the README now links the browser build and shows the screenshots) |
 | `tex/` | Knitted-fleece textures (diffuse / normal / roughness / displacement / AO) |
 | `tools/inspect_glb.py` | Dump a GLB's images, textures, materials and animations |
 | `.github/workflows/ci.yml` | Tests, release builds and tag publishing |
