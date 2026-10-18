@@ -433,7 +433,10 @@ As on the phone, the testable half is the half that would otherwise rot:
    `agent.rs:2108`; default 8192) is exposed here as `--nursery-threshold N`
    and `?nursery=N`. A larger value collects less often -- fewer of the ~350 ms
    pauses, at the cost of more live memory -- and the right value is the next
-   thing to measure.
+   thing to measure. The browser builds take that trade by default: the shell
+   passes 65536 to the reference client, and the Godot `ModHost` sets the same
+   threshold on the mods' context (`crates/godot`), so neither starts from the
+   8192 default.
 2. **The ES3 link line, and raylib itself on wasm.** *Answered and closed.*
    `-lGLESv2` and `-lglfw` resolve under Emscripten; `-lGLdispatch` does not, and
    the fix is the gate Android already had (`raylib-sys/build.rs:188-190`)

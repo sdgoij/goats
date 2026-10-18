@@ -47,6 +47,12 @@ mod voice;
 /// The JavaScript facade (`goats`, `rl`) evaluated once, before any mod runs.
 const PRELUDE: &str = include_str!("prelude.js");
 
+/// How many young boxes a mod's collector lets accumulate before a minor runs.
+/// Slag's default is 8192, which on a busy world means a minor about once a
+/// second and a pause of a few hundred milliseconds (`WASM.md` risk 1). Fewer,
+/// longer collections are the right trade for a browser frame.
+const MOD_NURSERY_THRESHOLD: usize = 65536;
+
 /// The library entry point. Godot calls the `gdext_rust_init` symbol this macro
 /// generates, which is what `godot/goat.gdextension` names.
 struct GoatsGodot;
@@ -1301,6 +1307,7 @@ impl ModHost {
     /// facade, and keep the `goats` object.
     fn build(&self) -> Result<Mod, String> {
         let mut context = Context::new().map_err(|e| e.to_string())?;
+        context.set_nursery_threshold(MOD_NURSERY_THRESHOLD);
 
         // A mod's `console.log` reaches the host, not the terminal -- and so do its warnings and
         // its errors, each carrying the word it was said with, because `goats.warn` is not the

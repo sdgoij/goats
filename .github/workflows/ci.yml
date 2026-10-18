@@ -283,7 +283,7 @@ jobs:
         shell: bash
         run: |
           test -f dist-web/index.html
-          grep -q 'src: "client/index.html"' dist-web/index.html
+          grep -q 'page: "client/index.html"' dist-web/index.html
           grep -q 'value="reference"' dist-web/index.html
           test -f dist-web/client/index.pck
           test -f dist-web/client/index.side.wasm

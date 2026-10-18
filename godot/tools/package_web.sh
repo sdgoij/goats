@@ -17,6 +17,11 @@ godot_dir=$root/godot
 out=${1:-$root/target/godot-web}
 godot=${GODOT:-${GODOT_BIN:-godot}}
 
+# A build stamp for cache busting (`?v=`). A normal reload revalidates the shell
+# but not the `.pck` underneath it, so the stamp is written into the shell's
+# client URLs and into the export's `mainPack` URL.
+stamp=$(date +%Y%m%d%H%M%S)
+
 if [ ! -f "$godot_dir/addons/goats_godot/bin/web/goats_godot.wasm" ]; then
     echo "package_web.sh: no web extension yet -- run godot/tools/build_web.sh first" >&2
     exit 1
@@ -79,8 +84,23 @@ esac
 echo "package_web.sh: exporting Web -> $out/client/"
 "$godot" --headless --path "$godot_path" --export-release "Web" "$out_html"
 
+# The exporter writes `mainPack` only when the preset names one, so add it here:
+# the pack is the file that changes on every content rebuild, and a query on it
+# is what makes a plain reload see the new content (the engine fetches the URL
+# and mounts it at the same name in its virtual FS, so `--main-pack` still
+# resolves).
+if grep -q 'const GODOT_CONFIG = {' "$out/client/index.html"; then
+    sed -i "s|const GODOT_CONFIG = {|const GODOT_CONFIG = {\"mainPack\":\"index.pck?v=$stamp\",|" "$out/client/index.html"
+else
+    echo "package_web.sh: unexpected export shell; cannot stamp the pack URL" >&2
+    exit 1
+fi
+
 cp "$godot_dir/web/index.html" "$out/index.html"
-echo "package_web.sh: shell -> $out/index.html"
+# The shell's client URLs carry the same stamp, so a rebuilt client is a new URL
+# and the browser does not hand back yesterday's module.
+sed -i "s/__BUILD__/$stamp/g" "$out/index.html"
+echo "package_web.sh: shell -> $out/index.html ($stamp)"
 
 # The raylib client's own browser build (`web/build.sh client`). It is a
 # separate build from the Godot one, so a Godot-only package simply omits it;

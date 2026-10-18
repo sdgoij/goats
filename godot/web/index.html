@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Slag Goat</title>
     <style>
-      /* The shell around the client. The game itself is an iframe at a 16:9
+      /* The shell around the client. The game draws into a canvas in a 16:9
          stage, about the width of a YouTube player; everything else on this
          page is chrome, not the client. Keep it dependency-free: this file is
          copied beside the export rather than built. */
@@ -93,81 +93,35 @@
         overflow: hidden;
         box-shadow: 0 18px 60px rgb(0 0 0 / 55%);
       }
-      .stage iframe {
+      .stage canvas {
         position: absolute;
         inset: 0;
         display: block;
         width: 100%;
         height: 100%;
-        border: 0;
         background: #000;
+        outline: none;
       }
-      /* The click-to-start poster. Nothing is fetched until the player asks
-         for it: the Godot client's 43 MB engine module and the reference
-         client's 20 MB module both compile on the main thread, and loading
-         either before the visitor wants it is what made the page feel
-         blocked. */
-      .poster {
+      /* The Godot export's own boot screen, kept over the canvas until its
+         `startGame` resolves. The reference client has no equivalent: its module
+         compiles behind a black canvas. */
+      .status {
         position: absolute;
         inset: 0;
-        display: grid;
+        z-index: 1;
+        display: none;
         place-items: center;
-        padding: 24px;
-        text-align: center;
-        background:
-          radial-gradient(circle at 50% 35%, rgb(142 192 124 / 12%), transparent 55%),
-          #0b0d10;
+        background: #0b0d10;
       }
-      .poster-inner { max-width: 460px; }
-      .poster-kicker {
-        display: inline-block;
-        color: var(--accent);
-        font-size: 11px;
-        letter-spacing: 0.26em;
-        text-transform: uppercase;
-      }
-      .poster h1 {
-        margin: 10px 0 18px;
-        font-size: clamp(22px, 3.4vw, 32px);
-        font-weight: 600;
-        letter-spacing: -0.01em;
-      }
-      .poster .play { padding: 10px 20px; font-size: 15px; }
-      .poster p {
-        margin: 14px 0 0;
-        color: var(--dim);
-        font-size: 12.5px;
-      }
-      /* The loader sits over the frame and takes no pointer events, so a client
-         that is already interactive (the reference one boots straight into its
-         scene) is never blocked by it. The first frame can arrive before the
-         wasm finishes compiling; the client owns the stage after that. */
-      .loader {
-        position: absolute;
-        inset: 0;
-        display: grid;
-        place-items: center;
-        background: rgb(6 8 10 / 78%);
-        pointer-events: none;
-      }
-      .loader-inner {
-        display: flex;
-        align-items: center;
-        gap: 12px;
+      .status.show { display: grid; }
+      #status-progress { width: 46%; height: 5px; accent-color: var(--accent); }
+      #status-notice {
+        max-width: 76%;
+        margin: 0 auto;
         color: var(--ink);
-        font-size: 13px;
-      }
-      .spinner {
-        width: 18px;
-        height: 18px;
-        border: 2px solid rgb(200 208 218 / 22%);
-        border-top-color: var(--accent);
-        border-radius: 50%;
-        animation: spin 0.9s linear infinite;
-      }
-      @keyframes spin { to { transform: rotate(360deg); } }
-      @media (prefers-reduced-motion: reduce) {
-        .spinner { animation-duration: 2.4s; }
+        font: 13px/1.5 system-ui, sans-serif;
+        text-align: center;
+        white-space: pre-wrap;
       }
       .stage:fullscreen {
         width: 100vw;
@@ -179,7 +133,7 @@
         place-items: center;
         background: #000;
       }
-      .stage:fullscreen iframe {
+      .stage:fullscreen canvas {
         inset: 0;
         margin: auto;
         width: min(100vw, calc(100vh * 16 / 9));
@@ -236,6 +190,31 @@
         font-size: 12.5px;
       }
       .mod-list .empty { border: 1px dashed var(--line); text-align: center; }
+      .mod-item {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        width: 100%;
+        padding: 7px 9px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--ink);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .mod-item:hover, .mod-item.open { border-color: var(--line); background: #161a20; }
+      .mod-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--dim);
+        flex: 0 0 auto;
+      }
+      .mod-dot.loaded { background: var(--accent); }
+      .mod-dot.failed { background: #d1554a; }
+      .mod-meta { margin-left: auto; color: var(--dim); font-size: 10.5px; }
       .mods-main { display: flex; flex-direction: column; min-width: 0; }
       .tabline {
         display: flex;
@@ -307,28 +286,13 @@
     <main>
       <section id="player" aria-label="Game client">
         <div class="stage" id="stage">
-          <div class="poster" id="poster">
-            <div class="poster-inner">
-              <span class="poster-kicker">Slag Goat</span>
-              <h1>Walk, run, jump, sleep.</h1>
-              <button id="play" class="primary play" type="button">Start Godot client</button>
-              <p id="poster-note">
-                The client loads when you start it. Nothing runs in the background.
-              </p>
-            </div>
-          </div>
-          <!-- No `src` until Start: a wasm module that compiles on the main
-               thread is what made this page feel blocked on arrival. -->
-          <iframe
-            id="frame"
-            title="Slag Goat — Godot client"
-            allow="autoplay; fullscreen; microphone; gamepad"
-            hidden
-          ></iframe>
-          <div class="loader" id="loader" hidden role="status" aria-live="polite">
-            <div class="loader-inner">
-              <span class="spinner" aria-hidden="true"></span>
-              <span id="loader-label">Loading client…</span>
+          <!-- The selected client boots into this canvas as soon as the page is
+               ready -- no iframe and no start gate. It owns the stage from there. -->
+          <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+          <div class="status" id="status">
+            <div>
+              <progress id="status-progress" value="0" max="1"></progress>
+              <div id="status-notice" hidden></div>
             </div>
           </div>
         </div>
@@ -338,37 +302,31 @@
         </p>
       </section>
 
-      <!-- Scaffold: the editor exists so its place in the page is settled. Its
-           controls are deliberately disabled until the mod API and a storage
-           story (import from disk, save, export) are wired to the game. -->
+      <!-- The running client's mod table. The list and the editor talk to the
+           Godot client over the bridge `mods.gd` installs on its window; the
+           reference client has no bridge, so the panel says so. -->
       <section id="mods" hidden aria-labelledby="mods-title">
         <div class="panel-head">
           <h2 id="mods-title">Mod editor</h2>
-          <p>Scaffold only — not yet connected to the running client.</p>
+          <p>The running Godot client's mod table.</p>
         </div>
         <div class="mods-grid">
           <aside class="mods-side">
-            <button class="primary" disabled title="Not wired yet">New mod</button>
-            <button disabled title="Not wired yet">Import…</button>
-            <ul class="mod-list"><li class="empty">No mods loaded</li></ul>
+            <button class="primary" id="mod-new" type="button">New mod</button>
+            <button id="mod-import" type="button" disabled title="Not wired yet">Import…</button>
+            <ul class="mod-list"><li class="empty">Waiting for the client…</li></ul>
           </aside>
           <div class="mods-main">
-            <div class="tabline"><span>untitled.mod.js</span><span class="badge">unsaved</span></div>
-            <textarea id="mod-source" spellcheck="false" aria-label="Mod source">// A mod is a Slag program that registers itself with the game.
-// This template is placeholder text until the editor is wired.
+            <div class="tabline"><span id="mod-file">untitled/mod.js</span><span class="badge" id="mod-badge">unsaved</span></div>
+            <textarea id="mod-source" spellcheck="false" aria-label="Mod source">// A mod entry receives the live `goats` handle (APIv1.md).
 //
-// goats.mod({
-//   name: "untitled",
-//   setup(api) {
-//     // api.draw, api.world, api.audio, ...
-//   },
-// });
+// goats.command("hello", function () { return "ok hello"; });
 </textarea>
             <div class="editor-actions">
-              <button disabled title="Not wired yet">Run</button>
-              <button disabled title="Not wired yet">Save</button>
-              <button disabled title="Not wired yet">Export</button>
-              <span class="hint">Planned: import / customize / create / save / export.</span>
+              <button id="mod-run" type="button" disabled>Run</button>
+              <button id="mod-save" type="button" disabled>Save</button>
+              <button id="mod-export" type="button" disabled title="Not wired yet">Export</button>
+              <span class="hint" id="mod-hint">Open a mod to edit its entry.</span>
             </div>
           </div>
         </div>
@@ -377,136 +335,420 @@
 
     <footer>
       Clients: <a href="https://godotengine.org/" target="_blank" rel="noopener">Godot</a> (WebAssembly)
-      &middot; Reference (planned) &middot; mods run on
+      &middot; Reference (raylib / WASM) &middot; mods run on
       <a href="https://github.com/sdgoij/slag" target="_blank" rel="noopener">Slag</a>.
     </footer>
 
     <script>
-      // One place to teach the shell about a client. `src` is relative to this
-      // page; the Godot export is packaged under client/ (see
-      // godot/tools/package_web.sh), and the reference client goes under
-      // reference/ when its browser build exists.
+      // One place to teach the shell about a client. There is no iframe: the
+      // selected client boots straight into this page's canvas. A switch is a
+      // top-level navigation (`?client=...`) because two wasm engines cannot share
+      // one global scope, and the engine has no unload worth relying on.
+      //
+      // `__BUILD__` is replaced by the packaging script with the moment it ran. A
+      // rebuilt client then has new URLs, so a normal reload does not have to be a
+      // hard reload: only the shell itself is revalidated, and everything below it
+      // is a fresh URL. The Godot export's pack gets its own stamp in `mainPack`.
+      const BUILD = "__BUILD__";
       const CLIENTS = {
-        godot: { label: "Godot client", src: "client/index.html" },
-        // `?embedded=1` lets the reference page fill the 16:9 stage instead of
-        // presenting its standalone 854px column, and hands its viewport size
-        // to the wasm side so the framebuffer matches the canvas.
-        reference: { label: "Reference client", src: "reference/index.html?embedded=1" },
+        godot: { label: "Godot client", page: "client/index.html", boot: bootGodot },
+        reference: { label: "Reference client", page: "reference/index.html", boot: bootReference },
       };
 
-      const frame = document.getElementById("frame");
       const select = document.getElementById("client");
       const clientName = document.getElementById("client-name");
       const openTab = document.getElementById("open-tab");
       const stage = document.getElementById("stage");
-      const poster = document.getElementById("poster");
-      const play = document.getElementById("play");
-      const loader = document.getElementById("loader");
-      const loaderLabel = document.getElementById("loader-label");
+      const canvas = document.getElementById("canvas");
+      const status = document.getElementById("status");
+      const statusProgress = document.getElementById("status-progress");
+      const statusNotice = document.getElementById("status-notice");
       const params = new URLSearchParams(window.location.search);
 
-      let started = false;
       let active = CLIENTS[params.get("client")] ? params.get("client") : "godot";
-      let readyTimer = 0;
 
-      // The poster's label and the caption follow the selected client, whether
-      // or not it has been started.
+      // The caption follows the selected client.
       function describe(name) {
         const client = CLIENTS[name];
         clientName.textContent = client.label;
-        openTab.href = client.src;
-        play.textContent = "Start " + client.label;
+        openTab.href = client.page;
       }
 
-      function showLoader(label) {
-        loaderLabel.textContent = label;
-        loader.hidden = false;
-        clearTimeout(readyTimer);
-        // A client that never announces itself (an older export, a failed
-        // load) must not leave the stage covered forever. The overlay takes no
-        // pointer events, so this is a belt-and-braces limit, not a gate.
-        readyTimer = setTimeout(() => { loader.hidden = true; }, 90000);
+      // The stage's boot screen, over the canvas. Godot reports progress through
+      // `startGame`; the reference client has no progress to report, so only a
+      // failure notice ever appears for it.
+      function showStatus() {
+        statusNotice.hidden = true;
+        statusNotice.textContent = "";
+        statusProgress.hidden = false;
+        statusProgress.removeAttribute("value");
+        statusProgress.removeAttribute("max");
+        status.classList.add("show");
       }
 
-      // The only place the iframe gets a `src`. The module is fetched and
-      // compiled now, on the visitor's click, with the loader already painted.
-      function startClient() {
-        const client = CLIENTS[active];
-        started = true;
-        poster.hidden = true;
-        frame.hidden = false;
-        frame.title = "Slag Goat — " + client.label;
-        showLoader("Loading " + client.label.toLowerCase() + "…");
-        frame.src = client.src;
+      function notice(text) {
+        statusProgress.hidden = true;
+        statusNotice.textContent = String(text);
+        statusNotice.hidden = false;
+        status.classList.add("show");
       }
 
-      // A client posts this once its first frame is on screen (`main.gd` from
-      // `frame_post_draw`, `web/index.html` after the first `goats_frame`).
-      function clientReady(name) {
-        if (name && name !== active) return;
-        clearTimeout(readyTimer);
-        loader.hidden = true;
-        // A click was the gesture; moving the focus into the frame means the
-        // keyboard works without a second click. The reference client still
-        // wants a click on its canvas for pointer lock, which is its own rule.
-        try { frame.contentWindow.focus(); } catch (error) {}
+      function hideStatus() {
+        status.classList.remove("show");
       }
 
-      window.addEventListener("message", (event) => {
-        if (!frame.contentWindow || event.source !== frame.contentWindow) return;
-        const data = event.data;
-        if (data && data.type === "goats-ready") clientReady(String(data.client || ""));
-      });
+      function stageSize() {
+        const width = Math.max(1, Math.round(canvas.clientWidth || stage.clientWidth || 854));
+        const height = Math.max(1, Math.round(canvas.clientHeight || stage.clientHeight || 480));
+        return [width, height];
+      }
+
+      // The Godot export's own bootstrap, without its document: the same Engine
+      // and progress screen, with the paths one directory deeper because the shell
+      // is the top-level page. The extension is preloaded into the virtual FS as
+      // `goats_godot.wasm` -- the name the pack's descriptor resolves -- from its
+      // stamped `client/` URL, so a rebuilt extension is a new URL too.
+      function bootGodot() {
+        showStatus();
+        // `canvasResizePolicy: 0` (none) and a canvas that is already the stage's
+        // size: the adaptive policy would size the buffer to the *window*, and
+        // without an iframe there is no window boundary to inherit -- the stage is
+        // the client's box.
+        const [width, height] = stageSize();
+        canvas.width = width;
+        canvas.height = height;
+        const script = document.createElement("script");
+        script.src = "client/index.js?v=" + BUILD;
+        script.onload = () => {
+          const config = {
+            args: [],
+            canvasResizePolicy: 0,
+            emscriptenPoolSize: 8,
+            ensureCrossOriginIsolationHeaders: true,
+            executable: "client/index",
+            experimentalVK: false,
+            mainPack: "client/index.pck?v=" + BUILD,
+            focusCanvas: true,
+            // Preloaded by hand below, so the stamped source and the descriptor's
+            // name can differ; an empty list also skips the exporter's own
+            // "extensions unsupported" check, which the `web_dlink` template
+            // passes anyway.
+            gdextensionLibs: [],
+            godotPoolSize: 4,
+          };
+          const missing = Engine.getMissingFeatures({ threads: false });
+          if (missing.length !== 0) {
+            notice("This browser is missing features Godot needs:\n" + missing.join("\n"));
+            return;
+          }
+          const engine = new Engine(config);
+          engine
+            .preloadFile("client/goats_godot.wasm?v=" + BUILD, "goats_godot.wasm")
+            .then(() =>
+              engine.startGame({
+                onProgress: (current, total) => {
+                  if (current > 0 && total > 0) {
+                    statusProgress.value = current;
+                    statusProgress.max = total;
+                  } else {
+                    statusProgress.removeAttribute("value");
+                    statusProgress.removeAttribute("max");
+                  }
+                },
+              }),
+            )
+            .then(() => {
+              hideStatus();
+              refreshMods();
+            }, (error) => notice(error instanceof Error ? error.message : String(error)));
+        };
+        script.onerror = () => notice("client/index.js did not load");
+        document.body.appendChild(script);
+      }
+
+      // The reference client's Emscripten module, straight into the same canvas.
+      // `goats.js` is the glue; `goats.wasm` is resolved by `locateFile`, which
+      // carries the build stamp. `--viewport` is how the wasm learns its size (it
+      // cannot read this page's globals).
+      function bootReference() {
+        const [width, height] = stageSize();
+        window.Module = {
+          // The browser is the embedder with the least headroom: Slag's default
+          // young cohort (8192 boxes) collects about once a second, each pause a
+          // few hundred milliseconds on a busy world (`WASM.md` risk 1). Fewer,
+          // longer collections are the right trade here; `?nursery=N` still tunes
+          // it per load.
+          arguments: [
+            "--viewport", width + "x" + height,
+            "--nursery-threshold", params.get("nursery") || "65536",
+          ],
+          canvas: canvas,
+          locateFile: function (path) {
+            // The glue lives in `reference/`, but this page is the shell at the
+            // root; Emscripten's default would resolve the module next to the
+            // glue, so the prefix is ours to add once `locateFile` is overridden.
+            if (/^(https?:|\/|data:)/.test(path)) return path;
+            return "reference/" + path + (path.indexOf("?") < 0 ? "?v=" + BUILD : "");
+          },
+          onRuntimeInitialized: function () {
+            const frame = window.Module._goats_frame || window.Module.goats_frame;
+            if (!frame) {
+              notice("goats_frame was not exported");
+              return;
+            }
+            requestAnimationFrame(function tick() {
+              if (frame()) requestAnimationFrame(tick);
+            });
+          },
+        };
+        const glue = document.createElement("script");
+        glue.src = "reference/goats.js?v=" + BUILD;
+        glue.onerror = () => notice("reference/goats.js did not load");
+        document.body.appendChild(glue);
+      }
 
       // The reference client is a separate build (`web/build.sh client`), staged
-      // by `package_web.sh` under `reference/` when it exists. Probe it once: a
-      // Godot-only package keeps the option disabled instead of loading a 404.
+      // by `package_web.sh` under `reference/` when it exists. Probe it once so a
+      // Godot-only package can disable the option instead of loading a 404.
       const referenceOption = select.querySelector('option[value="reference"]');
-      const autostart = params.get("autostart") === "1";
-      function startIfAsked() {
-        if (autostart && !(active === "reference" && referenceOption.disabled)) {
-          startClient();
-        }
-      }
-      fetch("reference/index.html", { method: "HEAD" })
-        .then((response) => {
-          if (!response.ok) return;
-          referenceOption.disabled = false;
-          if (active !== "godot") select.value = active;
-          startIfAsked();
-        })
-        .catch(() => startIfAsked());
-
-      // Selecting a client before Start only changes what Start will load. Once
-      // something is running, the switch is immediate -- the loader covers the
-      // old frame while the new module compiles.
-      select.addEventListener("change", () => {
-        if (!CLIENTS[select.value]) return;
-        active = select.value;
-        describe(active);
-        if (started) startClient();
-      });
-
-      play.addEventListener("click", startClient);
-      if (active !== "godot") {
-        select.value = active;
-      }
+      if (active !== "godot") select.value = active;
       describe(active);
-      startIfAsked();
+      // No start gate: the selected client boots on arrival. The Godot side is
+      // always packaged; the reference side waits for the probe.
+      if (active === "godot") CLIENTS.godot.boot();
+
+      fetch("reference/goats.js", { method: "HEAD" })
+        .then((response) => {
+          if (response.ok) referenceOption.disabled = false;
+          if (active !== "reference") return;
+          if (response.ok) CLIENTS.reference.boot();
+          else notice("The reference client is not packaged (run web/build.sh client).");
+        })
+        .catch(() => {
+          if (active === "reference") {
+            notice("The reference client is not packaged (run web/build.sh client).");
+          }
+        });
+
+      // One engine per document: a switch is a fresh document with the new client
+      // selected, and that client boots on arrival.
+      select.addEventListener("change", () => {
+        const next = select.value;
+        if (!CLIENTS[next]) return;
+        window.location.href = "?client=" + encodeURIComponent(next);
+      });
 
       document.getElementById("fullscreen").addEventListener("click", () => {
         if (document.fullscreenElement) document.exitFullscreen();
         else stage.requestFullscreen?.();
       });
 
+      // ---- The mod editor ---------------------------------------------------
+      // The running Godot client installs `goatsModsSave` / `goatsModsReload` /
+      // `goatsModsRead` / `goatsModsState` on its window (`mods.gd`), and publishes
+      // every answer on `goatsModsLast` as well. Same-origin means the shell reads
+      // that property directly; the callback's own return value is not reliable
+      // across browsers. The reference client has no bridge.
       const mods = document.getElementById("mods");
       const modsToggle = document.getElementById("mods-toggle");
+      const modList = document.querySelector(".mod-list");
+      const modSource = document.getElementById("mod-source");
+      const modFile = document.getElementById("mod-file");
+      const modBadge = document.getElementById("mod-badge");
+      const modNew = document.getElementById("mod-new");
+      const modRun = document.getElementById("mod-run");
+      const modSave = document.getElementById("mod-save");
+      const modHint = document.getElementById("mod-hint");
+
+      let openName = "";
+      let openEntry = "mod.js";
+      let openFiles = {};
+      let modRefresh = 0;
+
+      const modB64 = (text) => {
+        const bytes = new TextEncoder().encode(text);
+        let binary = "";
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return btoa(binary);
+      };
+      const modText = (text) =>
+        new TextDecoder().decode(Uint8Array.from(atob(text), (c) => c.charCodeAt(0)));
+
+      // The client's bridge, when the Godot client is the one booted in this
+      // document (`mods.gd` installs it on `window`). Both the call and the read
+      // are synchronous; a missing bridge is simply null.
+      function modCall(fn, arg) {
+        if (typeof window[fn] !== "function") return null;
+        try {
+          window.goatsModsLast = "";
+          if (arg === undefined) window[fn]([]);
+          else window[fn](arg);
+          return window.goatsModsLast ? String(window.goatsModsLast) : null;
+        } catch (error) {
+          return null;
+        }
+      }
+
+      // The folder name a mod is saved under is not in the table (only its id and
+      // display name are), so the editor names a copy after the display name and
+      // falls back to the id's last segment for a build's own mod.
+      function modSlug(row) {
+        return String(row.name || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "");
+      }
+
+      function renderMods(rows) {
+        modList.textContent = "";
+        if (!rows || rows.length === 0) {
+          const li = document.createElement("li");
+          li.className = "empty";
+          li.textContent = rows
+            ? "No mods loaded"
+            : active === "godot"
+              ? "Waiting for the client…"
+              : "The mod editor needs the Godot client";
+          modList.append(li);
+          return;
+        }
+        for (const row of rows) {
+          const li = document.createElement("li");
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "mod-item";
+          button.title = String(row.id || "") + " — " + String(row.description || "");
+          const dot = document.createElement("span");
+          dot.className = "mod-dot";
+          if (row.failed) dot.classList.add("failed");
+          else if (row.loaded) dot.classList.add("loaded");
+          const label = document.createElement("span");
+          label.textContent = String(row.name || row.id || "mod");
+          const meta = document.createElement("span");
+          meta.className = "mod-meta";
+          meta.textContent = String(row.side || "") + (row.version ? " " + row.version : "");
+          button.append(dot, label, meta);
+          button.addEventListener("click", () => openMod(row, button));
+          li.append(button);
+          modList.append(li);
+        }
+      }
+
+      function refreshMods() {
+        clearInterval(modRefresh);
+        if (active !== "godot") {
+          renderMods(null);
+          return;
+        }
+        let tries = 0;
+        const pull = () => {
+          const text = modCall("goatsModsState");
+          if (text !== null) {
+            clearInterval(modRefresh);
+            try {
+              const rows = JSON.parse(text);
+              renderMods(Array.isArray(rows) ? rows : []);
+            } catch (error) {
+              renderMods([]);
+            }
+            return;
+          }
+          if (++tries > 80) {
+            clearInterval(modRefresh);
+            renderMods(null);
+          }
+        };
+        pull();
+        modRefresh = setInterval(pull, 250);
+      }
+
+      function openMod(row, button) {
+        const candidates = [modSlug(row), String(row.id || "").split(".").pop()].filter(
+          (name, index, all) => name && all.indexOf(name) === index,
+        );
+        for (const name of candidates) {
+          const text = modCall("goatsModsRead", name);
+          if (text === null || text.startsWith("error")) continue;
+          let data = null;
+          try { data = JSON.parse(text); } catch (error) { continue; }
+          if (!data || !data.files) continue;
+          openName = name;
+          openFiles = data.files;
+          openEntry = Object.keys(openFiles).find((file) => file.endsWith(".js")) || "mod.js";
+          modSource.value = openFiles[openEntry] ? modText(openFiles[openEntry]) : "";
+          modFile.textContent = name + "/" + openEntry;
+          modBadge.textContent = String(row.side || "client");
+          modRun.disabled = false;
+          modSave.disabled = false;
+          modHint.textContent =
+            "Run reloads this buffer without saving; Save writes it to the client's storage.";
+          for (const item of modList.querySelectorAll(".mod-item")) {
+            item.classList.toggle("open", item === button);
+          }
+          return;
+        }
+        modHint.textContent = "Could not read " + (row.name || row.id);
+      }
+
+      function modRequest() {
+        const files = Object.assign({}, openFiles);
+        files[openEntry] = modB64(modSource.value);
+        return JSON.stringify({ name: openName, files });
+      }
+
+      function modAnswer(action, fn) {
+        if (!openName) return;
+        const answer = modCall(fn, modRequest());
+        if (answer === null) {
+          modHint.textContent = action + " failed: the client's bridge is not there";
+          return;
+        }
+        modHint.textContent = answer.startsWith("error") ? action + " failed: " + answer : answer;
+        refreshMods();
+      }
+
+      modRun.addEventListener("click", () => modAnswer("Run", "goatsModsReload"));
+      modSave.addEventListener("click", () => modAnswer("Save", "goatsModsSave"));
+
+      modNew.addEventListener("click", () => {
+        const manifest = {
+          id: "com.example.untitled",
+          name: "Untitled",
+          version: "1.0.0",
+          api: 1,
+          side: "client",
+          description: "",
+          entry: "mod.js",
+          assets: {},
+        };
+        const entry =
+          '// A mod entry receives the live `goats` handle (APIv1.md).\n' +
+          'goats.command("hello", function () { return "ok hello"; });\n';
+        openName = "untitled";
+        openEntry = "mod.js";
+        openFiles = {
+          "mod.json": modB64(JSON.stringify(manifest, null, 2) + "\n"),
+          "mod.js": modB64(entry),
+        };
+        modSource.value = entry;
+        modFile.textContent = "untitled/mod.js";
+        modBadge.textContent = "unsaved";
+        modRun.disabled = false;
+        modSave.disabled = false;
+        modHint.textContent =
+          "Run reloads this buffer without saving; Save writes it to the client's storage.";
+      });
+
       modsToggle.addEventListener("click", () => {
         const open = mods.hidden;
         mods.hidden = !open;
         modsToggle.setAttribute("aria-expanded", String(open));
-        if (open) mods.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (open) {
+          refreshMods();
+          mods.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
       });
+
+      refreshMods();
     </script>
   </body>
 </html>

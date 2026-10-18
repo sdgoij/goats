@@ -60,7 +60,7 @@ SYSROOT="$EMSCRIPTEN_DIR/cache/sysroot"
 # this Rust's output (the problem upstream's `fix/emsdk-binaryen-121-for-rust188`
 # branch names), and the plan wants D3's `emscripten_set_main_loop_arg` callback
 # anyway: no async instrumentation at all.
-export EMCC_CFLAGS="${EMCC_CFLAGS:--O3 -sUSE_GLFW=3 -sASSERTIONS=1 -sWASM=1 -sGL_ENABLE_GET_PROC_ADDRESS=1 -sEXPORTED_RUNTIME_METHODS=ccall,requestFullscreen -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 -sSTACK_SIZE=8388608 -sALLOW_MEMORY_GROWTH=1}"
+export EMCC_CFLAGS="${EMCC_CFLAGS:--O3 -sUSE_GLFW=3 -sWASM=1 -sGL_ENABLE_GET_PROC_ADDRESS=1 -sEXPORTED_RUNTIME_METHODS=ccall,requestFullscreen -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 -sSTACK_SIZE=8388608 -sALLOW_MEMORY_GROWTH=1}"
 
 # bindgen has to be told the target's sysroot or `math.h` is not found at all --
 # the same note ANDROID.md carries for the NDK's headers.

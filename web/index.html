@@ -102,6 +102,10 @@
       // not 854x480 upscaled by the browser.
       var params = new URLSearchParams(window.location.search);
       var embedded = params.get("embedded") === "1";
+      // `?v=` is the shell's build stamp (`package_web.sh`). The glue and the wasm
+      // are named without one, so they are passed through here; a standalone tab
+      // has no stamp and loads them as before.
+      var build = params.get("v") || "";
       if (embedded) {
         document.body.classList.add("embedded");
       }
@@ -129,27 +133,29 @@
         // The shell reads this on the wasm side to size the window.
         embedded: embedded,
         canvas: document.getElementById("canvas"),
+        // Emscripten asks this for `goats.wasm`; the stamp makes a rebuilt module
+        // a new URL rather than a cached one.
+        locateFile: function (path) {
+          return build ? path + (path.indexOf("?") < 0 ? "?v=" + build : "") : path;
+        },
         onRuntimeInitialized: function () {
           // The exported frame entry. Emscripten may or may not prefix it with an
           // underscore depending on the build, so accept either spelling.
           var frame = Module._goats_frame || Module.goats_frame;
           if (!frame) throw new Error("goats_frame was not exported");
-          var announced = false;
           requestAnimationFrame(function tick() {
-            var running = frame();
-            // The first frame is up, so the shell can drop its loader. Opened
-            // alone this posts to itself, which costs nothing.
-            if (!announced) {
-              announced = true;
-              try {
-                parent.postMessage({ type: "goats-ready", client: "reference" }, "*");
-              } catch (error) {}
-            }
-            if (running) requestAnimationFrame(tick);
+            if (frame()) requestAnimationFrame(tick);
           });
         },
       };
+
+      // The glue gets the same stamp, so a rebuilt client is not the cached script.
+      (function () {
+        var glue = document.createElement("script");
+        glue.async = true;
+        glue.src = "goats.js" + (build ? "?v=" + build : "");
+        document.body.appendChild(glue);
+      })();
     </script>
-    <script async src="goats.js"></script>
   </body>
 </html>

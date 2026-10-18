@@ -59,8 +59,12 @@ latter to IndexedDB), and both reach Rust as bytes:
   own mod.
 
 An import is the editor's job: Godot's `ZIPReader` extracts a picked archive into
-that same dictionary, and a save writes it under `user://mods`. Compiled `.wasm`
-mods remain out -- a tab has no module host (`crates/plugin`).
+that same dictionary, and a save writes it under `user://mods`. The shell's Mod
+editor is wired to the bridge for the rest: it lists the client's table, opens a
+mod's entry with `goatsModsRead`, and runs or saves the edited buffer with
+`goatsModsReload` / `goatsModsSave`. Import and export are the remaining half (a
+file picker and a download). Compiled `.wasm` mods remain out -- a tab has no
+module host (`crates/plugin`).
 
 ## Building the extension
 
@@ -122,7 +126,7 @@ The export is **packaged under a shell page**, `godot/web/index.html`:
 ```sh
 GODOT=/path/to/Godot sh godot/tools/package_web.sh
 # -> target/godot-web/
-#      index.html            the shell (16:9 frame, client switcher, mod editor)
+#      index.html            the shell (16:9 stage, client switcher, mod editor)
 #      client/index.html     the Godot export
 #      client/index.pck      ...
 #      reference/index.html  the raylib client, when web/dist exists
@@ -136,46 +140,48 @@ the extension as `goats_godot.wasm` (about 7.7 MB). Set `GODOT` to the editor
 binary; it defaults to `godot` on `PATH`. The extension must already exist -- run
 `godot/tools/build_web.sh` first.
 
+The packaging moment is also a build stamp. `package_web.sh` replaces
+`__BUILD__` in the shell, which puts it on `client/index.js`,
+`client/goats_godot.wasm`, `reference/goats.js` and the reference module, and it
+writes the same stamp into the Godot export's `mainPack` URL (`index.pck?v=`). A
+normal reload revalidates the shell but not the 16 MB pack underneath it, so
+without the stamp a rebuild was only visible after a hard refresh; with it, the
+rebuilt pack is a new URL.
+
 ## The shell page
 
 `godot/web/index.html` is deliberately plain HTML/CSS/JS with no build step and
-no dependencies. It keeps the client out of the whole viewport: the game is an
-`<iframe>` in a `width: min(100%, 1120px); aspect-ratio: 16 / 9` stage, about the
-size of a YouTube player, with a fullscreen button that preserves the ratio.
+no dependencies. It keeps the client out of the whole viewport: the game draws
+into a `<canvas>` in a `width: min(100%, 1120px); aspect-ratio: 16 / 9` stage,
+about the size of a YouTube player, with a fullscreen button that preserves the
+ratio.
 
-**Nothing loads until the visitor presses Start.** The iframe has no `src` on
-arrival, and only the selected client is ever fetched. That is the fix for the
-page feeling blocked: both wasm modules compile on the main thread (Godot's
-engine side module is ~43 MB), so loading one before it is wanted froze the tab
--- and, because the iframe shares the document's main thread, the shell too.
-The Start button is also the user gesture the audio context needs.
+**There is no iframe and no start gate.** The selected client boots into this
+page's canvas on arrival: the Godot option loads `client/index.js` and starts the
+export's own `Engine` with `executable: "client/index"` and
+`mainPack: "client/index.pck?v=..."`; the reference option sets `Module` and
+loads `reference/goats.js`. One engine per document is the rule -- two wasm
+runtimes cannot share a global scope -- so switching clients is a top-level
+navigation (`?client=...`), which boots the new client on arrival.
 
-Once started, a client removes the loader itself. `main.gd` connects to
-`RenderingServer.frame_post_draw`, waits three drawn frames (the first is often
-the clear colour while the shaders compile), and posts
-`{type: "goats-ready", client: "godot"}` to `window.parent`; the reference page
-(`web/index.html`) posts its own message after the first `goats_frame` returns.
-The shell hides the overlay on that message and focuses the frame, so the
-keyboard works without a second click. The overlay takes no pointer events and
-is dropped after 90 seconds even without a message, so a client that cannot
-announce itself still gets the stage.
+The canvas is the client's alone: there is no shell overlay. Godot draws its own
+boot progress into the shell's `#status` (the export's progress bar), and a
+failed load is reported there for either client. Because nothing waits for a
+click, a browser may keep audio locked until the first interaction, which is its
+own rule.
 
 The page is the seam for two things:
 
-- **Client switcher.** `CLIENTS` names each client's entry point. The Godot
-  client is always there (`client/index.html`); the reference client is
-  `reference/index.html`, and a `HEAD` probe enables its option only when that
-  file exists -- a Godot-only package leaves it disabled rather than loading a
-  404. Selecting before Start changes what Start will load; once something is
-  running, switching reloads the iframe under the loader.
-- **Mod editor.** The panel and its layout exist, but its controls are disabled:
-  import / customize / create / save / export need the mod API and a storage
-  story wired to the running client first. (The browser bridge in `mods.gd` is
-  already that API for the Godot client; the panel is the remaining half.)
+- **Client switcher.** `CLIENTS` names each client's boot and its standalone
+  page. A `HEAD` probe on `reference/goats.js` enables the reference option only
+  when that build is packaged -- a Godot-only package leaves it disabled rather
+  than loading a 404.
+- **Mod editor.** The panel lists the running Godot client's mod table, and a
+  row opens that mod's entry in the textarea. Run reloads the buffer without
+  writing it; Save writes it to the client's `user://mods` (IndexedDB). Import
+  and export are disabled until the file picker and download are wired.
 
-`?client=reference` preselects the reference client, and `?autostart=1` skips the
-poster (used by the browser probes; the reference option still waits for its
-probe before starting).
+`?client=reference` selects the reference client (default: Godot).
 
 ### The reference client
 
@@ -187,17 +193,15 @@ sh web/build.sh client        # -> web/dist/{index.html,goats.js,goats.wasm}
 sh godot/tools/package_web.sh # stages it as reference/ when present
 ```
 
-The shell's probe then enables **Reference (raylib / WASM)**. The page is loaded
-with `?embedded=1`, so it fills the 16:9 frame rather than presenting its
-standalone 854px column, and it names the frame's pixel size on the wasm side's
-command line (`--viewport WxH` through `Module.arguments`, surfacing as
-`web.width`/`web.height`). `sceneInit` then calls `rl.initWindow` at that size.
-The page's globals are not readable from the wasm: the game script runs in the
-engine's own JS context, where `Module` is not visible, so argv is the channel.
-Without the flag the framebuffer stays 854x480 and the browser upscales it,
-which is the report that the reference client looked smaller (lower-resolution)
-than the canvas. Its mod loading, networking and voice are the reference
-client's own story (`WASM.md`), not this shell's.
+The shell's probe then enables **Reference (raylib / WASM)**. The shell passes
+the stage's pixel size on the wasm side's command line (`--viewport WxH` through
+`Module.arguments`, surfacing as `web.width`/`web.height`), and `sceneInit`
+calls `rl.initWindow` at that size. The wasm cannot read the shell's globals --
+the game script runs in the engine's own JS context, where `Module` is not
+visible -- so argv is the channel. The standalone page (`reference/index.html`)
+keeps the 854x480 column; the shell's canvas gets the stage size. Its mod
+loading, networking and voice are the reference client's own story (`WASM.md`),
+not this shell's.
 
 ## Serving
 
