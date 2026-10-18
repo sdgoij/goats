@@ -106,13 +106,13 @@ echo "package_web.sh: shell -> $out/index.html ($stamp)"
 # separate build from the Godot one, so a Godot-only package simply omits it;
 # the shell's HEAD probe then leaves the switcher's Reference option disabled.
 reference=$root/web/dist
-if [ -f "$reference/index.html" ] && [ -f "$reference/goats.js" ] && [ -f "$reference/goats.wasm" ]; then
+if [ -f "$reference/index.html" ] && [ -f "$reference/goats.js" ] && [ -f "$reference/goats.wasm" ] && [ -f "$reference/goats.data" ]; then
     rm -rf "$out/reference"
     mkdir -p "$out/reference"
     cp "$reference"/* "$out/reference/"
     echo "package_web.sh: reference -> $out/reference/"
 else
     rm -rf "$out/reference"
-    echo "package_web.sh: no reference build in web/dist (run web/build.sh client)"
+    echo "package_web.sh: no complete reference build in web/dist (run web/build.sh client; goats.data carries the mods)"
 fi
 echo "package_web.sh: serve it with, e.g., python -m http.server 8000 --directory $out"

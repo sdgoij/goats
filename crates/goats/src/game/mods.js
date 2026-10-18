@@ -408,6 +408,14 @@ function goatsMods() {
     });
 }
 
+// The same table as JSON, for a host that needs to *read* it. The browser's mod
+// editor is the one caller (`crates/goats/src/mod_editor.rs` caches the answer
+// for `goats_mods_state`), and it is the scene's live table rather than the
+// loader's metadata: only this side knows which entries loaded and which threw.
+function sceneModTable() {
+    return JSON.stringify(goatsMods());
+}
+
 // ---- accessors ------------------------------------------------------------
 //
 // Thin, documented wrappers over the scene's own globals; the values are read

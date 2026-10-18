@@ -291,6 +291,9 @@ jobs:
           test -f dist-web/reference/index.html
           test -f dist-web/reference/goats.js
           test -f dist-web/reference/goats.wasm
+          # The preloaded `/mods`: without it the reference client boots with an
+          # empty mod table rather than a visible failure.
+          test -f dist-web/reference/goats.data
           ls -lh dist-web dist-web/client dist-web/reference
       - name: Upload the Pages artifact
         uses: actions/upload-pages-artifact@v5

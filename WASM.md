@@ -82,8 +82,9 @@ Verified against the vendored `raylib-sys 6.0.0` in `android/build/raylib-sys/`
 - **The mods directory and its watcher.** `resolve_mods_dir` and
   `Loader::discover` (`:589-608`) read `mods/`; `ModWatcher` (`:616-635`,
   `:945-966`) needs inotify. Emscripten gives a real POSIX-shaped virtual FS, so
-  a *preloaded* `mods/` works unchanged, but a watcher has nothing to watch
-  (D6).
+  the build preloads the repository's `mods/` at `/mods` and discovery reads it
+  unchanged (D6); the watcher is desktop-only, and an edit reaches the client
+  through the editor bridge (`mod_editor.rs`) instead.
 - **Networking and voice.** `Net::start` (`:823`) spawns a thread and builds a
   multi-threaded tokio runtime (`net.rs:263-286`), and `Voice::start` (`:830`)
   opens cpal (`audio.rs:481-526`). Both are compiled out for the browser (D4).
@@ -266,9 +267,12 @@ holes. Playback stays.
 
 **D6 -- The mods directory is preloaded, not special-cased.** `--preload-file
 mods` puts the directory in Emscripten's virtual FS, and the loader reads it
-exactly as it reads the desktop's, so the release's two example mods load and one
-loader is kept rather than a browser-only asset path. `--watch` and a *fetched*
-world mod stay desktop concerns (the latter goes out with networking, D4).
+exactly as it reads the desktop's, so the release's mods load and one loader is
+kept rather than a browser-only asset path. A mod the editor changes is written
+into the same `/mods` tree and re-run on the next frame (`mod_editor.rs`); its
+text files are also kept in the shell's `localStorage` and written back in
+`preRun`, so a reload keeps an edit. `--watch` and a *fetched* world mod stay
+desktop concerns (the latter goes out with networking, D4).
 
 **D7 -- Shipping is a static directory and a `web` job.** Unlike Android, this
 needs no entry crate: raylib's Android backend calls a C-ABI `main`, which is why

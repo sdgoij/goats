@@ -60,7 +60,7 @@ SYSROOT="$EMSCRIPTEN_DIR/cache/sysroot"
 # this Rust's output (the problem upstream's `fix/emsdk-binaryen-121-for-rust188`
 # branch names), and the plan wants D3's `emscripten_set_main_loop_arg` callback
 # anyway: no async instrumentation at all.
-export EMCC_CFLAGS="${EMCC_CFLAGS:--O3 -sUSE_GLFW=3 -sWASM=1 -sGL_ENABLE_GET_PROC_ADDRESS=1 -sEXPORTED_RUNTIME_METHODS=ccall,requestFullscreen -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 -sSTACK_SIZE=8388608 -sALLOW_MEMORY_GROWTH=1}"
+export EMCC_CFLAGS="${EMCC_CFLAGS:--O3 -sUSE_GLFW=3 -sWASM=1 -sGL_ENABLE_GET_PROC_ADDRESS=1 -sEXPORTED_RUNTIME_METHODS=ccall,requestFullscreen,FS -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 -sSTACK_SIZE=8388608 -sALLOW_MEMORY_GROWTH=1 -sFORCE_FILESYSTEM=1}"
 
 # bindgen has to be told the target's sysroot or `math.h` is not found at all --
 # the same note ANDROID.md carries for the NDK's headers.
@@ -77,13 +77,37 @@ case "${1:-client}" in
         ;;
     client)
         PROFILE="${2:-release}"
+        # The repository's mods ride into the virtual filesystem at `/mods`, which
+        # is the directory `resolve_mods_dir` looks for -- so the browser client
+        # discovers birds, fatguy and the rest exactly as the desktop binary does.
+        # A preload is a *link* argument, not a compile one: `RUSTFLAGS` is what
+        # makes rustc hand it to emcc for the final module, and changing it here
+        # is also what makes a rebuild pick up an edited mod.
+        if command -v cygpath >/dev/null 2>&1; then
+            mods_src="$(cygpath -m "$ROOT/mods")"
+        else
+            mods_src="$ROOT/mods"
+        fi
+        export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=--preload-file=$mods_src@/mods"
         cargo build --profile "$PROFILE" -p goats --target "$TARGET"
 
         # A static directory: the page, the glue and the module. `goats.js` is
-        # what Emscripten emits beside the `.wasm` when the target links.
+        # what Emscripten emits beside the `.wasm` when the target links, and
+        # `goats.data` is the preloaded filesystem when there is one.
         mkdir -p "$DIST"
         cp "$ROOT/target/$TARGET/$PROFILE/goats.js" "$DIST/"
         cp "$ROOT/target/$TARGET/$PROFILE/goats.wasm" "$DIST/"
+        # The preloaded filesystem. rustc links in `deps/` and copies the module
+        # and the glue up, but `goats.data` is Emscripten's own side file and is
+        # not something rustc knows to move.
+        data="$ROOT/target/$TARGET/$PROFILE/goats.data"
+        [ -f "$data" ] || data="$ROOT/target/$TARGET/$PROFILE/deps/goats.data"
+        if [ -f "$data" ]; then
+            cp "$data" "$DIST/goats.data"
+        else
+            rm -f "$DIST/goats.data"
+            echo "web: warning: no goats.data (the build has no preloaded files)" >&2
+        fi
         cp "$HERE/index.html" "$DIST/"
         echo "web: staged in $DIST"
         echo "web: serve it with:  web/build.sh serve"

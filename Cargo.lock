@@ -1245,6 +1245,7 @@ dependencies = [
 name = "goats"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cpal",
  "jni 0.21.1",
  "mods",

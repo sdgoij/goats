@@ -303,12 +303,13 @@
       </section>
 
       <!-- The running client's mod table. The list and the editor talk to the
-           Godot client over the bridge `mods.gd` installs on its window; the
-           reference client has no bridge, so the panel says so. -->
+           client over the bridge each one installs on its window: `mods.gd` for
+           the Godot client, and the reference build's `mod_editor.rs` exports
+           for the raylib one. -->
       <section id="mods" hidden aria-labelledby="mods-title">
         <div class="panel-head">
           <h2 id="mods-title">Mod editor</h2>
-          <p>The running Godot client's mod table.</p>
+          <p>The running client's mod table.</p>
         </div>
         <div class="mods-grid">
           <aside class="mods-side">
@@ -470,6 +471,81 @@
       // `goats.js` is the glue; `goats.wasm` is resolved by `locateFile`, which
       // carries the build stamp. `--viewport` is how the wasm learns its size (it
       // cannot read this page's globals).
+      //
+      // The build preloads the repository's `mods/` at `/mods`, so the client's
+      // own discovery finds them; an edit saved from the editor is written into
+      // the same in-memory tree by `mods_editor.rs`. The text files an edit
+      // touches are also kept in `localStorage` and written back in `preRun`, so
+      // a reload keeps them -- a browser has no `user://`.
+      const MOD_STORE = "goats.mods.v1";
+      const MOD_TEXT_FILE = /\.(js|json|md|txt|css|html|svg)$/i;
+
+      // The reference build has no IndexedDB filesystem, so its own storage is a
+      // small text-only copy of what the editor saved. Assets stay as packaged.
+      function rememberMod(request) {
+        try {
+          const parsed = JSON.parse(request);
+          const files = {};
+          for (const [file, data] of Object.entries(parsed.files || {})) {
+            if (MOD_TEXT_FILE.test(file)) files[file] = data;
+          }
+          const store = JSON.parse(localStorage.getItem(MOD_STORE) || "{}");
+          store[parsed.name] = { name: parsed.name, files };
+          localStorage.setItem(MOD_STORE, JSON.stringify(store));
+        } catch (error) {
+          // Storage is a convenience; the in-memory write still happened.
+        }
+      }
+
+      // `preRun` runs after the preloaded `/mods` is unpacked and before Rust's
+      // `run()` scans it, which is why this is the one moment an edit can be put
+      // back without a second discovery pass.
+      function restoreMods() {
+        try {
+          const store = JSON.parse(localStorage.getItem(MOD_STORE) || "{}");
+          for (const mod of Object.values(store)) {
+            for (const [file, data] of Object.entries(mod.files || {})) {
+              const path = "/mods/" + mod.name + "/" + file;
+              const parent = path.slice(0, path.lastIndexOf("/"));
+              try { Module.FS.mkdirTree(parent); } catch (error) {}
+              const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+              try { Module.FS.writeFile(path, bytes); } catch (error) {}
+            }
+          }
+        } catch (error) {
+          // A corrupt or full store is not a reason to fail the boot.
+        }
+      }
+
+      // The reference client's half of the editor bridge: the same four globals
+      // `mods.gd` installs for the Godot client, over the C ABI `mod_editor.rs`
+      // exports. Each call is synchronous, like the Godot callbacks.
+      function installReferenceMods() {
+        const has = (name) => typeof Module["_" + name] === "function";
+        if (typeof Module.ccall !== "function" || !has("goats_mods_state")) return;
+        const call = (name, arg) => {
+          try {
+            return arg === undefined
+              ? Module.ccall(name, "string", [], [])
+              : Module.ccall(name, "string", ["string"], [String(arg)]);
+          } catch (error) {
+            return "error " + String(error);
+          }
+        };
+        const respond = (text) => {
+          window.goatsModsLast = text;
+          return text;
+        };
+        window.goatsModsState = () => respond(call("goats_mods_state"));
+        window.goatsModsRead = (name) => respond(call("goats_mods_read", name));
+        window.goatsModsSave = (request) => {
+          const text = call("goats_mods_write", request);
+          if (text.startsWith("ok")) rememberMod(request);
+          return respond(text);
+        };
+        window.goatsModsReload = (request) => respond(call("goats_mods_write", request));
+      }
+
       function bootReference() {
         const [width, height] = stageSize();
         // The browser is the embedder with the least headroom: Slag's default
@@ -485,6 +561,7 @@
         window.Module = {
           arguments: args,
           canvas: canvas,
+          preRun: [restoreMods],
           locateFile: function (path) {
             // The glue lives in `reference/`, but this page is the shell at the
             // root; Emscripten's default would resolve the module next to the
@@ -493,6 +570,7 @@
             return "reference/" + path + (path.indexOf("?") < 0 ? "?v=" + BUILD : "");
           },
           onRuntimeInitialized: function () {
+            installReferenceMods();
             const frame = window.Module._goats_frame || window.Module.goats_frame;
             if (!frame) {
               notice("goats_frame was not exported");
@@ -546,11 +624,12 @@
       });
 
       // ---- The mod editor ---------------------------------------------------
-      // The running Godot client installs `goatsModsSave` / `goatsModsReload` /
-      // `goatsModsRead` / `goatsModsState` on its window (`mods.gd`), and publishes
-      // every answer on `goatsModsLast` as well. Same-origin means the shell reads
-      // that property directly; the callback's own return value is not reliable
-      // across browsers. The reference client has no bridge.
+      // The running client installs `goatsModsSave` / `goatsModsReload` /
+      // `goatsModsRead` / `goatsModsState` on its window: `mods.gd` for the Godot
+      // client, the reference build's `mod_editor.rs` exports behind
+      // `installReferenceMods` for the raylib one. Both publish every answer on
+      // `goatsModsLast` as well. Same-origin means the shell reads that property
+      // directly; a callback's own return value is not reliable across browsers.
       const mods = document.getElementById("mods");
       const modsToggle = document.getElementById("mods-toggle");
       const modList = document.querySelector(".mod-list");
@@ -576,9 +655,9 @@
       const modText = (text) =>
         new TextDecoder().decode(Uint8Array.from(atob(text), (c) => c.charCodeAt(0)));
 
-      // The client's bridge, when the Godot client is the one booted in this
-      // document (`mods.gd` installs it on `window`). Both the call and the read
-      // are synchronous; a missing bridge is simply null.
+      // The client's bridge, installed by whichever client is booted in this
+      // document. Both the call and the read are synchronous; a missing bridge is
+      // simply null, which is what the editor polls for while a client boots.
       function modCall(fn, arg) {
         if (typeof window[fn] !== "function") return null;
         try {
@@ -607,9 +686,7 @@
           li.className = "empty";
           li.textContent = rows
             ? "No mods loaded"
-            : active === "godot"
-              ? "Waiting for the client…"
-              : "The mod editor needs the Godot client";
+            : "Waiting for the client…";
           modList.append(li);
           return;
         }
@@ -637,10 +714,6 @@
 
       function refreshMods() {
         clearInterval(modRefresh);
-        if (active !== "godot") {
-          renderMods(null);
-          return;
-        }
         let tries = 0;
         const pull = () => {
           const text = modCall("goatsModsState");

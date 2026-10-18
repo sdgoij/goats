@@ -70,6 +70,9 @@ voice = { workspace = true }
 # `-lGLdispatch` off the link, which a wasm link has no library for.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 raylib-sys = { workspace = true, features = ["opengl_es_30"] }
+# The mod editor's bridge (`mod_editor.rs`): the page's JSON carries file bytes
+# as base64, exactly as the Godot bridge's `Marshalls.raw_to_base64` does.
+base64 = { workspace = true }
 # No `jit`: the engine's wasm-body path refuses it (`wasm/src/lib.rs:13-16`), and
 # `install_jit` is compiled in only with that feature (`slag/src/lib.rs:31-32`).
 slag = { workspace = true, features = ["raylib", "raygui"] }

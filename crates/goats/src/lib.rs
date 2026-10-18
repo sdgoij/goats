@@ -32,6 +32,10 @@
 mod audio;
 #[cfg(not(target_arch = "wasm32"))]
 mod net;
+// The browser's mod-editor bridge: the C ABI the shell page's editor calls, and
+// the file work that has to happen on this side of the module.
+#[cfg(target_arch = "wasm32")]
+mod mod_editor;
 
 // The phone's touch surface, installed as the `android` global, and the JNI half
 // of the Java `Activity` behind P2's keyboard, clipboard and insets. Android only:
@@ -353,6 +357,17 @@ fn resolve_mods_dir(options: &Options) -> Option<PathBuf> {
     {
         return Some(PathBuf::from(dir));
     }
+    // The browser build preloads the repository's `mods/` at `/mods`
+    // (`web/build.sh`, the `--preload-file` link argument). Emscripten's working
+    // directory is not guaranteed to be `/`, so this is named rather than left to
+    // the relative candidate below.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let preloaded = PathBuf::from("/mods");
+        if preloaded.is_dir() {
+            return Some(preloaded);
+        }
+    }
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {
@@ -541,7 +556,7 @@ fn handle_mod_intent(
 /// Re-read a mod from its source (a directory or a zip) and evaluate it, so an
 /// edit takes effect without a restart. A read failure falls back to the cached
 /// copy rather than leaving the mod unloadable.
-fn reload_and_eval(
+pub(crate) fn reload_and_eval(
     context: &mut Context,
     loader: &mut Loader,
     plugins: &Rc<RefCell<PluginSet>>,
@@ -629,8 +644,7 @@ fn load_pulled(
 }
 
 /// Add one mod the scene has not seen before, exactly as `ids` names it.
-#[cfg(not(target_arch = "wasm32"))]
-fn add_pulled_mod(
+pub(crate) fn add_pulled_mod(
     context: &mut Context,
     loader: &mut Loader,
     plugins: &Rc<RefCell<PluginSet>>,
@@ -650,6 +664,7 @@ fn add_pulled_mod(
     // be a silent half-join. The boot path registers every mod's assets before
     // any entry runs for the same reason.
     let assets = manifest.take_assets();
+    #[cfg(not(target_arch = "wasm32"))]
     let compiled = manifest
         .wasm
         .as_ref()
@@ -661,9 +676,12 @@ fn add_pulled_mod(
         context.register_raylib_asset(name, data);
     }
     eval_entry(context, loader, id);
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some((side, bytes)) = compiled {
         add_plugin(context, plugins, id, side, &bytes);
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = plugins;
 }
 
 /// The client's entry point: read the environment's arguments, load the mods,
@@ -703,6 +721,11 @@ pub fn run() {
         }
         canonical_dir(&dir)
     });
+    // The browser's mod editor writes into this same tree; the writes happen
+    // from an export that has no `Options` to read, so the path is published
+    // once here.
+    #[cfg(target_arch = "wasm32")]
+    mod_editor::set_root(mods_dir.clone());
     let mut loader = match &mods_dir {
         Some(dir) => {
             eprintln!("[mods] scanning {}", dir.display());
@@ -856,6 +879,17 @@ pub fn run() {
     let set_wasm_published = scene_function(&context, "sceneSetWasmPublished");
     let scene_belly = scene_function(&context, "sceneBelly");
     let set_wasm_hud = scene_function(&context, "sceneSetWasmHud");
+    // The browser's editor reads the scene's table through this getter, because
+    // only the scene knows which mods loaded and which failed. The frame loop
+    // caches it (`mod_editor::publish_table`) after boot and after any change.
+    #[cfg(target_arch = "wasm32")]
+    let mod_table = scene_function_if_present(&context, "sceneModTable");
+    #[cfg(target_arch = "wasm32")]
+    mod_editor::publish_table(&mut context, mod_table.as_ref());
+    // The mods the scene already has, so an editor save can tell a reload from a
+    // folder discovery has never seen.
+    #[cfg(target_arch = "wasm32")]
+    let mut loaded_ids: std::collections::HashSet<String> = loader.ids().into_iter().collect();
 
     // The apply seam: a mirroring client's JS scene hands a peer's published
     // state back to the Rust host through this native function. Only a compiled
@@ -1102,6 +1136,7 @@ pub fn run() {
 
         // Mod enable/disable/reload intents the console queued. The host
         // re-reads and evaluates the entry, exactly as it did at startup.
+        let mut mods_changed = false;
         if let Some(drain) = &mod_drain {
             match context.call(drain, &JsValue::undefined(), &[]) {
                 Ok(value) => {
@@ -1110,6 +1145,7 @@ pub fn run() {
                             let line = line.trim();
                             if !line.is_empty() {
                                 handle_mod_intent(&mut context, &mut loader, &plugins, line);
+                                mods_changed = true;
                             }
                         }
                     }
@@ -1117,6 +1153,28 @@ pub fn run() {
                 Err(error) => eprintln!("[mods] sceneModDrain: {error}"),
             }
         }
+
+        // The browser editor's writes (a Save or a Run) land in the same tree and
+        // are applied here, on the frame boundary: the scene's `Context` is here
+        // and nowhere else. The table is re-published so the editor's list sees
+        // the result without waiting for a console event.
+        #[cfg(target_arch = "wasm32")]
+        {
+            if mod_editor::service(
+                &mut context,
+                &mut loader,
+                &plugins,
+                mods_dir.as_deref(),
+                &mut loaded_ids,
+            ) {
+                mods_changed = true;
+            }
+            if mods_changed {
+                mod_editor::publish_table(&mut context, mod_table.as_ref());
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = mods_changed;
 
         // A watched mod file changed. Coalesce the burst an editor produces and
         // reload once the writes have settled, so a half-written file is never

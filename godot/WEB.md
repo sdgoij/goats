@@ -176,20 +176,29 @@ The page is the seam for two things:
   page. A `HEAD` probe on `reference/goats.js` enables the reference option only
   when that build is packaged -- a Godot-only package leaves it disabled rather
   than loading a 404.
-- **Mod editor.** The panel lists the running Godot client's mod table, and a
-  row opens that mod's entry in the textarea. Run reloads the buffer without
-  writing it; Save writes it to the client's `user://mods` (IndexedDB). Import
-  and export are disabled until the file picker and download are wired.
+- **Mod editor.** The panel lists the running client's mod table, and a row
+  opens that mod's entry in the textarea. Both clients expose the same four
+  globals (`goatsModsState`, `goatsModsRead`, `goatsModsSave`,
+  `goatsModsReload`): `mods.gd` installs them for the Godot client, and the
+  reference build's `goats_mods_*` exports behind `installReferenceMods` for the
+  raylib one. Run reloads the buffer without keeping it; Save also keeps an
+  edit's text files in `localStorage`, because the reference build has no
+  `user://` and writes its mods back in `preRun` on the next load. Asset files
+  stay as packaged. Import and export are disabled until the file picker and
+  download are wired.
 
 `?client=reference` selects the reference client (default: Godot).
 
 ### The reference client
 
 The second option is the raylib client's own WebAssembly build (`WASM.md`). It is
-built separately, with its own link flags and the stable toolchain:
+built separately, with its own link flags and the stable toolchain. The build
+preloads the repository's `mods/` into the module's virtual filesystem
+(`goats.data`), so the browser client discovers the same mods the desktop binary
+does, and the shell's editor reaches it through the `goats_mods_*` exports.
 
 ```sh
-sh web/build.sh client        # -> web/dist/{index.html,goats.js,goats.wasm}
+sh web/build.sh client        # -> web/dist/{index.html,goats.js,goats.wasm,goats.data}
 sh godot/tools/package_web.sh # stages it as reference/ when present
 ```
 

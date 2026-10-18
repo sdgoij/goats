@@ -61,6 +61,9 @@ iroh = "1.2.0"
 # hosts without a registry. It tracks iroh's 1.x line (its `iroh` requirement is
 # `^1`), so it shares the endpoint stack above.
 iroh-gossip = "0.101"
+# The swarm message is compact binary, and the browser's mod editor speaks base64
+# (the same representation `APIv1` uses for bytes on the wire).
+base64 = "0.22"
 # The LAN beacon's multicast socket needs the reuse flags, which a plain
 # `UdpSocket` does not expose. `socket2` 0.6 is what iroh itself uses.
 socket2 = "0.6"
