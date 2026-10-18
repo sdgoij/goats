@@ -231,6 +231,8 @@ func run(line: String) -> String:
 			return "ok " + json_of(_net_status())
 		"net":
 			return "ok " + json_of(_net_status())
+		"swarm":
+			return _swarm(parts)
 		"copy":
 			return _copy(parts)
 		"say":
@@ -861,6 +863,34 @@ func _net_status() -> Dictionary:
 ## Whether the frame is in a session at all, which is `netInSession()`.
 func _in_session() -> bool:
 	return String(_net_status().get("mode", "off")) != "off"
+
+## `swarm [join [--topic ID] [--peer ID|TICKET]... | leave]`: the gossip topic hosts
+## advertise on (`ctl.js`'s `swarm`). With no verb it reports the topic, the direct
+## neighbours and how many hosts were found, which is `netSwarmStatus()`.
+func _swarm(parts: PackedStringArray) -> String:
+	var verb: String = parts[1] if parts.size() > 1 else ""
+	if verb == "":
+		var status: Variant = _call("cmd_swarm_status")
+		if status is Dictionary:
+			return "ok " + json_of(status)
+		return "ok " + json_of({"topic": "", "peers": 0, "hosts": 0})
+	if verb == "join":
+		var topic := ""
+		var peers := PackedStringArray()
+		var i: int = 2
+		while i < parts.size():
+			if parts[i] == "--topic" and i + 1 < parts.size():
+				topic = parts[i + 1]
+				i += 2
+			elif parts[i] == "--peer" and i + 1 < parts.size():
+				peers.append(parts[i + 1])
+				i += 2
+			else:
+				return "error swarm join expects --topic ID or --peer ID"
+		return String(_call("cmd_swarm_join", [topic, ",".join(peers)]))
+	if verb == "leave":
+		return String(_call("cmd_swarm_leave"))
+	return "error swarm expects join|leave"
 
 ## Whether the frame is a *client* in a session, which is what decides whether the herd is
 ## the scene's own or the host's mirror -- `main.gd`'s `_joined`.

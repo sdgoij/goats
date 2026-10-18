@@ -809,6 +809,35 @@ function modStreamStates() {
     return out;
 }
 
+// A complete snapshot of the mod streams, for a client that has to put its own
+// world back after a session (see `sceneSaveOwnSeed` in `weather.js`). A compiled
+// world mod keeps its streams inside its module, so those are copied too -- data
+// is not included: this is the *seed state*, and a mod's published world is the
+// host's while the session lasts.
+function modStreamSnapshot() {
+    const wasm = {};
+    for (const [id, live] of modWasmLive) {
+        if (live.side !== "world") continue;
+        wasm[id] = Array.from(live.rng);
+    }
+    return { streams: modStreamStates(), wasm: wasm };
+}
+
+function modRestoreStreams(snapshot) {
+    if (snapshot === null || typeof snapshot !== "object") return;
+    modAdoptStreams(snapshot.streams);
+    const wasm = snapshot.wasm || {};
+    const ids = Object.keys(wasm);
+    for (let i = 0; i < ids.length; i++) {
+        const live = modWasmLive.get(ids[i]);
+        const saved = wasm[ids[i]];
+        if (live === undefined || live.side !== "world" || !Array.isArray(saved)) continue;
+        for (let j = 0; j < live.rng.length && j < saved.length; j++) {
+            live.rng[j] = Number(saved[j]) >>> 0;
+        }
+    }
+}
+
 function modAdoptStreams(states) {
     if (states === null || typeof states !== "object") return;
     const keys = Object.keys(states);

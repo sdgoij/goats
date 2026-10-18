@@ -838,6 +838,10 @@ function sceneFrame() {
     perfMark("peers_upd");
     resolveGoatCollisions();
     perfMark("collide");
+    // A ring is a place in the meadow, so stepping into one is part of the frame
+    // the goat moves, not part of the drawing pass.
+    PORTALS.step();
+    perfMark("portals");
     // The heightfield follows the goat: rebuild the grid if it has left the one
     // it was built around, before either the shadow pass or the visible one reads
     // it.
@@ -970,6 +974,8 @@ function sceneFrame() {
         perfMark("peers");
         lightingText = litShader < 0 ? "cube shader" : "off";
     }
+    // Host rings, over the world they stand in and under the bang.
+    PORTALS.draw();
     // The bang goes over the world it happened in: after the goats and the grass,
     // before the HUD, so the smoke reads in front of what it hit.
     drawExplosions();
@@ -981,6 +987,8 @@ function sceneFrame() {
 drawRain(screenW, screenH);
 perfMark("rain2d");
 if (uiScreen === "hud") {
+    // Ring names are screen-space text, so they go under the HUD they belong to.
+    PORTALS.labels(vx, vy, vz, lookX, lookY, lookZ);
     drawHud(move);
     // The touch controls, over the HUD they belong to. Nothing at all without a
     // touch surface, which is why the server's null `rl` needs no circle bindings.

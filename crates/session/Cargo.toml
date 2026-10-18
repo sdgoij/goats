@@ -13,6 +13,20 @@ serde = { workspace = true }
 # carry it without knowing what a mod publishes.
 serde_json = { workspace = true }
 iroh = { workspace = true }
+# The swarm: topic broadcast for host discovery. It rides its own endpoint (the
+# session's accept loop owns the session ALPNs), and this crate owns both.
+iroh-gossip = { workspace = true }
+# The LAN beacon: a multicast socket with `SO_REUSEADDR`/`SO_REUSEPORT`, so two
+# clients on one machine both receive the group.
+socket2 = { workspace = true }
+# Gossip's receive side is a `Stream`; this is n0's small `StreamExt`, the same
+# one iroh-gossip itself uses.
+n0-future = "0.3"
+# The swarm message is compact binary, like the session datagrams; `alloc` is
+# what `to_allocvec`/`from_bytes` need.
+postcard = { workspace = true, features = ["alloc"] }
+# A persistent swarm identity is 32 bytes of hex (`$GOATS_SWARM_KEY`).
+hex = "0.4"
 iroh-tickets = { workspace = true }
 bytes = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }

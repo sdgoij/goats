@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use session::swarm::{Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use session::{Event, Host, ModsOutcome, WorldOutcome, WorldState, describe_mods};
 
 /// The world snapshot cadence, in sim frames (the sim runs at a fixed 60 Hz).
@@ -41,6 +42,7 @@ const DEFAULT_HERD: usize = 7;
 
 const USAGE: &str = "\
 goatsd [name] [--listen address:port] [--download URL] [--mods DIRECTORY] [--no-mods] [--herd N]
+        [--nojoin] [--topicid ID] [--peer ID|TICKET]... [--swarm-key HEX]
 
   name                the name to host under (default: server)
   -l, --listen ADDR   serve a status page on ADDR; a bare port means 0.0.0.0:port.
@@ -54,6 +56,15 @@ goatsd [name] [--listen address:port] [--download URL] [--mods DIRECTORY] [--no-
       --herd N        bots in the world's herd, 0..100 (default: 7). The herd is
                       simulated here and broadcast, so this is what every joiner
                       mirrors; a hundred is a real per-frame cost at both ends.
+      --nojoin        do not join the discovery swarm; the session is still
+                      reachable by its ticket
+      --topicid ID    the swarm topic to join, 64 hex characters (default: the
+                      game's own topic)
+      --peer ID|TICKET
+                      a node already in the swarm to seed from; repeatable, and
+                      also read from $GOATS_SWARM_PEERS (comma-separated)
+      --swarm-key HEX a persistent swarm endpoint secret, so this host keeps its
+                      id across restarts (also $GOATS_SWARM_KEY)
   -h, --help          this text";
 
 /// What the command line asked for.
@@ -64,6 +75,10 @@ struct Options {
     mods_dir: Option<PathBuf>,
     no_mods: bool,
     herd: usize,
+    nojoin: bool,
+    topic_id: Option<String>,
+    peers: Vec<String>,
+    swarm_key: Option<String>,
 }
 
 /// Asking for help is not an error, but it ends the process the same way.
@@ -80,6 +95,10 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
         mods_dir: None,
         no_mods: false,
         herd: DEFAULT_HERD,
+        nojoin: false,
+        topic_id: None,
+        peers: Vec::new(),
+        swarm_key: None,
     };
     let mut named = false;
     let mut args = args;
@@ -98,6 +117,18 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
                 ));
             }
             "--no-mods" => options.no_mods = true,
+            "--nojoin" => options.nojoin = true,
+            "--topicid" => {
+                options.topic_id = Some(args.next().ok_or("--topicid needs an id")?);
+            }
+            "--peer" => {
+                options
+                    .peers
+                    .push(args.next().ok_or("--peer needs an id or a ticket")?);
+            }
+            "--swarm-key" => {
+                options.swarm_key = Some(args.next().ok_or("--swarm-key needs 64 hex characters")?);
+            }
             "--herd" => {
                 let value = args.next().ok_or("--herd needs a count")?;
                 let count: usize = value
@@ -311,6 +342,40 @@ async fn main() {
     println!("goatsd: internet reach (n0 relays + DNS discovery); Ctrl-C to stop");
     let _ = std::io::stdout().flush();
 
+    // The discovery swarm. `goatsd` is the natural seed for a WAN: it joins by
+    // default and prints the id and ticket a client needs to seed from it. A
+    // gossip topic with nobody in it cannot be found by anybody, so a deployment
+    // that turns this off (`--nojoin`) is reachable by ticket only.
+    let mut swarm: Option<SwarmCommands> = None;
+    if options.nojoin {
+        println!("goatsd: discovery off (--nojoin); reachable by ticket only");
+    } else {
+        match start_swarm(&options).await {
+            Ok((commands, joined)) => {
+                println!("goatsd: swarm topic {}", joined.topic());
+                println!("goatsd: swarm seed id {}", joined.id());
+                println!("goatsd: swarm ticket {}", joined.ticket());
+                let _ = std::io::stdout().flush();
+                swarm = Some(commands);
+                // The task owns the endpoint, so it has to outlive this scope.
+                // Its events are drained (a full channel would stall the gossip
+                // task); the only one worth a line is the neighbour count.
+                tokio::spawn(async move {
+                    let mut joined = joined;
+                    while let Some(event) = joined.next_event().await {
+                        if let SwarmEvent::Peers(count) = event {
+                            println!("goatsd: swarm has {count} peer(s)");
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
+                });
+            }
+            Err(error) => {
+                eprintln!("goatsd: could not join the swarm: {error}; reachable by ticket only")
+            }
+        }
+    }
+
     // The status page, only when asked for. It reports the ticket, the client
     // count and where to get the client; the count is kept up to date from the
     // session's roster events below. The listener is bound here, before the loop
@@ -354,6 +419,10 @@ async fn main() {
     // A step does not have to be exactly 16 ms; catch up once and carry on
     // rather than firing a burst of steps after a stall.
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The swarm advert's clock. The first tick is immediate, so the session is
+    // published as soon as it exists.
+    let mut swarm_tick = tokio::time::interval(session::swarm::ADVERT_EVERY);
+    swarm_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut frames: u64 = 0;
     // The last thing said about each high-rate datagram, so a shed is reported
     // when it happens and when it stops happening, not on every tick.
@@ -424,11 +493,21 @@ async fn main() {
                 Some(Event::BlastReport { kind, key, by }) => {
                     relay_blast(&host, &mut sim, kind, key, &by).await;
                 }
-                Some(event) => report(event, &info),
+                Some(event) => {
+                    // The player count is part of the advert; a roster change is
+                    // the moment to restate it rather than wait for the window.
+                    if matches!(&event, Event::Roster { .. }) {
+                        advertise(&host, swarm.as_ref()).await;
+                    }
+                    report(event, &info);
+                }
                 None => {
                     println!("goatsd: session finished");
                     break;
                 }
+            },
+            _ = swarm_tick.tick() => {
+                advertise(&host, swarm.as_ref()).await;
             },
             _ = &mut interrupt => {
                 println!();
@@ -439,13 +518,61 @@ async fn main() {
     }
 
     // Close the session, but never let a peer that has gone quiet hold the
-    // process open; the endpoint is going away either way.
+    // process open; the endpoint is going away either way. The swarm is told
+    // first, so a portal goes down now rather than after the TTL.
+    if let Some(commands) = &swarm {
+        commands.leave();
+    }
     if tokio::time::timeout(Duration::from_secs(2), host.close())
         .await
         .is_err()
     {
         eprintln!("goatsd: close timed out; exiting anyway");
     }
+}
+
+/// Joins the discovery swarm from the command line: the topic, the seed peers,
+/// and the identity (a persistent one matters for a seed, whose id is what
+/// clients are pointed at).
+async fn start_swarm(options: &Options) -> Result<(SwarmCommands, session::swarm::Swarm), String> {
+    let topic = match &options.topic_id {
+        Some(text) => session::swarm::parse_topic(text)?,
+        None => SwarmConfig::default_topic(),
+    };
+    let mut peers = session::swarm::peers_from_env()?;
+    for peer in &options.peers {
+        peers.push(session::swarm::parse_peer(peer)?);
+    }
+    let secret = match &options.swarm_key {
+        Some(text) => Some(session::swarm::parse_secret(text)?),
+        None => session::swarm::secret_from_env()?,
+    };
+    let config = SwarmConfig {
+        secret,
+        peers,
+        lan: std::env::var("GOATS_SWARM_LAN")
+            .map(|value| value != "0")
+            .unwrap_or(true),
+        ..SwarmConfig::new(topic)
+    };
+    let swarm = session::swarm::Swarm::join(config)
+        .await
+        .map_err(|error| error.to_string())?;
+    let commands = swarm.commands();
+    Ok((commands, swarm))
+}
+
+/// Restates this host's advert: its session ticket, name and player count.
+async fn advertise(host: &Host, swarm: Option<&SwarmCommands>) {
+    let Some(swarm) = swarm else {
+        return;
+    };
+    swarm.advertise(Advert {
+        ticket: host.ticket().to_string(),
+        name: host.name().to_string(),
+        clients: host.clients().await,
+        protocol: proto::PROTOCOL_VERSION,
+    });
 }
 
 /// One answer from the scene to a blast report (M19e): where the device it names
@@ -666,6 +793,39 @@ mod tests {
         assert!(parse(&["--download"]).is_err(), "a missing value");
         assert!(parse(&["--nope"]).is_err(), "an unknown option");
         assert!(parse(&["one", "two"]).is_err(), "two names");
+    }
+
+    #[test]
+    fn goatsd_joins_a_swarm_by_default() {
+        let defaults = options(&[]);
+        assert!(!defaults.nojoin, "the swarm is on unless it is turned off");
+        assert!(
+            defaults.topic_id.is_none(),
+            "the game's own topic is the default"
+        );
+        assert!(defaults.peers.is_empty());
+        assert!(defaults.swarm_key.is_none());
+    }
+
+    #[test]
+    fn the_swarm_flags_are_read() {
+        let topic = "a".repeat(64);
+        let key = "b".repeat(64);
+        let parsed = options(&[
+            "--nojoin",
+            "--topicid",
+            &topic,
+            "--peer",
+            "seed-one",
+            "--peer",
+            "seed-two",
+            "--swarm-key",
+            &key,
+        ]);
+        assert!(parsed.nojoin);
+        assert_eq!(parsed.topic_id.as_deref(), Some(topic.as_str()));
+        assert_eq!(parsed.peers, vec!["seed-one", "seed-two"]);
+        assert_eq!(parsed.swarm_key.as_deref(), Some(key.as_str()));
     }
 
     /// The status page, wired from the real fixture mods the way `main` does it:

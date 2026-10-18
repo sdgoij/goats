@@ -48,6 +48,10 @@ pub use proto::{
     WorldHead, WorldOutcome, WorldPart, WorldState, compare_world_mods, describe_mods,
 };
 
+/// Finding hosts without a registry: iroh-gossip topic membership and the
+/// advert a host restates on it.
+pub mod swarm;
+
 /// The ALPN, carrying the major wire version so a peer built against a
 /// different protocol fails the QUIC handshake instead of misreading messages.
 pub fn alpn() -> Vec<u8> {
@@ -150,6 +154,8 @@ pub enum Error {
     Refused(String),
     /// A message could not be encoded, framed or decoded.
     Message(String),
+    /// The swarm could not be joined, or its endpoint could not be bound.
+    Swarm(String),
 }
 
 impl std::fmt::Display for Error {
@@ -162,6 +168,7 @@ impl std::fmt::Display for Error {
             Error::Ticket(message) => write!(formatter, "ticket: {message}"),
             Error::Refused(message) => write!(formatter, "refused: {message}"),
             Error::Message(message) => write!(formatter, "message: {message}"),
+            Error::Swarm(message) => write!(formatter, "swarm: {message}"),
         }
     }
 }
@@ -713,6 +720,12 @@ impl Host {
     /// roster carries, not necessarily what was asked for.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// How many players are in, the host included. This is what a host advertises
+    /// to its swarm, so a portal can show how busy the session is.
+    pub async fn clients(&self) -> usize {
+        self.server.lock().await.roster.len()
     }
 
     /// The seed joiners are told to build the world from.

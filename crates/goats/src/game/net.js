@@ -19,6 +19,23 @@ let netName = "";           // this player's assigned name, once connected
 let netTicket = "";         // the ticket to hand out, once hosting
 let netRoster = [];         // names in the session, host first
 let netOutbox = [];         // intent lines waiting for the host
+// The swarm this client is in. A topic is a 32-byte id printed as hex; empty
+// means "not in a swarm", which is the default: joining is a command, not a
+// startup choice.
+let netSwarmTopic = "";
+let netSwarmPeers = 0;      // direct gossip neighbours
+// This node's own swarm endpoint ticket. It carries its addresses, so handing it
+// to another client's `swarm join --peer` is what seeds a fresh topic: gossip has no
+// rendezvous of its own, and two bare listeners never meet.
+let netSwarmTicket = "";
+// The hosts the swarm has told us about. This is what the portals come from.
+let netHosts = [];
+// A join that has been queued but not answered yet. `netMode` stays "off" until
+// the welcome, so a portal needs to know that a join is already in flight.
+let netJoining = false;
+// The last name this player joined under. A portal cannot stop to ask for one,
+// so it uses this, and only a fresh install falls back to "goat".
+let netJoinName = "";
 
 function netQueue(intent) {
     netOutbox.push(JSON.stringify(intent));
@@ -38,7 +55,16 @@ function sceneNetDrain() {
 }
 
 function netStatus() {
-    return { mode: netMode, name: netName, ticket: netTicket, roster: netRoster.slice() };
+    return {
+        mode: netMode,
+        name: netName,
+        ticket: netTicket,
+        roster: netRoster.slice(),
+        swarm: netSwarmTopic,
+        swarmPeers: netSwarmPeers,
+        swarmTicket: netSwarmTicket,
+        hosts: netHosts.length
+    };
 }
 
 function netInSession() {
@@ -92,6 +118,8 @@ function netJoin(parts) {
     if (netInSession()) return "error already in a session (leave first)";
     const args = netJoinArgs(parts);
     if (args.ticket === "") return "error connect expects a ticket";
+    if (args.name !== undefined && args.name !== "") netJoinName = args.name;
+    netJoining = true;
     netQueue({
         type: "join",
         ticket: args.ticket,
@@ -111,11 +139,51 @@ function netLeave() {
 }
 
 function netReset() {
+    // A client's session borrowed the host's seed; leaving puts its own streams
+    // back. A host's seed is its world, so that snapshot is simply dropped.
+    if (netMode === "host") sceneDiscardOwnSeed();
+    else sceneRestoreOwnSeed();
     netMode = NET_OFF;
     netName = "";
     netTicket = "";
     netRoster = [];
+    netJoining = false;
+    // `PORTALS` deliberately survives: a join that was refused must not be
+    // retried by the same ring on the next frame. Stepping out clears it.
     netPeersClear();
+}
+
+// ---- the swarm -------------------------------------------------------------
+
+// `swarm join [--topic ID] [--peer ID|TICKET]...`. A topic is 64 hex
+// characters; absent means the default every build shares. A peer seeds the
+// first connection -- gossip needs one, because nothing can be found on a topic
+// with nobody in it.
+function netSwarmJoin(parts) {
+    let topic = "";
+    const peers = [];
+    for (let i = 0; i < parts.length; i++) {
+        if (parts[i] === "--topic" && parts[i + 1] !== undefined) {
+            topic = parts[++i];
+        } else if (parts[i] === "--peer" && parts[i + 1] !== undefined) {
+            peers.push(parts[++i]);
+        } else {
+            return "error swarm join expects --topic ID or --peer ID";
+        }
+    }
+    netQueue({ type: "swarm_join", topic: topic === "" ? null : topic, peers: peers });
+    consoleSystem("swarm: joining " + (topic === "" ? "the default topic" : topic) + " ...");
+    return "ok swarm join";
+}
+
+function netSwarmLeave() {
+    if (netSwarmTopic === "") return "error not in a swarm";
+    netQueue({ type: "swarm_leave" });
+    return "ok swarm leave";
+}
+
+function netSwarmStatus() {
+    return { topic: netSwarmTopic, peers: netSwarmPeers, hosts: netHosts.length, ticket: netSwarmTicket };
 }
 
 // ---- events ----------------------------------------------------------------
@@ -134,13 +202,19 @@ function sceneNetEvent(line) {
     switch (event.type) {
         case "session":
             // The world is shared by seed: the first event of every session,
-            // before any roster or chat line.
+            // before any roster or chat line. What this client was running on is
+            // saved first, so a client that leaves gets its own world back.
+            sceneSaveOwnSeed();
             sceneUseSeed(event.seed);
             consoleNet("net: world seed " + String(event.seed));
             break;
         case "hosting":
             netMode = "host";
             netName = String(event.name);
+            netJoining = false;
+            // A host's session seed is its own world; there is no earlier one to
+            // go back to when it stops hosting.
+            sceneDiscardOwnSeed();
             // Publish promptly now that a session exists, rather than waiting
             // for the next throttle window.
             netPoseFrame = -NET_POSE_EVERY;
@@ -155,6 +229,7 @@ function sceneNetEvent(line) {
         case "welcome":
             netMode = "client";
             netName = String(event.name);
+            netJoining = false;
             netPoseFrame = -NET_POSE_EVERY;
             consoleNet("net: joined as " + netName);
             break;
@@ -200,6 +275,33 @@ function sceneNetEvent(line) {
         case "roster":
             netRoster = Array.isArray(event.names) ? event.names.slice() : [];
             consoleNet("net: roster " + netRoster.join(", "));
+            break;
+        case "swarm":
+            if (event.joined === true) {
+                netSwarmTopic = String(event.topic);
+                netSwarmPeers = typeof event.peers === "number" ? event.peers : 0;
+                netSwarmTicket = String(event.ticket);
+                consoleNet("swarm: joined " + netSwarmTopic + " (seed " + String(event.id) + ")");
+                // The ticket, not the id: it carries this node's addresses, so the
+                // next client can be seeded with a paste rather than a lookup.
+                consoleSystem("swarm: seed ticket " + netSwarmTicket);
+            } else {
+                netSwarmTopic = "";
+                netSwarmPeers = 0;
+                netSwarmTicket = "";
+                netHosts = [];
+                consoleNet("swarm: left");
+            }
+            break;
+        case "swarm_peers":
+            // Gossip neighbours come and go as the mesh settles; the count is for
+            // the `swarm` status, not for the console.
+            netSwarmPeers = typeof event.peers === "number" ? event.peers : 0;
+            break;
+        case "discovered":
+            // The swarm's host list, for the scene. Each entry becomes a portal
+            // ring (`PORTALS` at the end of this file) rather than a console line.
+            netHosts = Array.isArray(event.sessions) ? event.sessions.slice() : [];
             break;
         case "notice":
             consoleNet("net: " + event.text);
@@ -670,3 +772,259 @@ function scenePeers() {
     }
     return out;
 }
+// ---- portals ---------------------------------------------------------------
+//
+// A host found in the swarm is a ring standing in the meadow. The position is
+// derived from the session ticket rather than assigned by a server, so every
+// player computes the same place for the same host, and the swarm -- which owns
+// no world -- never has to hand out coordinates. Walking into the ring joins it.
+//
+// Portals exist in two states. Offline, every host in the swarm is a ring and
+// walking into one joins it. In a session as a *client*, the hosts' rings are
+// inert (a session refuses a second join, `leave first`) and one amber ring
+// stands near the spawn: the way out. A host has no exit ring -- ending its own
+// session from the meadow would disconnect everyone else without a word.
+
+// The portal implementation is one module object rather than a dozen top-level
+// names, so this file's global surface stays small and a reader can see the
+// whole thing in one place. `PORTALS.placement` and `PORTALS.exit` are what the
+// harness test drives; `draw`, `labels` and `step` are the scene's hooks.
+const PORTALS = (function () {
+    const DRAWN = 8;        // rings drawn: the nearest, so a long list stays cheap
+    const SEGMENTS = 24;    // beads in a ring
+    const RADIUS = 1.25;    // ring radius, metres
+    const MIDDLE = 1.45;    // ring centre above the ground
+    const REACH = 1.6;      // how close the goat has to be to fall in
+
+    // The way out of a session, at a place a player can find again: ten metres
+    // from the spawn, on the +z side. It is deliberately not ticket-derived --
+    // every client's exit is its own local door, not a shared place.
+    const EXIT_X = 0;
+    const EXIT_Z = 10;
+
+    // The ticket whose ring the goat is standing in. A failed join must not be
+    // retried every frame: the goat has to step out and back in, which is also
+    // what makes a second try deliberate rather than a loop.
+    let inside = "";
+    // ...and the same for the exit, plus whether the last frame was already in a
+    // session: joining while standing in the exit ring must not leave at once.
+    let exitInside = false;
+    let wasClient = false;
+
+    // FNV-1a. Small, stable, and enough to scatter a list of tickets around the
+    // field; the placement only has to agree between players, not be random.
+    function hash(text) {
+        let value = 2166136261 >>> 0;
+        for (let i = 0; i < text.length; i++) {
+            value ^= text.charCodeAt(i);
+            value = Math.imul(value, 16777619) >>> 0;
+        }
+        return value >>> 0;
+    }
+
+    // Where a host's ring stands. The angle and the radius come from two draws
+    // off the same hash, so a single host is not always on the same circle; the
+    // ring's horizontal diameter runs along the tangent, which puts its face
+    // toward the middle of the field a player walks out from.
+    function placement(ticket) {
+        const angle = (hash(ticket) / 4294967296) * Math.PI * 2;
+        const spread = (hash(ticket + "#radius") % 1000) / 1000;
+        const radius = 20 + spread * 10;
+        return {
+            x: Math.cos(angle) * radius,
+            z: Math.sin(angle) * radius,
+            tangentX: -Math.sin(angle),
+            tangentZ: Math.cos(angle)
+        };
+    }
+
+    // The nearest few hosts, in distance order. A swarm may list hundreds; the
+    // meadow only has to show the ones a player could walk to.
+    function nearest() {
+        const list = [];
+        for (let i = 0; i < netHosts.length; i++) {
+            const host = netHosts[i];
+            const place = placement(host.ticket);
+            const dx = place.x - goat.px;
+            const dz = place.z - goat.pz;
+            list.push({ host: host, place: place, d2: dx * dx + dz * dz });
+        }
+        list.sort(function (a, b) { return a.d2 - b.d2; });
+        return list.slice(0, DRAWN);
+    }
+
+    // The furthest a label is drawn off-screen; the projection is still
+    // meaningful there, but nothing would land on the drawable.
+    function labelAt(place, text, ex, ey, ez, tx, ty, tz, fill) {
+        const top = terrainHeight(place.x, place.z) + MIDDLE + RADIUS + 0.35;
+        const point = project(place.x, top, place.z, ex, ey, ez, tx, ty, tz);
+        if (point === null) return;
+        const size = 18;
+        const width = text.length * size * 0.5;
+        const left = Math.round(point.x - width / 2);
+        const line = Math.round(point.y - size / 2);
+        rl.drawRectangle(left - 7, line - 4, width + 14, size + 8, rl.color(8, 12, 16, 170));
+        rl.drawText(text, left, line, size, fill);
+    }
+
+    // One ring: a wide faint pass for the haze and a small bright one inside,
+    // because `drawSphereEx` is the only curve the scene has.
+    function ring(place, haze, glow) {
+        const base = terrainHeight(place.x, place.z);
+        for (let j = 0; j < SEGMENTS; j++) {
+            const t = (j / SEGMENTS) * Math.PI * 2;
+            const along = Math.cos(t) * RADIUS;
+            const up = Math.sin(t) * RADIUS;
+            const px = place.x + place.tangentX * along;
+            const pz = place.z + place.tangentZ * along;
+            const py = base + MIDDLE + up;
+            rl.drawSphereEx(px, py, pz, 0.26, 4, 6, haze);
+            rl.drawSphereEx(px, py, pz, 0.11, 4, 6, glow);
+        }
+    }
+
+    function draw() {
+        const pulse = 0.75 + 0.25 * Math.sin(sceneFrames * 0.05);
+        if (netMode === "client") {
+            // Amber, not the hosts' cyan: this ring is a door, not a destination.
+            ring({ x: EXIT_X, z: EXIT_Z, tangentX: 1, tangentZ: 0 },
+                rl.color(255, 170, 70, Math.round(30 + 26 * pulse)),
+                rl.color(255, 228, 160, Math.round(190 + 55 * pulse)));
+            return;
+        }
+        if (netInSession() || netHosts.length === 0) return;
+        const list = nearest();
+        // One pulse for the whole field, so two rings in view breathe together
+        // rather than each keeping its own private clock.
+        const haze = rl.color(90, 220, 255, Math.round(30 + 26 * pulse));
+        const glow = rl.color(170, 250, 255, Math.round(190 + 55 * pulse));
+        for (let i = 0; i < list.length; i++) {
+            ring(list[i].place, haze, glow);
+        }
+    }
+
+    // World point to screen pixels, using the same look-at and perspective the
+    // `beginMode3D` pass uses (55 degrees, the aspect of the drawable). There is
+    // no world-to-screen binding in the scene's `rl`, and a label above a ring is
+    // the one thing a portal needs that the world geometry cannot draw.
+    function project(x, y, z, ex, ey, ez, tx, ty, tz) {
+        let bx = ex - tx;
+        let by = ey - ty;
+        let bz = ez - tz;
+        const back = Math.hypot(bx, by, bz);
+        if (back < 0.000001) return null;
+        bx /= back;
+        by /= back;
+        bz /= back;
+        // right = normalize(up x back), up = (0,1,0); then up' = back x right.
+        let rx = bz;
+        let rz = -bx;
+        const right = Math.hypot(rx, rz);
+        if (right < 0.000001) return null;
+        rx /= right;
+        rz /= right;
+        const ux = by * rz;
+        const uy = bz * rx - bx * rz;
+        const uz = -by * rx;
+
+        const vx = x - ex;
+        const vy = y - ey;
+        const vz = z - ez;
+        const viewX = vx * rx + vz * rz;
+        const viewY = vx * ux + vy * uy + vz * uz;
+        const depth = -(vx * bx + vy * by + vz * bz);
+        if (depth <= 0.05) return null;
+
+        const aspect = screenW / screenH;
+        const f = 1 / Math.tan((55 * Math.PI / 180) * 0.5);
+        const nx = ((f / aspect) * viewX) / depth;
+        const ny = (f * viewY) / depth;
+        if (nx < -1.4 || nx > 1.4 || ny < -1.4 || ny > 1.4) return null;
+        return {
+            x: Math.round((nx * 0.5 + 0.5) * screenW),
+            y: Math.round((0.5 - ny * 0.5) * screenH)
+        };
+    }
+
+    // The host's name above each ring. Two-dimensional, drawn after the world
+    // pass, because the scene has no 3D text; the projection above places it.
+    // The width is estimated rather than measured (`rl.measureText` would add a
+    // binding the headless `rl` does not have, for a label that is only a
+    // pixel or two off); the HUD font is close to half the point size per
+    // character.
+    function labels(ex, ey, ez, tx, ty, tz) {
+        if (netMode === "client") {
+            labelAt({ x: EXIT_X, z: EXIT_Z }, "Exit session",
+                ex, ey, ez, tx, ty, tz, rl.color(255, 228, 160, 240));
+            return;
+        }
+        if (netInSession() || netHosts.length === 0) return;
+        const list = nearest();
+        for (let i = 0; i < list.length; i++) {
+            const host = list[i].host;
+            const text = host.name + (host.clients > 1 ? "  ·  " + host.clients + " goats" : "");
+            labelAt(list[i].place, text, ex, ey, ez, tx, ty, tz, rl.color(190, 248, 255, 240));
+        }
+    }
+
+    // Walking into a ring joins that host; walking into the amber ring in a
+    // session leaves it. A menu freezes the world, and a dead goat is not walking
+    // anywhere. The ring the goat is standing in is remembered, so a refused join
+    // waits for the player to step out instead of retrying on every frame -- and
+    // the exit uses the same rule, so joining while standing in it does not
+    // leave instantly.
+    function step() {
+        if (uiIsOpen() || mode === "dead" || netJoining) return;
+        if (netMode === "client") {
+            const dx = EXIT_X - goat.px;
+            const dz = EXIT_Z - goat.pz;
+            const near = dx * dx + dz * dz <= REACH * REACH;
+            if (!wasClient) {
+                // Arriving in the session: a goat already in the ring has to
+                // step out and back in, the same as a refused join.
+                wasClient = true;
+                exitInside = near;
+                return;
+            }
+            if (!near) {
+                exitInside = false;
+                return;
+            }
+            if (exitInside) return;
+            exitInside = true;
+            netLeave();
+            return;
+        }
+        wasClient = false;
+        exitInside = false;
+        if (netInSession()) return;
+        let found = null;
+        for (let i = 0; i < netHosts.length; i++) {
+            const place = placement(netHosts[i].ticket);
+            const dx = place.x - goat.px;
+            const dz = place.z - goat.pz;
+            if (dx * dx + dz * dz <= REACH * REACH) {
+                found = netHosts[i];
+                break;
+            }
+        }
+        if (found === null) {
+            inside = "";
+            return;
+        }
+        if (inside === found.ticket) return;
+        inside = found.ticket;
+        // No `--pull`: fetching a host's mods installs code, and that is consent
+        // the player gives with the console, not something a ring can assume.
+        netJoin(["connect", found.ticket, netJoinName === "" ? "goat" : netJoinName]);
+    }
+
+    // The exit's own place, exposed for the harness (and for a mod that wants to
+    // point at it). It is a constant, but a test should not have to repeat it.
+    function exitPlace() {
+        return { x: EXIT_X, z: EXIT_Z, tangentX: 1, tangentZ: 0 };
+    }
+
+    return { placement: placement, exit: exitPlace, draw: draw, labels: labels, step: step };
+})();
+

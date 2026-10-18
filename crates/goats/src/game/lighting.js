@@ -1126,10 +1126,15 @@ function buildLightMatrix(cx, cy, cz) {
     ];
 }
 
+// Spread rather than sixteen element expressions. The explicit form is the one
+// that reads best, but the native binding receives a short argument list for it
+// in the release build (`rl.setShaderValueMatrix: argument 17 must be a number`,
+// i.e. the sixteenth value never arrives), and it is the *element read in the
+// last slot* that loses: a literal there works, and so does the spread form,
+// which takes the argument-vector path. Reported upstream; one line to revert
+// when Slag's fast call stops dropping that argument.
 function setMatrixOn(shader, loc, m) {
-    rl.setShaderValueMatrix(shader, loc,
-        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
-        m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+    rl.setShaderValueMatrix(shader, loc, ...m);
 }
 
 // The shadow map's uniforms on one lit program, and the sampler for the batch

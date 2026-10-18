@@ -39,6 +39,9 @@ raylib-sys = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The wire protocol's transport and session state machine (iroh over UDP).
 session = { workspace = true }
+# The wire protocol's version, which a swarm advert carries so a portal can show
+# a host this client could not join.
+proto = { workspace = true }
 # The compiled-mod host (M17b): the client drives compiled mods from Rust.
 plugin = { workspace = true }
 # Fetching a host's world mods (M18d): the client's half of mod sync, which the

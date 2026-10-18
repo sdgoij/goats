@@ -185,6 +185,17 @@ ticket.
   versions), and a download link for each of the client and the whole mods set
   (`--download URL` to point the client link elsewhere); without `--listen`, no
   HTTP server is started.
+- **Finding a host**: discovery is on by default. A client joins the default
+  gossip topic at startup and announces itself on the local network, so two
+  copies of the game on the same LAN find each other with no ticket, no seed and
+  no command: launch both, `host` on one, walk into the ring that appears on the
+  other. Across the internet a seed is needed: `goatsd` joins the swarm by
+  default and prints its ticket (`--peer` on a client, or
+  `$GOATS_SWARM_PEERS`). `swarm` shows the topic, neighbour count, hosts and
+  this node's ticket; `swarm join --topic ID` picks another topic; `swarm leave`
+  stops discovery, and `GOATS_SWARM=0` (or `GOATS_SWARM_LAN=0` for just the LAN
+  beacon) opts out. `goatsd --nojoin` turns its swarm off entirely. See
+  [SWARM.md](SWARM.md).
 - **Chat**: in a session, type a line with no leading slash to say it to
   everyone. `@name <text>` (or `say` / `msg <name> <text>`) is a 1:1 whisper, and
   the console marks it as one. Offline, bare text is an error, and `who` lists
@@ -352,7 +363,7 @@ event into a character — so only the on-screen keyboard reaches it.
 | `mods/` | Checked-in example mods: `example/` (a command, a HUD hook, an asset override), `birds/` (a procedural world mod) and `fatguy/` (a client mod with a model of its own and a chain of bad luck) |
 | `crates/server/` | `goatsd`: the standalone headless host, which runs the world on a null `rl` |
 | `crates/server/src/web.rs` | The optional status page: ticket, protocol version, client count, the mod list and a `mods.zip` download, behind `--listen` |
-| `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster |
+| `crates/session/` | The peer-to-peer transport and session state machine: iroh, tickets, the join handshake and the roster, plus the swarm (`swarm.rs`): gossip topic membership and the host adverts a portal list is made of |
 | `crates/proto/` | The session protocol: message types, framing and name rules (no iroh or tokio) |
 | `sfx/` | Music, weather ambience and goat vocalisations (embedded into the binary; the long beds are Ogg) |
 | `goat_animated.glb` | Exported model (14 clips, textures embedded) — embedded into the binary |
@@ -400,8 +411,8 @@ a line-based bridge: `net.rs` runs the session on its own tokio thread, and each
 frame the host hands the scene its events with `sceneNetEvent(line)` and takes
 the scene's queued intents back with `sceneNetDrain()`, without ever awaiting in
 the frame loop. `net.js` is the scene end of that channel; the console commands
-are `host`, `connect <ticket>`, `who`, `leave`, `say` and `msg` (with bare text
-and a leading `@name` both routed to chat). Chat and roster travel on reliable
+are `host`, `connect <ticket>`, `swarm join|leave`, `who`, `leave`, `say` and `msg`
+(with bare text and a leading `@name` both routed to chat). Chat and roster travel on reliable
 streams, one message per stream, as JSON: a frame is small and infrequent, and
 worth being able to read in a log. Goat snapshots, the server's world, the world
 mods' state and voice travel as unreliable binary datagrams, because those are

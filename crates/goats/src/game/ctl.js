@@ -345,6 +345,13 @@ function sceneCommand(line) {
             return "ok " + JSON.stringify(netStatus());
         case "net":
             return "ok " + JSON.stringify(netStatus());
+        case "swarm": {
+            const sub = parts[1] === undefined ? "" : parts[1];
+            if (sub === "join") return netSwarmJoin(parts.slice(2));
+            if (sub === "leave") return netSwarmLeave();
+            if (sub === "") return "ok " + JSON.stringify(netSwarmStatus());
+            return "error swarm expects join|leave";
+        }
         case "copy": {
             if (!consoleClipboardAvailable()) return "error clipboard unavailable";
             // With no argument, `copy` is the ticket -- the one thing long enough

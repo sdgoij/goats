@@ -970,13 +970,23 @@ pub fn run() {
     let net_drain = scene_function_if_present(&context, "sceneNetDrain");
     // The mods directory travels with the bridge: a refused join may fetch into
     // it and retry, and a join we host may serve it (M18d).
+    //
+    // Discovery is on by default: the client joins the default swarm at startup
+    // and the LAN beacon introduces it to the other client on the network, with
+    // no ticket and no command. `GOATS_SWARM=0` opts out (and `swarm leave`
+    // does the same for the rest of the run).
     #[cfg(not(target_arch = "wasm32"))]
-    let mut net = net::Net::start(
+    let auto_swarm = std::env::var("GOATS_SWARM")
+        .map(|value| value != "0")
+        .unwrap_or(true);
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut net = net::Net::start_with_swarm(
         world_mods,
         net::Pull {
             mods_dir: mods_dir.clone(),
             always: options.pull,
         },
+        auto_swarm,
     );
     #[cfg(not(target_arch = "wasm32"))]
     let mut voice = audio::Voice::start(&mut net);

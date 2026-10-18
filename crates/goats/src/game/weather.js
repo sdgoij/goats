@@ -78,6 +78,40 @@ function sceneStreams() {
     return { weather: rngState, bots: botRngState, food: foodRngState, audio: audioSeed };
 }
 
+// This scene's own streams, saved before a session adopts the host's seed. A
+// client that leaves gets its world back where it was -- the point of a seed is
+// that the world continues, and the session's was never this player's. The trap
+// salt is part of the same state (it is the fifth draw), and the mods' streams
+// ride along so a world mod's PRNG does not stay on the host's sequence either.
+let ownStreams = null;
+let ownTrapSalt = trapSalt;
+let ownModStreams = null;
+
+function sceneSaveOwnSeed() {
+    // The first save wins: a second `session` event is the same session's
+    // restatement, and the streams then in hand are already the host's.
+    if (ownStreams !== null) return;
+    ownStreams = sceneStreams();
+    ownTrapSalt = trapSalt;
+    ownModStreams = modStreamSnapshot();
+}
+
+function sceneRestoreOwnSeed() {
+    if (ownStreams === null) return;
+    sceneUseStreams(ownStreams);
+    trapSalt = ownTrapSalt;
+    modRestoreStreams(ownModStreams);
+    ownStreams = null;
+    ownModStreams = null;
+}
+
+// A host's session seed *is* its world: it has no earlier one to go back to, so
+// the snapshot is dropped rather than kept for a later restore.
+function sceneDiscardOwnSeed() {
+    ownStreams = null;
+    ownModStreams = null;
+}
+
 // Adopt the server's streams. Joining takes the server's PRNG state as it is
 // *now* -- not the seed it started from -- so a stream the client still draws
 // from continues where the server is instead of replaying from zero. The world

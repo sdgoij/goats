@@ -87,6 +87,19 @@ impl NetBridge {
     }
 
     #[func]
+    fn swarm_join(&mut self, _topic: GString, _peers: GString) -> GString {
+        no_session()
+    }
+
+    #[func]
+    fn swarm_leave(&mut self) -> GString {
+        no_session()
+    }
+
+    #[func]
+    fn set_swarm_auto(&mut self, _on: bool) {}
+
+    #[func]
     fn poll_events(&mut self) -> PackedStringArray {
         PackedStringArray::new()
     }

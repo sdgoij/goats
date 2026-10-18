@@ -28,7 +28,7 @@ pull = { path = "crates/pull" }
 voice = { path = "crates/voice" }
 
 # The engine. Flip between the published revision and a local checkout here.
-slag = { git = "https://github.com/sdgoij/slag", rev = "0851f8401b06108234f7bbd8c23ca88f01eb1799" }
+slag = { git = "https://github.com/sdgoij/slag", rev = "f491e69a00b5d8f5275a4770cc53e01e0d6590d5" }
 # slag = { path = "slag/crates/slag" }
 
 # Serialisation / framing.
@@ -57,6 +57,13 @@ godot = { version = "0.5.5" }
 
 # Networking (session only).
 iroh = "1.2.0"
+# The swarm: iroh's epidemic broadcast for a topic, which is how a client finds
+# hosts without a registry. It tracks iroh's 1.x line (its `iroh` requirement is
+# `^1`), so it shares the endpoint stack above.
+iroh-gossip = "0.101"
+# The LAN beacon's multicast socket needs the reuse flags, which a plain
+# `UdpSocket` does not expose. `socket2` 0.6 is what iroh itself uses.
+socket2 = "0.6"
 iroh-tickets = "1.0"
 bytes = "1"
 

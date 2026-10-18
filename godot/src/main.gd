@@ -188,9 +188,15 @@ var mod_world := ModWorld.new()
 ## decoders for the bytes a mod declared (`APIv1.md` section 4.20).
 var mod_audio := ModAudio.new()
 
-## Voice chat's device half (M13b): the microphone and the ear (`voice.gd`). The *codec* is the
-## bridge's (`voice.rs`), so this node only moves samples between the two devices and the frame.
+## Voice chat's device half (M13b): the microphone and the ear (`voice.gd`). The *codec* is
+## the bridge's (`voice.rs`), so this node only moves samples between the two devices and the frame.
 var voice: Voice
+
+## The swarm's hosts, standing in the meadow (`portals.gd`, `net.js`'s `PORTALS`), and the
+## screen-space names above them (`portal_labels.gd`). Both are built in code, like the console,
+## so a `class_name` script is never a node type in the scene file.
+var portals: Portals
+var portal_labels: PortalLabels
 
 ## Whether the scene is in a session as a *client*. It is what the herd mirror hangs on, and
 ## its window is the wire's. A client simulates no world: the host owns the bots, the weather and
@@ -211,6 +217,17 @@ var _pose_timer := 0.0
 const WORLD_EVERY := 6
 var _world_frame := -WORLD_EVERY
 
+## The swarm (`net.js`'s `netSwarm*`): the topic this client listens on, its direct gossip
+## neighbours, and the hosts the topic has reported. The hosts are what the rings stand for
+## (`portals.gd`); the topic and the count are what the console's `swarm` reports.
+var _swarm_topic := ""
+var _swarm_peers := 0
+var _swarm_ticket := ""
+var _hosts: Array = []
+## The last name this player joined under. A ring cannot stop to ask for one, so a walk-in
+## reuses it, and only a fresh install falls back to the port's own "godot".
+var _join_name := ""
+
 ## The sky material and the world's clock, wind and weather, all of which `_advance`
 ## refreshes once a frame. `_hours` starts where the scene's own `worldTime` does.
 var _sky_material: ShaderMaterial
@@ -225,6 +242,11 @@ var _wind_sway := 0.0
 ## The last `weather` the host sent, or empty while there is no session -- which is
 ## what decides whether the clock runs locally or follows the wire.
 var _weather := {}
+
+## This scene's own world streams, saved before a session adopts the host's seed and put
+## back when a client leaves. Empty when there is nothing to restore; a host discards it
+## because its session seed *is* its world.
+var _seed_own := {}
 ## The staging knobs: everything there is no UI for yet. The console and the menu are
 ## stage 6, so each of these is an environment variable, and a session's own values win,
 ## because the host owns the world.
@@ -391,6 +413,11 @@ func _ready() -> void:
 	var node := ClassDB.instantiate("NetBridge") as Node
 	add_child(node)
 	bridge = node
+	# Discovery is on by default: the bridge joins the default swarm before its first
+	# command, and the LAN beacon introduces this client to the others on the network with
+	# no ticket. `GOATS_SWARM=0` opts out; `swarm leave` does the same for the rest of the
+	# run.
+	bridge.call("set_swarm_auto", OS.get_environment("GOATS_SWARM") != "0")
 
 	# Voice (M13b): the bridge carries the session, and this node is the two devices the codec
 	# is missing -- the microphone and the ear (`voice.gd`). Voice is the one module that needs
@@ -401,6 +428,17 @@ func _ready() -> void:
 	# The master mute is `audio.gd`'s and voice is where it lands: a `Callable` rather than a
 	# flag, because both the console's `mute` verb and the `M` key go through `set_muted`.
 	audio.on_mute = Callable(voice, "set_muted")
+
+	# The swarm's rings (`net.js`'s `PORTALS`): a host found on the topic is a place in the meadow,
+	# and walking into it joins. Built in code for the console's and the menu's reason, and added
+	# to the UI *before* them so a menu covers the labels rather than the other way round.
+	portals = Portals.new()
+	add_child(portals)
+	portals.join = Callable(self, "_portal_join")
+	portals.leave = Callable(self, "cmd_leave")
+	portal_labels = PortalLabels.new()
+	$Ui.add_child(portal_labels)
+	portal_labels.camera = $Camera3D
 
 	# The console (M24): built in code, added to the UI layer *after* the HUD so it draws over
 	# it, and pointed at the vocabulary. It is wired before the offline return below, so a
@@ -609,6 +647,11 @@ func _process(delta: float) -> void:
 		if not _joined:
 			bots.update(delta, _weather_now())
 			bots.resolve_collisions()
+		# A ring is a place in the meadow, so stepping into one is part of the step the
+		# goat moves in rather than part of the drawing pass (`PORTALS.step`). A client
+		# gets the amber exit ring; host rings are inert on either side of a session.
+		portals.step(goat.px, goat.pz, _joined or _hosting, _joined,
+			menu.is_open(), goat.mode == "dead")
 		# The meadow is the host's in a session, so a client only mirrors it.
 		meadow.update(delta, _weather.is_empty())
 
@@ -671,6 +714,16 @@ func _process(delta: float) -> void:
 	# controls and the damage pulse in the `uiScreen === "hud"` branch and `drawUi` in the `else`,
 	# so a menu screen is the dim over a world with no read-out on it at all. Drawing the HUD under
 	# the dim would be a dimmed read-out the scene does not have.
+	# The swarm's rings, and the names above them in the HUD's branch: hosts exist while
+	# this client is offline, a client in a session gets the amber exit ring instead, and a
+	# menu replaces the HUD and with it the labels.
+	portals.hosts = _hosts
+	portal_labels.hosts = _hosts
+	var offline: bool = not (_joined or _hosting)
+	portals.visible = _joined or (offline and not _hosts.is_empty())
+	if portals.visible:
+		portals.update(goat.px, goat.pz, _joined)
+	portal_labels.refresh(goat.px, goat.pz, menu.is_open() or _hosting, _joined)
 	hud.visible = not menu.is_open()
 	hud.show_for(goat, _hours, _weather_now(), water.hud_text(goat.px, goat.pz),
 		_hud_world(controls))
@@ -1554,6 +1607,8 @@ func _handle(line: String) -> void:
 			# host's are without a word about where they are -- and the four streams too, which
 			# a host runs from this same seed (`sceneUseSeed`).
 			var seed: int = int(event.get("seed", 0))
+			# What this scene was running on, so a client can come back to it.
+			_save_seed()
 			explosions.use_seed(seed)
 			weather.use_seed(seed)
 			# The herd's stream is `sceneUseSeed`'s *second* draw, the meadow's the *third* and
@@ -1578,6 +1633,8 @@ func _handle(line: String) -> void:
 			_net_name = String(event.get("name", ""))
 			_world_frame = -WORLD_EVERY
 			_pose_timer = POSE_INTERVAL
+			# A host's session seed is its own world; there is no earlier one to go back to.
+			_discard_seed()
 			console.net_line("net: hosting as " + _net_name)
 		"ticket":
 			_net_ticket = String(event.get("ticket", ""))
@@ -1600,11 +1657,43 @@ func _handle(line: String) -> void:
 			var names: Variant = event.get("names", [])
 			_roster = (names as Array).duplicate() if names is Array else []
 			console.net_line("net: roster " + ", ".join(PackedStringArray(_roster)))
+		"swarm":
+			# The topic this client joined, or the one it left. A swarm is independent of a
+			# session: a player can look for hosts while offline, and a host keeps its advert
+			# on the topic for as long as it is hosting.
+			if bool(event.get("joined", false)):
+				_swarm_topic = String(event.get("topic", ""))
+				_swarm_peers = int(event.get("peers", 0))
+				_swarm_ticket = String(event.get("ticket", ""))
+				console.net_line("swarm: joined " + _swarm_topic \
+					+ " (seed " + String(event.get("id", "")) + ")")
+				# The ticket, not the id: it carries this node's addresses, so the next
+				# client can be seeded with a paste rather than a lookup.
+				console.system_line("swarm: seed ticket " + _swarm_ticket)
+			else:
+				_swarm_topic = ""
+				_swarm_peers = 0
+				_swarm_ticket = ""
+				_hosts = []
+				console.net_line("swarm: left")
+		"swarm_peers":
+			# Gossip neighbours come and go as the mesh settles; the count is for the
+			# `swarm` status, not for the console.
+			_swarm_peers = int(event.get("peers", 0))
+		"discovered":
+			# The topic's host list. Each entry becomes a ring (`portals.gd`), and a list
+			# *replaces* the one before it: a host that stopped restating its advert is gone.
+			var sessions: Variant = event.get("sessions", [])
+			_hosts = (sessions as Array).duplicate() if sessions is Array else []
 		"chat":
 			var from: String = String(event.get("from", ""))
 			console.net_line("net: " + ("dm " if bool(event.get("direct", false)) else "") \
 				+ ("you" if from == _net_name else from) + ": " + String(event.get("text", "")))
 		"disconnected":
+			if _joined:
+				_restore_seed()
+			else:
+				_discard_seed()
 			_joined = false
 			_hosting = false
 			_roster = []
@@ -1678,6 +1767,13 @@ func _handle(line: String) -> void:
 				mod_audio.prepare()
 			console.net_line("net: " + String(event.get("text", "")))
 		"notice", "error":
+			# An error after a join the scene had accepted is a session it will not be in;
+			# put this client's own streams back if it had borrowed the host's.
+			if String(event.get("type", "")) == "error":
+				if _joined:
+					_restore_seed()
+				else:
+					_discard_seed()
 			console.net_line("net: " + ("error " if String(event.get("type", "")) == "error" else "") \
 				+ String(event.get("text", "")))
 			print(String(event.get("type", "")), ": ", event.get("text"))
@@ -1955,6 +2051,10 @@ func cmd_net_status() -> Dictionary:
 		"name": _net_name,
 		"ticket": _net_ticket,
 		"roster": _roster,
+		"swarm": _swarm_topic,
+		"swarmPeers": _swarm_peers,
+		"swarmTicket": _swarm_ticket,
+		"hosts": _hosts.size(),
 	}
 
 ## `host [name]`: serve a session, and be the side that owns the world (`net.js` `netHost`). The
@@ -1979,7 +2079,11 @@ func cmd_host(name: String) -> String:
 func cmd_join(ticket: String, name: String, pull: bool = false) -> String:
 	if _joined or _hosting:
 		return "error already in a session (leave first)"
-	var asked: String = name if name != "" else "godot"
+	var asked: String = name if name != "" else ("godot" if _join_name == "" else _join_name)
+	if name != "":
+		# The last name a player chose is what a walk-in portal reuses: a ring cannot stop
+		# to ask, and a fresh install falls back to the port's own "godot".
+		_join_name = name
 	# The set is presented at the join, not the ticket: the host compares it with its own and
 	# refuses a mismatch, which is the whole point of the digest (`APIv1.md` section 6.3).
 	bridge.call("join", ticket, asked, mods.world_mod_refs(), pull)
@@ -1991,6 +2095,12 @@ func cmd_join(ticket: String, name: String, pull: bool = false) -> String:
 func cmd_leave() -> String:
 	if not _joined and not _hosting:
 		return "error not in a session"
+	# A client borrowed the host's seed; leaving puts its own streams back. A host's
+	# seed is its world, so there is nothing to restore there.
+	if _joined:
+		_restore_seed()
+	else:
+		_discard_seed()
 	bridge.call("leave")
 	_joined = false
 	_hosting = false
@@ -1998,9 +2108,80 @@ func cmd_leave() -> String:
 	_roster = []
 	return "ok leave"
 
+## Save the streams this world was running on before a session's seed replaces them.
+## The first save wins: a later `session` event is the same session's restatement, and
+## the streams in hand by then are already the host's.
+func _save_seed() -> void:
+	if not _seed_own.is_empty():
+		return
+	_seed_own = {
+		"weather": weather.rng,
+		"rain": weather.rain_seed,
+		"bots": bots._rng,
+		"meadow": meadow._rng,
+		"audio": audio._seed,
+		"salt": explosions.salt,
+		# The world mods' streams (and their published state) as one JSON object -- the
+		# same shape `apply_world_mods` takes, so restoring is one call.
+		"mods": mods.world_mods_json(),
+	}
+
+## Put this client's world back exactly where it was: the four streams, the trap salt
+## (the fifth draw) and the world mods' streams.
+func _restore_seed() -> void:
+	if _seed_own.is_empty():
+		return
+	weather.rng = int(_seed_own["weather"])
+	weather.rain_seed = int(_seed_own["rain"])
+	bots._rng = int(_seed_own["bots"])
+	meadow._rng = int(_seed_own["meadow"])
+	audio._seed = int(_seed_own["audio"])
+	explosions.salt = int(_seed_own["salt"])
+	var mods_json: String = String(_seed_own["mods"])
+	if mods_json != "":
+		mods.apply_world_mods(mods_json)
+	_seed_own = {}
+
+func _discard_seed() -> void:
+	_seed_own = {}
+
 func cmd_say(text: String) -> String:
 	bridge.call("say", text)
 	return ""
+
+## `swarm join [--topic ID] [--peer ID|TICKET]...`: listen on a gossip topic, and let a
+## host's advert turn into a ring (`net.js` `netSwarmJoin`). `peers` is already joined by
+## the console and comma-separated here, because the bridge's own call takes the list.
+func cmd_swarm_join(topic: String, peers: String) -> String:
+	bridge.call("swarm_join", topic, peers)
+	console.system_line("swarm: joining " \
+		+ ("the default topic" if topic == "" else topic) + " ...")
+	return "ok swarm join"
+
+## `swarm leave`: stop discovery and, if this client is hosting, withdraw its advert.
+func cmd_swarm_leave() -> String:
+	if _swarm_topic == "":
+		return "error not in a swarm"
+	bridge.call("swarm_leave")
+	return "ok swarm leave"
+
+## `swarm` with no verb: the topic, the neighbours and how many hosts were found --
+## `netSwarmStatus()`'s three fields.
+func cmd_swarm_status() -> Dictionary:
+	return {
+		"topic": _swarm_topic,
+		"peers": _swarm_peers,
+		"hosts": _hosts.size(),
+		"ticket": _swarm_ticket,
+	}
+
+## A ring the goat walked into: the console's `connect` with the name this player last
+## used. No `--pull`: fetching a host's mods installs code, and a ring cannot consent.
+func _portal_join(ticket: String) -> void:
+	if _joined or _hosting:
+		return
+	console.net_line("net: connecting ...")
+	cmd_join(ticket, "", false)
 
 func cmd_ticket() -> String:
 	return _net_ticket

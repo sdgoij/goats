@@ -76,6 +76,9 @@ slag = { workspace = true, features = ["jit"] }
 # section 7): the ALPN, the framed control messages, the packed datagrams and
 # the world-mod digest all come from here.
 session = { workspace = true }
+# The wire's own version tag, which the swarm advert carries so a portal can say whether
+# the host it found speaks this client's protocol.
+proto = { workspace = true }
 # The client half of mod sync (M18d, `APIv1.md` section 6.3): the fetch ALPN's catalogue/reply,
 # the verification of a fetched archive against the announced identity, and the install. The
 # *policy* -- consent, the retry, the report -- is the bridge's (`net.rs`), exactly as in

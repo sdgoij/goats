@@ -21,6 +21,7 @@ use std::thread;
 
 use mods::{AssetMode, Loader};
 use serde::{Deserialize, Serialize};
+use session::swarm::{self, Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use tokio::runtime;
 use tokio::sync::mpsc;
 
@@ -106,6 +107,18 @@ enum Command {
     Voice { seq: u32, payload: Vec<u8> },
     /// Leave whatever session is running.
     Close,
+    /// Join a gossip swarm: a topic hosts announce their sessions on. `topic`
+    /// absent (or blank) means the default; `peers` seed the first connections,
+    /// as endpoint tickets or endpoint ids. Joining twice replaces the swarm.
+    SwarmJoin {
+        #[serde(default)]
+        topic: Option<String>,
+        #[serde(default)]
+        peers: Vec<String>,
+    },
+    /// Leave the swarm. Discovery stops and, if this client is hosting, its
+    /// advert is withdrawn.
+    SwarmLeave,
 }
 
 /// A delivered frame on its way to the audio module: the speaker's canonical
@@ -218,6 +231,22 @@ enum Event {
     /// retried join's welcome, so the scene is whole by the time the world it
     /// joins arrives.
     Pulled { text: String, ids: Vec<String> },
+    /// The swarm's current hosts, whenever the list changes. This is the swarm's
+    /// version of the old registry's list: one entry per host a portal can reach.
+    Discovered { sessions: Vec<Advert> },
+    /// The swarm was joined or left. `ticket` is this node's swarm endpoint
+    /// ticket, which is what another node needs to seed itself from this one; it
+    /// is empty when leaving.
+    Swarm {
+        joined: bool,
+        topic: String,
+        id: String,
+        ticket: String,
+        peers: usize,
+    },
+    /// The number of direct neighbours in the swarm changed. Zero means the node
+    /// is subscribed but alone, which is the shape a missing seed takes.
+    SwarmPeers { peers: usize },
 }
 
 /// What this client does about a join the host refused for mods (M18d).
@@ -258,9 +287,19 @@ pub struct Net {
 }
 
 impl Net {
-    /// Starts the runtime thread. It runs until the handle is dropped, which
-    /// closes the command channel and lets the thread finish.
+    /// Starts the runtime thread with no swarm: the constructor the cases in this
+    /// file use, so a test can never be joined by a beacon it did not ask for.
+    /// The game uses [`Net::start_with_swarm`].
+    #[cfg(test)]
     pub fn start(world_mods: Vec<session::ModRef>, pull: Pull) -> Net {
+        Self::start_with_swarm(world_mods, pull, false)
+    }
+
+    /// Starts the runtime thread, optionally joining the default swarm before
+    /// the first command. A joined swarm is what discovery runs on: the LAN
+    /// beacon needs an endpoint to advertise, and auto-joining is what makes the
+    /// client zero-config on a local network.
+    pub fn start_with_swarm(world_mods: Vec<session::ModRef>, pull: Pull, auto_swarm: bool) -> Net {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (voice_tx, voice_rx) = mpsc::channel(VOICE_BACKLOG);
@@ -274,7 +313,9 @@ impl Net {
                         return;
                     }
                 };
-                runtime.block_on(run(command_rx, event_tx, voice_tx, world_mods, pull));
+                runtime.block_on(run(
+                    command_rx, event_tx, voice_tx, world_mods, pull, auto_swarm,
+                ));
             })
             .expect("spawn the networking thread");
         Net {
@@ -481,8 +522,26 @@ async fn run(
     voice: mpsc::Sender<VoiceIn>,
     world_mods: Vec<session::ModRef>,
     pull: Pull,
+    auto_swarm: bool,
 ) {
     let mut live: Option<Live> = None;
+    // The swarm this client is in, if any, and the task draining its events. The
+    // command side is what hosts advertise through; the task is aborted on a
+    // topic switch so a stale list cannot overtake the new swarm's.
+    let mut swarm: Option<SwarmCommands> = None;
+    let mut swarm_task: Option<tokio::task::JoinHandle<()>> = None;
+    if auto_swarm {
+        // Zero-config: join the default topic before the first command, so the
+        // LAN beacon and any seed in the environment are already running when a
+        // player starts `host` or looks for a session.
+        match join_swarm(None, Vec::new(), &events).await {
+            Ok((commands, task)) => {
+                swarm = Some(commands);
+                swarm_task = Some(task);
+            }
+            Err(text) => emit(&events, Event::Notice { text }),
+        }
+    }
     // What this client presents at its next join. A pull can change it, and the
     // change has to outlive the join that caused it: the host command uses the
     // same set (M18d).
@@ -491,6 +550,10 @@ async fn run(
     // times a second, so a report belongs on the change, not on every send.
     let mut last_world = session::WorldOutcome::Whole;
     let mut last_mods = session::ModsOutcome::Sent;
+    // How often a hosting client restates its swarm advert. The interval is only
+    // polled inside a live session; the swarm task's own timer covers the gaps.
+    let mut announce = tokio::time::interval(session::swarm::ADVERT_EVERY);
+    announce.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         /// What one turn of the loop produced.
         enum Outcome {
@@ -514,17 +577,38 @@ async fn run(
                         continue;
                     }
                     Some(event) => {
+                        // The player count is part of the advert, so a roster
+                        // change is the moment to restate it rather than wait
+                        // for the next window.
+                        if matches!(&event, session::Event::Roster { .. })
+                            && let Live::Host(host) = &*session
+                        {
+                            advertise_host(host, swarm.as_ref()).await;
+                        }
                         emit(&events, bridge(event));
                         continue;
                     }
                     None => Outcome::Ended,
+                },
+                // A host keeps its advert fresh for as long as it is hosting.
+                // The swarm task restates the last advert too; this is what
+                // refreshes the player count and recovers from a dropped one.
+                _ = announce.tick() => {
+                    if let Live::Host(host) = session {
+                        advertise_host(host, swarm.as_ref()).await;
+                    }
+                    continue;
                 },
             },
             None => Outcome::Command(commands.recv().await),
         };
 
         match outcome {
-            Outcome::Ended => live = None,
+            Outcome::Ended => {
+                if let Some(session) = live.take() {
+                    stop(session, swarm.as_ref()).await;
+                }
+            }
             // `Say` needs the live session rather than a new one, so it is
             // handled here; everything else reconfigures the session.
             Outcome::Command(Some(command)) => match command {
@@ -641,14 +725,168 @@ async fn run(
                         emit(&events, Event::Notice { text: error });
                     }
                 }
-                other => live = start(other, live.take(), &events, &mut world_mods, &pull).await,
+                // Joining a swarm replaces whatever swarm is running, and is
+                // independent of the session: a player can look for hosts while
+                // offline, and a host can publish while playing.
+                Command::SwarmJoin { topic, peers } => {
+                    stop_swarm(&mut swarm, &mut swarm_task);
+                    match join_swarm(topic, peers, &events).await {
+                        Ok((commands, task)) => {
+                            if let Some(Live::Host(host)) = &live {
+                                advertise_host(host, Some(&commands)).await;
+                            }
+                            swarm = Some(commands);
+                            swarm_task = Some(task);
+                        }
+                        Err(text) => emit(&events, Event::Notice { text }),
+                    }
+                }
+                Command::SwarmLeave => {
+                    let was_joined = swarm.is_some();
+                    stop_swarm(&mut swarm, &mut swarm_task);
+                    emit(
+                        &events,
+                        Event::Discovered {
+                            sessions: Vec::new(),
+                        },
+                    );
+                    emit(
+                        &events,
+                        Event::Swarm {
+                            joined: false,
+                            topic: String::new(),
+                            id: String::new(),
+                            ticket: String::new(),
+                            peers: 0,
+                        },
+                    );
+                    if !was_joined {
+                        emit(
+                            &events,
+                            Event::Notice {
+                                text: "swarm: not in a swarm".to_string(),
+                            },
+                        );
+                    }
+                }
+                other => {
+                    live = start(
+                        other,
+                        live.take(),
+                        &events,
+                        &mut world_mods,
+                        &pull,
+                        swarm.as_ref(),
+                    )
+                    .await
+                }
             },
             Outcome::Command(None) => break,
         }
     }
     if let Some(session) = live {
-        session.close().await;
+        stop(session, swarm.as_ref()).await;
     }
+    stop_swarm(&mut swarm, &mut swarm_task);
+}
+
+/// Ends a session, withdrawing its swarm advert first: a host that stops hosting
+/// should take its portal down rather than leave it for the TTL.
+async fn stop(session: Live, swarm: Option<&SwarmCommands>) {
+    if let Live::Host(_) = &session
+        && let Some(swarm) = swarm
+    {
+        swarm.withdraw();
+    }
+    session.close().await;
+}
+
+/// Leaves the current swarm and stops its event task. `leave` is what tells the
+/// gossip task to broadcast a withdrawal and shut its router down; the task is
+/// aborted so events from the old swarm cannot land after a new one has started.
+fn stop_swarm(swarm: &mut Option<SwarmCommands>, task: &mut Option<tokio::task::JoinHandle<()>>) {
+    if let Some(commands) = swarm.take() {
+        commands.leave();
+    }
+    if let Some(task) = task.take() {
+        task.abort();
+    }
+}
+
+/// The advert this host publishes: the ticket a portal joins, the name above it,
+/// and enough for the scene to say whether it could be joined.
+async fn advertise_host(host: &session::Host, swarm: Option<&SwarmCommands>) {
+    let Some(swarm) = swarm else {
+        return;
+    };
+    swarm.advertise(Advert {
+        ticket: host.ticket().to_string(),
+        name: host.name().to_string(),
+        clients: host.clients().await,
+        protocol: proto::PROTOCOL_VERSION,
+    });
+}
+
+/// Joins a swarm and starts the task that turns its events into scene lines.
+/// `topic` absent means the default; `peers` are the seed nodes, from the console
+/// or a ticket.
+async fn join_swarm(
+    topic: Option<String>,
+    peers: Vec<String>,
+    events: &mpsc::UnboundedSender<String>,
+) -> Result<(SwarmCommands, tokio::task::JoinHandle<()>), String> {
+    let topic = match topic
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => swarm::parse_topic(text)?,
+        None => SwarmConfig::default_topic(),
+    };
+    let mut seeds = swarm::peers_from_env()?;
+    for peer in peers {
+        seeds.push(swarm::parse_peer(&peer)?);
+    }
+    let config = SwarmConfig {
+        secret: swarm::secret_from_env()?,
+        peers: seeds,
+        lan: std::env::var("GOATS_SWARM_LAN")
+            .map(|value| value != "0")
+            .unwrap_or(true),
+        ..SwarmConfig::new(topic)
+    };
+    let mut joined = session::swarm::Swarm::join(config)
+        .await
+        .map_err(|error| format!("swarm: {error}"))?;
+    let commands = joined.commands();
+    let announced = Event::Swarm {
+        joined: true,
+        topic: joined.topic().to_string(),
+        id: joined.id().to_string(),
+        ticket: joined.ticket().to_string(),
+        peers: 0,
+    };
+    let task = {
+        let events = events.clone();
+        tokio::spawn(async move {
+            while let Some(event) = joined.next_event().await {
+                match event {
+                    SwarmEvent::Hosts(hosts) => {
+                        emit(&events, Event::Discovered { sessions: hosts })
+                    }
+                    SwarmEvent::Peers(peers) => emit(&events, Event::SwarmPeers { peers }),
+                    SwarmEvent::Failed(text) => emit(
+                        &events,
+                        Event::Notice {
+                            text: format!("swarm: {text}"),
+                        },
+                    ),
+                }
+            }
+        })
+    };
+    emit(events, announced);
+    Ok((commands, task))
 }
 
 /// Runs one command, replacing whatever session was live.
@@ -658,9 +896,10 @@ async fn start(
     events: &mpsc::UnboundedSender<String>,
     world_mods: &mut Vec<session::ModRef>,
     pull: &Pull,
+    swarm: Option<&SwarmCommands>,
 ) -> Option<Live> {
     if let Some(session) = current {
-        session.close().await;
+        stop(session, swarm).await;
     }
     match command {
         Command::Close => None,
@@ -671,7 +910,9 @@ async fn start(
         | Command::Mods { .. }
         | Command::Consume { .. }
         | Command::Voice { .. }
-        | Command::Blast { .. } => None,
+        | Command::Blast { .. }
+        | Command::SwarmJoin { .. }
+        | Command::SwarmLeave => None,
         Command::Host { name } => {
             // A host serves what it runs, so a joiner missing a world mod can
             // fetch it here rather than from a status page (M18d). The packaging
@@ -702,6 +943,10 @@ async fn start(
                             ticket: host.ticket().to_string(),
                         },
                     );
+                    // Hosting is what makes a swarm membership useful: publish
+                    // the ticket before returning, so a client already watching
+                    // the topic sees a portal as soon as this session exists.
+                    advertise_host(&host, swarm).await;
                     Some(Live::Host(host))
                 }
                 Err(error) => {
@@ -721,6 +966,11 @@ async fn start(
             pull: asked,
         } => match join(&ticket, &name, asked, pull, world_mods, events).await {
             Ok(client) => {
+                // This client is a player now, not a host: whatever it said on
+                // the swarm before is no longer true.
+                if let Some(swarm) = swarm {
+                    swarm.withdraw();
+                }
                 emit(
                     events,
                     Event::Welcome {
@@ -1322,6 +1572,73 @@ mod tests {
             mods_dir: None,
             always: false,
         }
+    }
+
+    /// A hosting bridge joins a swarm and publishes its session; another bridge
+    /// joins the same swarm through the first one's ticket and finds it. This is
+    /// the whole discovery path -- join, advertise, receive, leave -- with no
+    /// registry and no scene.
+    #[test]
+    fn a_swarm_finds_a_host_and_leaving_forgets_it() {
+        let mut host = Net::start(Vec::new(), pull_off());
+        host.send(r#"{"type":"swarm_join"}"#);
+        let joined = wait_for(&mut host, "\"joined\":");
+        let value: serde_json::Value = serde_json::from_str(&joined).expect("swarm json");
+        assert_eq!(value["joined"], serde_json::json!(true), "{joined}");
+        let seed = value["ticket"].as_str().expect("a seed ticket").to_string();
+        let topic = value["topic"].as_str().expect("a topic").to_string();
+
+        // The player joins the same topic, seeded by the host's swarm ticket.
+        // A ticket is what makes this work without the address lookup: it
+        // carries the seed's addresses.
+        let mut player = Net::start(Vec::new(), pull_off());
+        player.send(&format!(
+            r#"{{"type":"swarm_join","topic":"{topic}","peers":["{seed}"]}}"#
+        ));
+        let joined = wait_for(&mut player, "\"joined\":");
+        assert!(joined.contains("\"joined\":true"), "{joined}");
+
+        // Hosting publishes the session advert.
+        host.send(r#"{"type":"host","name":"bob"}"#);
+        let session_ticket = ticket_of(&mut host);
+        let discovered = wait_for(&mut player, &session_ticket);
+        assert!(
+            discovered.contains("\"type\":\"discovered\""),
+            "{discovered}"
+        );
+        assert!(discovered.contains("\"name\":\"bob\""), "{discovered}");
+
+        // Leaving the swarm drops the list, so no portal is left standing.
+        player.send(r#"{"type":"swarm_leave"}"#);
+        let left = wait_for(&mut player, "\"sessions\":[]");
+        assert!(left.contains("\"sessions\":[]"), "{left}");
+    }
+
+    /// The zero-config case: two clients start with no ticket, no seed and no
+    /// command. Both auto-join the default topic, the LAN beacon introduces
+    /// them, and one hosting is enough for the other to find it. This is what a
+    /// player does by launching two windows.
+    #[test]
+    fn two_clients_find_each_other_on_the_lan_with_no_seed() {
+        if std::env::var("GOATS_SWARM_LAN").is_ok_and(|value| value == "0") {
+            // The machine-wide opt-out; there is nothing to discover with.
+            return;
+        }
+        let mut host = Net::start_with_swarm(Vec::new(), pull_off(), true);
+        let mut player = Net::start_with_swarm(Vec::new(), pull_off(), true);
+        // Each joins by itself; the event is what says the endpoint is up before
+        // either asks it to do anything.
+        wait_for(&mut host, "\"type\":\"swarm\"");
+        wait_for(&mut player, "\"type\":\"swarm\"");
+
+        host.send(r#"{"type":"host","name":"bob"}"#);
+        let ticket = ticket_of(&mut host);
+        let discovered = wait_for(&mut player, &ticket);
+        assert!(
+            discovered.contains("\"type\":\"discovered\""),
+            "{discovered}"
+        );
+        assert!(discovered.contains("\"name\":\"bob\""), "{discovered}");
     }
 
     /// The ticket a hosting bridge just announced, which is what a joiner needs.
