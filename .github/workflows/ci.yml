@@ -270,7 +270,7 @@ jobs:
       # `reference/` beside the Godot export's `client/`.
       - name: Build the reference web client
         shell: bash
-        run: sh web/build.sh client
+        run: bash web/build.sh client
       # The export into `client/` and the shell at the root, which is the layout
       # `godot/web/index.html` names (`client/index.html`).
       - name: Export and wrap the client
