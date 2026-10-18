@@ -199,6 +199,12 @@ jobs:
           toolchain: nightly-2026-08-29
           components: rust-src
           targets: wasm32-unknown-emscripten
+      # The reference client (`web/build.sh client`) is a plain stable build for
+      # the same target; making stable the default here leaves the Godot step's
+      # explicit `WEB_TOOLCHAIN` pin in charge of its own nightly.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-emscripten
       - uses: Swatinem/rust-cache@v2
         with:
           key: web
@@ -214,6 +220,14 @@ jobs:
         with:
           version: 5.0.7
           actions-cache-folder: emsdk-cache
+      # `web/build.sh` hands bindgen the Emscripten sysroot, which a fresh SDK
+      # populates on the first compile. Warming it here makes that path true
+      # before the reference client's build script reaches for it.
+      - name: Warm the Emscripten sysroot
+        shell: bash
+        run: |
+          printf 'int main(void){return 0;}\n' | emcc -x c - -o "$RUNNER_TEMP/emcc-probe.js"
+          test -d "$EMSDK/upstream/emscripten/cache/sysroot"
       # The exporter, by release and digest -- the same editor the desktop job
       # uses, because the preset and the templates are the same ones.
       - name: Install Godot
@@ -252,22 +266,32 @@ jobs:
         env:
           WEB_TOOLCHAIN: nightly-2026-08-29
         run: sh godot/tools/build_web.sh
+      # The raylib client's browser build, staged by `package_web.sh` as
+      # `reference/` beside the Godot export's `client/`.
+      - name: Build the reference web client
+        shell: bash
+        run: sh web/build.sh client
       # The export into `client/` and the shell at the root, which is the layout
       # `godot/web/index.html` names (`client/index.html`).
       - name: Export and wrap the client
         shell: bash
         run: sh godot/tools/package_web.sh dist-web
-      # A static host serves whatever it is handed; the four files below are the
-      # ones whose absence would produce a blank frame rather than a red build.
+      # A static host serves whatever it is handed; the files below are the ones
+      # whose absence would produce a blank frame or a dead switcher option
+      # rather than a red build.
       - name: Check the package
         shell: bash
         run: |
           test -f dist-web/index.html
-          grep -q 'src="client/index.html"' dist-web/index.html
+          grep -q 'src: "client/index.html"' dist-web/index.html
+          grep -q 'value="reference"' dist-web/index.html
           test -f dist-web/client/index.pck
           test -f dist-web/client/index.side.wasm
           test -f dist-web/client/goats_godot.wasm
-          ls -lh dist-web dist-web/client
+          test -f dist-web/reference/index.html
+          test -f dist-web/reference/goats.js
+          test -f dist-web/reference/goats.wasm
+          ls -lh dist-web dist-web/client dist-web/reference
       - name: Upload the Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:

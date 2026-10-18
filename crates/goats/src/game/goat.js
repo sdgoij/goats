@@ -478,16 +478,27 @@ function sceneInit() {
     // A tab sizes the window like an embedded video; everywhere else it is the
     // desktop's window. The browser surface is installed before the scene runs,
     // so `typeof web` is a reliable way to tell (WASM.md W0).
+    //
+    // The shell's stage (`?embedded=1`) can be any size, so its page hands the
+    // viewport over (`--viewport`, exposed here as `web.width`/`web.height`): the
+    // framebuffer has to match the canvas or the browser is left upscaling a
+    // fixed 854x480 render. A standalone tab keeps that 854x480 column.
+    const embedded = typeof web !== "undefined";
+    const width = embedded && web.width > 0 ? Math.round(web.width) : (embedded ? 854 : 1000);
+    const height = embedded && web.height > 0 ? Math.round(web.height) : (embedded ? 480 : 640);
     rl.initWindow(
-        (typeof web !== "undefined") ? 854 : 1000,
-        (typeof web !== "undefined") ? 480 : 640,
+        width,
+        height,
         "Slag goat - walk / run / jump / sleep"
     );
     rl.setTargetFPS(60);
     // ESC is ours now: it opens the menu instead of closing the window.
     if (typeof rl.setExitKey === "function") rl.setExitKey(0);
-    // Full-screen by default; the Settings toggle and F11 flip it later.
-    if (SETTINGS.fullscreen && typeof rl.toggleFullscreen === "function" &&
+    // Full-screen by default on a desktop; a page that embeds the client (the
+    // shell's 16:9 stage) says so through `web.embedded`, and the player can
+    // still ask for it with F11 or the menu.
+    if (SETTINGS.fullscreen && (typeof web === "undefined" || !web.embedded) &&
+        typeof rl.toggleFullscreen === "function" &&
         typeof rl.isWindowFullscreen === "function" && !rl.isWindowFullscreen()) {
         rl.toggleFullscreen();
     }

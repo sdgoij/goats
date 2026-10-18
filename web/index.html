@@ -24,7 +24,7 @@
       html,
       body {
         margin: 0;
-        min-height: 100%;
+        height: 100%;
         background: #17181c;
         color: #d6d7db;
       }
@@ -36,10 +36,35 @@
       }
       /* The page is a single centred column: the game above, the console below. */
       #stage {
+        position: relative;
         display: flex;
         flex-direction: column;
         gap: 14px;
         width: min(92vw, 854px);
+      }
+      /* Embedded in the shell (`godot/web/index.html`): the iframe is already the
+         16:9 stage. The wasm side reads the stage's pixel size from `--viewport`
+         (built below), so the framebuffer is the canvas' size rather than
+         854x480 upscaled by the browser. */
+      body.embedded #stage {
+        width: 100%;
+        height: 100%;
+        gap: 0;
+      }
+      body.embedded #canvas {
+        width: 100% !important;
+        height: 100% !important;
+      }
+      /* The console is an overlay in the embedded form, so the canvas keeps the
+         whole 16:9 box; it stays hidden until W2 gives it something to say. */
+      body.embedded #console {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+      }
+      body.embedded #console:empty {
+        display: none;
       }
       /* The game. `height: auto` keeps the client's own aspect ratio -- the
          framebuffer is 1000x640, so a 854px-wide box is ~547px tall. */
@@ -70,12 +95,27 @@
       <div id="console"></div>
     </div>
     <script>
+      // `?embedded=1` is the shell's form: the page fills the iframe's 16:9
+      // stage rather than presenting the standalone video-sized column. The flag
+      // also reaches the wasm side as `Module.embedded`; that is where the scene
+      // takes its viewport size from, so the framebuffer is the canvas' size and
+      // not 854x480 upscaled by the browser.
+      var params = new URLSearchParams(window.location.search);
+      var embedded = params.get("embedded") === "1";
+      if (embedded) {
+        document.body.classList.add("embedded");
+      }
+
       // The wasm build has no command line; it reads its argv from
       // `Module.arguments`, which Emscripten's glue turns into `env::args()`.
       // Build it from the URL query string so diagnostics can be toggled per
       // load -- `?gctrace=1` turns on the collector's trace (WASM.md, risk 1).
       var queryArgs = [];
-      var params = new URLSearchParams(window.location.search);
+      // The shell's iframe is the client's box, not a fixed column: name its pixel
+      // size on the command line so raylib's framebuffer matches the canvas. The
+      // wasm side cannot read the page's globals (the game runs in the engine's
+      // own JS context), so `Module.arguments` is the channel.
+      if (embedded) queryArgs.push("--viewport", Math.round(innerWidth) + "x" + Math.round(innerHeight));
       if (params.get("gctrace") === "1") queryArgs.push("--gc-trace");
       // `?nursery=N` is `--nursery-threshold N`: the young-box count that paces a
       // minor collection (the engine's default is 8192).
@@ -86,14 +126,26 @@
       // through `Module.canvas`, and raylib then asks for its `id`.
       var Module = {
         arguments: queryArgs,
+        // The shell reads this on the wasm side to size the window.
+        embedded: embedded,
         canvas: document.getElementById("canvas"),
         onRuntimeInitialized: function () {
           // The exported frame entry. Emscripten may or may not prefix it with an
           // underscore depending on the build, so accept either spelling.
           var frame = Module._goats_frame || Module.goats_frame;
           if (!frame) throw new Error("goats_frame was not exported");
+          var announced = false;
           requestAnimationFrame(function tick() {
-            if (frame()) requestAnimationFrame(tick);
+            var running = frame();
+            // The first frame is up, so the shell can drop its loader. Opened
+            // alone this posts to itself, which costs nothing.
+            if (!announced) {
+              announced = true;
+              try {
+                parent.postMessage({ type: "goats-ready", client: "reference" }, "*");
+              } catch (error) {}
+            }
+            if (running) requestAnimationFrame(tick);
           });
         },
       };

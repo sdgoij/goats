@@ -125,13 +125,15 @@ GODOT=/path/to/Godot sh godot/tools/package_web.sh
 #      index.html            the shell (16:9 frame, client switcher, mod editor)
 #      client/index.html     the Godot export
 #      client/index.pck      ...
+#      reference/index.html  the raylib client, when web/dist exists
 ```
 
-`package_web.sh` runs the headless export into `client/` and copies the shell
-beside it. The export itself writes `index.html`, `index.js`, `index.wasm`, the
-engine's own `index.side.wasm`, the project's `index.pck`, and the extension as
-`goats_godot.wasm` (about 7.7 MB). Set `GODOT` to the editor binary; it defaults
-to `godot` on `PATH`. The extension must already exist -- run
+`package_web.sh` runs the headless export into `client/`, copies the shell
+beside it, and copies the raylib client's own build from `web/dist/` into
+`reference/` when it is there. The export itself writes `index.html`, `index.js`,
+`index.wasm`, the engine's own `index.side.wasm`, the project's `index.pck`, and
+the extension as `goats_godot.wasm` (about 7.7 MB). Set `GODOT` to the editor
+binary; it defaults to `godot` on `PATH`. The extension must already exist -- run
 `godot/tools/build_web.sh` first.
 
 ## The shell page
@@ -141,15 +143,61 @@ no dependencies. It keeps the client out of the whole viewport: the game is an
 `<iframe>` in a `width: min(100%, 1120px); aspect-ratio: 16 / 9` stage, about the
 size of a YouTube player, with a fullscreen button that preserves the ratio.
 
-The page is also the seam for two things that are planned, not built:
+**Nothing loads until the visitor presses Start.** The iframe has no `src` on
+arrival, and only the selected client is ever fetched. That is the fix for the
+page feeling blocked: both wasm modules compile on the main thread (Godot's
+engine side module is ~43 MB), so loading one before it is wanted froze the tab
+-- and, because the iframe shares the document's main thread, the shell too.
+The Start button is also the user gesture the audio context needs.
 
-- **Client switcher.** `CLIENTS` names each client's entry point. Only `godot`
-  (`client/index.html`) is enabled; the reference client's option is disabled
-  until its browser build lands under `reference/`.
+Once started, a client removes the loader itself. `main.gd` connects to
+`RenderingServer.frame_post_draw`, waits three drawn frames (the first is often
+the clear colour while the shaders compile), and posts
+`{type: "goats-ready", client: "godot"}` to `window.parent`; the reference page
+(`web/index.html`) posts its own message after the first `goats_frame` returns.
+The shell hides the overlay on that message and focuses the frame, so the
+keyboard works without a second click. The overlay takes no pointer events and
+is dropped after 90 seconds even without a message, so a client that cannot
+announce itself still gets the stage.
+
+The page is the seam for two things:
+
+- **Client switcher.** `CLIENTS` names each client's entry point. The Godot
+  client is always there (`client/index.html`); the reference client is
+  `reference/index.html`, and a `HEAD` probe enables its option only when that
+  file exists -- a Godot-only package leaves it disabled rather than loading a
+  404. Selecting before Start changes what Start will load; once something is
+  running, switching reloads the iframe under the loader.
 - **Mod editor.** The panel and its layout exist, but its controls are disabled:
   import / customize / create / save / export need the mod API and a storage
-  story wired to the running client first. Keeping the scaffold honest is
-  cheaper than promising controls that do nothing.
+  story wired to the running client first. (The browser bridge in `mods.gd` is
+  already that API for the Godot client; the panel is the remaining half.)
+
+`?client=reference` preselects the reference client, and `?autostart=1` skips the
+poster (used by the browser probes; the reference option still waits for its
+probe before starting).
+
+### The reference client
+
+The second option is the raylib client's own WebAssembly build (`WASM.md`). It is
+built separately, with its own link flags and the stable toolchain:
+
+```sh
+sh web/build.sh client        # -> web/dist/{index.html,goats.js,goats.wasm}
+sh godot/tools/package_web.sh # stages it as reference/ when present
+```
+
+The shell's probe then enables **Reference (raylib / WASM)**. The page is loaded
+with `?embedded=1`, so it fills the 16:9 frame rather than presenting its
+standalone 854px column, and it names the frame's pixel size on the wasm side's
+command line (`--viewport WxH` through `Module.arguments`, surfacing as
+`web.width`/`web.height`). `sceneInit` then calls `rl.initWindow` at that size.
+The page's globals are not readable from the wasm: the game script runs in the
+engine's own JS context, where `Module` is not visible, so argv is the channel.
+Without the flag the framebuffer stays 854x480 and the browser upscales it,
+which is the report that the reference client looked smaller (lower-resolution)
+than the canvas. Its mod loading, networking and voice are the reference
+client's own story (`WASM.md`), not this shell's.
 
 ## Serving
 
@@ -160,27 +208,28 @@ python -m http.server 8000 --directory target/godot-web
 # http://localhost:8000/
 ```
 
-The URL serves the shell; the Godot client is at `/client/` inside it. To compare
-the clients later, put the reference export under `target/godot-web/reference/`
-and enable its option.
+The URL serves the shell; the Godot client is at `/client/` and the reference
+client at `/reference/`. Both are plain relative paths, so the same directory
+works at a site root or a project subpath.
 
 ## Publishing
 
 `.github/workflows/ci.yml` has two jobs for the browser build. **`web`** runs on
 every push and pull request once `test` and `godot` are green: it installs the
-pinned Emscripten and nightly, builds the extension, packages `dist-web/`, checks
-the four files a blank frame would come from (the shell, the `.pck`, the engine's
-side module and the extension), and uploads the directory as the Pages artifact.
-**`deploy-web`** runs only for a push to `main` or a manual dispatch, and
-publishes it with `actions/deploy-pages@v5`.
+pinned Emscripten, the Godot nightly and a stable toolchain for the reference
+client, builds both extensions, packages `dist-web/`, checks the files a blank
+frame or a dead switcher option would come from, and uploads the directory as
+the Pages artifact. **`deploy-web`** runs only for a push to `main` or a manual
+dispatch, and publishes it with `actions/deploy-pages@v5`.
 
 GitHub Pages has to be pointed at Actions once, in the repository:
 
 > **Settings -> Pages -> Build and deployment -> Source: GitHub Actions**
 
 The site is then `https://<owner>.github.io/goats/`. Every path in the shell is
-relative, so the project-page subpath needs no base-URL configuration; the client
-is `/goats/client/index.html`. A pull request builds the page but does not deploy
+relative, so the project-page subpath needs no base-URL configuration; the Godot
+client is `/goats/client/index.html` and the reference client
+`/goats/reference/index.html`. A pull request builds the page but does not deploy
 it, and a `v*` tag does not deploy it either -- the release jobs are separate.
 
 ## The renderer

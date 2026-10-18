@@ -81,4 +81,18 @@ echo "package_web.sh: exporting Web -> $out/client/"
 
 cp "$godot_dir/web/index.html" "$out/index.html"
 echo "package_web.sh: shell -> $out/index.html"
+
+# The raylib client's own browser build (`web/build.sh client`). It is a
+# separate build from the Godot one, so a Godot-only package simply omits it;
+# the shell's HEAD probe then leaves the switcher's Reference option disabled.
+reference=$root/web/dist
+if [ -f "$reference/index.html" ] && [ -f "$reference/goats.js" ] && [ -f "$reference/goats.wasm" ]; then
+    rm -rf "$out/reference"
+    mkdir -p "$out/reference"
+    cp "$reference"/* "$out/reference/"
+    echo "package_web.sh: reference -> $out/reference/"
+else
+    rm -rf "$out/reference"
+    echo "package_web.sh: no reference build in web/dist (run web/build.sh client)"
+fi
 echo "package_web.sh: serve it with, e.g., python -m http.server 8000 --directory $out"

@@ -235,7 +235,7 @@ fn scene_function_if_present(context: &Context, name: &str) -> Option<JsValue> {
 
 const USAGE: &str = "\
 goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull] [--gc-trace]
-      [--nursery-threshold N]
+      [--nursery-threshold N] [--viewport WxH]
 
   --mods DIRECTORY   load mods from DIRECTORY instead of the default search
                      ($GOATS_MODS, then mods/ next to the executable, then
@@ -251,6 +251,8 @@ goats [--mods DIRECTORY] [--no-mods] [--watch] [--pull] [--gc-trace]
   --nursery-threshold N
                      young boxes that pace a minor collection; raising it makes
                      minors run less often (the engine's default is 8192)
+  --viewport WxH     the page's pixel size for the embedded browser client
+                     (`web/index.html` passes it; ignored on the desktop)
   -h, --help         this text";
 
 /// How long to wait for an editor's burst of writes to settle before reloading.
@@ -266,6 +268,7 @@ struct Options {
     pull: bool,
     gc_trace: bool,
     nursery_threshold: Option<usize>,
+    viewport: Option<(f64, f64)>,
     help: bool,
 }
 
@@ -277,6 +280,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
         pull: false,
         gc_trace: false,
         nursery_threshold: None,
+        viewport: None,
         help: false,
     };
     let mut args = args;
@@ -294,6 +298,19 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, String> {
                         .parse()
                         .map_err(|_| format!("--nursery-threshold: {value} is not a count"))?,
                 );
+            }
+            "--viewport" => {
+                let value = args.next().ok_or("--viewport needs WxH")?;
+                let (width, height) = value
+                    .split_once('x')
+                    .ok_or_else(|| format!("--viewport: {value} is not WxH"))?;
+                let width = width
+                    .parse()
+                    .map_err(|_| format!("--viewport: {value} is not WxH"))?;
+                let height = height
+                    .parse()
+                    .map_err(|_| format!("--viewport: {value} is not WxH"))?;
+                options.viewport = Some((width, height));
             }
             "--mods" => {
                 options.mods_dir = Some(PathBuf::from(
@@ -777,7 +794,7 @@ pub fn run() {
     // The browser surface, before the scene is evaluated and before the first frame,
     // exactly as `android` is (WASM.md D1).
     #[cfg(target_arch = "wasm32")]
-    web::install(&mut context);
+    web::install(&mut context, options.viewport);
     // Register every embedded asset before the scene runs; the loaders resolve
     // these names to the bytes above rather than reading from disk.
     for &(name, data) in ASSETS {

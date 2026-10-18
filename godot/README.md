@@ -525,9 +525,12 @@ serve the result. The networking, voice and compiled-mod crates are gated out fo
 
 The export is wrapped in `godot/web/index.html`, a dependency-free shell that
 frames the client at a 16:9 stage (YouTube-player sized), carries a client
-switcher with a disabled slot for the reference client, and holds the mod
-editor's place in the page. `godot/tools/package_web.sh` exports into `client/`
-and copies the shell to the root of the served directory.
+switcher, and holds the mod editor's place in the page. The switcher's second
+entry is the raylib client's own browser build (`sh web/build.sh client` ->
+`web/dist/`), which `godot/tools/package_web.sh` stages as `reference/` when it
+is present; a HEAD probe leaves the option disabled for a Godot-only package.
+The export goes into `client/` and the shell to the root of the served
+directory.
 
 Mods in a tab are the build's own **birds** and **fatguy** (staged as zips by
 `package_web.sh`) plus anything in `user://mods` (IndexedDB-backed): `mods.gd`
