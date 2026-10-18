@@ -52,11 +52,21 @@ latter to IndexedDB), and both reach Rust as bytes:
   id is torn down first (`__end`, as a disk reload does), and an unknown one is
   inserted and run, so one call is enough for a new buffer.
 - `mods.gd` also installs the editor bridge on `window`: `goatsModsSave`,
-  `goatsModsReload`, `goatsModsRead` and `goatsModsState`. A save/reload request
+  `goatsModsReload`, `goatsModsRead` and `goatsModsState`, plus the panel's
+  console and tuning calls (`goatsConsoleState`, `goatsConsoleRun`,
+  `goatsTuningState`, `goatsTuningWrite`). A save/reload request
   is JSON `{name, files: {relative name: base64}}`; every answer is returned and
   also published on `window.goatsModsLast`. `goatsModsRead` opens a saved copy
   first and falls back to the bundled zip, so the editor can customize a build's
   own mod.
+- `goatsConsoleState` is `{version, open, prompt, history, lines}`; the page
+  polls `version` and reads the ring only when it moves. `goatsConsoleRun`
+  submits through the same `Console.submit` the overlay's Enter key uses, so the
+  command echoes into the in-game scrollback too.
+- `goatsTuningState` is `{version, tree, clamp, int, last}` -- the live tree,
+  the client's own `INT`/`CLAMP` tables, and the last write's answer.
+  `goatsTuningWrite` takes `{path, value}` and returns `{ok, value}` or
+  `{err}` from `Tuning.write`, the same validated path a mod uses.
 
 An import is the editor's job: Godot's `ZIPReader` extracts a picked archive into
 that same dictionary, and a save writes it under `user://mods`. The shell's Mod
@@ -177,15 +187,16 @@ The page is the seam for two things:
   when that build is packaged -- a Godot-only package leaves it disabled rather
   than loading a 404.
 - **Mod editor.** The panel lists the running client's mod table, and a row
-  opens that mod's entry in the textarea. Both clients expose the same four
-  globals (`goatsModsState`, `goatsModsRead`, `goatsModsSave`,
-  `goatsModsReload`): `mods.gd` installs them for the Godot client, and the
-  reference build's `goats_mods_*` exports behind `installReferenceMods` for the
-  raylib one. Run reloads the buffer without keeping it; Save also keeps an
-  edit's text files in `localStorage`, because the reference build has no
-  `user://` and writes its mods back in `preRun` on the next load. Asset files
-  stay as packaged. Import and export are disabled until the file picker and
-  download are wired.
+  opens that mod's entry in the textarea. Both clients expose the same eight
+  globals: `goatsModsState`, `goatsModsRead`, `goatsModsSave`,
+  `goatsModsReload`, `goatsConsoleState`, `goatsConsoleRun`,
+  `goatsTuningState`, `goatsTuningWrite`. `mods.gd` installs them for the Godot
+  client, and the reference build's `goats_*` exports behind
+  `installReferenceMods` for the raylib one. Run reloads the buffer without
+  keeping it; Save also keeps an edit's text files in `localStorage`, because
+  the reference build has no `user://` and writes its mods back in `preRun` on
+  the next load. Asset files stay as packaged. Import and export are disabled
+  until the file picker and download are wired.
 
 `?client=reference` selects the reference client (default: Godot).
 

@@ -605,6 +605,12 @@ const TUNING_INT = {
     "explosions.fx.debris.count": true,
 };
 
+// The browser panel reads the tree only when this counter moves, and the last
+// write it made is echoed back on the next poll. Both live beside the tree
+// because every write already funnels through `tuningNotify`.
+let tuningVersion = 0;
+let tuningLast = null;
+
 function tuningHas(node, key) {
     return Object.prototype.hasOwnProperty.call(node, key);
 }
@@ -702,6 +708,7 @@ function tuningWatch(prefix, fn) {
 }
 
 function tuningNotify(path, value) {
+    tuningVersion += 1;
     for (let i = 0; i < tuningWatchers.length; i++) {
         const watcher = tuningWatchers[i];
         const hit = watcher.prefix === "" || path === watcher.prefix ||
@@ -715,6 +722,47 @@ function tuningNotify(path, value) {
     }
     // Mods observe tuning changes through the same notification (mods.js).
     modEmit("tuning", path, value);
+}
+
+// ---- the browser panel's half --------------------------------------------
+//
+// The shell page's Tuning tab gets the tree, the clients' own bounds
+// (`TUNING_CLAMP`) and integer flags (`TUNING_INT`) rather than inventing a
+// range; a leaf without a bound is a number input, not a made-up slider. A
+// write arrives as `{path, value}` JSON and goes through the same validated
+// `tuningSet` a mod uses, so a typo is the same error in both places.
+
+function sceneTuningVersion() {
+    return tuningVersion;
+}
+
+function sceneTuningState() {
+    return JSON.stringify({
+        version: tuningVersion,
+        tree: TUNING,
+        clamp: TUNING_CLAMP,
+        int: TUNING_INT,
+        last: tuningLast,
+    });
+}
+
+function sceneTuningWrite(request) {
+    let path = "";
+    try {
+        const write = JSON.parse(String(request));
+        path = String(write.path);
+        const stored = tuningSet(path, write.value);
+        tuningLast = { path: path, value: stored };
+        return JSON.stringify({ ok: stored });
+    } catch (error) {
+        const message = String(error !== null && error !== undefined &&
+            error.message !== undefined ? error.message : error);
+        tuningLast = { path: path, error: message };
+        // `tuningSet` did not run, so nothing else moved the version; without
+        // this the panel's next poll would still see the previous answer.
+        tuningVersion += 1;
+        return JSON.stringify({ err: message });
+    }
 }
 
 // ---- settings (see menu.js) ----------------------------------------------

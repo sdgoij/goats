@@ -158,6 +158,11 @@ static var _tree_cache: Dictionary = {}
 ## this once a frame and says each as the `"tuning"` event (`APIv1.md` section 4.2).
 static var _changed: Array = []
 
+## Bumped by every accepted write, so the browser's Tuning tab can tell a stale read from a
+## current one (`mods.gd`'s `_web_tuning_state`). The reference client's host watches the same
+## thing (`sceneTuningVersion` in `core.js`).
+static var version: int = 0
+
 ## Every static leaf, `path -> [owner, field, keys]`. The dotted paths are the duplication that has
 ## to be: a path is a name, and the API is the authority on what a name is.
 static func _leaves() -> Dictionary:
@@ -428,6 +433,7 @@ static func _store(path: String, value: Variant) -> void:
 		_write_leaf(_leaves()[path], value)
 	_tree_cache = {}
 	_changed.append([path, value])
+	version += 1
 
 ## `tuningCoerce`, transcribed: validate `value` against the leaf's current value -- a number stays
 ## finite and is rounded or clamped where the tables say so, an array stays an array, and a branch

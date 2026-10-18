@@ -96,6 +96,9 @@ var _web_callbacks: Array = []
 ## The `window` object the callbacks were installed on, so each call can publish
 ## its answer for a caller that only has the property, not the return value.
 var _web_window: Variant = null
+## The last tuning write's answer (`{"ok": stored}` or `{"err": message}`), so
+## the Tuning tab can report it on its next poll.
+var _tuning_last: Dictionary = {}
 ## The frame's own `netInSession()`: true while this client is in a session, as host or joiner. A
 ## `Callable` for the reason `scene_call` is one -- this file does not link against the net module --
 ## and it is the guard `modSetEnabled` needs: a world mod's side is fixed at join, so changing one
@@ -271,6 +274,10 @@ func _run() -> void:
 #   goatsModsReload(request) run an unsaved buffer without writing it
 #   goatsModsRead(name)      the saved files, JSON with base64 values
 #   goatsModsState()         the mod table, exactly `mods_json`
+#   goatsConsoleState()      the console ring, prompt and history, JSON
+#   goatsConsoleRun(line)    run a line through the console's own submit
+#   goatsTuningState()       the tree, bounds and last write, JSON
+#   goatsTuningWrite(req)    `{path, value}` through `Tuning.write`
 #
 # A request is JSON (`JSON.stringify` on the page): `{name, files: {relative
 # name: base64}}`. Base64 is the one representation both ends already have;
@@ -278,7 +285,7 @@ func _run() -> void:
 # still parses and validates everything -- the bridge is storage and invocation,
 # not a second manifest reader.
 
-## Install the four callbacks in a tab. On any other platform there is no
+## Install the panel callbacks in a tab. On any other platform there is no
 ## JavaScriptBridge singleton and nothing to do.
 func _install_web_bridge() -> void:
 	if not OS.has_feature("web"):
@@ -295,11 +302,19 @@ func _install_web_bridge() -> void:
 		bridge.call("create_callback", Callable(self, "_web_reload")),
 		bridge.call("create_callback", Callable(self, "_web_read")),
 		bridge.call("create_callback", Callable(self, "_web_state")),
+		bridge.call("create_callback", Callable(self, "_web_console_state")),
+		bridge.call("create_callback", Callable(self, "_web_console_run")),
+		bridge.call("create_callback", Callable(self, "_web_tuning_state")),
+		bridge.call("create_callback", Callable(self, "_web_tuning_write")),
 	]
 	window.goatsModsSave = _web_callbacks[0]
 	window.goatsModsReload = _web_callbacks[1]
 	window.goatsModsRead = _web_callbacks[2]
 	window.goatsModsState = _web_callbacks[3]
+	window.goatsConsoleState = _web_callbacks[4]
+	window.goatsConsoleRun = _web_callbacks[5]
+	window.goatsTuningState = _web_callbacks[6]
+	window.goatsTuningWrite = _web_callbacks[7]
 
 ## `goatsModsSave`: write the request's files under `user://mods/<name>/`, then
 ## insert/replace and run the mod. `user://` is IndexedDB-backed in a tab, so the
@@ -364,6 +379,56 @@ func _web_read(args: Array) -> String:
 ## game's list are one table.
 func _web_state(_args: Array) -> String:
 	return _web_respond(String(host.call("mods_json")))
+
+## `goatsConsoleState`: the ring, the open flag and the pending question. The
+## version is what the page polls; `lines` is only read when it moves.
+func _web_console_state(_args: Array) -> String:
+	if console == null:
+		return _web_respond(JSON.stringify({"error": "console not ready"}))
+	return _web_respond(JSON.stringify({
+		"version": console.version,
+		"open": console.open,
+		"prompt": String(console.prompt.get("question", "")),
+		"history": console.history,
+		"lines": console.lines,
+	}))
+
+## `goatsConsoleRun`: run a line through the console's own `submit`, so the echo
+## and the reply land in the scrollback the overlay draws as well.
+func _web_console_run(args: Array) -> String:
+	if console == null:
+		return _web_respond("error console not ready")
+	var line: String = "" if args.is_empty() else String(args[0])
+	console.submit(line, console.dispatch)
+	return _web_respond("ok")
+
+## `goatsTuningState`: the tree, the clients' own bounds and integer flags, and
+## the last write's answer. `tree()` is the live tree, so a leaf the menu moved
+## reads its current value here too.
+func _web_tuning_state(_args: Array) -> String:
+	return _web_respond(JSON.stringify({
+		"version": Tuning.version,
+		"tree": Tuning.tree().duplicate(true),
+		"clamp": Tuning.CLAMP,
+		"int": Tuning.INT,
+		"last": _tuning_last,
+	}))
+
+## `goatsTuningWrite`: `{path, value}` through `Tuning.write`, the same validated
+## path a mod's `goats.tuning.set` uses. The answer is kept for the next poll.
+func _web_tuning_write(args: Array) -> String:
+	if args.is_empty():
+		return _web_respond(JSON.stringify({"err": "no request"}))
+	var parsed: Variant = JSON.parse_string(String(args[0]))
+	if not (parsed is Dictionary):
+		return _web_respond(JSON.stringify({"err": "the request is not a JSON object"}))
+	var request: Dictionary = parsed
+	var path := String(request.get("path", ""))
+	if path.is_empty():
+		return _web_respond(JSON.stringify({"err": "the request needs a path"}))
+	var answer: Dictionary = Tuning.write(path, request.get("value", null))
+	_tuning_last = answer
+	return _web_respond(JSON.stringify(answer))
 
 ## Decode `{name, files: {relative: base64}}`. The request is JSON text because a
 ## JavaScript object's nested values do not cross the bridge as typed data.

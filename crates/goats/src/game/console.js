@@ -35,6 +35,9 @@ let consoleOpen = false;
 let consoleInput = "";
 let consoleCaret = 0;
 let consoleLines = [];          // { text, kind }
+// Bumped by every push, so a host that mirrors the scrollback (the browser
+// panel) can poll one number instead of serialising the ring every frame.
+let consoleVersion = 0;
 let consoleHistory = [];
 let consoleHistoryAt = 0;
 let consoleSeen = false;
@@ -52,6 +55,7 @@ function consolePush(text, kind) {
     if (consoleLines.length > CONSOLE_MAX_LINES) {
         consoleLines.splice(0, consoleLines.length - CONSOLE_MAX_LINES);
     }
+    consoleVersion += 1;
 }
 
 // A line from the session (M10/M11): chat, joins, errors.
@@ -389,4 +393,42 @@ function drawConsole() {
     const before = consoleInput.slice(0, consoleCaret);
     const after = consoleInput.slice(consoleCaret);
     rl.drawText("> " + before + "|" + after, pad, y, lineH, CONSOLE_COLORS.input);
+}
+
+// ---- the browser panel's half --------------------------------------------
+//
+// The shell page's Console tab mirrors this scrollback and runs lines through
+// the same `consoleSubmit`, so a command typed there lands in the in-game console
+// as well. The host polls the version and only asks for the state when it moves
+// (`crates/goats/src/mod_editor.rs`), which is what keeps a 200-line ring from
+// being serialised every frame.
+
+function sceneConsoleVersion() {
+    return consoleVersion;
+}
+
+// The scrollback, the open flag, and the question the console is waiting for.
+// The prompt's `action` is a function and does not cross; the panel only needs
+// the question, because the next submitted line is routed by `consoleSubmit`.
+function sceneConsoleState() {
+    return JSON.stringify({
+        version: consoleVersion,
+        open: consoleOpen,
+        prompt: consolePrompt === null ? "" : String(consolePrompt.question || ""),
+        history: consoleHistory,
+        lines: consoleLines,
+    });
+}
+
+// Run one line exactly as the overlay does. The reply is already in the ring;
+// an exception is a system line rather than a lost command.
+function sceneConsoleRun(line) {
+    const text = String(line);
+    if (text.trim() === "") return "ok";
+    try {
+        consoleSubmit(text);
+    } catch (error) {
+        consoleSystem("error " + String(error));
+    }
+    return "ok";
 }

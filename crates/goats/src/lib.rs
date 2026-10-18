@@ -886,6 +886,17 @@ pub fn run() {
     let mod_table = scene_function_if_present(&context, "sceneModTable");
     #[cfg(target_arch = "wasm32")]
     mod_editor::publish_table(&mut context, mod_table.as_ref());
+    // The panel's console and tuning tabs read the scene through these, on the
+    // same frame boundary as the mod table (`mod_editor::service_panel`).
+    #[cfg(target_arch = "wasm32")]
+    let panel = mod_editor::PanelFns {
+        console_version: scene_function_if_present(&context, "sceneConsoleVersion"),
+        console_state: scene_function_if_present(&context, "sceneConsoleState"),
+        console_run: scene_function_if_present(&context, "sceneConsoleRun"),
+        tuning_version: scene_function_if_present(&context, "sceneTuningVersion"),
+        tuning_state: scene_function_if_present(&context, "sceneTuningState"),
+        tuning_write: scene_function_if_present(&context, "sceneTuningWrite"),
+    };
     // The mods the scene already has, so an editor save can tell a reload from a
     // folder discovery has never seen.
     #[cfg(target_arch = "wasm32")]
@@ -991,6 +1002,10 @@ pub fn run() {
     }
 
     context.call(&init, &JsValue::undefined(), &[]).unwrap();
+    // Prime the panel's caches so the first poll after boot has an answer rather
+    // than an empty string. The tree and the console exist by now.
+    #[cfg(target_arch = "wasm32")]
+    mod_editor::service_panel(&mut context, &panel);
 
     // The network bridge. Both entry points live in the scene (`net.js`); the
     // host only moves lines between the frame loop and the runtime thread. A
@@ -1172,6 +1187,9 @@ pub fn run() {
             if mods_changed {
                 mod_editor::publish_table(&mut context, mod_table.as_ref());
             }
+            // Queued console lines and tuning writes land here, after the scene
+            // has stepped; the state is re-published if either version moved.
+            mod_editor::service_panel(&mut context, &panel);
         }
         #[cfg(not(target_arch = "wasm32"))]
         let _ = mods_changed;

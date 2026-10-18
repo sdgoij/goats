@@ -544,6 +544,18 @@
           return respond(text);
         };
         window.goatsModsReload = (request) => respond(call("goats_mods_write", request));
+        // The Console and Tuning tabs' half of the same bridge. Each export is
+        // synchronous like the mod ones; a write is queued and applied on the
+        // module's next frame, so the answer is "ok queued" and the result is
+        // read back from the state call.
+        if (has("goats_console_state")) {
+          window.goatsConsoleState = () => respond(call("goats_console_state"));
+          window.goatsConsoleRun = (line) => respond(call("goats_console_write", line));
+        }
+        if (has("goats_tuning_state")) {
+          window.goatsTuningState = () => respond(call("goats_tuning_state"));
+          window.goatsTuningWrite = (request) => respond(call("goats_tuning_write", request));
+        }
       }
 
       function bootReference() {

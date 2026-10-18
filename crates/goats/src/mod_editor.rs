@@ -25,6 +25,16 @@
 //! Loaded ids are tracked so a save can tell "reload this mod" from "a folder
 //! discovery has never seen". A new mod goes in through the same path a pulled
 //! one does, minus the compiled half a browser does not have (WASM.md D4).
+//!
+//! The same module carries the panel's other two tabs. The console scrollback
+//! and the tuning tree are the scene's, so the host polls a version and
+//! re-serialises only when it moves; a command or a write is queued here and
+//! applied on the frame boundary, where the `Context` is (`service_panel`).
+//!
+//!   `goats_console_state()`       scrollback, prompt and history, JSON
+//!   `goats_console_write(line)`   queue a line for the game console
+//!   `goats_tuning_state()`        the tree plus the clients' own bounds, JSON
+//!   `goats_tuning_write(request)` queue `{path, value}`
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -48,11 +58,129 @@ thread_local! {
     static PENDING: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// The last answer, kept alive for the pointer returned to JavaScript.
     static ANSWER: RefCell<Option<CString>> = const { RefCell::new(None) };
+    /// The console's state, re-serialised only when its version moves.
+    static CONSOLE: RefCell<String> = const { RefCell::new(String::new()) };
+    /// The console version last serialised; `-1` forces the first publish.
+    static CONSOLE_VERSION: RefCell<f64> = const { RefCell::new(-1.0) };
+    /// The tuning tree and bounds, same caching rule.
+    static TUNING: RefCell<String> = const { RefCell::new(String::new()) };
+    static TUNING_VERSION: RefCell<f64> = const { RefCell::new(-1.0) };
+    /// Console lines and tuning writes the page queued since the last frame.
+    static COMMANDS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static WRITES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The scene's half of the panel bridge: functions resolved once at boot and
+/// called from the frame loop, where the `Context` is. `scene_function_if_present`
+/// leaves an old scene without them doing nothing rather than refusing to start.
+pub struct PanelFns {
+    pub console_version: Option<JsValue>,
+    pub console_state: Option<JsValue>,
+    pub console_run: Option<JsValue>,
+    pub tuning_version: Option<JsValue>,
+    pub tuning_state: Option<JsValue>,
+    pub tuning_write: Option<JsValue>,
 }
 
 /// Where discovery found the mods. Called once, at `run`'s boot.
 pub fn set_root(dir: Option<PathBuf>) {
     ROOT.with(|slot| *slot.borrow_mut() = dir);
+}
+
+/// Apply the panel's queued commands and writes, then publish the console and
+/// tuning state if either version moved. Called once at boot (so the first poll
+/// has an answer) and once per frame, after the scene has stepped -- a command
+/// pushed here runs after this frame's simulation and lands in the next one.
+pub fn service_panel(context: &mut Context, fns: &PanelFns) {
+    let commands = COMMANDS.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
+    for line in commands {
+        let Some(run) = fns.console_run.as_ref() else {
+            break;
+        };
+        if let Err(error) = context.call(run, &JsValue::undefined(), &[JsValue::string(line)]) {
+            eprintln!("[panel] sceneConsoleRun: {error}");
+        }
+    }
+    let writes = WRITES.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
+    for request in writes {
+        let Some(write) = fns.tuning_write.as_ref() else {
+            break;
+        };
+        if let Err(error) = context.call(write, &JsValue::undefined(), &[JsValue::string(request)])
+        {
+            eprintln!("[panel] sceneTuningWrite: {error}");
+        }
+    }
+    publish_console(context, fns);
+    publish_tuning(context, fns);
+}
+
+/// The version a getter reports, or `None` when the scene has none.
+fn scene_version(context: &mut Context, version: Option<&JsValue>) -> Option<f64> {
+    let version = version?;
+    context
+        .call(version, &JsValue::undefined(), &[])
+        .ok()
+        .and_then(|value| value.as_number())
+}
+
+/// Cache `sceneConsoleState` when `sceneConsoleVersion` moved. The empty cache
+/// is the first publish, which is why the sentinel starts below every version.
+fn publish_console(context: &mut Context, fns: &PanelFns) {
+    let Some(version) = scene_version(context, fns.console_version.as_ref()) else {
+        return;
+    };
+    let changed = CONSOLE_VERSION.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        if *seen == version {
+            return false;
+        }
+        *seen = version;
+        true
+    });
+    if !changed && !CONSOLE.with(|slot| slot.borrow().is_empty()) {
+        return;
+    }
+    let Some(state) = fns.console_state.as_ref() else {
+        return;
+    };
+    match context.call(state, &JsValue::undefined(), &[]) {
+        Ok(value) => {
+            if let Some(text) = value.as_string() {
+                CONSOLE.with(|slot| *slot.borrow_mut() = text);
+            }
+        }
+        Err(error) => eprintln!("[panel] sceneConsoleState: {error}"),
+    }
+}
+
+/// `sceneTuningState` under the same rule as the console.
+fn publish_tuning(context: &mut Context, fns: &PanelFns) {
+    let Some(version) = scene_version(context, fns.tuning_version.as_ref()) else {
+        return;
+    };
+    let changed = TUNING_VERSION.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        if *seen == version {
+            return false;
+        }
+        *seen = version;
+        true
+    });
+    if !changed && !TUNING.with(|slot| slot.borrow().is_empty()) {
+        return;
+    }
+    let Some(state) = fns.tuning_state.as_ref() else {
+        return;
+    };
+    match context.call(state, &JsValue::undefined(), &[]) {
+        Ok(value) => {
+            if let Some(text) = value.as_string() {
+                TUNING.with(|slot| *slot.borrow_mut() = text);
+            }
+        }
+        Err(error) => eprintln!("[panel] sceneTuningState: {error}"),
+    }
 }
 
 /// Cache the scene's table (`sceneModTable`) for `goats_mods_state`.
@@ -138,6 +266,46 @@ pub extern "C" fn goats_mods_write(request: *const c_char) -> *mut c_char {
         Ok(message) => answer(message),
         Err(error) => answer(format!("error {error}")),
     }
+}
+
+/// `goats_console_state`: the console scrollback, prompt and history, JSON.
+#[unsafe(no_mangle)]
+pub extern "C" fn goats_console_state() -> *mut c_char {
+    answer(CONSOLE.with(|slot| slot.borrow().clone()))
+}
+
+/// `goats_console_write`: queue one line for the game console. It runs through
+/// `consoleSubmit`, the same entry the overlay's Enter key uses, so the reply
+/// and the echo land in the one scrollback both views read.
+#[unsafe(no_mangle)]
+pub extern "C" fn goats_console_write(line: *const c_char) -> *mut c_char {
+    let Some(line) = text_arg(line) else {
+        return answer("error no line".to_string());
+    };
+    COMMANDS.with(|slot| slot.borrow_mut().push(line));
+    answer("ok queued".to_string())
+}
+
+/// `goats_tuning_state`: the tree, the clients' bounds and integer flags, and
+/// the last write's answer, JSON.
+#[unsafe(no_mangle)]
+pub extern "C" fn goats_tuning_state() -> *mut c_char {
+    answer(TUNING.with(|slot| slot.borrow().clone()))
+}
+
+/// `goats_tuning_write`: queue `{path, value}` for the scene's validated
+/// `tuningSet`. A malformed request fails here, synchronously; a bad path or
+/// value is the scene's answer and arrives on the next state poll.
+#[unsafe(no_mangle)]
+pub extern "C" fn goats_tuning_write(request: *const c_char) -> *mut c_char {
+    let Some(request) = text_arg(request) else {
+        return answer("error no request".to_string());
+    };
+    if serde_json::from_str::<serde_json::Value>(&request).is_err() {
+        return answer("error the request is not JSON".to_string());
+    }
+    WRITES.with(|slot| slot.borrow_mut().push(request));
+    answer("ok queued".to_string())
 }
 
 /// A string crossing from JavaScript. Emscripten's `ccall(..., 'string', ...)`
