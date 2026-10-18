@@ -365,6 +365,14 @@ impl NetBridge {
         }
     }
 
+    /// The browser's gateway URL. The desktop bridge dials iroh itself and has
+    /// no WebSocket to point at it, so this is a no-op that keeps the scene's
+    /// boot call valid on both targets.
+    #[func]
+    fn set_gateway(&mut self, _url: GString) -> GString {
+        crate::gstring("ok")
+    }
+
     /// Set the `--pull` policy (M18d): the directory a fetched world mod is installed into, and
     /// whether a refused join fetches without being asked. The scene calls this once, at boot,
     /// from its own mods directory and `GOATS_PULL` -- the port's spelling of the raylib client's

@@ -27,15 +27,16 @@ interpreter* (`wasm/src/lib.rs:13-16`).
 | Raster | `Platform::Web` in the patched `raylib-sys`, and the GLSL dialect layer (Android D2) already emits `300 es` | done -- raylib builds, links and runs for wasm; the one link repair was a GLVND name (`web/build.sh raylib`) |
 | Host | `run()` is a blocking loop around three platform services a tab does not have | the real work |
 | Engine | Slag builds, links and runs under Emscripten (the engine's own demo, and `web/build.sh probe`, green); its JIT is RWX and cannot exist in the sandbox | drop `jit`, run the interpreter; the frame cost is risk 1 |
-| Networking, voice | `iroh` is QUIC over UDP; `cpal` has no wasm host | out of scope for the first browser build |
+| Networking, voice | `iroh` is QUIC over UDP, which a tab cannot open; `goatsd --gateway` runs the session client natively and relays the scene's JSON lines over a WebSocket | join works through a gateway; hosting, discovery, voice and mod pull stay out |
 
 ## Non-goals
 
 - **The server.** `crates/server` stays desktop, and stays the thing you host on.
-- **A networked browser client.** `iroh` needs a UDP socket, and nothing in a
-  browser exposes one. A tab that joins a session needs a relay or a
-  WebTransport/WebSocket bridge in front of `goatsd` -- a milestone of its own,
-  not a line in this one.
+- **Hosting or discovery from the tab.** The gateway gives a browser a *join*
+  path only: `goatsd --gateway` owns the session and the tab is its client.
+  Hosting from a tab needs a gateway-hosted room, and swarm discovery needs the
+  gateway to proxy the topic; both are later milestones. A tab with no gateway
+  still plays offline, as before.
 - **Voice.** `cpal` has no wasm host; capture would be `getUserMedia` and an
   `AudioWorklet`, and `libopus_sys` would need a wasm libopus. Playback is a
   different story and stays.
@@ -252,13 +253,18 @@ returns, and `sceneFrame`'s `false` calls `emscripten_cancel_main_loop`.
 `requestAnimationFrame` is the cadence. `-sASYNCIFY` is the fallback if some
 startup step turns out to need a blocking wait.
 
-**D4 -- Networking and voice are compiled out.** Not deferred with a stub that
-half-works: `net.rs` and the capture half of `audio.rs` are behind
-`cfg(not(target_arch = "wasm32"))`, because an `iroh` runtime and a cpal stream
-have no wasm implementation to construct. The scene already guards both --
-`net.js` against a missing bridge, `audio.js` against a missing capture -- so the
-browser build is a coherent single-player game rather than a networked one with
-holes. Playback stays.
+**D4 -- Networking is the gateway's job, and voice is compiled out.** A tab
+cannot open the UDP socket `iroh` needs, so the browser links no transport at
+all: `crates/goats/src/net_web.rs` is a pair of C-ABI queues
+(`goats_net_push`/`goats_net_drain`) and the page owns a WebSocket to
+`goatsd --gateway`. The gateway runs a real `session::Client` per socket and
+speaks the same JSON lines (`session::bridge`) the native bridge does, so a
+browser is an ordinary client to every host. Hosting, swarm discovery and mod
+pulling answer with a `notice` or `error` rather than being silently dropped.
+Voice stays out: capture is `cpal`, which has no wasm host, and would be
+`getUserMedia` plus an `AudioWorklet`. The scene already guards both -- `net.js`
+against a missing bridge, `audio.js` against a missing capture -- and playback
+stays.
 
 **D5 -- The dialect is the ES3 one.** WebGL 2 is the context, so
 `setGlslDialect(true)` -- today under `cfg(target_os = "android")`
@@ -324,8 +330,8 @@ A page you can walk around on.
 
 **W2 -- The console and the clipboard.** The `web` text bridge (D1) and the
 character queue, so `help`, `tuning` and the rest work. The ticket flow
-(`copy`/paste) is moot without networking, but the console is the game's whole
-debug surface on every other target and must not be a read-only shell here.
+(`copy`/paste) is the way a browser joins: the page's gateway URL plus the
+ticket the console's `connect` takes.
 
 **W3 -- Look right.** `setGlslDialect(true)` on the wasm target, the ES3/WebGL 2
 build, the skinned programs and the shadow map. Mostly a canary: the dialect is

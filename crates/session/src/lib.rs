@@ -38,6 +38,10 @@ use proto::{
 };
 use tokio::sync::{Mutex, mpsc};
 
+/// The line protocol the scene speaks, shared by the native clients and the
+/// browser gateway. It lives here so the JSON shapes have one definition.
+pub mod bridge;
+
 // The wire types the session exchanges, re-exported so an embedding host (the
 // client's network bridge) can name a pose or a world without depending on
 // `proto` directly. `ModMismatch` and `compare_world_mods` ride along because a
@@ -52,8 +56,8 @@ pub use proto::{
 /// advert a host restates on it.
 pub mod swarm;
 
-/// The ALPN, carrying the major wire version so a peer built against a
-/// different protocol fails the QUIC handshake instead of misreading messages.
+// The ALPN, carrying the major wire version so a peer built against a
+// different protocol fails the QUIC handshake instead of misreading messages.
 pub fn alpn() -> Vec<u8> {
     format!("goats/{PROTOCOL_VERSION}").into_bytes()
 }

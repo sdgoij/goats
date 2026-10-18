@@ -799,6 +799,12 @@ rooms, presence and voice, which is exactly the shape we want — but it is
 Bevy-shaped and days old, so plain `iroh` plus our own `session` layer is the
 fallback, not a rewrite.
 
+**Browser gateway (added later).** A tab has no UDP socket, so `goatsd
+--gateway host:port` serves the same session over a WebSocket: one socket is one
+`session::Client`, and the lines are `session::bridge`'s (the native bridge and
+the page share one definition). The browser is a *joiner*: hosting, swarm
+discovery, voice and mod pulling answer "not available" rather than pretending.
+
 **Host bridge.** A Tokio runtime on its own thread owns the `Endpoint`; the
 synchronous frame loop drains an `mpsc` at frame boundaries and **never awaits**,
 so the render loop cannot stall. Rust→JS is `sceneNetEvent(line)`; JS→Rust is one

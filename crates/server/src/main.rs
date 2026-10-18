@@ -17,6 +17,7 @@
 //! large travels as several part-datagrams rather than one (`proto::split_world`), so the
 //! `--herd` ceiling is what the *parts* are sized for rather than the datagram budget.
 
+mod gateway;
 mod headless;
 mod web;
 
@@ -41,12 +42,14 @@ const DEFAULT_DOWNLOAD: &str = "https://github.com/sdgoij/goats/releases";
 const DEFAULT_HERD: usize = 7;
 
 const USAGE: &str = "\
-goatsd [name] [--listen address:port] [--download URL] [--mods DIRECTORY] [--no-mods] [--herd N]
+goatsd [name] [--listen address:port] [--gateway address:port] [--download URL] [--mods DIRECTORY] [--no-mods] [--herd N]
         [--nojoin] [--topicid ID] [--peer ID|TICKET]... [--swarm-key HEX]
 
   name                the name to host under (default: server)
   -l, --listen ADDR   serve a status page on ADDR; a bare port means 0.0.0.0:port.
                       Without it, no HTTP server is started.
+      --gateway ADDR   serve browser clients on ADDR over WebSocket; a bare port
+                      means 0.0.0.0:port. TLS is a reverse proxy's job (`wss://`).
       --download URL  client download link shown on the page
                       (default: the GitHub releases page)
       --mods DIR      require this server's world mods; joiner must match
@@ -71,6 +74,7 @@ goatsd [name] [--listen address:port] [--download URL] [--mods DIRECTORY] [--no-
 struct Options {
     name: String,
     listen: Option<String>,
+    gateway: Option<String>,
     download: String,
     mods_dir: Option<PathBuf>,
     no_mods: bool,
@@ -82,6 +86,9 @@ struct Options {
 }
 
 /// Asking for help is not an error, but it ends the process the same way.
+/// `Options` is built once from argv, so boxing it to quiet the size lint would
+/// only add an allocation nothing reads.
+#[allow(clippy::large_enum_variant)]
 enum Parsed {
     Run(Options),
     Help,
@@ -91,6 +98,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
     let mut options = Options {
         name: "server".to_string(),
         listen: None,
+        gateway: None,
         download: DEFAULT_DOWNLOAD.to_string(),
         mods_dir: None,
         no_mods: false,
@@ -107,6 +115,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
             "-h" | "--help" => return Ok(Parsed::Help),
             "-l" | "--listen" => {
                 options.listen = Some(args.next().ok_or("--listen needs address:port")?);
+            }
+            "--gateway" => {
+                options.gateway = Some(args.next().ok_or("--gateway needs address:port")?);
             }
             "--download" => {
                 options.download = args.next().ok_or("--download needs a URL")?;
@@ -410,6 +421,27 @@ async fn main() {
             }
             Err(error) => {
                 eprintln!("goatsd: could not listen on {address}: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // The browser gateway: a WebSocket listener whose every socket drives one
+    // native session client (`gateway.rs`). Bound before the loop, like the
+    // status page, so a busy port fails now rather than on the first browser.
+    if let Some(address) = &options.gateway {
+        let address = gateway::address(address);
+        match tokio::net::TcpListener::bind(&address).await {
+            Ok(listener) => {
+                println!(
+                    "goatsd: browser gateway on ws://{}/",
+                    gateway::shown(&listener, &address)
+                );
+                let _ = std::io::stdout().flush();
+                tokio::spawn(gateway::serve(listener));
+            }
+            Err(error) => {
+                eprintln!("goatsd: could not listen on {address} for the gateway: {error}");
                 std::process::exit(1);
             }
         }

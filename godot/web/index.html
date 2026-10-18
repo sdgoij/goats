@@ -850,7 +850,14 @@
         script.src = "client/index.js?v=" + BUILD;
         script.onload = () => {
           const config = {
-            args: [],
+            args: (() => {
+              // A browser has no UDP socket; the page passes the WebSocket
+              // gateway (if one is configured) to the Godot build, whose
+              // `NetBridge` speaks the gateway's JSON lines. The reference
+              // client's page owns its socket directly.
+              const gateway = gatewayUrl();
+              return gateway ? ["--gateway=" + gateway] : [];
+            })(),
             canvasResizePolicy: 0,
             emscriptenPoolSize: 8,
             ensureCrossOriginIsolationHeaders: true,
@@ -1043,6 +1050,132 @@
         }
       }
 
+      // ---- The reference client's network seam ------------------------------
+      //
+      // The wasm half is `net_web.rs`: lines from `sceneNetDrain` wait in
+      // `goats_net_drain`, and the page pushes what the socket receives through
+      // `goats_net_push`. The page owns the WebSocket, so no Rust transport is
+      // compiled into a tab. The gateway (`goatsd --gateway`) does the session.
+      let gatewaySocket = null;
+      let gatewayQueue = [];
+
+      function gatewayUrl() {
+        try {
+          const fromQuery = params.get("gateway");
+          if (fromQuery) {
+            localStorage.setItem("goats.gateway", fromQuery);
+            return fromQuery;
+          }
+          return localStorage.getItem("goats.gateway") || "";
+        } catch (error) {
+          return "";
+        }
+      }
+
+      function gatewayNormalize(url) {
+        if (url.startsWith("http://")) return "ws://" + url.slice(7);
+        if (url.startsWith("https://")) return "wss://" + url.slice(8);
+        return url;
+      }
+
+      function netPush(line) {
+        try {
+          Module.ccall("goats_net_push", null, ["string"], [line]);
+        } catch (error) {
+          // The module is going away; nothing left to deliver to.
+        }
+      }
+
+      function netHandleOut(line) {
+        let intent = null;
+        try { intent = JSON.parse(line); } catch (error) { return; }
+        if (!intent || typeof intent !== "object") return;
+        if (intent.type === "join") {
+          if (gatewaySocket && gatewaySocket.readyState === WebSocket.CLOSED) {
+            gatewaySocket = null;
+          }
+          if (gatewaySocket) {
+            if (gatewaySocket.readyState === WebSocket.OPEN) gatewaySocket.send(line);
+            else if (gatewaySocket.readyState === WebSocket.CONNECTING) gatewayQueue.push(line);
+            return;
+          }
+          let url = gatewayUrl();
+          if (!url) {
+            url = window.prompt(
+              "Gateway WebSocket URL (ws:// or wss://):",
+              "ws://localhost:8080",
+            );
+            if (!url) {
+              netPush(JSON.stringify({ type: "error", text: "no gateway configured" }));
+              return;
+            }
+            url = gatewayNormalize(url.trim());
+            try { localStorage.setItem("goats.gateway", url); } catch (error) {}
+          }
+          gatewayQueue = [line];
+          try {
+            gatewaySocket = new WebSocket(gatewayNormalize(url));
+          } catch (error) {
+            gatewaySocket = null;
+            netPush(JSON.stringify({ type: "error", text: "gateway URL is not a WebSocket" }));
+            return;
+          }
+          gatewaySocket.onopen = () => {
+            for (const queued of gatewayQueue) gatewaySocket.send(queued);
+            gatewayQueue = [];
+          };
+          gatewaySocket.onmessage = (event) => {
+            if (typeof event.data !== "string") return;
+            for (const part of event.data.split("\n")) {
+              const text = part.trim();
+              if (text) netPush(text);
+            }
+          };
+          gatewaySocket.onclose = () => {
+            gatewaySocket = null;
+            gatewayQueue = [];
+            netPush(JSON.stringify({ type: "disconnected" }));
+          };
+          gatewaySocket.onerror = () => {
+            netPush(JSON.stringify({ type: "error", text: "gateway connection failed" }));
+          };
+          return;
+        }
+        if (intent.type === "close") {
+          const socket = gatewaySocket;
+          if (socket && socket.readyState === WebSocket.OPEN) socket.send(line);
+          gatewaySocket = null;
+          gatewayQueue = [];
+          if (socket) setTimeout(() => socket.close(), 50);
+          return;
+        }
+        if (!gatewaySocket) return;
+        if (gatewaySocket.readyState === WebSocket.OPEN) gatewaySocket.send(line);
+        else if (gatewaySocket.readyState === WebSocket.CONNECTING) gatewayQueue.push(line);
+      }
+
+      function pumpNet() {
+        if (typeof Module !== "object" || Module === null ||
+            typeof Module.ccall !== "function") return;
+        let text = "";
+        try {
+          text = Module.ccall("goats_net_drain", "string", [], []) || "";
+        } catch (error) {
+          return;
+        }
+        for (const line of text.split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed) netHandleOut(trimmed);
+        }
+      }
+
+      function installReferenceNet() {
+        const has = (name) => typeof Module["_" + name] === "function";
+        if (!has("goats_net_drain") || !has("goats_net_push")) {
+          hostLog.push({ level: "warn", text: "net: the wasm module has no network seam" });
+        }
+      }
+
       async function bootReference() {
         await loadRestoredMods();
         const [width, height] = stageSize();
@@ -1069,12 +1202,14 @@
           },
           onRuntimeInitialized: function () {
             installReferenceMods();
+            installReferenceNet();
             const frame = window.Module._goats_frame || window.Module.goats_frame;
             if (!frame) {
               notice("goats_frame was not exported");
               return;
             }
             requestAnimationFrame(function tick() {
+              pumpNet();
               if (frame()) requestAnimationFrame(tick);
             });
           },

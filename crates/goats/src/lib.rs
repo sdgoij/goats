@@ -32,6 +32,10 @@
 mod audio;
 #[cfg(not(target_arch = "wasm32"))]
 mod net;
+// The browser's arm of the same seam: JSON lines between the frame loop and
+// the page's WebSocket (`net_web.rs`). The gateway does the session itself.
+#[cfg(target_arch = "wasm32")]
+mod net_web;
 // The browser's mod-editor bridge: the C ABI the shell page's editor calls, and
 // the file work that has to happen on this side of the module.
 #[cfg(target_arch = "wasm32")]
@@ -1023,9 +1027,7 @@ pub fn run() {
     // bridge nor the voice service that rides on it (WASM.md D4); `mod_drain` is
     // the scene's own queue and stays.
     let mod_drain = scene_function_if_present(&context, "sceneModDrain");
-    #[cfg(not(target_arch = "wasm32"))]
     let net_event = scene_function_if_present(&context, "sceneNetEvent");
-    #[cfg(not(target_arch = "wasm32"))]
     let net_drain = scene_function_if_present(&context, "sceneNetDrain");
     // The mods directory travels with the bridge: a refused join may fetch into
     // it and retry, and a join we host may serve it (M18d).
@@ -1106,6 +1108,10 @@ pub fn run() {
                 }
             }
         }
+        // The browser's lines arrive from the page's socket; the gateway has
+        // already done everything the native `net` thread does.
+        #[cfg(target_arch = "wasm32")]
+        net_web::deliver(&mut context, net_event.as_ref());
 
         let running = context
             .call(&frame, &JsValue::undefined(), &[])
@@ -1255,6 +1261,11 @@ pub fn run() {
                 Err(error) => eprintln!("[net] sceneNetDrain: {error}"),
             }
         }
+
+        // The browser's outbox: the page's WebSocket pump sends these the next
+        // time it runs, so the frame loop never touches the socket.
+        #[cfg(target_arch = "wasm32")]
+        net_web::collect(&mut context, net_drain.as_ref());
 
         // Decoded voice reaches raylib here, on the frame thread.
         #[cfg(not(target_arch = "wasm32"))]

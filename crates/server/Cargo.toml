@@ -29,4 +29,7 @@ proto = { workspace = true }
 slag = { workspace = true, features = ["jit"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time", "net"] }
+# The browser gateway: a WebSocket face for the native session client.
+futures-util = "0.3"
+tokio-tungstenite = "0.30"

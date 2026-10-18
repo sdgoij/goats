@@ -19,14 +19,18 @@ What is **not** there, by construction of a tab rather than by choice:
 
 | Area | Why |
 | --- | --- |
-| Networking (`host`, `join`, roster, chat, world datagrams, mod sync) | `session` is iroh, which is QUIC over UDP; a browser exposes no UDP socket. |
+| Hosting, swarm discovery | The gateway is a session *client*; a tab cannot own a session or join the gossip topic. |
+| Mod sync (pull) | A tab has nowhere to install a fetched mod; the gateway refuses `pull`. |
 | Voice | Capture is `cpal`, and the codec is native libopus. |
 | Compiled `.wasm` mods | `crates/plugin` needs a module host a tab does not have. |
 
-The scene is unchanged: `NetBridge` keeps its class and every method, but the
-`wasm32` arm (`crates/godot/src/net_web.rs`) has no transport behind it and
-answers the same "no session" an offline desktop scene gets. `main.gd` creates it
-as it always does.
+The scene is unchanged: `NetBridge` keeps its class and every method. The
+`wasm32` arm (`crates/godot/src/net_web.rs`) puts a `WebSocketPeer` behind it and
+speaks the same JSON lines to `goatsd --gateway`; the page passes the URL with
+`--gateway=` (`?gateway=ws://host:port`, persisted in `localStorage`). Hosting
+answers with an error, and the swarm and voice calls are silent -- the parts a
+file:// tab cannot own yet. The join, chat, poses, world and mod events are the
+same ones a desktop scene gets.
 
 ## Mods in the browser
 
@@ -236,8 +240,9 @@ calls `rl.initWindow` at that size. The wasm cannot read the shell's globals --
 the game script runs in the engine's own JS context, where `Module` is not
 visible -- so argv is the channel. The standalone page (`reference/index.html`)
 keeps the 854x480 column; the shell's canvas gets the stage size. Its mod
-loading, networking and voice are the reference client's own story (`WASM.md`),
-not this shell's.
+loading and voice are the reference client's own story (`WASM.md`); its
+networking goes through the same `goatsd --gateway` WebSocket as the Godot
+client.
 
 ## Serving
 

@@ -418,6 +418,12 @@ func _ready() -> void:
 	# no ticket. `GOATS_SWARM=0` opts out; `swarm leave` does the same for the rest of the
 	# run.
 	bridge.call("set_swarm_auto", OS.get_environment("GOATS_SWARM") != "0")
+	# The browser has no UDP transport; the page passes the WebSocket gateway's URL
+	# on the command line (`--gateway=ws://...`, from `goatsd --gateway`). A desktop
+	# build has none and ignores it.
+	for arg in OS.get_cmdline_args():
+		if arg.begins_with("--gateway="):
+			bridge.call("set_gateway", arg.trim_prefix("--gateway="))
 
 	# Voice (M13b): the bridge carries the session, and this node is the two devices the codec
 	# is missing -- the microphone and the ear (`voice.gd`). Voice is the one module that needs
@@ -1774,6 +1780,11 @@ func _handle(line: String) -> void:
 					_restore_seed()
 				else:
 					_discard_seed()
+				# A refused join (or a gateway error) leaves no session, and the
+				# browser bridge drops its socket so a retry can start cleanly.
+				_joined = false
+				_hosting = false
+				_roster = []
 			console.net_line("net: " + ("error " if String(event.get("type", "")) == "error" else "") \
 				+ String(event.get("text", "")))
 			print(String(event.get("type", "")), ": ", event.get("text"))
@@ -2066,7 +2077,9 @@ func cmd_host(name: String) -> String:
 	# The world-mod digest this host requires of every joiner is its *own* set (`APIv1.md` section
 	# 6.2): `mods.world_mod_refs`, which is empty when no world mod is loaded. Without it a host
 	# could not accept a peer running the same flock it does.
-	bridge.call("host", name, mods.world_mod_refs())
+	var answer: String = String(bridge.call("host", name, mods.world_mod_refs()))
+	if answer.begins_with("error"):
+		return answer
 	_hosting = true
 	_net_name = name
 	return "ok host"
@@ -2086,7 +2099,9 @@ func cmd_join(ticket: String, name: String, pull: bool = false) -> String:
 		_join_name = name
 	# The set is presented at the join, not the ticket: the host compares it with its own and
 	# refuses a mismatch, which is the whole point of the digest (`APIv1.md` section 6.3).
-	bridge.call("join", ticket, asked, mods.world_mod_refs(), pull)
+	var answer: String = String(bridge.call("join", ticket, asked, mods.world_mod_refs(), pull))
+	if answer.begins_with("error"):
+		return answer
 	_net_ticket = ticket
 	_net_name = asked
 	_joined = true

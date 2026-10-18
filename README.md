@@ -184,7 +184,11 @@ ticket.
   version, the connected-client count, the mods this host is running (with their
   versions), and a download link for each of the client and the whole mods set
   (`--download URL` to point the client link elsewhere); without `--listen`, no
-  HTTP server is started.
+  HTTP server is started. `--gateway host:port` adds a WebSocket listener for the
+  browser clients: each socket runs a real session client in `goatsd`, so both
+  wasm builds join exactly as a native client does. The gateway is a *client*
+  path -- hosting, swarm discovery, voice and mod pulling still need a native
+  client or the server itself.
 - **Finding a host**: discovery is on by default. A client joins the default
   gossip topic at startup and announces itself on the local network, so two
   copies of the game on the same LAN find each other with no ticket, no seed and

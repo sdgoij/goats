@@ -520,8 +520,11 @@ The Godot client also runs in a tab: `crates/godot` builds as an Emscripten side
 module, `export_presets.cfg`'s `Web` preset packs it, and the project switches to
 Godot's Compatibility renderer under the `web` feature tag. `WEB.md` is the whole
 of it -- the build script, the flags, what is compiled out and why, and how to
-serve the result. The networking, voice and compiled-mod crates are gated out for
-`wasm32`; the scene itself is unchanged and runs offline.
+serve the result. The networking transport is gated out for `wasm32`, but the
+browser still joins a session: it speaks the native bridge's JSON lines to
+`goatsd --gateway` over a WebSocket (`WEB.md`). Hosting, voice and compiled mods
+remain native; the scene itself is unchanged and runs offline without a
+gateway.
 
 The export is wrapped in `godot/web/index.html`, a dependency-free shell that
 frames the client at a 16:9 stage (YouTube-player sized), carries a client

@@ -111,6 +111,17 @@ function netJoinArgs(parts) {
     };
 }
 
+// The world-mod set this client presents at a join. The native bridge derives it
+// from the loader; a browser gateway has no loader, so the join line carries it.
+// Only loaded, enabled world-side mods count, which is the set the host compares.
+function netWorldMods() {
+    return MODS.filter(function (meta) {
+        return meta.side === "world" && meta.enabled !== false && meta.loaded;
+    }).map(function (meta) {
+        return { id: meta.id, version: meta.version, hash: meta.hash };
+    });
+}
+
 // `--pull` is the player's consent to fetch what the host runs and this client
 // lacks, install it and retry once -- a mod is code, so it is only ever fetched
 // because somebody said so.
@@ -124,7 +135,8 @@ function netJoin(parts) {
         type: "join",
         ticket: args.ticket,
         name: args.name === undefined ? "" : args.name,
-        pull: args.pull
+        pull: args.pull,
+        mods: netWorldMods()
     });
     consoleSystem("net: connecting ..." + (args.pull ? " fetching the host's mods if they differ" : ""));
     return "ok connect";
