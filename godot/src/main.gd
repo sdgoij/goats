@@ -298,8 +298,18 @@ var _previous := {}
 ## is deliberately not a plain timer: `goatsd` publishes half-built worlds while
 ## it loads its scene, and settling on one of those would measure nothing.
 var _settle := -1.0
+## Frames drawn since the shell was told to expect a handshake. The first frame
+## can be the black clear before the scene's materials compile, so the loader is
+## only dropped once there is a picture.
+var _web_ready_frames := 0
 
 func _ready() -> void:
+	# The shell (`web/index.html`) covers the stage with a loader until the
+	# client says its first frames are up. It is installed here, before any of the
+	# early returns below, because an offline scene with no ticket is the normal
+	# way to play and still has to dismiss it.
+	if OS.has_feature("web"):
+		RenderingServer.frame_post_draw.connect(_web_frame_drawn)
 	_set_up_sky()
 	# The devices need the goat they hurt and the meadow a trap has to land in; the
 	# scene's own field is wired the same way (`explosions.js` reads the goat and
@@ -693,6 +703,22 @@ func _process(delta: float) -> void:
 		if _settle >= PROBE_SETTLE:
 			_settle = -99.0
 			_probe_report()
+
+## `frame_post_draw` fires after a whole frame is on screen. Three of them is a
+## handshake that means "there is a picture", not "the loop started": the first
+## frame is often the clear colour while the scene's shaders compile.
+func _web_frame_drawn() -> void:
+	_web_ready_frames += 1
+	if _web_ready_frames < 3:
+		return
+	RenderingServer.frame_post_draw.disconnect(_web_frame_drawn)
+	var bridge: Object = Engine.get_singleton("JavaScriptBridge")
+	if bridge == null:
+		return
+	# A message rather than a callback on the parent's `window`: the shell listens
+	# for `message`, and the same line is harmless when this page is opened alone
+	# (`window.parent` is then this window).
+	bridge.eval("window.parent.postMessage({type:'goats-ready',client:'godot'},'*')", true)
 
 ## What the HUD needs that only the frame knows (`drawHud`'s own arguments). The herd is the
 ## *local* one when there is no session and the mirrored one when there is, which is the same

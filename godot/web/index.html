@@ -84,6 +84,7 @@
         gap: 14px;
       }
       .stage {
+        position: relative;
         width: min(100%, 1120px);
         aspect-ratio: 16 / 9;
         background: #000;
@@ -93,11 +94,80 @@
         box-shadow: 0 18px 60px rgb(0 0 0 / 55%);
       }
       .stage iframe {
+        position: absolute;
+        inset: 0;
         display: block;
         width: 100%;
         height: 100%;
         border: 0;
         background: #000;
+      }
+      /* The click-to-start poster. Nothing is fetched until the player asks
+         for it: the Godot client's 43 MB engine module and the reference
+         client's 20 MB module both compile on the main thread, and loading
+         either before the visitor wants it is what made the page feel
+         blocked. */
+      .poster {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        text-align: center;
+        background:
+          radial-gradient(circle at 50% 35%, rgb(142 192 124 / 12%), transparent 55%),
+          #0b0d10;
+      }
+      .poster-inner { max-width: 460px; }
+      .poster-kicker {
+        display: inline-block;
+        color: var(--accent);
+        font-size: 11px;
+        letter-spacing: 0.26em;
+        text-transform: uppercase;
+      }
+      .poster h1 {
+        margin: 10px 0 18px;
+        font-size: clamp(22px, 3.4vw, 32px);
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .poster .play { padding: 10px 20px; font-size: 15px; }
+      .poster p {
+        margin: 14px 0 0;
+        color: var(--dim);
+        font-size: 12.5px;
+      }
+      /* The loader sits over the frame and takes no pointer events, so a client
+         that is already interactive (the reference one boots straight into its
+         scene) is never blocked by it. The first frame can arrive before the
+         wasm finishes compiling; the client owns the stage after that. */
+      .loader {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: rgb(6 8 10 / 78%);
+        pointer-events: none;
+      }
+      .loader-inner {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: var(--ink);
+        font-size: 13px;
+      }
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid rgb(200 208 218 / 22%);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        .spinner { animation-duration: 2.4s; }
       }
       .stage:fullscreen {
         width: 100vw;
@@ -110,6 +180,8 @@
         background: #000;
       }
       .stage:fullscreen iframe {
+        inset: 0;
+        margin: auto;
         width: min(100vw, calc(100vh * 16 / 9));
         height: min(100vh, calc(100vw * 9 / 16));
       }
@@ -221,9 +293,10 @@
           Client
           <select id="client" aria-label="Client">
             <option value="godot" selected>Godot (WebAssembly)</option>
-            <!-- The reference client's browser build is planned; point its
-                 entry at e.g. "reference/index.html" and drop `disabled`. -->
-            <option value="reference" disabled>Reference (soon)</option>
+            <!-- Enabled by the probe below when `reference/index.html` exists;
+                 a Godot-only package leaves it disabled rather than offering
+                 a 404. -->
+            <option value="reference" disabled>Reference (raylib / WASM)</option>
           </select>
         </label>
         <button id="mods-toggle" aria-expanded="false" aria-controls="mods">Mod editor</button>
@@ -234,12 +307,30 @@
     <main>
       <section id="player" aria-label="Game client">
         <div class="stage" id="stage">
+          <div class="poster" id="poster">
+            <div class="poster-inner">
+              <span class="poster-kicker">Slag Goat</span>
+              <h1>Walk, run, jump, sleep.</h1>
+              <button id="play" class="primary play" type="button">Start Godot client</button>
+              <p id="poster-note">
+                The client loads when you start it. Nothing runs in the background.
+              </p>
+            </div>
+          </div>
+          <!-- No `src` until Start: a wasm module that compiles on the main
+               thread is what made this page feel blocked on arrival. -->
           <iframe
             id="frame"
-            src="client/index.html"
             title="Slag Goat — Godot client"
             allow="autoplay; fullscreen; microphone; gamepad"
+            hidden
           ></iframe>
+          <div class="loader" id="loader" hidden role="status" aria-live="polite">
+            <div class="loader-inner">
+              <span class="spinner" aria-hidden="true"></span>
+              <span id="loader-label">Loading client…</span>
+            </div>
+          </div>
         </div>
         <p class="caption">
           <span id="client-name">Godot client</span>
@@ -293,11 +384,14 @@
     <script>
       // One place to teach the shell about a client. `src` is relative to this
       // page; the Godot export is packaged under client/ (see
-      // godot/tools/package_web.sh), and the reference client will go under
-      // reference/ once its browser build exists.
+      // godot/tools/package_web.sh), and the reference client goes under
+      // reference/ when its browser build exists.
       const CLIENTS = {
         godot: { label: "Godot client", src: "client/index.html" },
-        reference: { label: "Reference client", src: "reference/index.html" },
+        // `?embedded=1` lets the reference page fill the 16:9 stage instead of
+        // presenting its standalone 854px column, and hands its viewport size
+        // to the wasm side so the framebuffer matches the canvas.
+        reference: { label: "Reference client", src: "reference/index.html?embedded=1" },
       };
 
       const frame = document.getElementById("frame");
@@ -305,15 +399,100 @@
       const clientName = document.getElementById("client-name");
       const openTab = document.getElementById("open-tab");
       const stage = document.getElementById("stage");
+      const poster = document.getElementById("poster");
+      const play = document.getElementById("play");
+      const loader = document.getElementById("loader");
+      const loaderLabel = document.getElementById("loader-label");
+      const params = new URLSearchParams(window.location.search);
 
-      select.addEventListener("change", () => {
-        const client = CLIENTS[select.value];
-        if (!client) return;
-        frame.src = client.src;
-        frame.title = "Slag Goat — " + client.label;
+      let started = false;
+      let active = CLIENTS[params.get("client")] ? params.get("client") : "godot";
+      let readyTimer = 0;
+
+      // The poster's label and the caption follow the selected client, whether
+      // or not it has been started.
+      function describe(name) {
+        const client = CLIENTS[name];
         clientName.textContent = client.label;
         openTab.href = client.src;
+        play.textContent = "Start " + client.label;
+      }
+
+      function showLoader(label) {
+        loaderLabel.textContent = label;
+        loader.hidden = false;
+        clearTimeout(readyTimer);
+        // A client that never announces itself (an older export, a failed
+        // load) must not leave the stage covered forever. The overlay takes no
+        // pointer events, so this is a belt-and-braces limit, not a gate.
+        readyTimer = setTimeout(() => { loader.hidden = true; }, 90000);
+      }
+
+      // The only place the iframe gets a `src`. The module is fetched and
+      // compiled now, on the visitor's click, with the loader already painted.
+      function startClient() {
+        const client = CLIENTS[active];
+        started = true;
+        poster.hidden = true;
+        frame.hidden = false;
+        frame.title = "Slag Goat — " + client.label;
+        showLoader("Loading " + client.label.toLowerCase() + "…");
+        frame.src = client.src;
+      }
+
+      // A client posts this once its first frame is on screen (`main.gd` from
+      // `frame_post_draw`, `web/index.html` after the first `goats_frame`).
+      function clientReady(name) {
+        if (name && name !== active) return;
+        clearTimeout(readyTimer);
+        loader.hidden = true;
+        // A click was the gesture; moving the focus into the frame means the
+        // keyboard works without a second click. The reference client still
+        // wants a click on its canvas for pointer lock, which is its own rule.
+        try { frame.contentWindow.focus(); } catch (error) {}
+      }
+
+      window.addEventListener("message", (event) => {
+        if (!frame.contentWindow || event.source !== frame.contentWindow) return;
+        const data = event.data;
+        if (data && data.type === "goats-ready") clientReady(String(data.client || ""));
       });
+
+      // The reference client is a separate build (`web/build.sh client`), staged
+      // by `package_web.sh` under `reference/` when it exists. Probe it once: a
+      // Godot-only package keeps the option disabled instead of loading a 404.
+      const referenceOption = select.querySelector('option[value="reference"]');
+      const autostart = params.get("autostart") === "1";
+      function startIfAsked() {
+        if (autostart && !(active === "reference" && referenceOption.disabled)) {
+          startClient();
+        }
+      }
+      fetch("reference/index.html", { method: "HEAD" })
+        .then((response) => {
+          if (!response.ok) return;
+          referenceOption.disabled = false;
+          if (active !== "godot") select.value = active;
+          startIfAsked();
+        })
+        .catch(() => startIfAsked());
+
+      // Selecting a client before Start only changes what Start will load. Once
+      // something is running, the switch is immediate -- the loader covers the
+      // old frame while the new module compiles.
+      select.addEventListener("change", () => {
+        if (!CLIENTS[select.value]) return;
+        active = select.value;
+        describe(active);
+        if (started) startClient();
+      });
+
+      play.addEventListener("click", startClient);
+      if (active !== "godot") {
+        select.value = active;
+      }
+      describe(active);
+      startIfAsked();
 
       document.getElementById("fullscreen").addEventListener("click", () => {
         if (document.fullscreenElement) document.exitFullscreen();
