@@ -50,28 +50,28 @@ var _ground_measured := false
 static func shot(gait: String) -> bool:
 	return SHOTS.has(gait)
 
-## The role a peer's gait plays, given whether the model has a clip for a role. `has` is a
+## The role a peer's gait plays, given whether the model has a clip for a role. `has_clip` is a
 ## `Callable(role) -> bool` rather than a table because the *fallback chain* is the rule:
 ## `flung` falls to `jump`, and every other miss falls to `walk` -- which is not the herd's
 ## table, and is why this is transcribed rather than shared with `Herd._clip_for`.
-static func role(gait: String, has: Callable) -> String:
-	if gait == "dead" and bool(has.call("death")):
+static func role(gait: String, has_clip: Callable) -> String:
+	if gait == "dead" and bool(has_clip.call("death")):
 		return "death"
-	if gait == "sleep" and bool(has.call("sleep")):
+	if gait == "sleep" and bool(has_clip.call("sleep")):
 		return "sleep"
-	if gait == "eat" and bool(has.call("eat")):
+	if gait == "eat" and bool(has_clip.call("eat")):
 		return "eat"
 	if gait == "flung":
-		return "flung" if bool(has.call("flung")) else "jump"
-	if gait == "jump" and bool(has.call("jump")):
+		return "flung" if bool(has_clip.call("flung")) else "jump"
+	if gait == "jump" and bool(has_clip.call("jump")):
 		return "jump"
-	if gait == "run" and bool(has.call("run")):
+	if gait == "run" and bool(has_clip.call("run")):
 		return "run"
-	if gait == "trot" and bool(has.call("trot")):
+	if gait == "trot" and bool(has_clip.call("trot")):
 		return "trot"
-	if gait == "walk" and bool(has.call("walk")):
+	if gait == "walk" and bool(has_clip.call("walk")):
 		return "walk"
-	if bool(has.call("idle")):
+	if bool(has_clip.call("idle")):
 		return "idle"
 	return "walk"
 
@@ -105,8 +105,8 @@ static func step_phase(phase: float, target: float, once: bool, k: float) -> flo
 ## The first snapshot a name ever sends **places** the goat rather than starting it at the
 ## origin, which is the client's own rule and the reason a joiner does not see everybody slide
 ## in from the middle of the map.
-func apply(name: String, state: Variant) -> bool:
-	if name.is_empty() or not (state is Dictionary):
+func apply(peer_name: String, state: Variant) -> bool:
+	if peer_name.is_empty() or not (state is Dictionary):
 		return false
 	var wire: Dictionary = state
 	if not wire.has("x"):
@@ -120,8 +120,8 @@ func apply(name: String, state: Variant) -> bool:
 	var lift: float = maxf(float(wire.get("py", 0.0)), 0.0)
 	var once: bool = shot(gait)
 
-	if not _goats.has(name):
-		var fresh: Dictionary = _goat_for(name)
+	if not _goats.has(peer_name):
+		var fresh: Dictionary = _goat_for(peer_name)
 		fresh["x"] = x
 		fresh["z"] = z
 		fresh["yaw"] = yaw
@@ -136,7 +136,7 @@ func apply(name: String, state: Variant) -> bool:
 		_place(fresh)
 		return true
 
-	var goat: Dictionary = _goats[name]
+	var goat: Dictionary = _goats[peer_name]
 	# A one-shot is stepped straight from the snapshot rather than eased into, and *entering*
 	# or *leaving* one snaps too -- hence the test against the previous gait and not only the
 	# new one.
@@ -154,11 +154,11 @@ func apply(name: String, state: Variant) -> bool:
 ## A peer left the session (`net.js` `netPeerRemove`). Leaving is the only thing that removes
 ## one: a snapshot that stops arriving leaves a goat standing, which is also what the client
 ## does, and is better than a herd that blinks.
-func remove(name: String) -> void:
-	if not _goats.has(name):
+func remove(peer_name: String) -> void:
+	if not _goats.has(peer_name):
 		return
-	(_goats[name]["node"] as Node3D).queue_free()
-	_goats.erase(name)
+	(_goats[peer_name]["node"] as Node3D).queue_free()
+	_goats.erase(peer_name)
 
 func _process(delta: float) -> void:
 	if _goats.is_empty():
@@ -181,8 +181,8 @@ func count() -> int:
 func ground_offset() -> float:
 	return _ground_offset
 
-func has(name: String) -> bool:
-	return _goats.has(name)
+func has(peer_name: String) -> bool:
+	return _goats.has(peer_name)
 
 ## The names being mirrored, in the order they arrived.
 func names() -> Array:
@@ -191,10 +191,10 @@ func names() -> Array:
 ## One line per peer, for a probe or a log.
 func describe() -> Array:
 	var lines: Array = []
-	for name in _goats:
-		var goat: Dictionary = _goats[name]
+	for peer_name in _goats:
+		var goat: Dictionary = _goats[peer_name]
 		lines.append("  peer %s  at %s  ->  %s  %s" % [
-			name,
+			peer_name,
 			(goat["node"] as Node3D).position,
 			Vector3(float(goat["tx"]), 0.0, float(goat["tz"])),
 			goat["clip"],
@@ -204,10 +204,10 @@ func describe() -> Array:
 ## One peer's own numbers, read out rather than reached into: where it is drawn, where it is
 ## going, the gait, both phases and the clip it settled on. A probe prints it and a case asserts
 ## it, and neither should have to know the dictionary's shape.
-func report_of(name: String) -> Dictionary:
-	if not _goats.has(name):
+func report_of(peer_name: String) -> Dictionary:
+	if not _goats.has(peer_name):
 		return {}
-	var goat: Dictionary = _goats[name]
+	var goat: Dictionary = _goats[peer_name]
 	return {
 		"x": float(goat["x"]),
 		"z": float(goat["z"]),
@@ -231,9 +231,9 @@ func worst_gap() -> float:
 		worst = maxf(worst, node.position.distance_to(target))
 	return worst
 
-func _goat_for(name: String) -> Dictionary:
-	if _goats.has(name):
-		return _goats[name]
+func _goat_for(peer_name: String) -> Dictionary:
+	if _goats.has(peer_name):
+		return _goats[peer_name]
 	var node: Node3D = GOAT_SCENE.instantiate()
 	add_child(node)
 	if not _ground_measured:
@@ -254,7 +254,7 @@ func _goat_for(name: String) -> Dictionary:
 		"gait": "idle",
 		"shot": false,
 	}
-	_goats[name] = goat
+	_goats[peer_name] = goat
 	return goat
 
 ## Put the goat where its eased numbers say, and pose it. The client's own placement

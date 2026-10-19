@@ -93,10 +93,10 @@ static func cell_exists(cx: int, cz: int) -> bool:
 ## it is the position the grass draws and the position a goat walks to.
 ##
 ## Two plain numbers and not a `Vector2` -- see the header on what that cost.
-static func tuft_x(cx: int, cz: int, bits: Vector3i) -> float:
+static func tuft_x(cx: int, _cz: int, bits: Vector3i) -> float:
 	return cx * Terrain.CELL + (unit(bits.y) - 0.5) * 1.8
 
-static func tuft_z(cx: int, cz: int, bits: Vector3i) -> float:
+static func tuft_z(_cx: int, cz: int, bits: Vector3i) -> float:
 	return cz * Terrain.CELL + (unit(bits.x) - 0.5) * 1.8
 
 ## A cell's identity as one number, unique for the cell range the field spans.
@@ -106,6 +106,7 @@ static func key(cx: int, cz: int) -> int:
 
 ## The cell a key names, as `(cx, cz)`. `food.js` `tuftCell`, the inverse of `key`.
 static func cell_of(key_value: int) -> Vector2i:
+	@warning_ignore("integer_division")
 	return Vector2i(key_value / 8192 - 4096, key_value % 8192 - 4096)
 
 ## The cell a world position is in.
@@ -207,8 +208,8 @@ func wire() -> Array:
 ## first, the bots second and the **food** third, which is `foodRngState`). Only a *host* owns the
 ## meadow -- a client mirrors the host's countdown -- so this matters to a host and to nothing
 ## else; it is here so a host's regrowth matches the scene's rather than happening to.
-func use_seed(seed: int) -> void:
-	var state: int = _i32(seed)
+func use_seed(world_seed: int) -> void:
+	var state: int = _i32(world_seed)
 	if state == 0:
 		state = 1
 	var value: int = 1

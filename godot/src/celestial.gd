@@ -98,7 +98,7 @@ func _ready() -> void:
 ## Where a body is and how opaque it is, from the sun's own direction and which end of
 ## the line it sits on (`side` 1 is the sun, -1 the moon). `world.js`
 ## `celestialPlacement`, verbatim.
-static func placement(side: float, cover: float, sun_dir: Vector3, px: float,
+static func placement(side: float, coverage: float, sun_dir: Vector3, px: float,
 		pz: float) -> Dictionary:
 	var up: float = sun_dir.y * side
 	var fade: float = 0.0
@@ -109,7 +109,7 @@ static func placement(side: float, cover: float, sun_dir: Vector3, px: float,
 		"y": up * R,
 		"z": pz + sun_dir.z * side * R,
 		"elevation": up,
-		"alpha": round(255.0 * cover * fade),
+		"alpha": round(255.0 * coverage * fade),
 	}
 
 ## What the weather takes off a body, 0..1: a disc glows dimmer through a gap than it

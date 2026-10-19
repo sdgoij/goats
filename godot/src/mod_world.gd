@@ -159,8 +159,8 @@ func _place(node: Node3D, command: Dictionary) -> void:
 		_place_oriented(node, command)
 		return
 	node.rotation = Vector3(0.0, float(command.get("yaw", 0.0)), 0.0)
-	var scale: float = float(command.get("scale", 1.0))
-	node.scale = Vector3(scale, scale, scale)
+	var scale_factor: float = float(command.get("scale", 1.0))
+	node.scale = Vector3(scale_factor, scale_factor, scale_factor)
 	_apply_tint(node, _color(command.get("tint", null)))
 
 ## A `mesh` record's placement: a mod's own geometry *or* a model, oriented the same way.
@@ -176,14 +176,14 @@ func _place_oriented(node: Node3D, command: Dictionary) -> void:
 		if String(_meta(mesh, "mod_mesh", "")) != handle:
 			mesh.mesh = _mesh_for(handle)
 			mesh.set_meta("mod_mesh", handle)
-	var scale: float = float(command.get("scale", 1.0))
+	var scale_factor: float = float(command.get("scale", 1.0))
 	var axis := Vector3(float(command.get("ax", 0.0)), float(command.get("ay", 1.0)),
 		float(command.get("az", 0.0)))
 	if axis.length_squared() < 1e-12:
 		# A degenerate axis is one the mod did not mean: the up axis is the yaw case.
 		axis = Vector3.UP
 	node.basis = Basis(axis.normalized(), float(command.get("angle", 0.0))) \
-		.scaled(Vector3(scale, scale, scale))
+		.scaled(Vector3(scale_factor, scale_factor, scale_factor))
 	# A mesh's material is the extension's (its per-vertex colours and its bound texture); an
 	# imported model carries its own, and only the tint is ours.
 	if node is MeshInstance3D:
@@ -262,53 +262,53 @@ static func _tinted(source: Material, tint: Color) -> StandardMaterial3D:
 ## game's own files under `res://assets/` (`goats.assets.get("model.goat")`), which this build loads
 ## itself. Nothing here is reachable by a mod as a path (`APIv1.md` section 0) -- a mod only ever
 ## holds the name it was handed.
-func _model_scene(name: String) -> PackedScene:
-	if _models.has(name):
-		return _models[name]
+func _model_scene(asset_name: String) -> PackedScene:
+	if _models.has(asset_name):
+		return _models[asset_name]
 	var packed: PackedScene = null
-	if not name.is_empty():
-		if name.begins_with("mod:"):
-			packed = _imported_scene(name)
+	if not asset_name.is_empty():
+		if asset_name.begins_with("mod:"):
+			packed = _imported_scene(asset_name)
 		else:
-			packed = _built_in_scene(name)
-	_models[name] = packed
+			packed = _built_in_scene(asset_name)
+	_models[asset_name] = packed
 	return packed
 
 ## A mod's own asset, imported at runtime from the bytes the host kept.
-func _imported_scene(name: String) -> PackedScene:
+func _imported_scene(asset_name: String) -> PackedScene:
 	var packed: PackedScene = null
 	if host == null:
 		return null
-	var bytes: PackedByteArray = host.call("asset_bytes", name)
+	var bytes: PackedByteArray = host.call("asset_bytes", asset_name)
 	if bytes.is_empty():
-		print("mod: no asset named ", name)
+		print("mod: no asset named ", asset_name)
 		return null
 	var document := GLTFDocument.new()
 	var state := GLTFState.new()
 	if document.append_from_buffer(bytes, "", state) != OK:
-		print("mod: ", name, " is not a glTF this build can read")
+		print("mod: ", asset_name, " is not a glTF this build can read")
 		return null
 	var scene: Node = document.generate_scene(state)
 	if scene == null:
-		print("mod: ", name, " imported to nothing")
+		print("mod: ", asset_name, " imported to nothing")
 		return null
 	packed = PackedScene.new()
 	if packed.pack(scene) != OK:
 		packed = null
-		print("mod: ", name, " would not pack")
+		print("mod: ", asset_name, " would not pack")
 	scene.free()
 	return packed
 
 ## One of the game's own files, by the logical name a built-in slot holds.
-func _built_in_scene(name: String) -> PackedScene:
-	var path: String = Audio.ASSET_ROOT + name
+func _built_in_scene(asset_name: String) -> PackedScene:
+	var path: String = Audio.ASSET_ROOT + asset_name
 	if not ResourceLoader.exists(path):
-		print("mod: no built-in asset named ", name)
+		print("mod: no built-in asset named ", asset_name)
 		return null
 	var loaded: Variant = ResourceLoader.load(path)
 	if loaded is PackedScene:
 		return loaded
-	print("mod: ", name, " is not a scene this build can instance")
+	print("mod: ", asset_name, " is not a scene this build can instance")
 	return null
 
 ## A node's own metadata, or `default` when it has none. `Object.get_meta` reports an error for
@@ -373,6 +373,7 @@ func _build_mesh(data: Dictionary) -> ArrayMesh:
 	if vertices.size() < 9 or vertices.size() % 3 != 0:
 		print("mod: a mesh the mod built has no usable vertices")
 		return null
+	@warning_ignore("integer_division")
 	var count: int = vertices.size() / 3
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -410,6 +411,7 @@ func _build_mesh(data: Dictionary) -> ArrayMesh:
 ## vertices dropped -- a mod's own bug should cost its own shape and not the whole frame.
 static func _triangles(indices: Array, count: int) -> PackedInt32Array:
 	var out := PackedInt32Array()
+	@warning_ignore("integer_division")
 	for at in range(0, (indices.size() / 3) * 3, 3):
 		var a: int = int(indices[at])
 		var b: int = int(indices[at + 1])
@@ -460,14 +462,18 @@ func _build_texture(data: Dictionary) -> Texture2D:
 ## bytes a colour -- and these three are the whole of the conversion.
 static func _vec3s(flat: Array) -> PackedVector3Array:
 	var out := PackedVector3Array()
+	@warning_ignore("integer_division")
 	out.resize(flat.size() / 3)
+	@warning_ignore("integer_division")
 	for at in flat.size() / 3:
 		out[at] = Vector3(float(flat[at * 3]), float(flat[at * 3 + 1]), float(flat[at * 3 + 2]))
 	return out
 
 static func _vec2s(flat: Array) -> PackedVector2Array:
 	var out := PackedVector2Array()
+	@warning_ignore("integer_division")
 	out.resize(flat.size() / 2)
+	@warning_ignore("integer_division")
 	for at in flat.size() / 2:
 		out[at] = Vector2(float(flat[at * 2]), float(flat[at * 2 + 1]))
 	return out

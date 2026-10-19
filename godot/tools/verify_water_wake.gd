@@ -545,13 +545,13 @@ func _initialize() -> void:
 		var frame: Dictionary = tape[index]
 		var level: float = float(frame["level"])
 		var actors: Array = frame["actors"]
-		var flat := PackedFloat64Array()
+		var actor_values := PackedFloat64Array()
 		for value: float in actors:
-			flat.append(value)
+			actor_values.append(value)
 		water.set_force(level)
 		if level < lowest:
 			dry_frames += 1
-		water.wake_step(DT, flat)
+		water.wake_step(DT, actor_values)
 		thrown = water.thrown
 		rings_laid = maxi(rings_laid, water.ripples_live())
 		if index >= oracle_frames.size():
@@ -675,12 +675,14 @@ func _initialize() -> void:
 			float(case["sway"]), float(case["wind"]), eaten, cull)
 		var culled: int = water.culled
 		culled_total += culled
-		kept_total += mine.size() / Grass.STRIDE
+		@warning_ignore("integer_division")
+		var kept: int = mine.size() / Grass.STRIDE
+		kept_total += kept
 		var parsed: int = 0
 		if oracle_tufts.has(index):
 			parsed = (oracle_tufts[index] as Array).size()
 		print("  case %d: scene %s, port %d tuft(s) / %d culled, %d oracle line(s)"
-			% [index, str(oracle_counts.get(index, "none")), mine.size() / Grass.STRIDE,
+			% [index, str(oracle_counts.get(index, "none")), kept,
 				culled, parsed])
 		var counts: Variant = oracle_counts.get(index, null)
 		if not (counts is Array):
@@ -690,11 +692,11 @@ func _initialize() -> void:
 			continue
 		var wanted_count: int = int((counts as Array)[0])
 		var wanted_culled: int = int((counts as Array)[1])
-		if wanted_count != mine.size() / Grass.STRIDE or wanted_culled != culled:
+		if wanted_count != kept or wanted_culled != culled:
 			grass_mismatches += 1
 			if first_grass == "":
 				first_grass = "case %d: scene %d tuft(s) / %d culled, port %d / %d" % [
-					index, wanted_count, wanted_culled, mine.size() / Grass.STRIDE, culled]
+					index, wanted_count, wanted_culled, kept, culled]
 		# A case that keeps *nothing* prints no `T` line at all, so its key is simply absent
 		# -- a legitimate zero, not a short answer. The `C` line above it is the count, and a
 		# case whose count is zero has no rows to compare either way.
@@ -705,6 +707,7 @@ func _initialize() -> void:
 				first_grass = "case %d: the oracle answered fewer tuft(s) than it counted" % index
 			continue
 		for k in wanted_count * Grass.STRIDE:
+			@warning_ignore("integer_division")
 			var wanted: float = float((tufts as Array)[k / Grass.STRIDE][k % Grass.STRIDE])
 			if absf(mine[k] - wanted) > TOLERANCE:
 				grass_mismatches += 1

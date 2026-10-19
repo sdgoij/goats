@@ -84,8 +84,8 @@ func set_reflection(tier: int, mirror: Texture2D) -> void:
 	_material.set_shader_parameter("water_mirror", mirror)
 
 ## Build the surface over the terrain grid's own heights, at the grid's anchor.
-func build(heights: PackedFloat64Array, anchor: Vector2) -> void:
-	_anchor = anchor
+func build(heights: PackedFloat64Array, grid_anchor: Vector2) -> void:
+	_anchor = grid_anchor
 	var count: int = N * N
 	if heights.size() != count:
 		return
@@ -93,8 +93,8 @@ func build(heights: PackedFloat64Array, anchor: Vector2) -> void:
 	var norms := PackedVector3Array()
 	verts.resize(count)
 	norms.resize(count)
-	var x0: float = anchor.x - Water.HALF
-	var z0: float = anchor.y - Water.HALF
+	var x0: float = grid_anchor.x - Water.HALF
+	var z0: float = grid_anchor.y - Water.HALF
 	for j in N:
 		var wz: float = z0 + j * Water.CELL
 		var row: int = j * N
@@ -129,6 +129,7 @@ func build(heights: PackedFloat64Array, anchor: Vector2) -> void:
 			indices[t + 5] = c
 			t += 6
 	indices.resize(t)
+	@warning_ignore("integer_division")
 	quads = t / 6
 
 	var arrays := []

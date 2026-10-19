@@ -81,8 +81,8 @@ func _init() -> void:
 
 ## Take the weather stream from the session seed. `weather.js` `sceneUseSeed` draws
 ## this first of the four streams.
-func use_seed(seed: int) -> void:
-	var s: int = _i32(seed)
+func use_seed(stream_seed: int) -> void:
+	var s: int = _i32(stream_seed)
 	if s == 0:
 		s = 1
 	rng = _step(s)
@@ -106,8 +106,8 @@ func update(delta: float) -> void:
 	if timer <= 0.0:
 		var options: Array = NEXT[kind]
 		kind = String(options[int(floor(rnd() * float(options.size()))) % options.size()])
-		var hold: Array = HOLD[kind]
-		timer = float(hold[0]) + rnd() * (float(hold[1]) - float(hold[0]))
+		var window: Array = HOLD[kind]
+		timer = float(window[0]) + rnd() * (float(window[1]) - float(window[0]))
 	var target: Dictionary = STATES[kind]
 	var k: float = minf(1.0, delta * EASE)
 	cloudiness += (float(target["cloud"]) - cloudiness) * k

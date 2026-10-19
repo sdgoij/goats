@@ -169,9 +169,9 @@ func _child(index: int) -> Node3D:
 	return _world.get_child(index) as Node3D
 
 ## How many `MeshInstance3D`s an instance holds, at any depth: an imported glTF scene is a tree.
-func _mesh_count(root: Node) -> int:
+func _mesh_count(subtree: Node) -> int:
 	var count := 0
-	var stack: Array = [root]
+	var stack: Array = [subtree]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
 		for child in node.get_children():

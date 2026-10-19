@@ -63,12 +63,12 @@ func _initialize() -> void:
 		return
 	var swarm: Dictionary = JSON.parse_string(joined)
 	var topic: String = String(swarm["topic"])
-	var seed: String = String(swarm["ticket"])
-	print("topic: ", topic.substr(0, 16), "...  seed: ", seed.substr(0, 16), "...")
+	var swarm_seed: String = String(swarm["ticket"])
+	print("topic: ", topic.substr(0, 16), "...  seed: ", swarm_seed.substr(0, 16), "...")
 
 	# 2. The player joins the same topic, seeded by the host. Joining is listen-only
 	#    until someone else is on the topic, which is why the seed is not optional here.
-	print("player join -> ", _player.call("swarm_join", topic, seed))
+	print("player join -> ", _player.call("swarm_join", topic, swarm_seed))
 	var player_joined: String = _wait(_player, ["\"type\":\"swarm\"", "\"joined\":true"], 60000)
 	if player_joined.is_empty():
 		failures.append("the second bridge never joined the host's topic")

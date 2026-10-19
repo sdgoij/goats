@@ -140,9 +140,9 @@ static func placement(ticket: String) -> Dictionary:
 
 ## The nearest few hosts, in distance order. A swarm may list hundreds; the meadow only
 ## has to show the ones a player could walk to.
-static func nearest(hosts: Array, px: float, pz: float) -> Array:
+static func nearest(host_list: Array, px: float, pz: float) -> Array:
 	var list: Array = []
-	for host: Variant in hosts:
+	for host: Variant in host_list:
 		if not (host is Dictionary):
 			continue
 		var place: Dictionary = placement(String(host.get("ticket", "")))
@@ -191,9 +191,9 @@ func _place_ring(place: Dictionary, index: int) -> int:
 			float(place["x"]) + float(place["tangentX"]) * along,
 			base + MIDDLE + up,
 			float(place["z"]) + float(place["tangentZ"]) * along)
-		var transform := Transform3D(Basis(), bead)
-		_haze.set_instance_transform(index, transform)
-		_glow.set_instance_transform(index, transform)
+		var xform := Transform3D(Basis(), bead)
+		_haze.set_instance_transform(index, xform)
+		_glow.set_instance_transform(index, xform)
 		index += 1
 	return index
 

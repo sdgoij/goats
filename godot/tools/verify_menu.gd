@@ -621,7 +621,7 @@ func _check_clicks() -> void:
 
 	# A click on the panel's own background is not a click on anything.
 	menu.show_screen("main")
-	var before: int = menu.settings.bgm
+	var before: int = int(menu.settings.bgm)
 	menu._press(Vector2(20.0, 20.0), size)
 	if menu.screen != "main" or menu.settings.bgm != before:
 		mismatches += 1

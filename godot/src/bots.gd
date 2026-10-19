@@ -223,10 +223,10 @@ func set_lit(on: bool) -> void:
 ## null access. The reference agrees, incidentally: there `setHerdSize` on a client resizes the
 ## flock it *mirrors* and the next snapshot puts it back, so the slider does not stick there
 ## either -- which is why refusing here is the outcome and not a hole.
-func set_herd_size(count: int) -> void:
+func set_herd_size(wanted_count: int) -> void:
 	if goat == null:
 		return
-	var want: int = clampi(int(round(float(count))), 0, MAX_HERD)
+	var want: int = clampi(int(round(float(wanted_count))), 0, MAX_HERD)
 	while _bots.size() > want:
 		var leaving: Bot = _bots.pop_back()
 		if leaving.node != null:
@@ -324,16 +324,16 @@ func use_stream(value: int) -> void:
 ## weather first and the bots second, so this is the *second* draw -- the same shape
 ## `explosions.gd` uses for the fifth (`trapSalt`), and only reachable in a session the
 ## scene is *hosting*, which today it never is. It is here so a host and a peer agree.
-func use_seed(seed: int) -> void:
-	var state: int = _i32(seed)
-	if state == 0:
-		state = 1
+func use_seed(source_seed: int) -> void:
+	var rng_state: int = _i32(source_seed)
+	if rng_state == 0:
+		rng_state = 1
 	var value: int = 1
 	for draw in 2:
-		state = _step(state)
-		if state == 0:
-			state = 1
-		value = state
+		rng_state = _step(rng_state)
+		if rng_state == 0:
+			rng_state = 1
+		value = rng_state
 	_rng = value
 
 ## Add an archetype to the herd's pool, which is `mods.js` `modBotRegister`'s own
@@ -366,6 +366,7 @@ func register(spec: Dictionary) -> int:
 ## looks oversized rather than think it is a bug (`bots.js` says the same of its `botSpec`).
 func spec_of(index: int) -> Dictionary:
 	var base: Dictionary = SPEC[index % SPEC.size()]
+	@warning_ignore("integer_division")
 	var cycle: int = index / SPEC.size()
 	if cycle == 0:
 		return base
@@ -986,11 +987,11 @@ func _collide_pairs(px: float, pz: float, radius: float, player_radius: float) -
 func _place(bot: Bot) -> void:
 	if bot.node == null:
 		return
-	var scale: float = float(bot.spec["scale"])
-	var y: float = Terrain.height_at(bot.x, bot.z) + _ground_offset * scale + bot.py
+	var body_scale: float = float(bot.spec["scale"])
+	var y: float = Terrain.height_at(bot.x, bot.z) + _ground_offset * body_scale + bot.py
 	bot.node.position = Vector3(bot.x, y, bot.z)
 	bot.node.rotation = Vector3(0.0, bot.yaw, 0.0)
-	bot.node.scale = Vector3(scale, scale, scale)
+	bot.node.scale = Vector3(body_scale, body_scale, body_scale)
 	var role: String = bot_role(bot)
 	var pose: float = bot.phase
 	if bot.mode == "jump":
@@ -1064,8 +1065,8 @@ func _measure(node: Node3D) -> void:
 		_durations[role] = PackedFloat64Array()
 	if anim == null:
 		return
-	for name in anim.get_animation_list():
-		var text: String = String(name)
+	for anim_name in anim.get_animation_list():
+		var text: String = String(anim_name)
 		for role in ROLES:
 			# The model's names are `GoatIdle`, `GoatIdle2`, `GoatDeath`, ... so the role
 			# is `Goat` plus the role's own capitalised name. `eat` needs no special case
@@ -1139,8 +1140,8 @@ static func _ushr(value: int, bits: int) -> int:
 
 ## One xorshift32 step, the three lines `bots.js`'s `botRnd` and `sceneUseSeed` run. The
 ## state comes back unsigned, which is what makes `bot_rnd`'s division land in `[0, 1)`.
-static func _step(state: int) -> int:
-	var s: int = _ushr(state, 0)
+static func _step(word: int) -> int:
+	var s: int = _ushr(word, 0)
 	s = _ushr(s ^ _i32(s << 13), 0)
 	s = _ushr(s ^ _ushr(s, 17), 0)
 	s = _ushr(s ^ _i32(s << 5), 0)

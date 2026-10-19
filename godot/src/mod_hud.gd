@@ -61,12 +61,12 @@ func _paint(command: Dictionary) -> void:
 	var col: Color = _color(command.get("col", null))
 	match String(command.get("k", "")):
 		"text":
-			var size: int = int(command.get("size", 20.0))
+			var font_size: int = int(command.get("size", 20.0))
 			var font: Font = get_theme_default_font()
 			# The API's `y` is the top of the line; Godot's baseline is what it draws from.
-			var baseline: float = at.y + font.get_ascent(size)
+			var baseline: float = at.y + font.get_ascent(font_size)
 			draw_string(font, Vector2(at.x, baseline), String(command.get("s", "")),
-				HORIZONTAL_ALIGNMENT_LEFT, -1.0, size, col)
+				HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size, col)
 		"rect":
 			draw_rect(Rect2(at, _size(command)), col)
 		"rectLines":

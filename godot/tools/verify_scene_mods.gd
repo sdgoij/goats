@@ -384,9 +384,9 @@ func _check_drawn(world: Object) -> void:
 			% [worst, TAU])
 
 ## How many `MeshInstance3D` nodes an instance carries, at any depth. An imported model is a tree.
-func _meshes_under(root: Node) -> int:
+func _meshes_under(subtree: Node) -> int:
 	var count := 0
-	var stack: Array = [root]
+	var stack: Array = [subtree]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
 		for child in node.get_children():
@@ -397,9 +397,9 @@ func _meshes_under(root: Node) -> int:
 
 ## The albedo of every surface an instance's meshes have been tinted with, which is where
 ## `mod_world.gd`'s `_apply_tint` puts it (one override per surface).
-func _surface_colours(root: Node) -> Array[Color]:
+func _surface_colours(subtree: Node) -> Array[Color]:
 	var out: Array[Color] = []
-	var stack: Array = [root]
+	var stack: Array = [subtree]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
 		for child in node.get_children():

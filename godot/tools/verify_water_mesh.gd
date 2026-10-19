@@ -117,6 +117,7 @@ func _initialize() -> void:
 	var present := {}
 	for t in range(0, idx.size(), 6):
 		var a: int = idx[t]
+		@warning_ignore("integer_division")
 		present[(a / Water.N) * Terrain.QUADS + (a % Water.N)] = true
 	var mine := ""
 	for q in Terrain.QUADS * Terrain.QUADS:
@@ -130,6 +131,7 @@ func _initialize() -> void:
 		if q >= wanted_kept.length():
 			break
 		var i: int = q % Terrain.QUADS
+		@warning_ignore("integer_division")
 		var j: int = q / Terrain.QUADS
 		var corner: int = j * Water.N + i
 		var lowest: float = minf(
@@ -198,7 +200,7 @@ func _initialize() -> void:
 		pushed = (surface.material_override as ShaderMaterial).get_shader_parameter("water_level")
 	print("level: pushed -0.5, read back %s" % str(pushed))
 
-	var kept: int = surface.quads
+	var _kept: int = surface.quads
 	surface.free()
 	grid.free()
 

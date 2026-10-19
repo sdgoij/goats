@@ -66,16 +66,16 @@ static func toggle_word(current: bool, arg: String) -> bool:
 ## `drawHud`'s `lightingText`: `lit + shadow map`, `lit + planar shadow` or `lit`, a function of
 ## the shadow mode alone -- the scene reads it back off the same switch it just used. The planar
 ## word is kept because it is the scene's own text; the port has no leaf that can hold it.
-static func lighting_word(shadow: String) -> String:
-	if shadow == "map":
+static func lighting_word(shadow_mode: String) -> String:
+	if shadow_mode == "map":
 		return "lit + shadow map"
-	if shadow == "planar":
+	if shadow_mode == "planar":
 		return "lit + planar shadow"
 	return "lit"
 
 ## `drawHud`'s sky word: `shader` while the sky program runs and `billboards` otherwise.
-static func sky_word_for(sky: bool) -> String:
-	return "shader" if sky else "billboards"
+static func sky_word_for(sky_on: bool) -> String:
+	return "shader" if sky_on else "billboards"
 
 ## A word's index in a combo's table, or `-1` for one the scene does not know -- which `ctl.js`
 ## answers with an error.

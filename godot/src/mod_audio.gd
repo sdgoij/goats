@@ -51,8 +51,8 @@ var _next := 0
 func prepare() -> void:
 	if host == null:
 		return
-	for name in host.call("asset_names"):
-		var token: String = String(name)
+	for asset_name in host.call("asset_names"):
+		var token: String = String(asset_name)
 		if _decodable(token):
 			_decode(token)
 
@@ -63,26 +63,26 @@ func prepare() -> void:
 ## One thing is loaded here rather than in `prepare`, and it is safe because it touches no host: a
 ## **built-in** slot's value is one of the game's own files under `res://assets/`, and `res://` is
 ## this process's own (a mod's bytes are the host's, and only those need the safe moment).
-func stream(name: String) -> AudioStream:
-	if _streams.has(name):
-		return _streams[name]
-	if name.begins_with("mod:"):
+func stream(sound_name: String) -> AudioStream:
+	if _streams.has(sound_name):
+		return _streams[sound_name]
+	if sound_name.begins_with("mod:"):
 		return null
 	var built: AudioStream = null
-	var path: String = Audio.ASSET_ROOT + name
+	var path: String = Audio.ASSET_ROOT + sound_name
 	if ResourceLoader.exists(path):
 		var loaded: Variant = ResourceLoader.load(path)
 		if loaded is AudioStream:
 			built = loaded
-	_streams[name] = built
+	_streams[sound_name] = built
 	return built
 
 ## Play a sound, `volume` in 0..1 and `pitch` a rate multiplier (`APIv1.md` section 4.20). A mod
 ## that wants attenuation computes it itself and passes the result, which is what the two examples
 ## already do -- a bird's squawk is quieter the further the goat is.
-func play(name: String, volume: float, pitch: float) -> bool:
+func play(sound_name: String, volume: float, pitch: float) -> bool:
 	plays += 1
-	var sound: AudioStream = stream(name)
+	var sound: AudioStream = stream(sound_name)
 	if sound == null:
 		return false
 	var player: AudioStreamPlayer = _player()
@@ -97,25 +97,25 @@ func play(name: String, volume: float, pitch: float) -> bool:
 
 ## Whether a declared asset's name is one this build has a decoder for, read off the extension the
 ## opaque name deliberately ends in.
-static func _decodable(name: String) -> bool:
-	return name.get_extension().to_lower() in ["mp3", "wav", "ogg"]
+static func _decodable(sound_name: String) -> bool:
+	return sound_name.get_extension().to_lower() in ["mp3", "wav", "ogg"]
 
 ## Build and remember one stream. A name that fails is remembered as a `null` too, so a bad sound
 ## is reported once rather than once per boot-time pass.
-func _decode(name: String) -> void:
+func _decode(sound_name: String) -> void:
 	var built: AudioStream = null
-	var bytes: PackedByteArray = host.call("asset_bytes", name)
+	var bytes: PackedByteArray = host.call("asset_bytes", sound_name)
 	if bytes.is_empty():
-		print("mod: no bytes for the sound ", name)
+		print("mod: no bytes for the sound ", sound_name)
 	else:
-		match name.get_extension().to_lower():
+		match sound_name.get_extension().to_lower():
 			"mp3":
 				built = AudioStreamMP3.load_from_buffer(bytes)
 			"wav":
 				built = AudioStreamWAV.load_from_buffer(bytes)
 			"ogg":
 				built = AudioStreamOggVorbis.load_from_buffer(bytes)
-	_streams[name] = built
+	_streams[sound_name] = built
 
 ## A player to use: one that is idle, or the oldest when they are all busy. Built on the first
 ## play, because a mod that never sounds anything costs nothing.

@@ -82,7 +82,7 @@ func _process(delta: float) -> bool:
 ## One key, held or released, through the same path a real keyboard uses.
 func _key(code: int, down: bool) -> void:
 	var event := InputEventKey.new()
-	event.physical_keycode = code
+	event.physical_keycode = code as Key
 	event.pressed = down
 	Input.parse_input_event(event)
 

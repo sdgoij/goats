@@ -25,10 +25,10 @@ func _process(_delta: float) -> bool:
 	if _frames == 1:
 		# Pin the clock and the cloud cover so the assertions below are exact rather
 		# than a moving target. `_forced_hour` is the scene's own staging knob.
-		var main: Node = root.get_node("Game")
-		main.set("_forced_hour", 12.0)
-		main.set("_hours", 12.0)
-		main.set("_forced_cloud", 1.0)
+		var game: Node = root.get_node("Game")
+		game.set("_forced_hour", 12.0)
+		game.set("_hours", 12.0)
+		game.set("_forced_cloud", 1.0)
 		return false
 	if _frames < FRAMES:
 		return false

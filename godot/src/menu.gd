@@ -198,17 +198,17 @@ func _draw() -> void:
 ## The click, on the widget under it. `menu.js`'s `rl.guiButton`/`guiToggle`/`guiComboBox` return
 ## their result here, one call at a time.
 func _gui_input(event: InputEvent) -> void:
-	var size: Vector2 = get_viewport_rect().size
+	var view_size: Vector2 = get_viewport_rect().size
 	if event is InputEventMouseButton:
 		var button := event as InputEventMouseButton
 		if button.button_index != MOUSE_BUTTON_LEFT:
 			return
 		if button.pressed:
-			_press(button.position, size)
+			_press(button.position, view_size)
 		else:
 			_dragging = ""
 	elif event is InputEventMouseMotion and _dragging != "":
-		_slide(_dragging, (event as InputEventMouseMotion).position, size)
+		_slide(_dragging, (event as InputEventMouseMotion).position, view_size)
 
 ## Escape's walk (`menu.js` `sceneFrame`): from a sub-screen back to `main`, from `main` back to
 ## the game, and from the game to `main`. It is `static` and pure because it is a *rule* -- the
@@ -231,25 +231,25 @@ func _process(_delta: float) -> void:
 ## and keeping it in one place is what stops the drawn button and the clickable button from being
 ## two rectangles. It takes the size rather than reading the viewport so a gate can lay a screen
 ## out at any resolution with no window at all.
-func layout(size: Vector2) -> Array:
+func layout(view_size: Vector2) -> Array:
 	match screen:
 		"main":
-			return _main_layout(size)
+			return _main_layout(view_size)
 		"settings":
-			return _settings_layout(size)
+			return _settings_layout(view_size)
 		"mods":
-			return _mods_layout(size)
+			return _mods_layout(view_size)
 		"keymap":
-			return _keymap_layout(size)
+			return _keymap_layout(view_size)
 	return []
 
 ## The first button's word, which `menu.js` decides from `sceneFrames`.
 static func continue_label(frames: int) -> String:
 	return "Continue" if frames > 0 else "Play"
 
-func _main_layout(size: Vector2) -> Array:
-	var x: float = round((size.x - MAIN_W) / 2.0)
-	var y: float = round((size.y - MAIN_H) / 2.0)
+func _main_layout(view_size: Vector2) -> Array:
+	var x: float = round((view_size.x - MAIN_W) / 2.0)
+	var y: float = round((view_size.y - MAIN_H) / 2.0)
 	var out: Array = [{"kind": "panel", "rect": Rect2(x, y, MAIN_W, MAIN_H), "text": "Slag goat"}]
 	var bx: float = x + MAIN_SIDE
 	var bw: float = MAIN_W - MAIN_SIDE * 2.0
@@ -270,9 +270,9 @@ func _main_layout(size: Vector2) -> Array:
 			"text": "Quit", "id": "quit"})
 	return out
 
-func _settings_layout(size: Vector2) -> Array:
-	var x: float = round((size.x - SET_W) / 2.0)
-	var y: float = round((size.y - SET_H) / 2.0)
+func _settings_layout(view_size: Vector2) -> Array:
+	var x: float = round((view_size.x - SET_W) / 2.0)
+	var y: float = round((view_size.y - SET_H) / 2.0)
 	var lx: float = x + SET_SIDE
 	var lw: float = SET_W - SET_SIDE * 2.0
 	var cx: float = lx + CONTROL_INSET
@@ -321,9 +321,9 @@ func _settings_layout(size: Vector2) -> Array:
 	out.append(_back(x, y, SET_W, SET_H))
 	return out
 
-func _mods_layout(size: Vector2) -> Array:
-	var x: float = round((size.x - MODS_W) / 2.0)
-	var y: float = round((size.y - MODS_H) / 2.0)
+func _mods_layout(view_size: Vector2) -> Array:
+	var x: float = round((view_size.x - MODS_W) / 2.0)
+	var y: float = round((view_size.y - MODS_H) / 2.0)
 	var out: Array = [{"kind": "panel", "rect": Rect2(x, y, MODS_W, MODS_H), "text": "Mods"}]
 	out.append({"kind": "label", "rect": Rect2(x + SET_SIDE, y + MODS_NOTE_TOP,
 		MODS_W - SET_SIDE * 2.0, 18.0),
@@ -354,9 +354,9 @@ func _mods_layout(size: Vector2) -> Array:
 	out.append(_back(x, y, MODS_W, MODS_H))
 	return out
 
-func _keymap_layout(size: Vector2) -> Array:
-	var x: float = round((size.x - KEY_W) / 2.0)
-	var y: float = round((size.y - KEY_H) / 2.0)
+func _keymap_layout(view_size: Vector2) -> Array:
+	var x: float = round((view_size.x - KEY_W) / 2.0)
+	var y: float = round((view_size.y - KEY_H) / 2.0)
 	var out: Array = [{"kind": "panel", "rect": Rect2(x, y, KEY_W, KEY_H), "text": "Keymap"}]
 	var ry: float = y + KEY_TOP
 	# The scene's own geometry, overflow and all: 22 rows at 21 px from `y + 44` is 462 px in a
@@ -405,8 +405,8 @@ func _herd_size() -> int:
 ##
 ## It takes the size rather than reading the viewport so a gate can ask "what is under this point"
 ## at any resolution with no window at all -- which is the case that would have caught the bug.
-func widget_at(at: Vector2, size: Vector2) -> Dictionary:
-	for widget: Dictionary in layout(size):
+func widget_at(at: Vector2, view_size: Vector2) -> Dictionary:
+	for widget: Dictionary in layout(view_size):
 		match String(widget["kind"]):
 			"button", "toggle", "combo", "slider":
 				if (widget["rect"] as Rect2).has_point(at):
@@ -416,8 +416,8 @@ func widget_at(at: Vector2, size: Vector2) -> Dictionary:
 	return {}
 
 ## A click: a button acts, a toggle flips, a combo advances, a slider takes the position.
-func _press(at: Vector2, size: Vector2) -> void:
-	var widget: Dictionary = widget_at(at, size)
+func _press(at: Vector2, view_size: Vector2) -> void:
+	var widget: Dictionary = widget_at(at, view_size)
 	if widget.is_empty():
 		return
 	match String(widget["kind"]):
@@ -429,10 +429,10 @@ func _press(at: Vector2, size: Vector2) -> void:
 			_cycle(widget)
 		"slider":
 			_dragging = String(widget["id"])
-			_slide(_dragging, at, size)
+			_slide(_dragging, at, view_size)
 
-func _slide(id: String, at: Vector2, size: Vector2) -> void:
-	for widget: Dictionary in layout(size):
+func _slide(id: String, at: Vector2, view_size: Vector2) -> void:
+	for widget: Dictionary in layout(view_size):
 		if String(widget.get("id", "")) != id or String(widget["kind"]) != "slider":
 			continue
 		var rect: Rect2 = widget["rect"]
@@ -576,16 +576,16 @@ func _draw_widget(font: Font, widget: Dictionary, hot: bool) -> void:
 static func num_word(value: float) -> int:
 	return int(roundf(value))
 
-func _centred(font: Font, rect: Rect2, text: String, size: int) -> void:
+func _centred(font: Font, rect: Rect2, text: String, font_size: int) -> void:
 	if font == null:
 		return
-	var width: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size).x
-	_text(font, rect.position + Vector2((rect.size.x - width) / 2.0, 8.0), text, TEXT, size)
+	var width: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size).x
+	_text(font, rect.position + Vector2((rect.size.x - width) / 2.0, 8.0), text, TEXT, font_size)
 
 ## `rl.drawText` draws from a text's top left and `draw_string` from the baseline, so every call
 ## adds the ascent back -- the same helper `hud.gd` and `console.gd` need.
-func _text(font: Font, at: Vector2, text: String, color: Color, size: int) -> void:
+func _text(font: Font, at: Vector2, text: String, color: Color, font_size: int) -> void:
 	if font == null:
 		return
-	draw_string(font, Vector2(at.x, at.y + font.get_ascent(size)), text,
-		HORIZONTAL_ALIGNMENT_LEFT, -1.0, size, color)
+	draw_string(font, Vector2(at.x, at.y + font.get_ascent(font_size)), text,
+		HORIZONTAL_ALIGNMENT_LEFT, -1.0, font_size, color)

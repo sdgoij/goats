@@ -194,11 +194,11 @@ func _load_user_mods() -> bool:
 		return false
 	_line("mod: scanning " + WEB_MODS)
 	var added := false
-	for name: String in names:
-		var files := _read_memory_files(WEB_MODS.path_join(name), "")
+	for mod_name: String in names:
+		var files := _read_memory_files(WEB_MODS.path_join(mod_name), "")
 		if files.is_empty():
 			continue
-		var answer: String = String(host.call("load_mod_files", name, files))
+		var answer: String = String(host.call("load_mod_files", mod_name, files))
 		if answer.begins_with("ok "):
 			added = true
 		else:
@@ -212,10 +212,10 @@ static func _read_zip(path: String) -> Dictionary:
 	if reader.open(path) != OK:
 		return {}
 	var files: Dictionary = {}
-	for name: String in reader.get_files():
-		if name.ends_with("/"):
+	for file_name: String in reader.get_files():
+		if file_name.ends_with("/"):
 			continue
-		files[name] = reader.read_file(name)
+		files[file_name] = reader.read_file(file_name)
 	reader.close()
 	return files
 
@@ -323,9 +323,9 @@ func _web_save(args: Array) -> String:
 	var request := _web_request(args)
 	if request.has("error"):
 		return _web_respond(String(request["error"]))
-	var name: String = request["name"]
+	var mod_name: String = request["name"]
 	var files: Dictionary = request["files"]
-	var root: String = WEB_MODS.path_join(name)
+	var root: String = WEB_MODS.path_join(mod_name)
 	for file: String in files:
 		if not file.is_relative_path() or file.contains(".."):
 			return _web_respond("error file '%s' is not a relative name" % file)
@@ -339,7 +339,7 @@ func _web_save(args: Array) -> String:
 			return _web_respond("error cannot write '%s'" % path)
 		access.store_buffer(files[file])
 		access.close()
-	return _web_finish(String(host.call("reload_mod_files", name, files)))
+	return _web_finish(String(host.call("reload_mod_files", mod_name, files)))
 
 ## `goatsModsReload`: run an unsaved buffer. The save path is the same call after
 ## the files have been written.
@@ -356,24 +356,24 @@ func _web_reload(args: Array) -> String:
 func _web_read(args: Array) -> String:
 	if args.is_empty():
 		return _web_respond("error no mod name")
-	var name := String(args[0])
-	if not _web_name_ok(name):
+	var mod_name := String(args[0])
+	if not _web_name_ok(mod_name):
 		return _web_respond("error invalid mod name")
 	var files: Dictionary = {}
-	var root: String = WEB_MODS.path_join(name)
+	var root: String = WEB_MODS.path_join(mod_name)
 	if DirAccess.dir_exists_absolute(root):
 		files = _read_memory_files(root, "")
 	else:
 		# A bundled mod is a zip in the project; opening it here is what lets the
 		# editor customize a mod the build shipped without saving a copy first.
-		var zip: String = BUNDLED_MODS.path_join(name + ".zip")
+		var zip: String = BUNDLED_MODS.path_join(mod_name + ".zip")
 		if not FileAccess.file_exists(zip):
-			return _web_respond("error no mod named '%s'" % name)
+			return _web_respond("error no mod named '%s'" % mod_name)
 		files = _read_zip(zip)
 	var encoded: Dictionary = {}
 	for file: String in files:
 		encoded[file] = Marshalls.raw_to_base64(files[file])
-	return _web_respond(JSON.stringify({"name": name, "files": encoded}))
+	return _web_respond(JSON.stringify({"name": mod_name, "files": encoded}))
 
 ## `goatsModsState`: the table the Mods screen draws, so the editor's list and the
 ## game's list are one table.
@@ -438,8 +438,8 @@ func _web_request(args: Array) -> Dictionary:
 	var parsed: Variant = JSON.parse_string(String(args[0]))
 	if not (parsed is Dictionary):
 		return {"error": "error the request is not a JSON object"}
-	var name := String((parsed as Dictionary).get("name", ""))
-	if not _web_name_ok(name):
+	var mod_name := String((parsed as Dictionary).get("name", ""))
+	if not _web_name_ok(mod_name):
 		return {"error": "error invalid mod name"}
 	var encoded: Variant = (parsed as Dictionary).get("files", null)
 	if not (encoded is Dictionary):
@@ -450,13 +450,13 @@ func _web_request(args: Array) -> Dictionary:
 		if not (text is String):
 			return {"error": "error file '%s' is not base64 text" % file}
 		files[file] = Marshalls.base64_to_raw(text)
-	return {"name": name, "files": files}
+	return {"name": mod_name, "files": files}
 
 ## A mod's folder name, which is not its manifest id: the id is validated by the
 ## loader, while this must stay a single path segment under `user://mods`.
-static func _web_name_ok(name: String) -> bool:
-	return not name.is_empty() and name != "." and name != ".." \
-		and not name.contains("/") and not name.contains("\\")
+static func _web_name_ok(mod_name: String) -> bool:
+	return not mod_name.is_empty() and mod_name != "." and mod_name != ".." \
+		and not mod_name.contains("/") and not mod_name.contains("\\")
 
 ## The scene's own table and tuning follow a saved or previewed mod, exactly as
 ## they follow a reload (`APIv1.md` section 3.4). The host has already run it.
@@ -709,17 +709,17 @@ func _drive_wasm(dt: float, snapshot: Dictionary) -> void:
 	var parsed: Variant = JSON.parse_string(answer)
 	if not (parsed is Dictionary):
 		return
-	var report: Dictionary = parsed
-	var hud: Variant = report.get("hud", {})
+	var frame_report: Dictionary = parsed
+	var hud: Variant = frame_report.get("hud", {})
 	wasm_hud = hud if hud is Dictionary else {}
 
 ## Re-derive the world mods' streams from the session seed (`APIv1.md` section 4.13). It is
 ## `sceneUseSeed`'s last act in the reference client (`weather.js`), which is why it is an *event*
 ## and not part of the per-frame snapshot: the derivation advances on every call, so a joiner lands
 ## on the same stream the host is on rather than on one derived from a frame.
-func use_seed(seed: int) -> void:
+func use_seed(session_seed: int) -> void:
 	if host != null:
-		host.call("use_seed", seed)
+		host.call("use_seed", session_seed)
 
 ## The world mods' state as one JSON object -- `{streams, data}` -- or **empty** when there is
 ## nothing to send: no registered stream, no extension that publishes, no compiled module with
@@ -784,10 +784,10 @@ func shutdown() -> void:
 ## what makes a mod's console verb work at all -- the extension's `run_command` is the lookup, and
 ## it answers `""` rather than an error when the word belongs to nobody, which is how the console
 ## tells a mod's verb from a typo without a second lookup of its own.
-func run_command(name: String, line: String) -> String:
+func run_command(mod_name: String, line: String) -> String:
 	if host == null:
 		return ""
-	return String(host.call("run_command", name, line))
+	return String(host.call("run_command", mod_name, line))
 
 ## Where the mods come from. `GOATS_MODS` wins, then `mods/` beside the project (the source
 ## layout: `godot/../mods`), then `mods/` beside the executable (an exported build).

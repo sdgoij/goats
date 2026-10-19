@@ -29,9 +29,9 @@ func _initialize() -> void:
 		print("FAIL: could not load ", MODEL)
 		quit(1)
 		return
-	var root := packed.instantiate()
+	var model_root := packed.instantiate()
 
-	var anim := _find(root, "AnimationPlayer") as AnimationPlayer
+	var anim := _find(model_root, "AnimationPlayer") as AnimationPlayer
 	if anim == null:
 		failures.append("no AnimationPlayer in the imported scene")
 	else:
@@ -44,7 +44,7 @@ func _initialize() -> void:
 			if not names.has(want):
 				failures.append("missing clip " + want)
 
-	var skel := _find(root, "Skeleton3D") as Skeleton3D
+	var skel := _find(model_root, "Skeleton3D") as Skeleton3D
 	if skel == null:
 		failures.append("no Skeleton3D in the imported scene")
 	else:
@@ -59,7 +59,7 @@ func _initialize() -> void:
 	# glTF's five primitives (one per material) land as one ArrayMesh with five
 	# surfaces on a single MeshInstance3D, not five nodes -- so this is the
 	# surface count, and it is what tells the fur from the eyes.
-	var mesh_instance := _find(root, "MeshInstance3D") as MeshInstance3D
+	var mesh_instance := _find(model_root, "MeshInstance3D") as MeshInstance3D
 	if mesh_instance == null or mesh_instance.mesh == null:
 		failures.append("no MeshInstance3D in the imported scene")
 	else:
@@ -83,7 +83,7 @@ func _initialize() -> void:
 			print("  GoatFur textures: diffuse ", fur.albedo_texture.get_size(),
 				", normal ", fur.normal_texture.get_size())
 
-	root.free()
+	model_root.free()
 
 	if failures.is_empty():
 		print("OK: the model imports with every clip, bone and surface the scene needs")

@@ -473,8 +473,8 @@ func clip_durations(role: String) -> Array:
 	var out: Array = []
 	if _anim == null:
 		return out
-	for name in clip_names(role):
-		var animation: Animation = _anim.get_animation(name)
+	for clip_name in clip_names(role):
+		var animation: Animation = _anim.get_animation(clip_name)
 		out.append(animation.length if animation != null else 0.0)
 	return out
 
@@ -795,8 +795,8 @@ func _index_clips() -> void:
 		_variant[role] = 0
 	if _anim == null:
 		return
-	for name in _anim.get_animation_list():
-		var text: String = String(name)
+	for clip_name in _anim.get_animation_list():
+		var text: String = String(clip_name)
 		for role in ROLES:
 			var prefix: String = "Goat" + role.capitalize()
 			if text.begins_with(prefix):
@@ -807,8 +807,8 @@ func _index_clips() -> void:
 
 ## The variant number in a clip's name: `GoatIdle` is 0, `GoatIdle3` is 3. Anything
 ## that is not a number sorts last rather than being dropped.
-static func _variant_index(name: String, prefix: String) -> int:
-	var rest: String = name.substr(prefix.length())
+static func _variant_index(clip_name: String, prefix: String) -> int:
+	var rest: String = clip_name.substr(prefix.length())
 	if rest.is_empty():
 		return 0
 	if not rest.is_valid_int():
@@ -820,13 +820,13 @@ static func _variant_index(name: String, prefix: String) -> int:
 static func _sorted_by_variant(names: PackedStringArray, prefix: String) -> PackedStringArray:
 	var out: PackedStringArray = names.duplicate()
 	for i in range(1, out.size()):
-		var name: String = out[i]
-		var index: int = _variant_index(name, prefix)
+		var clip_name: String = out[i]
+		var index: int = _variant_index(clip_name, prefix)
 		var j: int = i - 1
 		while j >= 0 and _variant_index(out[j], prefix) > index:
 			out[j + 1] = out[j]
 			j -= 1
-		out[j + 1] = name
+		out[j + 1] = clip_name
 	return out
 
 ## The model's own lowest point, negated. Godot's glTF import keeps the mesh's

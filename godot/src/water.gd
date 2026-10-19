@@ -268,8 +268,8 @@ func update() -> void:
 ## The `flood <h>` override, for a demo or a bisect. A *level* is any finite number:
 ## this field's water lives below zero -- the ground is a metre or two of relief either
 ## side of it -- so a sign cannot double as the off switch.
-func set_force(level: float) -> void:
-	_force = level if is_finite(level) else NAN
+func set_force(force_level: float) -> void:
+	_force = force_level if is_finite(force_level) else NAN
 	update()
 
 func force_off() -> void:
@@ -348,6 +348,7 @@ func pools() -> Array:
 			var k: int = _pool_queue[head]
 			head += 1
 			var i: int = k % N
+			@warning_ignore("integer_division")
 			var j: int = (k - i) / N
 			var d: float = _level - _heights[k]
 			cells += 1
@@ -490,6 +491,7 @@ func wake_step(delta: float, actors: PackedFloat64Array) -> void:
 			ring.strength = 0.0
 	_splash_step(delta)
 
+	@warning_ignore("integer_division")
 	var count: int = actors.size() / 3
 	_resize_marks(count)
 	for at in count:
@@ -658,6 +660,7 @@ func state(px: float, pz: float) -> Dictionary:
 		if d > deepest:
 			deepest = d
 			di = k % N
+			@warning_ignore("integer_division")
 			dj = (k - di) / N
 	var x0: float = _anchor.x - HALF
 	var z0: float = _anchor.y - HALF

@@ -752,8 +752,8 @@ func _say(text: String) -> String:
 
 ## `grass [range]`: the nearest standing tuft, its distance, and whether it is in reach.
 func _grass(parts: PackedStringArray) -> String:
-	var range: Variant = ctl_arg(parts, 1)
-	var reach: float = float(range) if range != null else 60.0
+	var range_arg: Variant = ctl_arg(parts, 1)
+	var reach: float = float(range_arg) if range_arg != null else 60.0
 	var t: Dictionary = meadow.nearest(goat.px, goat.pz, reach)
 	if t.is_empty():
 		return "ok null"
@@ -771,8 +771,8 @@ func _grass(parts: PackedStringArray) -> String:
 ## a mine is judged at its cell's centre, a trapped tuft at the tuft itself, which is the
 ## half-metre the scene's own comment is about.
 func _traps(parts: PackedStringArray) -> String:
-	var range: Variant = ctl_arg(parts, 1)
-	var reach: float = float(range) if range != null else 30.0
+	var range_arg: Variant = ctl_arg(parts, 1)
+	var reach: float = float(range_arg) if range_arg != null else 30.0
 	# The derivation is `Explosions.traps_near`'s, and deliberately the *same* function a mod reaches
 	# through `goats.explosions.traps` (`APIv1.md` section 4.15): a mine detector a mod writes and
 	# the console's own verb would otherwise be two transcriptions of `sceneTraps`, and the one that
@@ -803,8 +803,8 @@ func _traps(parts: PackedStringArray) -> String:
 ## `craters [range]`: the holes the ground is carrying, where and how deep right now and how
 ## far through the heal. `sceneCraters`, filtered to the range like the scene's own.
 func _craters(parts: PackedStringArray) -> String:
-	var range: Variant = ctl_arg(parts, 1)
-	var reach: float = float(range) if range != null else 30.0
+	var range_arg: Variant = ctl_arg(parts, 1)
+	var reach: float = float(range_arg) if range_arg != null else 30.0
 	var range2: float = reach * reach
 	var near: Array = []
 	for crater: Dictionary in Craters.list:

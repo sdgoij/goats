@@ -159,9 +159,9 @@ func _initialize() -> void:
 	var counts := {}
 	for line in answers:
 		if line.begins_with("log count "):
-			var parts: PackedStringArray = line.split(" ")
-			if parts.size() == 4:
-				counts[int(parts[2])] = int(parts[3])
+			var count_parts: PackedStringArray = line.split(" ")
+			if count_parts.size() == 4:
+				counts[int(count_parts[2])] = int(count_parts[3])
 			continue
 		if not line.begins_with("log T "):
 			continue
@@ -189,7 +189,9 @@ func _initialize() -> void:
 		var mine: PackedFloat64Array = Grass.field(
 			c["gx"], c["gz"], CULL2, DETAIL2, c["sway"], c["wind"], eaten)
 		var expected: PackedFloat64Array = oracle.get(case_index, PackedFloat64Array())
+		@warning_ignore("integer_division")
 		var my_tufts: int = mine.size() / STRIDE
+		@warning_ignore("integer_division")
 		var js_tufts: int = expected.size() / STRIDE
 		print("case %d at (%.1f, %.1f): gd %d tuft(s), js %d" % [
 			case_index, c["gx"], c["gz"], my_tufts, js_tufts])

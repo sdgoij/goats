@@ -310,8 +310,8 @@ func handle_key(event: InputEventKey) -> bool:
 ## The width of a console row in pixels. `consoleTextWidth`'s fallback -- see the header on
 ## why the estimate and not Godot's own metrics: it is the form of the rule the JavaScript
 ## can also be held to.
-static func text_width(text: String, size: int) -> float:
-	return float(text.length()) * float(size) * 0.55
+static func text_width(text: String, text_size: int) -> float:
+	return float(text.length()) * float(text_size) * 0.55
 
 ## The leading whitespace of a line. `consoleWrap`'s `/^\s*/`, as a loop: a console line has
 ## had its newlines split off already (`push`), so spaces and tabs are the whole of it.
@@ -333,9 +333,9 @@ static func indent_of(text: String) -> String:
 ## same-named method in this class binds to the global instead -- a `SCRIPT ERROR` on the
 ## first argument's type, every frame, with nothing drawn. The gate's calls were qualified
 ## (`Console.wrap`), which is exactly why they passed while the panel was blank.
-static func wrap_rows(text: String, max_width: float, size: int) -> PackedStringArray:
+static func wrap_rows(text: String, max_width: float, text_size: int) -> PackedStringArray:
 	var rows := PackedStringArray()
-	if text_width(text, size) <= max_width:
+	if text_width(text, text_size) <= max_width:
 		rows.append(text)
 		return rows
 	var indent: String = indent_of(text)
@@ -343,15 +343,15 @@ static func wrap_rows(text: String, max_width: float, size: int) -> PackedString
 	var row: String = ""
 	for word in words:
 		var candidate: String = word if row == "" else row + " " + word
-		if text_width(indent + candidate, size) <= max_width:
+		if text_width(indent + candidate, text_size) <= max_width:
 			row = candidate
 			continue
 		if row != "":
 			rows.append(row)
 		var rest: String = word
-		while text_width(indent + rest, size) > max_width and rest.length() > 1:
+		while text_width(indent + rest, text_size) > max_width and rest.length() > 1:
 			var cut: int = rest.length() - 1
-			while cut > 1 and text_width(indent + rest.substr(0, cut), size) > max_width:
+			while cut > 1 and text_width(indent + rest.substr(0, cut), text_size) > max_width:
 				cut -= 1
 			rows.append(rest.substr(0, cut))
 			rest = rest.substr(cut)

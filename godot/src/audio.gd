@@ -181,8 +181,8 @@ func build() -> void:
 	if _built:
 		return
 	_built = true
-	for name: String in BEDS:
-		var path: String = BEDS[name]
+	for bed_name: String in BEDS:
+		var path: String = BEDS[bed_name]
 		var player := _player(path)
 		if player == null:
 			continue
@@ -191,10 +191,10 @@ func build() -> void:
 		_loop(player.stream)
 		player.volume_db = QUIET
 		player.play()
-		_beds[name] = player
-	for name: String in SLOTS:
-		var paths: Array = SLOTS[name]
-		_variants[name] = _load_slot(paths)
+		_beds[bed_name] = player
+	for slot_name: String in SLOTS:
+		var paths: Array = SLOTS[slot_name]
+		_variants[slot_name] = _load_slot(paths)
 
 ## `audio.js` `arnd`: the variety PRNG, bit for bit. xorshift32, and the shifts are masked
 ## because GDScript's `int` is 64-bit and signed where the scene's is 32-bit and unsigned.
@@ -207,18 +207,18 @@ func rnd() -> float:
 ## Take the variety stream from the session seed (`weather.js` `sceneUseSeed` draws the weather,
 ## the bots and the food first, so this is the **fourth** -- `audioSeed`). It is here so two players
 ## in a session hear the same bleat picked for the same event rather than each picking their own.
-func use_seed(seed: int) -> void:
-	var state: int = seed & 0xFFFFFFFF
-	if state == 0:
-		state = 1
+func use_seed(source_seed: int) -> void:
+	var rng_state: int = source_seed & 0xFFFFFFFF
+	if rng_state == 0:
+		rng_state = 1
 	var value: int = 1
 	for draw in 4:
-		state = (state ^ ((state << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF
-		state = (state ^ (state >> 17)) & 0xFFFFFFFF
-		state = (state ^ ((state << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF
-		if state == 0:
-			state = 1
-		value = state
+		rng_state = (rng_state ^ ((rng_state << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF
+		rng_state = (rng_state ^ (rng_state >> 17)) & 0xFFFFFFFF
+		rng_state = (rng_state ^ ((rng_state << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF
+		if rng_state == 0:
+			rng_state = 1
+		value = rng_state
 	_seed = value
 
 ## The variety stream as the wire carries it. `_seed` is already the unsigned word, which is the
@@ -415,8 +415,8 @@ func state() -> Dictionary:
 ## decides rather than an event, so it is the one worth reading back.
 func _levels() -> Dictionary:
 	var out := {}
-	for name: String in _beds:
-		out[name] = float((_beds[name] as AudioStreamPlayer).volume_db)
+	for bed_name: String in _beds:
+		out[bed_name] = float((_beds[bed_name] as AudioStreamPlayer).volume_db)
 	return out
 
 ## The word the status line shows (`goat.js`'s `drawHud`): `off` when nothing is loaded, `muted`
@@ -451,10 +451,10 @@ func apply_settings() -> void:
 
 ## Set a bed's volume from a *multiple of the music gain*, which is how the scene does it: the
 ## rain and wind beds are the track's own level scaled by the weather, and a mute is zero.
-func _set_bed(name: String, scale: float) -> void:
-	if not _beds.has(name):
+func _set_bed(bed_name: String, scale: float) -> void:
+	if not _beds.has(bed_name):
 		return
-	var player: AudioStreamPlayer = _beds[name]
+	var player: AudioStreamPlayer = _beds[bed_name]
 	player.volume_db = _db(bed_gain(music_gain(), muted, scale))
 
 ## One slot's variants, each with `SFX_POOL` copies of the same stream (`loadSlot`). A slot whose
@@ -477,21 +477,21 @@ func _load_slot(paths: Array) -> Array:
 func _player(path: String) -> AudioStreamPlayer:
 	if not ResourceLoader.exists(path):
 		return null
-	var stream: AudioStream = load(path) as AudioStream
-	if stream == null:
+	var clip: AudioStream = load(path) as AudioStream
+	if clip == null:
 		return null
 	var player := AudioStreamPlayer.new()
-	player.stream = stream
+	player.stream = clip
 	add_child(player)
 	return player
 
 ## Whether a bed repeats. `loop` is not on `AudioStream` itself -- it is each format's own -- so
 ## this asks the two the bed table uses rather than setting a property that may not be there.
-func _loop(stream: AudioStream) -> void:
-	if stream is AudioStreamOggVorbis:
-		(stream as AudioStreamOggVorbis).loop = true
-	elif stream is AudioStreamMP3:
-		(stream as AudioStreamMP3).loop = true
+func _loop(clip: AudioStream) -> void:
+	if clip is AudioStreamOggVorbis:
+		(clip as AudioStreamOggVorbis).loop = true
+	elif clip is AudioStreamMP3:
+		(clip as AudioStreamMP3).loop = true
 
 ## A linear gain as decibels, with zero at the floor rather than at minus infinity.
 func _db(gain: float) -> float:

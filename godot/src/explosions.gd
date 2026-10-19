@@ -149,8 +149,8 @@ func _ready() -> void:
 ## the four streams drawn first so the salt is the *fifth* draw: the port does not use
 ## those four values (the meadow takes its own from the wire), but the draw order is
 ## what makes this number the scene's.
-func use_seed(seed: int) -> void:
-	var s: int = _i32(seed)
+func use_seed(source_seed: int) -> void:
+	var s: int = _i32(source_seed)
 	if s == 0:
 		s = 1
 	# Five draws: the scene's four streams take the first four and the salt is the
@@ -485,7 +485,7 @@ func trip(kind: String, cx: int, cz: int, x: float, z: float, depth: int) -> boo
 ## Returns the new stamp, because the unit owns it (`goat.trip` in the scene) and this
 ## has no business holding another node's state.
 func check_triggers(x: float, z: float, airborne: bool, stamp: int) -> int:
-	var here: int = ((_i32(x * 2.0) + 4096) * 8192 + (_i32(z * 2.0) + 4096)) * 2 \
+	var here: int = ((_i32(int(x * 2.0)) + 4096) * 8192 + (_i32(int(z * 2.0)) + 4096)) * 2 \
 		+ (1 if airborne else 0)
 	if stamp == here:
 		return stamp
@@ -542,9 +542,9 @@ func take_blast_events() -> Array:
 ## bang is another device going off and reports itself when its own fuse ends, while a staged
 ## bang (`GOATS_BOOM`), the `blast` a remote device arrives through and a bang a mod asked for
 ## pass none and are never handed back out. `-1` is "no key", which no packed cell key can be.
-func blast(kind: String, x: float, z: float, seed: float, depth: int, key: int = -1) -> void:
+func blast(kind: String, x: float, z: float, blast_seed: float, depth: int, key: int = -1) -> void:
 	blasts += 1
-	Craters.add(x, z, seed)
+	Craters.add(x, z, blast_seed)
 	var dx: float = 0.0
 	var dz: float = 0.0
 	if goat != null:
@@ -565,7 +565,7 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int, key: int =
 			hurt_by(took)
 		# Away from the blast, up, and scaled by the same falloff as the damage: the
 		# rim is a shove and the centre is a launch.
-		var u: Vector2 = fling_direction(dx, dz, d, seed)
+		var u: Vector2 = fling_direction(dx, dz, d, blast_seed)
 		goat.start_fling(u.x * BLAST_PUSH * falloff, u.y * BLAST_PUSH * falloff,
 			BLAST_LIFT * falloff)
 	# The herd takes it too, on the player's own curve and off the player's own radius --
@@ -585,14 +585,14 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int, key: int =
 				continue
 			var bd: float = sqrt(bd2)
 			var bfalloff: float = 1.0 - bd / BLAST_RADIUS
-			var bu: Vector2 = fling_direction(bx, bz, bd, seed)
+			var bu: Vector2 = fling_direction(bx, bz, bd, blast_seed)
 			# `blast_at` answers `false` when the bot *died* -- it kills instead of throwing -- so
 			# the two counts the event carries come from one call each rather than a second walk.
 			if not bots.blast_at(index, BLAST_DAMAGE * bfalloff * bfalloff,
 					BLAST_PUSH * bfalloff, BLAST_LIFT * bfalloff, bu):
 				killed += 1
 			touched += 1
-	spawn_burst(x, z, seed)
+	spawn_burst(x, z, blast_seed)
 	flash_at(x, z)
 	knock(x, z)
 	# Heard wherever the goat is, in or out of the radius (`audio.js` `playBlast`). Last of the
@@ -606,7 +606,7 @@ func blast(kind: String, x: float, z: float, seed: float, depth: int, key: int =
 	# goat lost rather than what the bang was worth -- a goat at the rim takes a bruise. The frame
 	# says it (see `blast_events`); this only writes it down.
 	blast_events.append({
-		"kind": kind, "x": x, "z": z, "seed": seed,
+		"kind": kind, "x": x, "z": z, "seed": blast_seed,
 		"radius": BLAST_RADIUS, "depth": depth,
 		"player": took, "bots": touched, "killed": killed,
 	})
@@ -650,17 +650,17 @@ func chain_from(x: float, z: float, depth: int) -> void:
 ## `explosions.js` `flingDirection`: away from the blast, with a little off-axis
 ## jitter, or a drawn direction when the goat is at the blast's own centre (where
 ## "away" is not defined).
-func fling_direction(ox: float, oz: float, d: float, seed: float) -> Vector2:
+func fling_direction(ox: float, oz: float, d: float, jitter_seed: float) -> Vector2:
 	var ux: float = 0.0
 	var uz: float = 0.0
 	if d > 1e-3:
 		ux = ox / d
 		uz = oz / d
 	else:
-		var a: float = Terrain.value_hash(seed * 9.7) * TAU
+		var a: float = Terrain.value_hash(jitter_seed * 9.7) * TAU
 		ux = cos(a)
 		uz = sin(a)
-	var turn: float = (Terrain.value_hash(seed * 3.7 + 1.3) - 0.5) * 0.6
+	var turn: float = (Terrain.value_hash(jitter_seed * 3.7 + 1.3) - 0.5) * 0.6
 	var c: float = cos(turn)
 	var s: float = sin(turn)
 	return Vector2(ux * c - uz * s, ux * s + uz * c)
@@ -809,7 +809,7 @@ func flash_at(x: float, z: float) -> void:
 ## growing for the smoke). The pool is the limit rather than `maxActive`, so a bang
 ## draws nothing at all on an `Explosions` that was never added to the tree -- which
 ## is how the gates use it.
-func spawn_burst(x: float, z: float, seed: float) -> void:
+func spawn_burst(x: float, z: float, burst_seed: float) -> void:
 	if _live >= _burst.size():
 		return
 	var spot: int = _live
@@ -820,7 +820,7 @@ func spawn_burst(x: float, z: float, seed: float) -> void:
 	burst["z"] = z
 	burst["y"] = Terrain.height_at(x, z)
 	burst["t"] = 0.0
-	burst["seed"] = seed
+	burst["seed"] = burst_seed
 	(_fire[spot] as Sprite3D).visible = true
 	(_smoke[spot] as Sprite3D).visible = true
 

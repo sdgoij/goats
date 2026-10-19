@@ -252,7 +252,7 @@ func set_lit(on: bool) -> void:
 
 ## A boolean as `BaseMaterial3D.ShadingMode`, so the three modules that flip a material and the
 ## one that builds one agree on which side is which.
-static func shading(on: bool) -> int:
+static func shading(on: bool) -> BaseMaterial3D.ShadingMode:
 	return BaseMaterial3D.SHADING_MODE_PER_PIXEL if on else BaseMaterial3D.SHADING_MODE_UNSHADED
 
 ## The ground's material as the **mirror** draws it (M20e): the same mesh, the same detail

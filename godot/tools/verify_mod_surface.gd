@@ -732,17 +732,17 @@ static func _ushr(value: int, bits: int) -> int:
 ## same floor the port's `trap_noise` had to sit on (`PORT.md` section 9, the devices), and a
 ## transcription that "fixed" it would agree with nobody -- including the client it is copying.
 static func _key_hash(key: String) -> int:
-	var hash: int = 2166136261
+	var hash_value: int = 2166136261
 	for i: int in key.length():
-		hash = (hash ^ key.unicode_at(i)) & 0xFFFFFFFF
-		var product: float = float(_i32(hash)) * 16777619.0
-		hash = int(product) & 0xFFFFFFFF
-	return hash
+		hash_value = (hash_value ^ key.unicode_at(i)) & 0xFFFFFFFF
+		var product: float = float(_i32(hash_value)) * 16777619.0
+		hash_value = int(product) & 0xFFFFFFFF
+	return hash_value
 
 ## `modRegisterStream`'s `initial`, including the two fall-throughs: a zero seed becomes the key's
 ## own hash, and a zero result becomes 1.
-static func _stream_initial(key: String, seed: int) -> int:
-	var initial: int = _i32(seed)
+static func _stream_initial(key: String, stream_seed: int) -> int:
+	var initial: int = _i32(stream_seed)
 	if initial == 0:
 		initial = _i32(0x9e3779b9) ^ _key_hash(key)
 	initial = initial & 0xFFFFFFFF
@@ -765,8 +765,8 @@ static func _stream_draw(states: Dictionary, key: String) -> float:
 
 ## `modSeedStreams`: one draw of a shared sequence per stream, in insertion order, each mixed into
 ## the stream's own seed.
-static func _seed_streams(states: Dictionary, seeds: Dictionary, order: Array, seed: int) -> void:
-	var s: int = _i32(seed)
+static func _seed_streams(states: Dictionary, seeds: Dictionary, order: Array, stream_seed: int) -> void:
+	var s: int = _i32(stream_seed)
 	if s == 0:
 		s = 1
 	for key: String in order:

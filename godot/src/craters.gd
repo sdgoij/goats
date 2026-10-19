@@ -53,15 +53,15 @@ static var _bucket := {}
 
 ## Dig one. The radius varies a little per bang -- a minefield of identical holes
 ## reads as a pattern -- and the depth is the tuning's.
-static func add(x: float, z: float, seed: float) -> void:
+static func add(x: float, z: float, bang_seed: float) -> void:
 	if RADIUS <= 0.0 or DEPTH <= 0.0 or MAX <= 0:
 		return
 	# The cap retires the oldest rather than refusing the newest.
 	while list.size() >= MAX and not list.is_empty():
 		_retire(list[0])
 		list.remove_at(0)
-	var r: float = RADIUS * (0.85 + Terrain.value_hash(seed) * 0.3)
-	list.append(_crater(x, z, r, DEPTH, seed, HEAL))
+	var r: float = RADIUS * (0.85 + Terrain.value_hash(bang_seed) * 0.3)
+	list.append(_crater(x, z, r, DEPTH, bang_seed, HEAL))
 	_reindex()
 	dirty = true
 
@@ -217,7 +217,7 @@ static func apply_wire(entries: Variant) -> void:
 static func cell_at(x: float, z: float) -> Vector2i:
 	return Vector2i(int(floor(x / Terrain.CELL)), int(floor(z / Terrain.CELL)))
 
-static func _crater(x: float, z: float, r: float, depth: float, seed: float,
+static func _crater(x: float, z: float, r: float, depth: float, bang_seed: float,
 		heal: float) -> Dictionary:
 	var reach: float = r * LIP_OUT
 	return {
@@ -228,7 +228,7 @@ static func _crater(x: float, z: float, r: float, depth: float, seed: float,
 		"depth": depth,
 		"dip": depth,
 		"lip": LIP,
-		"seed": seed,
+		"seed": bang_seed,
 		"age": 0.0,
 		"heal": heal,
 		"drop": depth,

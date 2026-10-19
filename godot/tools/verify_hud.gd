@@ -147,16 +147,16 @@ func _initialize() -> void:
 	var first_word := ""
 	for mode in MODES:
 		for move in MOVES:
-			for paused in [0, 1]:
+			for paused_state in [0, 1]:
 				word_cases += 1
-				var mine: String = Hud.state_word(move, mode, paused == 1).replace(" ", "~")
+				var mine: String = Hud.state_word(move, mode, paused_state == 1).replace(" ", "~")
 				var wanted: String = String(oracle_word.get(
-					"%d %s %d" % [move, mode, paused], "?"))
+					"%d %s %d" % [move, mode, paused_state], "?"))
 				if mine != wanted:
 					word_mismatches += 1
 					if first_word == "":
 						first_word = "move %d, mode '%s', paused %d: scene '%s', port '%s'" % [
-							move, mode, paused, wanted, mine]
+							move, mode, paused_state, wanted, mine]
 	print("state words: %d case(s), %d mismatch(es)" % [word_cases, word_mismatches])
 	if first_word != "":
 		print("  first: ", first_word)

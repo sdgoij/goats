@@ -892,14 +892,14 @@ func _initialize() -> void:
 
 	var stream_failures := 0
 	var first_stream := ""
-	for seed: int in streams:
-		probe.use_seed(seed)
+	for stream_seed: int in streams:
+		probe.use_seed(stream_seed)
 		var got: int = int(round(probe.bot_rnd() * 4294967296.0))
-		var wanted: int = int(streams[seed])
+		var wanted: int = int(streams[stream_seed])
 		if got != wanted:
 			stream_failures += 1
 			if first_stream == "":
-				first_stream = "seed %d: scene %d, port %d" % [seed, wanted, got]
+				first_stream = "seed %d: scene %d, port %d" % [stream_seed, wanted, got]
 	print("use_seed: %d seed(s), %d mismatch(es)" % [streams.size(), stream_failures])
 	if first_stream != "":
 		print("  first: ", first_stream)
@@ -1216,5 +1216,5 @@ func _stub_armed(cx: int, cz: int) -> bool:
 ## rather than that rule because the herd's own gate is about what the herd does with the
 ## answer. The rule itself is `verify_water_wake.gd`'s, and so is the difference between it
 ## and `waterSubmergedAt`, which is the grass cull's and not the sleep rule's.
-func _stub_in_water(x: float, z: float) -> bool:
+func _stub_in_water(_x: float, z: float) -> bool:
 	return z < _goat.pz - 16.0

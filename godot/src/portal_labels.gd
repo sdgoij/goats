@@ -37,10 +37,10 @@ func _ready() -> void:
 ## This frame's goat position, whether the labels are hidden (a menu, or hosting), and
 ## whether this client is inside a session. `main.gd` calls it once a frame, right after
 ## the rings are placed.
-func refresh(px: float, pz: float, hidden: bool, client: bool) -> void:
+func refresh(px: float, pz: float, is_hidden: bool, client: bool) -> void:
 	_px = px
 	_pz = pz
-	_hidden = hidden
+	_hidden = is_hidden
 	_client = client
 	queue_redraw()
 
@@ -70,11 +70,11 @@ func _label(font: Font, place: Dictionary, text: String, colour: Color) -> void:
 	if camera.is_position_behind(world):
 		return
 	var point: Vector2 = camera.unproject_position(world)
-	var size: Vector2 = get_viewport_rect().size
+	var viewport_size: Vector2 = get_viewport_rect().size
 	# Off the drawable by more than a label's width: the projection is still meaningful,
 	# but nothing would land on screen.
-	if point.x < -300.0 or point.x > size.x + 300.0 \
-			or point.y < -100.0 or point.y > size.y + 100.0:
+	if point.x < -300.0 or point.x > viewport_size.x + 300.0 \
+			or point.y < -100.0 or point.y > viewport_size.y + 100.0:
 		return
 	var width: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, SIZE).x
 	var left: float = roundf(point.x - width * 0.5)

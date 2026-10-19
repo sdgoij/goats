@@ -64,11 +64,11 @@ var wish: float = DEFAULT
 ## keep falling to the one below rather than to nothing. `Math.round` rounds half toward
 ## +infinity and `roundi` away from zero; the clamp above admits no negative leaf, so the two
 ## agree on every value that reaches here.
-static func promise(want: float, can_ground: bool, can_mirror: bool) -> int:
-	var tier: int = roundi(want)
-	if tier >= MIRROR and can_mirror:
+static func promise(want: float, ground_ok: bool, mirror_ok: bool) -> int:
+	var wanted: int = roundi(want)
+	if wanted >= MIRROR and mirror_ok:
 		return MIRROR
-	if tier >= GROUND and can_ground:
+	if wanted >= GROUND and ground_ok:
 		return GROUND
 	return SKY
 
@@ -79,16 +79,16 @@ static func clamp_wish(value: float) -> float:
 ## A `setting reflect <word>`'s word as a tier, or `-1` for one the scene does not know --
 ## which `ctl.js` answers with an error, leaving the leaf where it was.
 static func word_tier(word: String) -> int:
-	for tier in NAMES.size():
-		if NAMES[tier] == word:
-			return tier
+	for i in NAMES.size():
+		if NAMES[i] == word:
+			return i
 	return -1
 
 ## The word a tier is spelled with.
-static func tier_word(tier: int) -> String:
-	if tier < 0 or tier >= NAMES.size():
+static func tier_word(which: int) -> String:
+	if which < 0 or which >= NAMES.size():
 		return ""
-	return NAMES[tier]
+	return NAMES[which]
 
 ## What a tier's pass draws, and whether it runs one at all. Both live in `water_mirror.gd`,
 ## beside the camera that does the drawing: this object owns the *rule*, not the pass.

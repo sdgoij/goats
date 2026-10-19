@@ -131,6 +131,7 @@ func update(centre: Vector3, sway_time: float, wind_sway: float, eaten: Dictiona
 		cull = Callable(water, "submerged_at")
 	var positions: PackedFloat64Array = field(
 		centre.x, centre.z, CULL2, DETAIL2, sway_time, wind_sway, eaten, cull, _height_cache)
+	@warning_ignore("integer_division")
 	var tufts: int = positions.size() / STRIDE
 	rebuilds += 1
 

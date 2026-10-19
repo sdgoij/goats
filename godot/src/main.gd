@@ -927,10 +927,10 @@ func _exit_tree() -> void:
 func _net_in_session() -> bool:
 	return _hosting or _joined
 
-func _mod_call(name: String, args_json: String) -> String:
+func _mod_call(verb: String, args_json: String) -> String:
 	var parsed: Variant = JSON.parse_string(args_json)
 	var args: Array = parsed if parsed is Array else []
-	match name:
+	match verb:
 		"world.terrainHeight":
 			# The scene's own function, craters and all -- not a second heightfield, which is the
 			# whole reason this crosses instead of being pushed as values.
@@ -1164,7 +1164,7 @@ func _mod_call(name: String, args_json: String) -> String:
 			if args.is_empty() or not (args[0] is Dictionary):
 				return _mod_err("tuning.merge needs an object")
 			return JSON.stringify(Tuning.merge(args[0]))
-	return _mod_err("goats." + name + ": this client does not answer that member")
+	return _mod_err("goats." + verb + ": this client does not answer that member")
 
 ## A successful `_mod_call` answer.
 func _mod_ok(value: Variant) -> String:
@@ -1689,8 +1689,8 @@ func _boom_if_asked() -> void:
 		explosions.blast("mine", goat.px + 2.0, goat.pz, 0.417, 0)
 
 ## An environment variable as a float, or `fallback` when it is unset or not a number.
-func _environment_float(name: String, fallback: float) -> float:
-	var text: String = OS.get_environment(name)
+func _environment_float(variable: String, fallback: float) -> float:
+	var text: String = OS.get_environment(variable)
 	if text.is_empty() or not text.is_valid_float():
 		return fallback
 	return text.to_float()
@@ -1709,23 +1709,23 @@ func _handle(line: String) -> void:
 			# field is *derived* from it, so this is what puts this scene's mines where the
 			# host's are without a word about where they are -- and the four streams too, which
 			# a host runs from this same seed (`sceneUseSeed`).
-			var seed: int = int(event.get("seed", 0))
+			var world_seed: int = int(event.get("seed", 0))
 			# What this scene was running on, so a client can come back to it.
 			_save_seed()
-			explosions.use_seed(seed)
-			weather.use_seed(seed)
+			explosions.use_seed(world_seed)
+			weather.use_seed(world_seed)
 			# The herd's stream is `sceneUseSeed`'s *second* draw, the meadow's the *third* and
 			# the variety stream's the *fourth* (`bots.gd`, `meadow.gd`, `audio.gd`). All four
 			# matter to a host; a joiner takes the streams the host sends in each world snapshot
 			# instead (`use_stream`), so its own draws are overwritten as soon as a world lands.
-			bots.use_seed(seed)
-			meadow.use_seed(seed)
-			audio.use_seed(seed)
+			bots.use_seed(world_seed)
+			meadow.use_seed(world_seed)
+			audio.use_seed(world_seed)
 			# ...and the *mods'* streams from the same seed, which is `sceneUseSeed`'s own last act: a
 			# `side: "world"` mod's PRNG has to be the same one on every peer, or the flock the host
 			# simulates is not the flock a joiner computes (`APIv1.md` section 4.13).
-			mods.use_seed(seed)
-			console.net_line("net: world seed " + str(seed))
+			mods.use_seed(world_seed)
+			console.net_line("net: world seed " + str(world_seed))
 		"hosting":
 			# This scene is the server. A host keeps simulating the world (`not _joined` in
 			# `_process`) and is the one side that *publishes* it, so the flag is what both
@@ -1805,9 +1805,9 @@ func _handle(line: String) -> void:
 			# The weather and the meadow ride every world snapshot, not only the ones
 			# that carry a herd: `goatsd` publishes half-built worlds while it loads its
 			# scene, and the clock is as true in those as in any other.
-			var weather: Variant = event.get("weather", null)
-			if weather is Dictionary:
-				_weather = weather
+			var weather_state: Variant = event.get("weather", null)
+			if weather_state is Dictionary:
+				_weather = weather_state
 			var eaten: Variant = event.get("eaten", null)
 			meadow.apply_wire(eaten)
 			# The ground the host has cratered and the devices it has seen go off: state
@@ -1987,9 +1987,9 @@ func _probe_report() -> void:
 	_report(failures, "the herd mirrors goatsd's bots, on Godot-drawn ground")
 
 ## The largest per-bot displacement between consecutive snapshots.
-func _measure_motion(bots: Array) -> void:
+func _measure_motion(entries: Array) -> void:
 	var current := {}
-	for entry in bots:
+	for entry in entries:
 		if not (entry is Dictionary):
 			continue
 		var index: int = int(entry.get("index", 0))
@@ -2168,17 +2168,17 @@ func cmd_net_status() -> Dictionary:
 ## `host [name]`: serve a session, and be the side that owns the world (`net.js` `netHost`). The
 ## scene boots into a solo world and only serves when it is asked to, so this is the console's way
 ## in. The name is a request: the `hosting` event carries the canonical one, which may differ.
-func cmd_host(name: String) -> String:
+func cmd_host(requested_name: String) -> String:
 	if _joined or _hosting:
 		return "error already in a session (leave first)"
 	# The world-mod digest this host requires of every joiner is its *own* set (`APIv1.md` section
 	# 6.2): `mods.world_mod_refs`, which is empty when no world mod is loaded. Without it a host
 	# could not accept a peer running the same flock it does.
-	var answer: String = String(bridge.call("host", name, mods.world_mod_refs()))
+	var answer: String = String(bridge.call("host", requested_name, mods.world_mod_refs()))
 	if answer.begins_with("error"):
 		return answer
 	_hosting = true
-	_net_name = name
+	_net_name = requested_name
 	return "ok host"
 
 ## `connect`: join the session a ticket names. The scene joins on startup from
@@ -2186,14 +2186,15 @@ func cmd_host(name: String) -> String:
 ## `pull` is the console's per-join consent (`connect <ticket> --pull`), which the bridge joins
 ## with its standing `GOATS_PULL` (M18d): with either set, a refusal for a missing world mod
 ## fetches it, installs it, and retries once.
-func cmd_join(ticket: String, name: String, pull: bool = false) -> String:
+func cmd_join(ticket: String, requested_name: String, pull: bool = false) -> String:
 	if _joined or _hosting:
 		return "error already in a session (leave first)"
-	var asked: String = name if name != "" else ("godot" if _join_name == "" else _join_name)
-	if name != "":
+	var asked: String = requested_name if requested_name != "" \
+		else ("godot" if _join_name == "" else _join_name)
+	if requested_name != "":
 		# The last name a player chose is what a walk-in portal reuses: a ring cannot stop
 		# to ask, and a fresh install falls back to the port's own "godot".
-		_join_name = name
+		_join_name = requested_name
 	# The set is presented at the join, not the ticket: the host compares it with its own and
 	# refuses a mismatch, which is the whole point of the digest (`APIv1.md` section 6.3).
 	var answer: String = String(bridge.call("join", ticket, asked, mods.world_mod_refs(), pull))
@@ -2264,8 +2265,8 @@ func cmd_say(text: String) -> String:
 ## `swarm join [--topic ID] [--peer ID|TICKET]...`: listen on a gossip topic, and let a
 ## host's advert turn into a ring (`net.js` `netSwarmJoin`). `peers` is already joined by
 ## the console and comma-separated here, because the bridge's own call takes the list.
-func cmd_swarm_join(topic: String, peers: String) -> String:
-	bridge.call("swarm_join", topic, peers)
+func cmd_swarm_join(topic: String, peer_list: String) -> String:
+	bridge.call("swarm_join", topic, peer_list)
 	console.system_line("swarm: joining " \
 		+ ("the default topic" if topic == "" else topic) + " ...")
 	return "ok swarm join"

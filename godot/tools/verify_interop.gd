@@ -88,9 +88,9 @@ func _initialize() -> void:
 			_check_pull(pulled, PULL_URI, failures)
 			# The retried join is accepted because the retry presents the *installed* set, which is
 			# the host's -- the whole point of `pull::recover` re-deriving the digest off the disk.
-			var welcome: String = _wait(bridge, ["\"type\":\"welcome\"", "godot"], 60000)
-			print("welcome: ", welcome)
-			if welcome.is_empty():
+			var retry_welcome: String = _wait(bridge, ["\"type\":\"welcome\"", "godot"], 60000)
+			print("welcome: ", retry_welcome)
+			if retry_welcome.is_empty():
 				failures.append("the retried join was not welcomed within 60s")
 		_shutdown(bridge)
 		_report(failures, "a client with no world mods fetched the host's, installed them and joined")
@@ -152,7 +152,7 @@ func _check_world(line: String, failures: Array) -> void:
 	var bots: Variant = world["bots"]
 	var weather: Variant = world["weather"]
 	var streams: Variant = world["streams"]
-	var eaten: Variant = world["eaten"]
+	var _eaten: Variant = world["eaten"]
 	if bots is Array and bots.size() > 0:
 		print("world bot 0:    ", bots[0])
 	print("world weather:  ", weather["kind"] if weather is Dictionary else "?",

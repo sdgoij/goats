@@ -44,6 +44,7 @@ func _initialize() -> void:
 	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
 
 	# 1. The grid: the client's 49x49 vertices and 48x48x2 triangles.
+	@warning_ignore("integer_division")
 	print("vertices: ", verts.size(), "  triangles: ", indices.size() / 3)
 	if verts.size() != 49 * 49:
 		failures.append("expected 2401 vertices, got %d" % verts.size())
