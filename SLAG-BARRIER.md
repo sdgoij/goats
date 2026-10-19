@@ -1,8 +1,9 @@
 # A write-barrier miss in the pinned nursery collector
 
 **Status:** fixed upstream in `f491e69a00b5d8f5275a4770cc53e01e0d6590d5`
-("fix(gc): record the composite shape's write barrier"), and the goats pin is
-bumped to it. The reproducer -- the portal module, whose evaluation used to trip
+("fix(gc): record the composite shape's write barrier"), and the goats pin
+includes it (now `178f92f3f2f8aa625fd227dd0550db7d00ec9c18`). The reproducer --
+the portal module, whose evaluation used to trip
 the verifier -- now passes on the new revision, as does the full gate. The root
 cause was `436607f97fcbe0942e2c5601c6d5946b3c00a7e8` (`perf(crux): cache the
 whole object-literal shape`): its new composite transition cache stored a young
@@ -329,7 +330,7 @@ the failing test.
 ## Resolution
 
 The fix was pushed as `f491e69a00b5d8f5275a4770cc53e01e0d6590d5` and the goats
-pin now names it. The portal module is back in `crates/goats/src/game/net.js`,
+pin includes it (now `178f92f3f2f8aa625fd227dd0550db7d00ec9c18`). The portal module is back in `crates/goats/src/game/net.js`,
 where the reproducer lives, and the birds fixture test is green on the new
 revision. A regression test that pins the barrier itself belongs in Slag; the
 commit's own test populates the composite cache but never collects, which is why
