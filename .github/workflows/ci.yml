@@ -643,7 +643,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          "$GODOT_BIN" --headless --path godot --export-release "${{ matrix.preset }}" "dist/${{ matrix.out }}"
+          # Godot resolves a relative export path against `--path` (the project),
+          # not the shell's cwd, so name the target absolutely. On Windows this is
+          # a native path, which is why it is converted where `cygpath` exists.
+          out="$PWD/dist/${{ matrix.out }}"
+          if command -v cygpath >/dev/null 2>&1; then
+            out=$(cygpath -m "$out")
+          fi
+          "$GODOT_BIN" --headless --path godot --export-release "${{ matrix.preset }}" "$out"
           ls -1 dist
 
       # A packed client that never boots is a bad release, and the extension is the piece most likely
