@@ -23,6 +23,11 @@
 // density without the high-frequency erosion, the erosion is only evaluated
 // near a cloud surface, and the step count comes from the `clouds` setting.
 // `B` still falls back to the M2 gradient and the noise-puff billboards.
+//
+// The atmosphere's Rayleigh/Mie split, the dusk horizon rim and the height-lit
+// cloud deck are borrowed from Sky3D (github.com/TokisanGames/Sky3D, MIT),
+// re-expressed for this display-space two-layer pass rather than copied. The
+// palette, the clock and the celestial sprites stay the scene's.
 
 // The slab geometry, density and march steps are `TUNING.sky` (core.js).
 const CLOUD_LEVELS = ["low", "medium", "high"];
@@ -52,6 +57,10 @@ const SKY_FS = [
     "uniform vec3  zenithColor;",
     "uniform vec3  horizonColor;",
     "uniform vec3  sunDir;",
+    // The sun's own direction. `sunDir` is the *active* light -- the sun by
+    // day, the moon after dusk -- but the warmth stays on the sun's side for a
+    // while after it sets, which is what the horizon rim below reads.
+    "uniform vec3  sunTrueDir;",
     "uniform vec4  sunColor;",
     "uniform float cloudiness;",
     "uniform float time;",
@@ -103,12 +112,18 @@ const SKY_FS = [
     // Domain warp: the cheap trick that turns blobby fBm into billows.
     "    float warp = fbm2(q * 0.5);",
     "    float base = fbm3(q + warp * 0.75);",
-    // Soft base, rounded top.
-    "    float shape = smoothstep(0.0, 0.22, y) * (1.0 - smoothstep(0.58, 1.0, y));",
+    // A second field sheared the other way. Without it a high-coverage deck is
+    // a function of height alone and reads as horizontal bands.
+    "    if (detailAmt > 0.001) {",
+    "        base += (vnoise2(q * 3.1 + vec2(y * 5.0, y * -3.0) + 19.0) - 0.5) * 0.22;",
+    "    }",
+    // Soft base, rounded top. Slightly thicker than before, so the top does not
+    // collapse to a line when the deck is solid.
+    "    float shape = smoothstep(0.0, 0.20, y) * (1.0 - smoothstep(0.62, 1.0, y));",
     "    float d = base * shape;",
-    // Coverage: the threshold falls as cloudiness rises, so the sky goes from a
-    // few puffs to solid overcast.
-    "    float cover = mix(0.78, 0.14, cloudiness);",
+    // Coverage: the threshold falls as cloudiness rises, and rises with height
+    // so the top breaks up first.
+    "    float cover = mix(0.78, 0.14, cloudiness) + y * 0.10;",
     "    d = max(0.0, d - cover) / max(1.0 - cover, 1e-3);",
     // Erode the edges, but only near a surface -- that is where it reads.
     "    if (detailAmt > 0.001 && d > 0.02 && d < 0.55) {",
@@ -135,10 +150,22 @@ const SKY_FS = [
     "vec3 skyBackground(vec3 dir) {",
     "    float h = clamp(dir.y, 0.0, 1.0);",
     "    vec3 col = mix(horizonColor, zenithColor, pow(h, 0.45));",
-    "    float mu = max(dot(dir, sunDir), 0.0);",
-    "    float low = 1.0 - clamp(sunDir.y, 0.0, 1.0);",
-    // Forward-scattered glow, wide and warm when the sun is near the horizon.
-    "    col += sunColor.rgb * pow(mu, mix(26.0, 3.0, low)) * (0.05 + 0.20 * low) * (1.0 - nightDim);",
+    // The sun's own direction, not `sunDir`: at dusk the light has already
+    // flipped to the moon while the warmth is still on the sun's side.
+    "    float mu = dot(dir, sunTrueDir);",
+    "    float up = clamp(sunTrueDir.y, 0.0, 1.0);",
+    "    float low = 1.0 - up;",
+    "    float daylight = 1.0 - nightDim;",
+    // Sky3D's two lobes: the Rayleigh lobe is the broad sky, the Mie lobe the
+    // forward halo. The palette stays the scene's; these only place the light.
+    "    float rayleigh = 0.75 * (1.0 + mu * mu);",
+    "    float mie = hg(mu, mix(0.82, 0.55, low));",
+    "    vec3 warm = mix(vec3(1.0), vec3(1.0, 0.62, 0.38), low);",
+    "    col += warm * daylight * (mie * (0.10 + 0.30 * low) + rayleigh * 0.02);",
+    // The horizon rim survives a little past sunset, which the old single
+    // `pow(mu, ...)` lobe could not do.
+    "    float dusk = (1.0 - smoothstep(0.0, 0.35, sunTrueDir.y)) * smoothstep(-0.35, 0.0, sunTrueDir.y);",
+    "    col += warm * exp(-h * 5.0) * (0.25 + 0.75 * max(mu, 0.0)) * dusk * 0.45;",
     // NOTE: the sun and moon discs themselves are drawn by `drawCelestial`
     // (world.js) as sprites over this pass, so the shader must not draw one too.
     // Haze hugging the horizon.
@@ -152,9 +179,14 @@ const SKY_FS = [
     "    if (t <= 0.0) return behind;",
     "    vec2 p = (camPos.xz + dir.xz * t) * cloudScale * 1.7 + wind * time * 0.006;",
     "    float n = fbm2(vec2(p.x * 0.24, p.y * 1.9));",
+    // A second, finer stretch keeps the high layer from reading as one streak.
+    "    float n2 = fbm2(vec2(p.x * 0.55 + 7.0, p.y * 3.2 - 3.0));",
+    "    n = mix(n, n2, 0.35);",
     "    float cover = mix(0.82, 0.42, cirrus);",
     "    float mask = smoothstep(cover, cover + 0.28, n);",
+    "    float dusk = (1.0 - smoothstep(0.0, 0.35, sunTrueDir.y)) * smoothstep(-0.35, 0.0, sunTrueDir.y);",
     "    vec3 c = mix(cloudShadow, cloudLit, 0.55 + 0.45 * clamp(sunDir.y, 0.0, 1.0));",
+    "    c *= mix(vec3(1.0), vec3(1.0, 0.74, 0.54), dusk * 0.7);",
     "    return mix(behind, c, mask * cirrus * exp(-t * 0.0035) * 0.85);",
     "}",
     // ---- the march ----
@@ -183,6 +215,7 @@ const SKY_FS = [
     "        dt = span / float(cloudSteps);",
     "    }",
     "    vec2 drift = wind * time * 0.01;",
+    "    float dusk = (1.0 - smoothstep(0.0, 0.35, sunTrueDir.y)) * smoothstep(-0.35, 0.0, sunTrueDir.y);",
     "    float cosT = dot(dir, sunDir);",
     "    float ph = hg(cosT, 0.72) * 0.75 + hg(cosT, -0.28) * 0.40;",
     // No per-pixel jitter: randomising the start offset per pixel is exactly the
@@ -204,8 +237,17 @@ const SKY_FS = [
     "            float powder = 1.0 - exp(-tau * cloudAbsorb * 2.0);",
     "            float lum = sunT * mix(0.55, 1.0, powder);",
     "            vec3 c = mix(cloudShadow, cloudLit, clamp(lum, 0.0, 1.0));",
-    // Forward scattering tints the rim toward the sun colour.
-    "            c += cloudLit * sunColor.rgb * ph * sunT * 1.3;",
+    // Sky3D lights a cloud from its top down (`exp(h)`), which is what keeps an
+    // overcast deck from reading as one flat grey sheet.
+    "            float cy = clamp((pos.y - cloudBase) / max(cloudTop - cloudBase, 1e-3), 0.0, 1.0);",
+    "            c *= 0.72 + 0.55 * cy;",
+    // ...and at dusk the whole deck picks up the sun's warmth, even when the
+    // direct light has already flipped to the moon.
+    "            c *= mix(vec3(1.0), vec3(1.0, 0.70, 0.48), dusk * 0.85);",
+    // Forward scattering tints the rim toward the sun colour; at dusk that is
+    // the warm sun, not the moon the light has flipped to.
+    "            vec3 rimTint = mix(sunColor.rgb, vec3(1.0, 0.62, 0.35), dusk);",
+    "            c += cloudLit * rimTint * ph * sunT * 1.4;",
     // Distance haze blends far cloud into the horizon.
     "            c = mix(c, horizonColor, (1.0 - exp(-t * 0.0022)) * 0.55);",
     "            float a = 1.0 - exp(-dens * cloudAbsorb * dt);",
@@ -260,6 +302,7 @@ function makeSkyShader() {
         zenithColor: rl.getShaderLocation(skyShader, "zenithColor"),
         horizonColor: rl.getShaderLocation(skyShader, "horizonColor"),
         sunDir: rl.getShaderLocation(skyShader, "sunDir"),
+        sunTrueDir: rl.getShaderLocation(skyShader, "sunTrueDir"),
         sunColor: rl.getShaderLocation(skyShader, "sunColor"),
         cloudiness: rl.getShaderLocation(skyShader, "cloudiness"),
         time: rl.getShaderLocation(skyShader, "time"),
@@ -378,6 +421,8 @@ function setSkyUniforms(sw, sh, layer) {
         channelOf(skyBot, 24), channelOf(skyBot, 16), channelOf(skyBot, 8));
     rl.setShaderValueVector3(skyShader, skyUniforms.sunDir,
         LIGHT_DIR[0], LIGHT_DIR[1], LIGHT_DIR[2]);
+    rl.setShaderValueVector3(skyShader, skyUniforms.sunTrueDir,
+        SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]);
     rl.setShaderValueVector4(skyShader, skyUniforms.sunColor,
         LIGHT_COLOR[0], LIGHT_COLOR[1], LIGHT_COLOR[2], 1.0);
     rl.setShaderValue(skyShader, skyUniforms.cloudiness, cloudiness, rl.SHADER_UNIFORM_FLOAT);
