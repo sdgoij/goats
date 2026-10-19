@@ -9,13 +9,19 @@
 # Windows, where the SDK ships `emcc.bat`/`emcmake.bat` and a bare
 # `Command::new("emcmake")` is not found (WASM.md, "The build, concretely").
 #
-# Usage: web/build.sh [check | client [profile] | serve]     (default: client)
+# Usage: web/build.sh [check | client [profile] | serve | smoke]  (default: client)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 DIST="$HERE/dist"
 TARGET=wasm32-unknown-emscripten
+
+# `smoke` drives an already-built `dist` over the DevTools protocol, so it needs
+# Node and a browser, not emsdk. Hand it off before the SDK check below.
+if [ "${1:-client}" = "smoke" ]; then
+    exec node "$HERE/smoke.js"
+fi
 
 # ---- emsdk, and the two variables it does not set for us --------------------
 # The gate is the SDK variable, not `emcc`: the fork's `build.rs` reads exactly
@@ -119,7 +125,7 @@ case "${1:-client}" in
         python -m http.server 8000 --directory "$DIST"
         ;;
     *)
-        echo "web: usage: $(basename "$0") [check | client [profile] | serve]" >&2
+        echo "web: usage: $(basename "$0") [check | client [profile] | serve | smoke]" >&2
         exit 2
         ;;
 esac

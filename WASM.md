@@ -417,6 +417,28 @@ As on the phone, the testable half is the half that would otherwise rot:
   build script drops a one-file server beside the artifacts; `file://` will not
   work.
 
+## The smoke test
+
+`web/build.sh smoke` is the one command that answers "does the built client
+still boot and draw?" It serves `web/dist` and drives the client in headless
+Chrome or Edge over the DevTools protocol:
+
+- A headless page has no compositor, so `requestAnimationFrame` never ticks --
+  and the scene's loader advances one step per frame (`sceneLoadStep` in
+  `game/goat.js`). Left to rAF, the page stops after the first step and looks
+  hung. Timers are throttled for the same reason, so `web/smoke.js` calls the
+  exported `goats_frame()` itself, once per loader step.
+- It waits for the ready line (default `sky: shader`), draws ten more frames,
+  and writes `target/wasm-smoke.png` plus the full console in
+  `target/wasm-smoke.log`.
+- It fails on an uncaught exception, a missing ready line, or the sky's
+  "cumulus mips did not build" fallback. `BROWSER` picks the executable when
+  more than one is installed; `SMOKE_PORT`, `SMOKE_DEBUG_PORT`, `SMOKE_READY`,
+  `SMOKE_SHOT` and `SMOKE_LOG` override the defaults.
+
+It checks one path -- boot and a drawn frame -- not gameplay or input; the
+harness and `es3.rs` remain the headless gates.
+
 ## Risks and the calls to confirm
 
 1. **Is the interpreter fast enough in a browser?** *Answered, with the blocker
