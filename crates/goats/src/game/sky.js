@@ -104,32 +104,50 @@ const SKY_FS = [
     "}",
     // ---- the cumulus slab ----
     "float slabY(vec3 p) { return (p.y - cloudBase) / max(cloudTop - cloudBase, 1e-3); }",
+    "float remap(float v, float a, float b, float c, float d) {",
+    "    return c + (v - a) * (d - c) / max(b - a, 1e-4);",
+    "}",
     "float cloudDensity(vec3 p, vec2 drift, float detailAmt) {",
     "    float y = slabY(p);",
     "    if (y < 0.0 || y > 1.0) return 0.0;",
-    // Shear with height (so it is not an extrusion) plus the wind drift.
-    "    vec2 q = p.xz * cloudScale + drift + vec2(y * 0.85, y * -0.45);",
+    // Shear with height (so it is not an extrusion) plus the wind drift. The
+    // 2.2 is the shader's own: the scene's scale makes features wider than the
+    // slab is thick, which reads as streaks rather than puffs.
+    "    float domain = cloudScale * 2.2;",
+    "    vec2 q = p.xz * domain + drift * 2.2 + vec2(y * 1.4, y * -0.7);",
     // Domain warp: the cheap trick that turns blobby fBm into billows.
     "    float warp = fbm2(q * 0.5);",
-    "    float base = fbm3(q + warp * 0.75);",
-    // A second field sheared the other way. Without it a high-coverage deck is
-    // a function of height alone and reads as horizontal bands.
+    "    float base = fbm3(q + warp * 1.1);",
+    // The fourth octave Sky3D's texture supplies; the first three are too smooth
+    // to give a cumulus edge. It fades with distance like the erosion, or the
+    // deck's far edge turns to speckle at a grazing angle.
+    "    base += 0.18 * detailAmt * vnoise2(q * 8.1 + 3.0);",
+    // Sky3D's density: double the field for contrast, then a soft threshold
+    // that rises with height. The base stays dense while the top erodes, so
+    // the deck rounds off instead of ending on a plane.
+    "    float dens = base * 2.0;",
+    // A second field sheared the other way, for vertical structure.
     "    if (detailAmt > 0.001) {",
-    "        base += (vnoise2(q * 3.1 + vec2(y * 5.0, y * -3.0) + 19.0) - 0.5) * 0.22;",
+    "        dens += (vnoise2(q * 3.1 + vec2(y * 5.0, y * -3.0) + 19.0) - 0.5) * 0.44;",
     "    }",
-    // Soft base, rounded top. Slightly thicker than before, so the top does not
-    // collapse to a line when the deck is solid.
-    "    float shape = smoothstep(0.0, 0.20, y) * (1.0 - smoothstep(0.62, 1.0, y));",
-    "    float d = base * shape;",
-    // Coverage: the threshold falls as cloudiness rises, and rises with height
-    // so the top breaks up first.
-    "    float cover = mix(0.78, 0.14, cloudiness) + y * 0.10;",
-    "    d = max(0.0, d - cover) / max(1.0 - cover, 1e-3);",
+    // `cloudiness` is the scene's 0..1; Sky3D's coverage is 0.15..0.95 over it.
+    "    float coverage = mix(0.15, 0.95, cloudiness);",
+    "    float cov = 1.0 - coverage;",
+    // 4.5 rather than Sky3D's 3.5: this pass's fBm has a longer high tail than
+    // its noise texture, so the same threshold covers much more sky.
+    "    float mask = smoothstep(0.0, cov * 4.5 + y, dens);",
+    "    dens *= mask;",
+    // The remap lands at a full 1.0 in the core, which is more opaque than the
+    // field this pass used before; 0.70 keeps the optical depth (and the sun
+    // march's self-shadow) in the same range.
+    "    dens = remap(dens, 1.0 - mask, 1.0, 0.0, 1.0) * 0.70;",
+    // Soft base and top, so the deck does not start or end on a plane.
+    "    dens *= smoothstep(0.0, 0.08, y) * (1.0 - smoothstep(0.72, 1.0, y));",
     // Erode the edges, but only near a surface -- that is where it reads.
-    "    if (detailAmt > 0.001 && d > 0.02 && d < 0.55) {",
-    "        d -= detailAmt * fbm2(q * 2.6 + 13.0) * (0.55 - d) * 1.6;",
+    "    if (detailAmt > 0.001 && dens > 0.02 && dens < 0.55) {",
+    "        dens -= detailAmt * fbm2(q * 2.6 + 13.0) * (0.55 - dens) * 1.6;",
     "    }",
-    "    return clamp(d, 0.0, 1.0);",
+    "    return clamp(dens, 0.0, 1.0);",
     "}",
     // Extinction between a point and the sun: the self-shadow term.
     "float sunTau(vec3 p, vec2 drift) {",
@@ -240,7 +258,7 @@ const SKY_FS = [
     // Sky3D lights a cloud from its top down (`exp(h)`), which is what keeps an
     // overcast deck from reading as one flat grey sheet.
     "            float cy = clamp((pos.y - cloudBase) / max(cloudTop - cloudBase, 1e-3), 0.0, 1.0);",
-    "            c *= 0.72 + 0.55 * cy;",
+    "            c *= 0.68 + 0.62 * cy;",
     // ...and at dusk the whole deck picks up the sun's warmth, even when the
     // direct light has already flipped to the moon.
     "            c *= mix(vec3(1.0), vec3(1.0, 0.70, 0.48), dusk * 0.85);",
