@@ -121,6 +121,13 @@ static ASSETS: &[(&str, &[u8])] = &[
         "goat_animated.glb",
         include_bytes!("../../../goat_animated.glb"),
     ),
+    // The cumulus slice texture (Sky3D's `noiseClouds.png`, MIT). The sky pass
+    // reads it as a 3D noise by mixing two z-slices; it is the one cloud asset
+    // the JS client borrows from the addon.
+    (
+        "noiseClouds.png",
+        include_bytes!("../../../godot/addons/sky_3d/assets/textures/noiseClouds.png"),
+    ),
     // The background track and the two weather beds (60 s loops).
     (
         "sfx/jkstudios-rage-2-187959.mp3",

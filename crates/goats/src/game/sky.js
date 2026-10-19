@@ -33,6 +33,7 @@
 const CLOUD_LEVELS = ["low", "medium", "high"];
 
 let skyShader = -1;
+let skyNoise = -1;              // the cumulus slice texture (`noiseClouds.png`)
 let skyUniforms = null;
 let useSkyShader = true;
 let skyTime = 0;
@@ -61,6 +62,7 @@ const SKY_FS = [
     // day, the moon after dusk -- but the warmth stays on the sun's side for a
     // while after it sets, which is what the horizon rim below reads.
     "uniform vec3  sunTrueDir;",
+    "uniform sampler2D cumulus_texture;",
     "uniform vec4  sunColor;",
     "uniform float cloudiness;",
     "uniform float time;",
@@ -107,46 +109,60 @@ const SKY_FS = [
     "float remap(float v, float a, float b, float c, float d) {",
     "    return c + (v - a) * (d - c) / max(b - a, 1e-4);",
     "}",
+    // Sky3D's 3D noise from a 2D texture: two z-slices, mixed by the fraction.
+    // `p.xy` is in texture repeats and `p.z` selects the slice.
+    "float sample_cumulus_noise(vec3 p) {",
+    "    vec2 offset = vec2(0.317, 0.123);",
+    "    vec2 uv0 = p.xy + offset * floor(p.z);",
+    "    vec2 uv1 = uv0 + offset;",
+    "    float a = textureLod(cumulus_texture, uv0, 0.0).r;",
+    "    float b = textureLod(cumulus_texture, uv1, 0.0).r;",
+    "    return mix(a, b, fract(p.z));",
+    "}",
+    // Sky3D's four octaves. The last two fade with distance through `detailAmt`
+    // (and are skipped for the sun march), which is this pass's answer to the
+    // texture aliasing at a grazing angle.
+    "float calc_cumulus_fbm(vec3 p, float l, float detailAmt) {",
+    "    float ret = 0.51749673 * sample_cumulus_noise(p);",
+    "    p *= l;",
+    "    ret += 0.25584929 * sample_cumulus_noise(p);",
+    "    if (detailAmt > 0.001) {",
+    "        float hi = clamp(detailAmt * 3.0, 0.0, 1.0);",
+    "        p *= l;",
+    "        ret += 0.12527603 * hi * sample_cumulus_noise(p);",
+    "        p *= l;",
+    "        ret += 0.06255931 * hi * sample_cumulus_noise(p);",
+    "    }",
+    "    return ret;",
+    "}",
     "float cloudDensity(vec3 p, vec2 drift, float detailAmt) {",
     "    float y = slabY(p);",
     "    if (y < 0.0 || y > 1.0) return 0.0;",
-    // Shear with height (so it is not an extrusion) plus the wind drift. The
-    // 2.2 is the shader's own: the scene's scale makes features wider than the
-    // slab is thick, which reads as streaks rather than puffs.
-    "    float domain = cloudScale * 2.2;",
-    "    vec2 q = p.xz * domain + drift * 2.2 + vec2(y * 1.4, y * -0.7);",
-    // Domain warp: the cheap trick that turns blobby fBm into billows.
-    "    float warp = fbm2(q * 0.5);",
-    "    float base = fbm3(q + warp * 1.1);",
-    // The fourth octave Sky3D's texture supplies; the first three are too smooth
-    // to give a cumulus edge. It fades with distance like the erosion, or the
-    // deck's far edge turns to speckle at a grazing angle.
-    "    base += 0.18 * detailAmt * vnoise2(q * 8.1 + 3.0);",
+    // The world slab in texture repeats. Sky3D's own sphere works out to
+    // ~0.0003 UV per metre; the slab is shallower, so the scale is a little
+    // larger. `drift` is still in the old q units, so it is scaled with it.
+    "    vec2 uv = p.xz * 0.001 - drift * 0.0083;",
+    "    float slice = (y - 0.5) * 4.0;",
+    "    float base = calc_cumulus_fbm(vec3(uv, slice), 2.7, detailAmt);",
+    // The texture's fBm is narrow around its mean; expanding that spread is
+    // what turns it from a haze into separate cloud bodies.
+    "    base = clamp((base - 0.43) * 1.5 + 0.43, 0.0, 1.0);",
     // Sky3D's density: double the field for contrast, then a soft threshold
     // that rises with height. The base stays dense while the top erodes, so
     // the deck rounds off instead of ending on a plane.
     "    float dens = base * 2.0;",
-    // A second field sheared the other way, for vertical structure.
-    "    if (detailAmt > 0.001) {",
-    "        dens += (vnoise2(q * 3.1 + vec2(y * 5.0, y * -3.0) + 19.0) - 0.5) * 0.44;",
-    "    }",
     // `cloudiness` is the scene's 0..1; Sky3D's coverage is 0.15..0.95 over it.
     "    float coverage = mix(0.15, 0.95, cloudiness);",
     "    float cov = 1.0 - coverage;",
-    // 4.5 rather than Sky3D's 3.5: this pass's fBm has a longer high tail than
-    // its noise texture, so the same threshold covers much more sky.
-    "    float mask = smoothstep(0.0, cov * 4.5 + y, dens);",
+    // 3.0 rather than Sky3D's 3.5: bilinear filtering smooths the texture's
+    // high tail, but 2.5 covered too much sky at this scale.
+    "    float mask = smoothstep(0.0, cov * 3.0 + y, dens);",
     "    dens *= mask;",
-    // The remap lands at a full 1.0 in the core, which is more opaque than the
-    // field this pass used before; 0.70 keeps the optical depth (and the sun
-    // march's self-shadow) in the same range.
-    "    dens = remap(dens, 1.0 - mask, 1.0, 0.0, 1.0) * 0.70;",
+    // The remap lands at a full 1.0 in the core; 0.70 keeps the optical depth
+    // (and the sun march's self-shadow) in the range the old field had.
+    "    dens = remap(dens, 1.0 - mask, 1.0, 0.0, 1.0) * 0.85;",
     // Soft base and top, so the deck does not start or end on a plane.
     "    dens *= smoothstep(0.0, 0.08, y) * (1.0 - smoothstep(0.72, 1.0, y));",
-    // Erode the edges, but only near a surface -- that is where it reads.
-    "    if (detailAmt > 0.001 && dens > 0.02 && dens < 0.55) {",
-    "        dens -= detailAmt * fbm2(q * 2.6 + 13.0) * (0.55 - dens) * 1.6;",
-    "    }",
     "    return clamp(dens, 0.0, 1.0);",
     "}",
     // Extinction between a point and the sun: the self-shadow term.
@@ -154,7 +170,9 @@ const SKY_FS = [
     "    float stepLen = (cloudTop - cloudBase) * 0.28;",
     "    vec3 step = sunDir * stepLen;",
     "    float tau = 0.0;",
-    "    for (int i = 0; i < 3; i++) { p += step; tau += cloudDensity(p, drift, 0.0); }",
+    // 0.2 keeps two extra octaves in the self-shadow: with only the first two
+    // the density is too low and the cloud bases stay flat.
+    "    for (int i = 0; i < 3; i++) { p += step; tau += cloudDensity(p, drift, 0.2); }",
     "    return tau * stepLen;",
     "}",
     // Henyey-Greenstein: a forward lobe is the bright rim on the sun's side, a
@@ -321,6 +339,7 @@ function makeSkyShader() {
         horizonColor: rl.getShaderLocation(skyShader, "horizonColor"),
         sunDir: rl.getShaderLocation(skyShader, "sunDir"),
         sunTrueDir: rl.getShaderLocation(skyShader, "sunTrueDir"),
+        cumulusTexture: rl.getShaderLocation(skyShader, "cumulus_texture"),
         sunColor: rl.getShaderLocation(skyShader, "sunColor"),
         cloudiness: rl.getShaderLocation(skyShader, "cloudiness"),
         time: rl.getShaderLocation(skyShader, "time"),
@@ -339,6 +358,16 @@ function makeSkyShader() {
         // Which part of the sky a pass draws, `SKY_LAYER_*` below.
         skyLayer: rl.getShaderLocation(skyShader, "skyLayer"),
     };
+    // The cumulus noise is the addon's `noiseClouds.png`, embedded in `ASSETS`.
+    // A miss is not fatal -- the shader samples zero and the clouds thin out --
+    // but it is named so a missing asset is visible in the log.
+    if (typeof rl.loadTexture === "function") skyNoise = rl.loadTexture("noiseClouds.png");
+    if (skyNoise >= 0 && typeof rl.setTextureFilter === "function") {
+        // raylib loads with point filtering; the slice noise is magnified a lot,
+        // and point samples read as blocky clouds.
+        rl.setTextureFilter(skyNoise, rl.TEXTURE_FILTER_BILINEAR);
+    }
+    if (skyNoise < 0) console.log("sky: cumulus texture did not load - clouds will be thin");
     console.log("sky: shader " + skyShader + ", clouds " + CLOUD_LEVELS[SETTINGS.cloud] +
         " (" + TUNING.sky.steps[SETTINGS.cloud] + " steps)");
 }
@@ -425,6 +454,9 @@ function setSkyUniforms(sw, sh, layer) {
     const shadow = 0.09 + 0.40 * skyLight;
     // The high cirrus only shows up once the sky is broken or overcast.
     const cirrus = clamp((cloudiness - 0.25) * 1.2, 0, 0.85);
+    if (skyNoise >= 0) {
+        rl.setShaderValueTexture(skyShader, skyUniforms.cumulusTexture, skyNoise);
+    }
     rl.setShaderValueVector2(skyShader, skyUniforms.screenSize, sw, sh);
     rl.setShaderValueVector3(skyShader, skyUniforms.camPos, SKY_CAM[0], SKY_CAM[1], SKY_CAM[2]);
     rl.setShaderValueVector3(skyShader, skyUniforms.camForward, SKY_FWD[0], SKY_FWD[1], SKY_FWD[2]);
