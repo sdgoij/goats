@@ -72,7 +72,7 @@ static var WAVE_HEIGHT: float = 0.03
 static var WAVE_SCALE: float = 0.6
 static var WAVE_SPEED: float = 1.2
 static var WAVE_WIND: float = 0.8
-## `TUNING.weather.windNorm` is read from its one owner (`SkyDome.WIND_NORM`) rather than a
+## `TUNING.weather.windNorm` is read from its one owner (`SkyModel.WIND_NORM`) rather than a
 ## second copy here, for the gust's share below.
 ## `water.js`'s three structural numbers beside the tuning: the wetting curve's own
 ## exponent, the point where a draining table is called dry, and the depth below which
@@ -631,7 +631,7 @@ func wave_wind(wind_x: float, wind_z: float, wind_sway: float) -> Vector3:
 	var length: float = sqrt(wind_x * wind_x + wind_z * wind_z)
 	var dx: float = wind_x / length if length > 1e-3 else 1.0
 	var dz: float = wind_z / length if length > 1e-3 else 0.0
-	var gust: float = clampf(wind_sway / SkyDome.WIND_NORM, 0.0, 1.0)
+	var gust: float = clampf(wind_sway / SkyModel.WIND_NORM, 0.0, 1.0)
 	return Vector3(dx, dz, (1.0 - WAVE_WIND) + WAVE_WIND * gust)
 
 ## The seam a console and a mod read, and the gate's own view of the field: the level,

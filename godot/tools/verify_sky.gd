@@ -147,7 +147,7 @@ func _initialize() -> void:
 		var hours: float = float(parts[2])
 
 		# The bytes first, and exactly: `top` then `bot`.
-		var curve: Dictionary = SkyDome.sample(hours)
+		var curve: Dictionary = SkyModel.sample(hours)
 		var top: Color = curve["top"]
 		var bot: Color = curve["bot"]
 		var mine_bytes: Array[int] = [
@@ -165,14 +165,14 @@ func _initialize() -> void:
 		# Then the floats, which start after `h` and the six bytes.
 		var j: int = 9
 		var sky_light: float = curve["light"]
-		var sun: Vector3 = SkyDome.sun_dir(hours)
-		var light: Vector3 = SkyDome.light_dir(hours)
-		var colour: Color = SkyDome.light_color(hours, sky_light)
-		var ambient: Color = SkyDome.ambient(sky_light)
-		var warm: float = SkyDome.warmth(sky_light)
-		var tint: Vector3 = SkyDome.ambient_tint(sky_light)
-		var lit: Color = SkyDome.cloud_lit(sky_light, warm)
-		var shade: Color = SkyDome.cloud_shadow(sky_light)
+		var sun: Vector3 = SkyModel.sun_dir(hours)
+		var light: Vector3 = SkyModel.light_dir(hours)
+		var colour: Color = SkyModel.light_color(hours, sky_light)
+		var ambient: Color = SkyModel.ambient(sky_light)
+		var warm: float = SkyModel.warmth(sky_light)
+		var tint: Vector3 = SkyModel.ambient_tint(sky_light)
+		var lit: Color = SkyModel.cloud_lit(sky_light, warm)
+		var shade: Color = SkyModel.cloud_shadow(sky_light)
 		var mine: Array[float] = [
 			sky_light,
 			sun.x, sun.y, sun.z,

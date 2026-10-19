@@ -1,27 +1,26 @@
-# The sky: `world.js`'s day/night curve and `lighting.js`'s light, drawn by
-# `sky.gdshader` (`sky.js`'s `SKY_FS`).
+# The sky's *model*: `world.js`'s day/night curve and `lighting.js`'s light, plus the
+# reference renderer `sky.gdshader` (`sky.js`'s `SKY_FS`).
 #
-# Named `SkyDome` and not `Sky` because `Sky` is already a Godot resource, and a
+# The client's sky is drawn by the Sky3D addon now (`addons/sky_3d`), driven from
+# `main.gd`'s `_apply_sky`. This file remains the clock, the sun/moon arc and the
+# `light` factor gameplay reads (the goat's night drain), and `tools/verify_sky.gd`
+# still measures it against the JavaScript. `make_material`/`apply` are kept as the
+# reference renderer and the fallback path; they are no longer the scene's sky.
+#
+# Named `SkyModel` and not `Sky` because `Sky` is already a Godot resource, and a
 # script class that hides a native one is a trap: `Environment.sky` and the scene's
 # `[sub_resource type="Sky"]` both mean the engine's, and a global class of the same
-# name makes which one is meant a matter of where you are standing.
+# name makes which one is meant a matter of where you are standing. The name also no
+# longer collides with Sky3D's own `SkyDome` class.
 #
-# Godot draws the sky here rather than the scene's own full-screen pass. A
-# `shader_type sky` material gets the same maths for free -- `EYEDIR` stands in for
-# the view ray `SKY_FS` rebuilds from the camera basis, and Godot's sky stage
-# re-renders every frame -- but what decides the *colour of everything* is not the
-# shader, it is this file: the keyframed curve, the sun's arc and the ambient the
-# light and the environment are set from.
-#
-# Those are transcriptions, and `tools/verify_sky.gd` checks them against the
-# JavaScript itself -- the scene's own engine -- the way `tools/verify_terrain.gd`
-# checks the heightfield. The numbers are the scene's numbers because a sky that is
-# a little wrong is a whole scene that is a little wrong.
+# The old renderer used a `shader_type sky` material on the environment. Sky3D owns
+# that material now, so `make_material`/`apply` are the reference implementation and
+# the fallback, not the frame the client draws.
 #
 # Every local is annotated rather than inferred -- see the `:=` note in
 # `terrain.gd` for why a `var x := <call to a static function of this class>` is
 # not survivable.
-class_name SkyDome
+class_name SkyModel
 extends RefCounted
 
 const SHADER: Shader = preload("res://src/sky.gdshader")

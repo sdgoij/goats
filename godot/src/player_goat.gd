@@ -81,7 +81,7 @@ const V_CYCLE := 0.70
 
 ## `TUNING.weather` / `TUNING.food.rainShelter`, for the two things the weather does
 ## to a goat that is ported: how fast it moves and how fast it tires. `windNorm` is the
-## *sky's* leaf (`SkyDome.WIND_NORM`) rather than a second copy here, because `TUNING` has one
+## *sky's* leaf (`SkyModel.WIND_NORM`) rather than a second copy here, because `TUNING` has one
 ## owner per number and the sky is what derives the gust this normalises.
 static var RAIN_SLOW: float = 0.28
 static var WIND_SLOW: float = 0.07
@@ -343,7 +343,7 @@ static func weather_speed(belly: float, rain: float, wind_sway: float) -> float:
 	if rain <= 0.0:
 		return 1.0
 	var shelter: float = RAIN_SLOW * (1.0 - RAIN_SHELTER * clampf(belly, 0.0, 1.0))
-	var wind: float = WIND_SLOW * minf(1.0, wind_sway / SkyDome.WIND_NORM)
+	var wind: float = WIND_SLOW * minf(1.0, wind_sway / SkyModel.WIND_NORM)
 	return 1.0 - (shelter + wind) * rain
 
 ## `weather.js` `updateWeatherEffects`'s `weatherDrain`: how much faster a soaked goat
@@ -352,7 +352,7 @@ static func weather_drain(weather: Dictionary) -> float:
 	var rain: float = float(weather.get("rain_amount", 0.0))
 	if rain <= 0.0:
 		return 1.0
-	var wind: float = minf(1.0, float(weather.get("wind_sway", 0.0)) / SkyDome.WIND_NORM)
+	var wind: float = minf(1.0, float(weather.get("wind_sway", 0.0)) / SkyModel.WIND_NORM)
 	return 1.0 + (WET_DRAIN + WIND_DRAIN * wind) * rain
 
 ## The speed of a gait, in m/s, from its stride, its duty and the clip's duration --

@@ -463,7 +463,7 @@ func _time(parts: PackedStringArray) -> String:
 	var wanted: Variant = ctl_arg(parts, 1)
 	if wanted == null:
 		return "error time expects hours"
-	var wrapped: float = SkyDome.mod24(float(wanted))
+	var wrapped: float = SkyModel.mod24(float(wanted))
 	_call("cmd_set_hours", [wrapped])
 	return "ok time " + num(ctl_round(wrapped))
 

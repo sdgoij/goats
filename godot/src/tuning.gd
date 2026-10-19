@@ -210,8 +210,8 @@ static func _leaves() -> Dictionary:
 			# The wind's base and its normaliser are the sky's (it derives the gust); the rest are
 			# the two shares the goat feels, and the hold times are the machine's. `windNorm` lives
 			# only on the sky, which is what the goat and the water read.
-			"weather.windBase": [SkyDome, &"WIND_BASE", PackedStringArray()],
-			"weather.windNorm": [SkyDome, &"WIND_NORM", PackedStringArray()],
+			"weather.windBase": [SkyModel, &"WIND_BASE", PackedStringArray()],
+			"weather.windNorm": [SkyModel, &"WIND_NORM", PackedStringArray()],
 			"weather.rainMax": [Weather, &"RAIN_MAX", PackedStringArray()],
 			"weather.rainSlow": [PlayerGoat, &"RAIN_SLOW", PackedStringArray()],
 			"weather.windSlow": [PlayerGoat, &"WIND_SLOW", PackedStringArray()],
@@ -241,7 +241,7 @@ static func _leaves() -> Dictionary:
 			"water.drag": [Water, &"DRAG", PackedStringArray()],
 			"water.dragEnergy": [Water, &"DRAG_ENERGY", PackedStringArray()],
 			# The day's length is the sky's; the cold's multiplier is the goat's.
-			"world.dayLength": [SkyDome, &"DAY_LENGTH", PackedStringArray()],
+			"world.dayLength": [SkyModel, &"DAY_LENGTH", PackedStringArray()],
 			"world.nightDrainMult": [PlayerGoat, &"NIGHT_DRAIN_MULT", PackedStringArray()],
 			# `count` is the scene's (header); the linger and the pool are the herd's.
 			"herd.deathLinger": [Bots, &"DEATH_LINGER", PackedStringArray()],
@@ -252,14 +252,14 @@ static func _leaves() -> Dictionary:
 			"camera.minDist": [Tuning, &"CAMERA_MIN_DIST", PackedStringArray()],
 			"camera.maxDist": [Tuning, &"CAMERA_MAX_DIST", PackedStringArray()],
 			# The cloud layer's own numbers, which the sky shader's march reads every frame.
-			"sky.cloudBase": [SkyDome, &"CLOUD_BASE", PackedStringArray()],
-			"sky.cloudTop": [SkyDome, &"CLOUD_TOP", PackedStringArray()],
-			"sky.scale": [SkyDome, &"CLOUD_SCALE", PackedStringArray()],
-			"sky.detail": [SkyDome, &"CLOUD_DETAIL", PackedStringArray()],
-			"sky.absorb": [SkyDome, &"CLOUD_ABSORB", PackedStringArray()],
-			"sky.cirrusLevel": [SkyDome, &"CIRRUS_LEVEL", PackedStringArray()],
-			"sky.speed": [SkyDome, &"CLOUD_SPEED", PackedStringArray()],
-			"sky.steps": [SkyDome, &"CLOUD_STEPS", PackedStringArray()],
+			"sky.cloudBase": [SkyModel, &"CLOUD_BASE", PackedStringArray()],
+			"sky.cloudTop": [SkyModel, &"CLOUD_TOP", PackedStringArray()],
+			"sky.scale": [SkyModel, &"CLOUD_SCALE", PackedStringArray()],
+			"sky.detail": [SkyModel, &"CLOUD_DETAIL", PackedStringArray()],
+			"sky.absorb": [SkyModel, &"CLOUD_ABSORB", PackedStringArray()],
+			"sky.cirrusLevel": [SkyModel, &"CIRRUS_LEVEL", PackedStringArray()],
+			"sky.speed": [SkyModel, &"CLOUD_SPEED", PackedStringArray()],
+			"sky.steps": [SkyModel, &"CLOUD_STEPS", PackedStringArray()],
 			# The devices: the field, the trigger, the bang and the look. The crate's dish is
 			# `craters.gd`'s, because the crater is a term in the ground rather than a bang's effect.
 			"explosions.safe": [Explosions, &"SAFE", PackedStringArray()],

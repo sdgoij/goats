@@ -38,10 +38,11 @@ plan.
 | `src/meadow.gd` | The meadow as food: the cell hash, the nearest tuft, bites and regrowth (`food.js`) |
 | `src/explosions.gd` | The devices: the derived minefield, the trapped tufts, the fuse, the bang and the effects (`explosions.js`) |
 | `src/craters.gd` | The holes a bang leaves, as a term in the heightfield, healing over four minutes |
-| `src/sky.gd` | The day/night curve, the sun's arc, the light and the ambient, transcribed from `world.js` and `lighting.js` and measured against them |
-| `src/sky.gdshader` | The sky, drawn: `sky.js`'s raymarched cloud slab as a `shader_type sky` |
+| `src/sky.gd` | The day/night curve, the sun's arc, the light and the ambient, transcribed from `world.js` and `lighting.js` and measured against them. The client's sky is rendered by Sky3D and driven from this file's clock and arc |
+| `src/sky.gdshader` | The reference sky, drawn: `sky.js`'s raymarched cloud slab as a `shader_type sky`. Kept as the fallback; Sky3D draws the client's sky |
+| `addons/sky_3d/` | Sky3D (vendored, MIT): the atmosphere, clouds, fog, stars and sun/moon discs. `main.gd`'s `_set_up_sky` and `_apply_sky` own the hand-off |
 | `src/weather.gd` | The weather: `weather.js`'s state machine, the values a session mirrors and the rain's own integration |
-| `src/celestial.gd` | The two bodies: `world.js`'s `celestialPlacement` as real sun and moon spheres, with the sun's additive glare |
+| `src/celestial.gd` | The two bodies: `world.js`'s `celestialPlacement` as real sun and moon spheres, with the sun's additive glare. Out of the frame while Sky3D draws its own discs; kept for the fallback |
 | `src/rain.gd` | The rain, drawn: `weather.js`'s `drawRain` streaks as a screen-space overlay under the HUD |
 | `src/audio.gd` | The sound: `audio.js`'s ten slots, the variety PRNG, the bang attenuation, the weather beds and the mute (M22) — and `built_in()`, the built-in half of the asset slot table (`APIv1.md` §4.11) the mod facade merges with what the mods declared |
 | `src/voice.gd` | Voice chat's device half (M13b): the microphone (`AudioStreamMicrophone` on a muted capture bus) and the ear (an `AudioStreamGenerator` at the wire's 48 kHz). The *codec* is the bridge's (`voice.rs`, over a shared `crates/voice`) |
@@ -197,6 +198,11 @@ sh godot/tools/gates.sh              # GODOT_BIN=…, GATE_TIMEOUT=… if the de
 # The sky's curve, the sun's arc, the light and the ambient, against the JS ones.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
     --script res://tools/verify_sky.gd
+
+# The Sky3D hand-off: the addon is the scene's sky, its clock is the port's, and
+# the weather reaches its cloud covers.
+"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
+    --script res://tools/verify_sky3d.gd
 
 # The meadow: `tuftField`'s 32-bit cell hashes, positions, culls and flags.
 "C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe" --headless --path godot \
@@ -363,9 +369,11 @@ still Godot's rather than the scene's is the *lighting model*: the terrain, the
 grass and the goat are lit by Godot materials under a `DirectionalLight3D` with
 Godot's shadows, not by the scene's own lit program and hand-rolled shadow map
 (`PORT.md` section 5). The port's colours also run through Godot's linear pipeline,
-which the sky compensates for and the ground does not (`PORT.md` section 9). The two
-bodies are Godot meshes — the moon lit by a light only it sees — rather than the
-scene's celestial shader, the rain is a `Control` drawing the scene's own streaks, and
+which the sky compensates for and the ground does not (`PORT.md` section 9). The sky
+and its two bodies are Sky3D's now — the port's own `celestial.gd` discs are out of
+the frame, and the addon draws its sun and moon in the sky shader so the clouds can
+cover them — while `sky.gd` still owns the clock, the arc and the `light` factor gameplay
+reads. The rain is a `Control` drawing the scene's own streaks, and
 the water is a `spatial` shader carrying the scene's vertex lift, its absorption, its
 chop and its wake under Godot's own light and reflection — the rings are three `vec4`
 uniforms and the splashes are a `MultiMeshInstance3D` (`water_splash.gd`), a deep pool

@@ -29,7 +29,7 @@ flowchart TB
     subgraph godot["godot/ — the Godot project"]
         loop["Godot loop, _process"]
         core["GDScript: world, gaits, health,<br/>weather, day/night, bots, water, food"]
-        fx["Godot shaders: lit, sky, water, celestial"]
+        fx["Godot shaders: lit, water; Sky3D for sky and celestial"]
         ui["Control UI: menu, HUD, console"]
     end
 
@@ -588,12 +588,14 @@ its own lit program and hand-rolled shadow map, and this uses a Godot material,
 Godot's light and Godot's shadows. That is the decision from section 5 -- the
 look is a Godot look, the ground is the scene's ground.
 
-**The sky** (`verify_sky.gd`): `sky.gd` is `world.js`'s day/night curve and
-`lighting.js`'s light, transcribed, and `sky.gdshader` is `sky.js`'s `SKY_FS`.
-Godot draws it -- a `shader_type sky` material on the `WorldEnvironment`, with
-`EYEDIR` standing in for the view ray the GLSL rebuilds from the camera basis, and
-`REALTIME` so the sun moves and the clouds drift -- but what decides the colour of
-everything is the curve, so the curve is what the gate measures:
+**The sky** (`verify_sky.gd`, `verify_sky3d.gd`): `sky.gd` is `world.js`'s
+day/night curve and `lighting.js`'s light, transcribed, and `sky.gdshader` is
+`sky.js`'s `SKY_FS`. The client *draws* the sky with the vendored Sky3D addon
+(`addons/sky_3d`): its atmosphere, clouds, stars and sun/moon discs replace the
+`sky.gdshader` pass, and `main.gd`'s `_apply_sky` drives it from the port's clock,
+sun/moon arc, cloudiness and wind every frame. `sky.gdshader` remains the reference
+renderer and fallback. What decides the colour of everything is still the curve, so
+the curve is what `verify_sky.gd` measures:
 
 ```
 compared 345 field(s) over 15 hour(s)
@@ -614,6 +616,12 @@ transcription would have been quietly wrong about dawn forever. Second, the fiel
 that must agree *exactly* -- the curve's bytes -- do, because both sides
 interpolate in the same order (`a + (b - a) * t`, and not Godot's `lerpf`, which
 associates the other way) and then round.
+
+`verify_sky3d.gd` is the other half: it instantiates the scene, pins the clock at
+12:00 and the cover at overcast, and asserts that the `WorldEnvironment` carries the
+Sky3D script, the addon built its sky material and both lights, its own timer is
+paused, the port's hours and sun/moon arc reached it, the weather reached its two
+cloud covers, and `celestial.gd` is out of the frame.
 
 **The grass** (`verify_grass.gd`): `grass.gd` is `weather.js`'s `tuftField`, drawn
 as a `MultiMesh`. The hard part is not the drawing: the scene's cell hash is 32-bit
@@ -1392,7 +1400,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 | Terrain heightfield (3-octave noise, materials, drifting) | `game/world.js` | **Done**: `terrain.gd` (the field) + `terrain_mesh.gd` (the grid) |
 | Grass field (per-cell hash, follows the goat, sways) | `game/weather.js` | **Done**: `grass.gd`, a `MultiMesh`, culled where a pool hides it |
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
-| Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` + `sky.gdshader`, and the two discs in `celestial.gd` |
+| Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` is the clock/curve/arc and drives Sky3D; the client draws the sky with the vendored addon (`addons/sky_3d`), and `sky.gdshader` + `celestial.gd` remain the reference/fallback |
 | Lighting + shadows | `game/lighting.js` | `DirectionalLight3D` + Godot's shadow atlas |
 | Water pools (level, chop, fresnel, wake, splashes, reflection) | `game/water.js` | **Done**: `water.gd` (the table, the wading and the wake) + `water_mesh.gd` + `water.gdshader` (the surface, the chop, the rings and what reads the mirror) + `water_splash.gd` (the drops) + `water_reflect.gd` (the three tiers) + `water_mirror.gd` (the mirrored pass) + `terrain_mirror.gdshader` (the ground's own draw, seen from under it) |
 | Weather state machine, wind, rain | `game/weather.js` | **Done**: `weather.gd` (the machine and the drop pool) + `rain.gd` (the overlay) |
@@ -1408,16 +1416,15 @@ Two decisions were settled with the plan and are recorded where they belong:
   with `K` cycling map / planar / off. That pipeline is not reproduced. Godot's
   shadow atlas is the shadow system, and `K` keeps only the planar fallback as a
   debug view.
-- **The sky still ports, and it landed that way.** The best fit in the whole
-  port — `sky.js` is already a full-screen fragment shader that rebuilds the
-  camera ray and raymarches a cloud slab, which is what `shader_type sky` is for.
-  It went in without a rewrite: `EYEDIR` replaced the rebuilt ray, the raylib
-  uniforms became shader parameters, and the march count is still the Clouds
-  setting (`TUNING.sky.steps`). Two things are *not* the scene's: the slab needs
-  the eye's world position (Godot's sky is at infinity, and the density is a
-  function of where the eye sits inside the slab), and Godot's linear pipeline
-  means display-space colours have to be converted — which `sky.gd` does on the
-  CPU and the ground does not, section 9.
+- **The sky's model still ports; its drawing is Sky3D's.** `sky.gd` is still
+  `world.js`'s curve and `lighting.js`'s light, transcribed and gated, and it is
+  still what gameplay reads (`_sky_light`). The client renders it through the
+  vendored Sky3D addon instead of `sky.gdshader`: the addon owns the sky material,
+  the atmosphere, clouds, stars and the sun/moon discs, and `_apply_sky` writes the
+  port's clock, sun/moon arc, cloudiness and wind into it every frame. `sky.gdshader`
+  and `celestial.gd` remain as the reference renderer and the fallback. The trade is
+  the scene's exact `sky.js` look for a richer sky; the curve and its gate are
+  unchanged.
 
 `GPU_SKINNING` disappears: Godot always skins on the GPU, so the plain/skinned
 shader duality in `lighting.js` — which exists only because raylib can be built
@@ -1615,7 +1622,7 @@ Sizes are judgement, not measurement.
 | 2 | NetBridge | a Godot client joins `goatsd`; roster, chat, goat snapshots, world — **all four verified against the shipping `goatsd`, peer-to-peer and cross-engine, with the world's fields carried**; the *peers* and the *bite report* are in too (M21: `interop.sh pair` is two clients facing each other, and `Meadow.consume_key` has a caller from the wire at last), and so are a client that can **host** and both directions of a **bang** (M26: `verify_hosting.gd` holds the world payload the scene builds, and `verify_net.gd` runs three peers through a published world and a relayed bang); the **mods datagram** is in (a world mod's state on a datagram of its own, adopted by a joiner — `verify_hosting.gd`, `verify_net.gd`'s 7b), and the **voice** path is in too (M13b: the codec hangs on the bridge as `push_voice`/`pull_voice`/`set_voice_gain`, over a shared `crates/voice`, with the two devices in `voice.gd` — `verify_voice.gd`) | 3–4 |
 | 3 | Core world in GDScript | terrain, grass, gaits, health/energy, clock; a goat moves — **done: the field, the grid, the meadow, the sky with its light and the local goat with its gaits, health and energy are all in and gated against the scene's own, and `interop.sh shot` is a live host's herd with your goat in it**; the HUD is `drawHud` too now (M23) | 2–3 |
 | 4 | Weather, bots, food, mines | the README's world features, rules matching the JS — **done: the mines, the trapped tufts, the bangs and the craters are in and gated, the meadow is live, the weather machine runs offline and mirrors a host, and the bots' own AI is in and gated frame for frame, all against the JS**; what stage 4 leaves is the mods reaching GDScript | 3–5 |
-| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is in (`sky.gdshader`), the two bodies are Godot meshes on their own light (`celestial.gd`), and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
+| 5 | Shaders | lit, sky, water, celestial; `K`/`L`/`B` decided — **the sky is Sky3D (`addons/sky_3d`), driven from `sky.gd`; `sky.gdshader` and `celestial.gd` are the reference/fallback, and the lit and shadow work is Godot's own materials and lights, and the water's reflection is the port's own mirrored pass (M20e), the ground's half of it a shader of its own** | 3–5 |
 | 6 | UI | menu, HUD, console, Mods screen as `Control` trees | **done**: the HUD is a `Control` drawing `drawHud` (M23), the console is in (M24: `console.gd` + `commands.gd` + `verify_console.gd` -- the shell, the sixty-odd verbs, chat, and six of the seven `GOATS_*` knobs as verbs), and the menu's four screens are in with the settings they drive (M25: `menu.gd` + `settings.gd` + `verify_menu.gd`); what is left is the `Mods` screen's *list*, which waits on the scene loading mods (stage 1) | 2–3 |
 | 7 | Audio | music/SFX; voice through Godot's audio + the existing Opus path | **done for the SFX: ten slots, three of them the empty M19g ones, the variety PRNG, the bang reach and chain, the weather beds and the mute (M22: `audio.gd` + `verify_audio.gd`)**; the console's `mute` and `setting bgm|sfx` are in (M24) and the menu's two sliders are in (M25), and *voice* is in as of M13b, so stage 7 is done | 2–3 |
 | 8 | Mod surface | the `goats` bridge; JS mods load; the two examples work (or are reworked) | 4–6 — in progress: identity and logging, the readable groups, both drawing surfaces, a mod's own geometry and images, `gfx.unload`, a mod's own **sound**, the **asset slots**, the **entities** two mods see of each other, a world mod's **seeded stream**, the **devices** and **`goats.water`** are done (`verify_mod_surface.gd`, `verify_mod_gfx.gd`, `verify_mod_mesh.gd`, `verify_mod_audio.gd`), **the events are fired** (`update`/`shutdown`/`blast`), and the two examples have been **rewritten onto the API** — no `rl` in either, and every one of them loads, and *draws* right (the handle-kind and radians fixes, `_check_drawn`); the slot writes are in (`assets.override`/`add`, gated to a mod's own entry), and so are **reload and the watcher** (`mod reload` + `GOATS_WATCH` — `verify_scene_mods.gd`); **the writes the scene owns are in**, `explosions.armed` with them, and **the tuning tree is in** (`tuning.set`/`merge`, the `tuning.json` merge before an entry runs, and the `tuning` event — `verify_mod_surface.gd`), **the toggle is in** (`modSetEnabled`, with the session guard and `goatsEnd`'s teardown of a mod's registrations — `verify_mod_toggle.gd`), **the world-mod datagram is in** (`world.extend`'s transport: `ModHost::world_mods_json` on the `mods` datagram, adopted by a joiner — `verify_hosting.gd`, `verify_net.gd`'s 7b) and **the compiled path is done** (`crates/godot` links `crates/plugin`: a `.wasm` module loads, runs and reports, `verify_wasm_mod.gd`) |
@@ -1758,7 +1765,8 @@ Stage 2 is independent of everything else and can start immediately.
 - **The display-space/linear split between the two pipelines.** The scene writes a
   plain framebuffer, so its colours are display-space; Godot renders in linear and
   encodes to sRGB at the end. The port converts where it is cheap and it shows --
-  the sky's curve colours and cloud tints, once on the CPU in `sky.gd` -- and
+  the sky's curve colours and cloud tints, once on the CPU in `sky.gd` for the
+  reference renderer (`sky.gdshader`); Sky3D uses its own `source_color` uniforms -- and
   leaves the ground's and the grass's per-vertex albedos as the scene authored
   them. So the sky is the scene's sky and the meadow is a shade paler than the
   client's. Doing it properly is `srgb_to_linear()` on `terrain_mesh.gd`'s colours

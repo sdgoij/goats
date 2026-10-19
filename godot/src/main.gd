@@ -57,6 +57,12 @@ const PROBE_MOTION := 0.01
 ## bots do wander out, and this is what says so.
 const PROBE_RELIEF := 0.05
 
+## Sky3D derives its ambient from the sun, and at noon that is a bright white ambient --
+## much brighter than this scene was tuned for (`SkyModel.ambient` is about 0.25 at noon).
+## This is the environment's ambient energy with the addon's own colour; lower it if the
+## scene still reads washed out.
+const SKY3D_AMBIENT_ENERGY := 0.25
+
 @onready var herd: Herd = $Herd
 ## The other *players*: one goat per peer the server relays. `Herd` is the host's bots; this
 ## is the host's people, and they are two modules because they are two rules (`peers.gd`, M21).
@@ -76,7 +82,9 @@ const PROBE_RELIEF := 0.05
 @onready var audio: Audio = $Audio
 @onready var hud: Hud = $Ui/Hud
 @onready var rain: Rain = $Ui/Rain
-@onready var sun: DirectionalLight3D = $Sun
+## The scene's `WorldEnvironment` node carries the Sky3D script; it owns the sky material,
+## the sun/moon lights and the clock. See `_set_up_sky`.
+@onready var sky3d: Sky3D = $WorldEnvironment
 @onready var world_environment: WorldEnvironment = $WorldEnvironment
 
 ## The bridge is built in code, not in the scene. A GDExtension class named as a
@@ -228,14 +236,15 @@ var _hosts: Array = []
 ## reuses it, and only a fresh install falls back to the port's own "godot".
 var _join_name := ""
 
-## The sky material and the world's clock, wind and weather, all of which `_advance`
-## refreshes once a frame. `_hours` starts where the scene's own `worldTime` does.
-var _sky_material: ShaderMaterial
-var _hours := SkyDome.DEFAULT_HOUR
-var _sky_time := 0.0
+## The world's clock, wind and weather, all of which `_advance` refreshes once a
+## frame. `_hours` starts where the scene's own `worldTime` does.
+var _hours := SkyModel.DEFAULT_HOUR
+## Sky3D's sun. The addon owns the light; this is the reference the settings screen and
+## the menu gate read (the old scene `$Sun` node is gone).
+var sun: DirectionalLight3D
 var _sway_time := 0.0
 var _sky_light := 1.0
-var _cloudiness := SkyDome.CLOUDINESS_CLEAR
+var _cloudiness := SkyModel.CLOUDINESS_CLEAR
 var _wind_x := 0.0
 var _wind_z := 0.0
 var _wind_sway := 0.0
@@ -595,21 +604,52 @@ func _ready() -> void:
 	_net_name = "godot"
 	_net_ticket = ticket
 
-## Give the scene the scene's sky: a `shader_type sky` material on the
-## `WorldEnvironment`, and the environment told that its ambient is the light's
-## rather than the sky's.
+## Hand the sky to Sky3D (the addon) and keep the port's own curve as the clock and
+## lighting authority (`_apply_sky` drives the addon from it every frame).
 ##
-## `REALTIME` and not a bake: the sun moves, the clouds drift and the clock runs, and
-## a cached radiance would freeze all three. The ambient is a colour and not the sky
-## because the scene's own ambient has a *floor* (`lighting.js` `LIGHT_AMBIENT`, 0.10
-## at midnight) that a sky-derived one would not have, and the scene's night is dark
-## rather than black.
+## Sky3D owns the sky material, the sun/moon lights and the stars; the port keeps the
+## keyframed `SkyModel` curve because gameplay reads its `light` factor (the goat's
+## night drain), and because `tools/verify_sky.gd` measures it.
+##
+## The ambient stays a *colour* rather than a sky contribution for the same reason as
+## before: the scene's own ambient has a floor (`lighting.js` `LIGHT_AMBIENT`, 0.10 at
+## midnight), so night is dark rather than black.
 func _set_up_sky() -> void:
-	_sky_material = SkyDome.make_material()
 	var environment: Environment = world_environment.environment
-	environment.sky.sky_material = _sky_material
-	environment.sky.process_mode = Sky.PROCESS_MODE_REALTIME
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	environment.ambient_light_energy = SKY3D_AMBIENT_ENERGY
+
+	if sky3d == null:
+		return
+	# `herd.tscn` declares Sky3D's SunLight/MoonLight/SkyDome/TimeOfDay children. The
+	# addon can build them itself, but its `add_child()` runs `SkyDome._ready()` before
+	# the parent assigns `environment`; `_build_scene()` then returns early and the cloud
+	# tick dereferences a null `sky_material` every frame (SkyDome.gd:119).
+	# `sky3d_enabled` is the addon's master switch and turns everything on; the flags
+	# after it are the deltas this scene wants. Fog is off because the port draws its
+	# own rain and the water mirror has its own layer masks; the addon's screen-space
+	# fog would be a third overlay this scene does not budget for.
+	sky3d.sky3d_enabled = true
+	sky3d.fog_enabled = false
+	sun = sky3d.sun
+	# The addon multiplies its below-horizon ground colour by the atmosphere. The old
+	# sky clamped rays below the horizon to the horizon colour, so white here keeps that
+	# look instead of the addon's default dark band at the edge of the 96 m grid.
+	sky3d.sky.ground_color = Color(1.0, 1.0, 1.0)
+
+	# The host owns the clock, so Sky3D's own timer is not allowed to advance it. The
+	# time and celestial angles are written from `_apply_sky` every frame instead.
+	if sky3d.tod != null:
+		sky3d.tod.game_time_enabled = false
+		sky3d.tod.update_interval = 0.016
+		sky3d.tod.pause()
+
+	# Sky3D composites its own sun and moon into the sky, so the port's separate disc
+	# meshes (and their moon-only light) would only be duplicates in front of the
+	# clouds. Keep the node for the fallback renderer but take it out of the frame.
+	if celestial != null:
+		celestial.visible = false
+		celestial.process_mode = Node.PROCESS_MODE_DISABLED
 
 func _process(delta: float) -> void:
 	for line in bridge.call("poll_events"):
@@ -703,9 +743,10 @@ func _process(delta: float) -> void:
 			_paused = true
 	grass.update(here, _sway_time, _wind_sway, meadow.eaten)
 	water_splash.update()
-	# The two bodies and the rain, from the values `_advance` just settled: the sun and the moon
-	# ride the light's own line, and the rain is screen space over everything.
-	celestial.update(here.x, here.z, SkyDome.sun_dir(_hours), _cloudiness)
+	# The two bodies and the rain. Sky3D draws the sun and moon now, so the port's own discs
+	# are only updated when the fallback renderer is in use.
+	if celestial.visible:
+		celestial.update(here.x, here.z, SkyModel.sun_dir(_hours), _cloudiness)
 	rain.show_for(weather, _wind_x)
 	_publish_pose(delta)
 	_publish_world()
@@ -1475,26 +1516,25 @@ func _escape() -> void:
 ## scene without one is its own host and runs the day at `TUNING.world.dayLength`.
 ## The wind follows the same split, through the same function (`updateWind`).
 ##
-## The two phase clocks (`_sky_time` for the cloud drift, `_sway_time` for the grass's
-## lean) run locally in both cases, which is what the scene does for the sky's and not
-## quite for the grass's -- it advances `swayTime` only where `updateWind` runs, so a
+## The grass's own phase clock (`_sway_time`) runs locally in both cases, which is what
+## the scene does for the sky's and not quite for the grass's -- it advances `swayTime`
+## only where `updateWind` runs, so a
 ## joiner's grass leans at a fixed phase and only the strength of the wind changes.
 ## That reads as a frozen wind rather than as a faithful mirror, so the port runs the
 ## clock and lets the *values* come from the wire.
 func _advance(delta: float) -> void:
-	_sky_time += delta
 	_sway_time += delta
 	if _weather.is_empty():
 		# Offline (or hosting): the weather is ours. The machine walks its own clock and
 		# eases toward the state it is in, and the wind is read off the cloudiness it
 		# leaves behind -- `updateWind` reads `cloudiness`, so the two are one step.
 		if _forced_hour < 0.0:
-			_hours = SkyDome.mod24(_hours + delta / SkyDome.DAY_LENGTH * 24.0)
+			_hours = SkyModel.mod24(_hours + delta / SkyModel.DAY_LENGTH * 24.0)
 		weather.update(delta)
 		var cloud: float = weather.cloudiness
 		if _forced_cloud >= 0.0:
 			cloud = _forced_cloud
-		var gust: Dictionary = SkyDome.wind(_sway_time, cloud)
+		var gust: Dictionary = SkyModel.wind(_sway_time, cloud)
 		_wind_x = gust["x"]
 		_wind_z = gust["z"]
 		_wind_sway = gust["sway"]
@@ -1540,15 +1580,64 @@ func _advance(delta: float) -> void:
 ## one. With this inside `_advance`, a menu opened on the first frame never set a single sky
 ## uniform and the panel hung over nothing; a picture found it, and no data could.
 ##
-## The cloud drift's own clock (`_sky_time`) is `_advance`'s, so a frozen sky holds still -- which
-## is the freeze, and not this.
-func _apply_sky(camera: Vector3) -> void:
-	_sky_light = float(SkyDome.sample(_hours)["light"])
-	SkyDome.apply(_sky_material, world_environment.environment, sun, camera, _hours,
-		_sky_light, _cloudiness, _wind_x, _wind_z, _sky_time)
-	# The sky program or the flat horizon across it (M25). `apply` sets the sun and the ambient
-	# either way -- those are the lighting, not the sky -- and this is the one line the setting
-	# changes; it is per-frame because the flat colour has to follow the clock and the clouds.
+## Cloud drift belongs to Sky3D's own process now; this function only moves the clock and
+## the weather into the addon's properties.
+func _apply_sky(_camera: Vector3) -> void:
+	# The port's own curve is still what gameplay reads (the goat's night drain), and it is
+	# still what the sky's *clock* means. Sky3D is driven from it rather than owning time.
+	_sky_light = float(SkyModel.sample(_hours)["light"])
+	if sky3d == null or sky3d.sky == null:
+		return
+
+	# The host's clock, not the addon's. The setter is a no-op when the value has not moved.
+	if sky3d.tod != null and not is_equal_approx(sky3d.tod.current_time, _hours):
+		sky3d.tod.current_time = _hours
+
+	# Keep the addon's sun and moon on the port's own arc, so the shadows and the game's
+	# night agree with the clock on the wire. `spherical_to_cartesian` in the addon uses
+	# 0 = zenith, PI/2 = horizon and azimuth measured from +Z toward +X, which is the
+	# inverse of `atan2(x, z)` here.
+	var sun_dir: Vector3 = SkyModel.sun_dir(_hours)
+	var moon_dir: Vector3 = -sun_dir
+	sky3d.sky.sun_altitude = acos(clampf(sun_dir.y, -1.0, 1.0))
+	sky3d.sky.sun_azimuth = atan2(sun_dir.x, sun_dir.z)
+	sky3d.sky.moon_altitude = acos(clampf(moon_dir.y, -1.0, 1.0))
+	sky3d.sky.moon_azimuth = atan2(moon_dir.x, moon_dir.z)
+
+	# Sky3D toggles its sun's shadow with the light's energy, so the settings leaf is
+	# written back after the addon has had its say. This is what makes `setting shadow off`
+	# survive the next sunrise.
+	if sky3d.sun != null:
+		sky3d.sun.shadow_enabled = settings.shadow != "off"
+
+	# Weather: the port's single cloudiness becomes the addon's two coverage knobs, and its
+	# wind vector becomes the addon's speed/direction. `wind_direction` is the angle the
+	# addon feeds to `Vector2.from_angle`, with its own -90 degree offset folded back out.
+	var cloud: float = clampf(_cloudiness, 0.0, 1.0)
+	var cumulus: float = lerpf(0.15, 0.95, cloud)
+	var cirrus: float = SkyModel.cirrus_of(cloud)
+	if not is_equal_approx(sky3d.sky.cumulus_coverage, cumulus):
+		sky3d.sky.cumulus_coverage = cumulus
+	if not is_equal_approx(sky3d.sky.cirrus_coverage, cirrus):
+		sky3d.sky.cirrus_coverage = cirrus
+	# The tuning leaf still means what it meant: the port's cloud-drift multiplier is
+	# folded into the addon's wind speed, and the old absorption becomes the addon's
+	# per-layer absorption. The other `sky.*` leaves have no direct Sky3D equivalent.
+	if not is_equal_approx(sky3d.sky.cumulus_absorption, SkyModel.CLOUD_ABSORB):
+		sky3d.sky.cumulus_absorption = SkyModel.CLOUD_ABSORB
+	if not is_equal_approx(sky3d.sky.cirrus_absorption, SkyModel.CLOUD_ABSORB):
+		sky3d.sky.cirrus_absorption = SkyModel.CLOUD_ABSORB
+	var wind_speed: float = sqrt(_wind_x * _wind_x + _wind_z * _wind_z)
+	var wanted_speed: float = wind_speed * SkyModel.CLOUD_SPEED
+	if not is_equal_approx(sky3d.wind_speed, wanted_speed):
+		sky3d.wind_speed = wanted_speed
+	if wind_speed > 0.01:
+		var wanted_direction: float = rad_to_deg(atan2(_wind_z, _wind_x) + PI * 0.5)
+		if absf(wrapf(sky3d.wind_direction - wanted_direction, -180.0, 180.0)) > 0.01:
+			sky3d.wind_direction = wanted_direction
+
+	# The flat horizon across the sky (M25). The lights stay on either way; only the sky
+	# background changes.
 	if not settings.sky:
 		_set_sky_background(false)
 
@@ -2231,11 +2320,19 @@ func _apply_settings() -> void:
 	bots.set_lit(settings.light)
 
 	# Shadows: Godot's map or nothing. `planar` is not a word this port has (`settings.gd`).
-	sun.shadow_enabled = settings.shadow != "off"
+	# The light is Sky3D's now; `_apply_sky` writes this back every frame because the addon
+	# also toggles shadows with the sun's energy.
+	if sky3d != null and sky3d.sun != null:
+		sky3d.sun.shadow_enabled = settings.shadow != "off"
 
-	# The sky: the raymarched program, or a flat horizon colour. `_advance` decides which on every
-	# frame from the same setting, so this only has to say it once here.
-	SkyDome.cloud_level = maxi(0, Settings.index_of(Settings.CLOUD_NAMES, settings.cloud))
+	# The sky: Sky3D's program, or a flat horizon colour. `_apply_sky` decides which on every
+	# frame from the same setting, so this only has to say it once here. The cloud leaf still
+	# moves the port's old step count for the tuning/mod surface; Sky3D has no step count, so
+	# it is mapped to the addon's noise frequency as the visible quality knob.
+	var cloud_level: int = maxi(0, Settings.index_of(Settings.CLOUD_NAMES, settings.cloud))
+	SkyModel.cloud_level = cloud_level
+	if sky3d != null and sky3d.sky != null:
+		sky3d.sky.cumulus_noise_freq = [1.8, 2.7, 4.0][clampi(cloud_level, 0, 2)]
 	_set_sky_background(settings.sky)
 
 	# Fullscreen, if the window is not already where the setting says.
@@ -2249,17 +2346,15 @@ func _apply_settings() -> void:
 
 ## The sky program on or off. Off, the environment draws a flat colour at the horizon -- which is
 ## what `useSkyShader = false` falls back to in the scene, a gradient instead of the raymarched
-## slab -- and on, the material is back.
+## slab -- and on, Sky3D's material is back. The material itself belongs to the addon; this
+## function only chooses which background mode the environment is in.
 func _set_sky_background(on: bool) -> void:
 	var environment: Environment = world_environment.environment
 	if on:
-		environment.sky.sky_material = _sky_material
 		environment.background_mode = Environment.BG_SKY
 		return
-	var curve: Dictionary = SkyDome.sample(_hours)
-	var horizon: Color = SkyDome.overcast(curve["bot"], SkyDome.OVERCAST_BOT, _cloudiness)
-	environment.sky.sky_material = null
+	var curve: Dictionary = SkyModel.sample(_hours)
+	var horizon: Color = SkyModel.overcast(curve["bot"], SkyModel.OVERCAST_BOT, _cloudiness)
 	environment.background_mode = Environment.BG_COLOR
-	# The environment's colours are linear here, which is the conversion `SkyDome.apply` makes for
-	# the *shader's* uniforms (`_linear`); the sky curve is display space.
+	# The environment's colours are linear here; the sky curve is display space.
 	environment.background_color = horizon.srgb_to_linear()

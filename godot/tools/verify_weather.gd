@@ -356,7 +356,7 @@ func _check_bodies(lines: Array[String]) -> float:
 		var cloud: float = float(parts[2])
 		var shaded: bool = side < 0.0
 		var tint: Vector3 = Celestial.MOON_TINT if shaded else Celestial.SUN_TINT
-		var sun: Vector3 = SkyDome.sun_dir(hours)
+		var sun: Vector3 = SkyModel.sun_dir(hours)
 		var spot: Dictionary = Celestial.placement(side, Celestial.cover(cloud), sun, PX, PZ)
 		var colour: Vector3 = Celestial.tint_of(tint, float(spot["elevation"]), shaded)
 		var wanted: Array[float] = [

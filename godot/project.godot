@@ -19,6 +19,10 @@ config/features=PackedStringArray("4.7", "Forward Plus")
 
 project/assembly_name="Slag Goat"
 
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/sky_3d/plugin.cfg")
+
 [importer_defaults]
 
 scene={

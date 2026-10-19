@@ -7,6 +7,9 @@ target/
 # The README's screenshots are the one PNG set the repository carries.
 !/screenshot1.png
 !/screenshot2.png
+# Vendored Sky3D textures: the `*.png` rule above is for screenshots and would
+# otherwise leave the addon's moon map, icon and noise textures out.
+!/godot/addons/sky_3d/assets/**/*.png
 *.mp4
 *.blend1
 #*.pyc

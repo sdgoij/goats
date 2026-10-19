@@ -1437,9 +1437,9 @@ func _check_writes(read: Dictionary, main: Node) -> void:
 	if not _near(float(PlayerGoat.ENERGY_DRAIN["idle"]), 1.25):
 		_failures.append("tuning.set(\"stats.energyDrain.idle\", 1.25) left the drain at %s"
 			% PlayerGoat.ENERGY_DRAIN["idle"])
-	if not _near(float(SkyDome.CLOUD_ABSORB), 1.5) or not _near(float(Tuning.CAMERA_PITCH), 0.5):
+	if not _near(float(SkyModel.CLOUD_ABSORB), 1.5) or not _near(float(Tuning.CAMERA_PITCH), 0.5):
 		_failures.append("tuning.merge did not land: absorb %s, pitch %s"
-			% [SkyDome.CLOUD_ABSORB, Tuning.CAMERA_PITCH])
+			% [SkyModel.CLOUD_ABSORB, Tuning.CAMERA_PITCH])
 	for part: String in ["branch", "unknown", "type"]:
 		if str(read.get("tune_" + part)) != "threw":
 			_failures.append("tuning.set on a %s path did not throw" % part)

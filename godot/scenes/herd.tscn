@@ -1,4 +1,4 @@
-[gd_scene load_steps=17 format=3]
+[gd_scene load_steps=19 format=3]
 
 [ext_resource type="Script" path="res://src/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/herd.gd" id="2_herd"]
@@ -14,12 +14,12 @@
 [ext_resource type="Script" path="res://src/water_splash.gd" id="12_splash"]
 [ext_resource type="Script" path="res://src/peers.gd" id="13_peers"]
 [ext_resource type="Script" path="res://src/audio.gd" id="14_audio"]
-
-[sub_resource type="Sky" id="Sky_1"]
+[ext_resource type="Script" path="res://addons/sky_3d/src/Sky3D.gd" id="15_sky3d"]
+[ext_resource type="Script" path="res://addons/sky_3d/src/SkyDome.gd" id="16_skydome"]
+[ext_resource type="Script" path="res://addons/sky_3d/src/TimeOfDay.gd" id="17_tod"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 2
-sky = SubResource("Sky_1")
 ambient_light_source = 2
 ambient_light_energy = 1.0
 
@@ -28,6 +28,20 @@ script = ExtResource("1_main")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_1")
+script = ExtResource("15_sky3d")
+
+[node name="SunLight" type="DirectionalLight3D" parent="WorldEnvironment"]
+shadow_enabled = true
+
+[node name="MoonLight" type="DirectionalLight3D" parent="WorldEnvironment"]
+shadow_enabled = true
+
+[node name="SkyDome" type="Node" parent="WorldEnvironment"]
+script = ExtResource("16_skydome")
+
+[node name="TimeOfDay" type="Node" parent="WorldEnvironment"]
+script = ExtResource("17_tod")
+dome_path = NodePath("../SkyDome")
 
 [node name="Goat" type="Node3D" parent="."]
 script = ExtResource("5_goat")
@@ -61,9 +75,6 @@ script = ExtResource("7_explosions")
 
 [node name="Celestial" type="Node3D" parent="."]
 script = ExtResource("8_celestial")
-
-[node name="Sun" type="DirectionalLight3D" parent="."]
-shadow_enabled = true
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 5)

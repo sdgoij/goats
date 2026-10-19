@@ -13,7 +13,7 @@
 # Then the live half, which is the part a layout cannot answer: **every control does something.**
 # The four settings that are the port's own switches are asserted against the *world* rather than
 # against the settings object -- the terrain's material goes unshaded and back, the sun's shadow
-# toggle follows the mode, the environment's sky material comes and goes, the cloud march's step
+# toggle follows the mode, the environment's sky background comes and goes, the cloud march's step
 # count moves, the herd resizes -- because "the value changed" is exactly the claim a broken
 # `apply` would still satisfy.
 #
@@ -139,8 +139,8 @@ const EFFECTS := [
 	["setting light on", "grass_shading", "lit"],
 	["setting shadow off", "sun_shadow", "off"],
 	["setting shadow map", "sun_shadow", "on"],
-	["setting sky off", "sky_material", "off"],
-	["setting sky on", "sky_material", "on"],
+	["setting sky off", "sky_background", "off"],
+	["setting sky on", "sky_background", "on"],
 	["setting cloud low", "cloud_level", "0"],
 	["setting cloud high", "cloud_level", "2"],
 	["setting bgm 40", "bgm", "40"],
@@ -336,13 +336,15 @@ func _witness(_vocabulary: Commands, what: String) -> String:
 		"sun_shadow":
 			var sun: DirectionalLight3D = _main.get("sun")
 			return "on" if sun != null and sun.shadow_enabled else "off"
-		"sky_material":
+		"sky_background":
+			# Sky3D owns the sky material now, so the *material's presence* is no longer the
+			# switch; the environment's background mode is. The flat fallback is `BG_COLOR`.
 			var env: WorldEnvironment = _main.get("world_environment")
 			if env == null or env.environment == null:
 				return "?"
-			return "on" if env.environment.sky.sky_material != null else "off"
+			return "on" if env.environment.background_mode == Environment.BG_SKY else "off"
 		"cloud_level":
-			return str(SkyDome.cloud_level)
+			return str(SkyModel.cloud_level)
 		"bgm":
 			return str(int(_main.get("audio").bgm))
 		"sfx":
