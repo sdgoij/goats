@@ -34,6 +34,8 @@ const CLOUD_LEVELS = ["low", "medium", "high"];
 
 let skyShader = -1;
 let skyNoise = -1;              // the cumulus slice texture (`noiseClouds.png`)
+let skyNoiseMid = -1;           // 64px box-filtered level, for the middle distance
+let skyNoiseLow = -1;           // 16px box-filtered level, for the horizon
 let skyUniforms = null;
 let useSkyShader = true;
 let skyTime = 0;
@@ -63,6 +65,8 @@ const SKY_FS = [
     // while after it sets, which is what the horizon rim below reads.
     "uniform vec3  sunTrueDir;",
     "uniform sampler2D cumulus_texture;",
+    "uniform sampler2D cumulus_texture_mid;",
+    "uniform sampler2D cumulus_texture_low;",
     "uniform vec4  sunColor;",
     "uniform float cloudiness;",
     "uniform float time;",
@@ -110,28 +114,39 @@ const SKY_FS = [
     "    return c + (v - a) * (d - c) / max(b - a, 1e-4);",
     "}",
     // Sky3D's 3D noise from a 2D texture: two z-slices, mixed by the fraction.
-    // `p.xy` is in texture repeats and `p.z` selects the slice.
-    "float sample_cumulus_noise(vec3 p) {",
+    // `p.xy` is in texture repeats and `p.z` selects the slice. `lod` picks the
+    // box-filtered mip: the host has no `GenTextureMipmaps`, so the coarse levels
+    // are built once on the CPU (`sky.js`'s `cumulusMips`).
+    "float sample_cumulus_noise(vec3 p, float lod) {",
     "    vec2 offset = vec2(0.317, 0.123);",
     "    vec2 uv0 = p.xy + offset * floor(p.z);",
     "    vec2 uv1 = uv0 + offset;",
-    "    float a = textureLod(cumulus_texture, uv0, 0.0).r;",
-    "    float b = textureLod(cumulus_texture, uv1, 0.0).r;",
+    "    float a, b;",
+    "    if (lod > 0.66) {",
+    "        a = texture(cumulus_texture_low, uv0).r;",
+    "        b = texture(cumulus_texture_low, uv1).r;",
+    "    } else if (lod > 0.33) {",
+    "        a = texture(cumulus_texture_mid, uv0).r;",
+    "        b = texture(cumulus_texture_mid, uv1).r;",
+    "    } else {",
+    "        a = texture(cumulus_texture, uv0).r;",
+    "        b = texture(cumulus_texture, uv1).r;",
+    "    }",
     "    return mix(a, b, fract(p.z));",
     "}",
     // Sky3D's four octaves. The last two fade with distance through `detailAmt`
     // (and are skipped for the sun march), which is this pass's answer to the
     // texture aliasing at a grazing angle.
-    "float calc_cumulus_fbm(vec3 p, float l, float detailAmt) {",
-    "    float ret = 0.51749673 * sample_cumulus_noise(p);",
+    "float calc_cumulus_fbm(vec3 p, float l, float detailAmt, float lod) {",
+    "    float ret = 0.51749673 * sample_cumulus_noise(p, lod);",
     "    p *= l;",
-    "    ret += 0.25584929 * sample_cumulus_noise(p);",
+    "    ret += 0.25584929 * sample_cumulus_noise(p, lod);",
     "    if (detailAmt > 0.001) {",
     "        float hi = clamp(detailAmt * 3.0, 0.0, 1.0);",
     "        p *= l;",
-    "        ret += 0.12527603 * hi * sample_cumulus_noise(p);",
+    "        ret += 0.12527603 * hi * sample_cumulus_noise(p, lod);",
     "        p *= l;",
-    "        ret += 0.06255931 * hi * sample_cumulus_noise(p);",
+    "        ret += 0.06255931 * hi * sample_cumulus_noise(p, lod);",
     "    }",
     "    return ret;",
     "}",
@@ -142,8 +157,12 @@ const SKY_FS = [
     // ~0.0003 UV per metre; the slab is shallower, so the scale is a little
     // larger. `drift` is still in the old q units, so it is scaled with it.
     "    vec2 uv = p.xz * 0.001 - drift * 0.0083;",
-    "    float slice = (y - 0.5) * 4.0;",
-    "    float base = calc_cumulus_fbm(vec3(uv, slice), 2.7, detailAmt);",
+    // Eight slices rather than four: the marching slab stays 5.0..9.5 m, but
+    // the noise changes more often with height, which is what makes the volume
+    // read as towers instead of a flat deck.
+    "    float slice = (y - 0.5) * 8.0;",
+    "    float lod = smoothstep(70.0, 240.0, length(p - camPos));",
+    "    float base = calc_cumulus_fbm(vec3(uv, slice), 2.7, detailAmt, lod);",
     // The texture's fBm is narrow around its mean; expanding that spread is
     // what turns it from a haze into separate cloud bodies.
     "    base = clamp((base - 0.43) * 1.5 + 0.43, 0.0, 1.0);",
@@ -319,6 +338,64 @@ const SKY_FS = [
     "}",
 ].join("\n");
 
+// A box-filtered level of the cumulus noise. `pixels` is a square grayscale
+// array at `width`; the result is a `size` texture plus its pixels, so the next
+// level can be built from it without touching the disk again.
+function mipFrom(pixels, width, size) {
+    const block = Math.max(1, Math.floor(width / size));
+    const out = new Uint8Array(size * size);
+    const hex = [];
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            let sum = 0, n = 0;
+            for (let sy = 0; sy < block; sy++) {
+                for (let sx = 0; sx < block; sx++) {
+                    sum += pixels[(y * block + sy) * width + x * block + sx];
+                    n++;
+                }
+            }
+            const v = Math.round(sum / n);
+            out[y * size + x] = v;
+            const h = (v < 16 ? "0" : "") + v.toString(16);
+            hex.push(h + h + h + "ff");
+        }
+    }
+    const tex = rl.makeTexture(size, size, hex.join(""));
+    if (tex >= 0 && typeof rl.setTextureFilter === "function") {
+        rl.setTextureFilter(tex, rl.TEXTURE_FILTER_BILINEAR);
+    }
+    return { tex: tex, pixels: out };
+}
+
+// raylib's `LoadTextureFromImage` leaves one level and the host exposes no
+// `GenTextureMipmaps`, so the two coarse levels the horizon needs are built
+// once here. A 2x2-strided read (16k host calls) is enough detail for the 64px
+// level; the 16px level comes from it.
+function cumulusMips() {
+    if (typeof rl.loadImage !== "function" || typeof rl.imagePixel !== "function" ||
+        typeof rl.imageWidth !== "function" || typeof rl.makeTexture !== "function") return;
+    const image = rl.loadImage("noiseClouds.png");
+    if (image < 0) return;
+    const width = rl.imageWidth(image);
+    const height = rl.imageHeight(image);
+    if (width <= 0 || height <= 0) return;
+    const stride = 2;
+    const sw = Math.floor(width / stride);
+    const sh = Math.floor(height / stride);
+    if (sw <= 0 || sh <= 0) return;
+    const pixels = new Uint8Array(sw * sh);
+    for (let y = 0; y < sh; y++) {
+        for (let x = 0; x < sw; x++) {
+            pixels[y * sw + x] = (rl.imagePixel(image, x * stride, y * stride) >>> 24) & 255;
+        }
+    }
+    if (typeof rl.unloadImage === "function") rl.unloadImage(image);
+    const mid = mipFrom(pixels, sw, 64);
+    skyNoiseMid = mid.tex;
+    const low = mipFrom(mid.pixels, 64, 16);
+    skyNoiseLow = low.tex;
+}
+
 function makeSkyShader() {
     if (typeof rl.loadShaderFromMemory !== "function") return;
     skyShader = loadGlsl(SKY_VS, SKY_FS);
@@ -340,6 +417,8 @@ function makeSkyShader() {
         sunDir: rl.getShaderLocation(skyShader, "sunDir"),
         sunTrueDir: rl.getShaderLocation(skyShader, "sunTrueDir"),
         cumulusTexture: rl.getShaderLocation(skyShader, "cumulus_texture"),
+        cumulusTextureMid: rl.getShaderLocation(skyShader, "cumulus_texture_mid"),
+        cumulusTextureLow: rl.getShaderLocation(skyShader, "cumulus_texture_low"),
         sunColor: rl.getShaderLocation(skyShader, "sunColor"),
         cloudiness: rl.getShaderLocation(skyShader, "cloudiness"),
         time: rl.getShaderLocation(skyShader, "time"),
@@ -368,6 +447,16 @@ function makeSkyShader() {
         rl.setTextureFilter(skyNoise, rl.TEXTURE_FILTER_BILINEAR);
     }
     if (skyNoise < 0) console.log("sky: cumulus texture did not load - clouds will be thin");
+    skyNoiseMid = skyNoise;
+    skyNoiseLow = skyNoise;
+    if (skyNoise >= 0) {
+        cumulusMips();
+        if (skyNoiseMid < 0) skyNoiseMid = skyNoise;
+        if (skyNoiseLow < 0) skyNoiseLow = skyNoise;
+        if (skyNoiseMid == skyNoise || skyNoiseLow == skyNoise) {
+            console.log("sky: cumulus mips did not build - the horizon uses the full texture");
+        }
+    }
     console.log("sky: shader " + skyShader + ", clouds " + CLOUD_LEVELS[SETTINGS.cloud] +
         " (" + TUNING.sky.steps[SETTINGS.cloud] + " steps)");
 }
@@ -456,6 +545,12 @@ function setSkyUniforms(sw, sh, layer) {
     const cirrus = clamp((cloudiness - 0.25) * 1.2, 0, 0.85);
     if (skyNoise >= 0) {
         rl.setShaderValueTexture(skyShader, skyUniforms.cumulusTexture, skyNoise);
+        if (skyNoiseMid >= 0) {
+            rl.setShaderValueTexture(skyShader, skyUniforms.cumulusTextureMid, skyNoiseMid);
+        }
+        if (skyNoiseLow >= 0) {
+            rl.setShaderValueTexture(skyShader, skyUniforms.cumulusTextureLow, skyNoiseLow);
+        }
     }
     rl.setShaderValueVector2(skyShader, skyUniforms.screenSize, sw, sh);
     rl.setShaderValueVector3(skyShader, skyUniforms.camPos, SKY_CAM[0], SKY_CAM[1], SKY_CAM[2]);
