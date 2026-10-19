@@ -17,6 +17,10 @@
 //   SMOKE_PORT        static server port            (default 8124)
 //   SMOKE_DEBUG_PORT  DevTools port                 (default 9223)
 //   SMOKE_READY       console line that means ready (default "sky: shader")
+//   SMOKE_QUERY       query string for the page, e.g. "?gctrace=1" (default "")
+//   SMOKE_FRAMES      extra drawn frames after ready (default 10)
+//   SMOKE_FRAME_DELAY ms between those frames (default 100)
+//   SMOKE_BENCH       synchronous frames to time in-page (default 0)
 //   SMOKE_SHOT        screenshot path (default target/wasm-smoke.png)
 //   SMOKE_LOG         console log path (default target/wasm-smoke.log)
 //
@@ -33,6 +37,10 @@ const DIST = path.join(ROOT, "web", "dist");
 const PORT = Number(process.env.SMOKE_PORT || 8124);
 const DEBUG_PORT = Number(process.env.SMOKE_DEBUG_PORT || 9223);
 const READY = process.env.SMOKE_READY || "sky: shader";
+const QUERY = process.env.SMOKE_QUERY || "";
+const EXTRA_FRAMES = Number(process.env.SMOKE_FRAMES || 10);
+const FRAME_DELAY = Number(process.env.SMOKE_FRAME_DELAY || 100);
+const BENCH = Number(process.env.SMOKE_BENCH || 0);
 const SHOT = path.resolve(ROOT, process.env.SMOKE_SHOT || "target/wasm-smoke.png");
 const LOG = path.resolve(ROOT, process.env.SMOKE_LOG || "target/wasm-smoke.log");
 const PROFILE = path.join(ROOT, "target", "smoke-profile-" + process.pid);
@@ -206,7 +214,9 @@ async function main() {
   try {
     await waitForDebug();
     const created = await fetch(
-      `http://127.0.0.1:${DEBUG_PORT}/json/new?${encodeURIComponent(`http://localhost:${PORT}/test.html`)}`,
+      `http://127.0.0.1:${DEBUG_PORT}/json/new?${encodeURIComponent(
+        `http://localhost:${PORT}/test.html${QUERY}`
+      )}`,
       { method: "PUT" }
     );
     const target = await created.json();
@@ -273,10 +283,28 @@ async function main() {
     }
     note(`smoke: ${frames} frame(s), ready=${ready}`);
 
-    // A few drawn frames so the screenshot is not the first painted one.
-    for (let i = 0; i < 10; i++) {
+    // A few drawn frames so the screenshot is not the first painted one. With
+    // SMOKE_QUERY=?gctrace=1 and a larger SMOKE_FRAMES, this is also a GC trace.
+    for (let i = 0; i < EXTRA_FRAMES; i++) {
       await send("Runtime.evaluate", { expression: frame, returnByValue: true });
-      await sleep(100);
+      await sleep(FRAME_DELAY);
+    }
+
+    if (BENCH > 0) {
+      // One in-page loop, not one CDP round trip per frame: this measures the
+      // engine and the scene, not the debugger's latency.
+      const timed = await send("Runtime.evaluate", {
+        expression:
+          `(function(){var f=Module._goats_frame||Module.goats_frame;` +
+          `var t=performance.now();for(var i=0;i<${BENCH};i++)f();` +
+          `return performance.now()-t;})()`,
+        returnByValue: true,
+      });
+      const total = timed.result.value;
+      note(
+        `smoke: bench ${BENCH} frames ${total.toFixed(1)} ms ` +
+          `(${(total / BENCH).toFixed(2)} ms/frame)`
+      );
     }
     const capture = await send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(SHOT, Buffer.from(capture.data, "base64"));

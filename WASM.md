@@ -434,7 +434,13 @@ Chrome or Edge over the DevTools protocol:
 - It fails on an uncaught exception, a missing ready line, or the sky's
   "cumulus mips did not build" fallback. `BROWSER` picks the executable when
   more than one is installed; `SMOKE_PORT`, `SMOKE_DEBUG_PORT`, `SMOKE_READY`,
-  `SMOKE_SHOT` and `SMOKE_LOG` override the defaults.
+  `SMOKE_QUERY`, `SMOKE_FRAMES`, `SMOKE_FRAME_DELAY`, `SMOKE_BENCH`,
+  `SMOKE_SHOT` and `SMOKE_LOG` override the defaults. For example,
+  `SMOKE_QUERY='?gctrace=1' SMOKE_FRAMES=300 SMOKE_FRAME_DELAY=10 web/build.sh smoke`
+  is a collector trace rather than a single screenshot, and
+  `SMOKE_BENCH=600 web/build.sh smoke` times 600 frames in one in-page loop,
+  which is the number to compare across engine pins (a CDP round trip per
+  frame caps the client near 20 fps and hides the engine's work).
 
 It checks one path -- boot and a drawn frame -- not gameplay or input; the
 harness and `es3.rs` remain the headless gates.
