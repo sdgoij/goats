@@ -50,8 +50,9 @@ extends MultiMeshInstance3D
 const CULL2 := 576.0
 const DETAIL2 := 180.0
 
-## `core.js` `TUFT`.
-const TUFT_COLOUR := Color8(78, 128, 66)
+## `core.js` `TUFT`, converted from the scene's sRGB bytes to linear for Godot's
+## pipeline (`Color8` does not convert; `PORT.md` section 9).
+static var TUFT_COLOUR: Color = Color8(78, 128, 66).srgb_to_linear()
 ## `rl.drawCube`'s `(0.14, 0.16, 0.14)` and the detail segment's `(0.11, 0.16, 0.11)`.
 const CUBE := Vector3(0.14, 0.16, 0.14)
 const CUBE_DETAIL := Vector3(0.11, 0.16, 0.11)

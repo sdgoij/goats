@@ -1094,8 +1094,10 @@ func _build_coats() -> void:
 					+ 0.30 * Terrain.vnoise2(x * 0.39 + i * 3.3, y * 0.39 + i * 9.9) \
 					+ 0.15 * Terrain.vnoise2(x * 0.86 + i, y * 0.86 + i * 2.0)
 				var shade: float = 0.62 + 0.70 * (noise - 0.5)
+				# The coat table is the scene's sRGB bytes; the texture is linear.
 				image.set_pixel(x, y, Color8(
-					_byte(red * shade), _byte(green * shade), _byte(blue * shade), 255))
+					_byte(red * shade), _byte(green * shade), _byte(blue * shade), 255)
+					.srgb_to_linear())
 		var material := StandardMaterial3D.new()
 		material.albedo_texture = ImageTexture.create_from_image(image)
 		# Godot 4 replaced the `TextureRepeat` enum with a flag; the mottle tiles.

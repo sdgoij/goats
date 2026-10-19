@@ -161,7 +161,12 @@ func _initialize() -> void:
 
 func _in_palette(colour: Color) -> bool:
 	for entry in PALETTE:
-		var c := Color8(entry[0], entry[1], entry[2])
-		if absf(c.r - colour.r) < 1e-6 and absf(c.g - colour.g) < 1e-6 and absf(c.b - colour.b) < 1e-6:
+		# The mesh carries the palette in linear space (`Terrain._rgb`), and the
+		# vertex buffer stores colours as 8-bit, so a linear component can be up to
+		# half a byte from its exact conversion.
+		var c := Color8(entry[0], entry[1], entry[2]).srgb_to_linear()
+		var tolerance := 1.0 / 255.0
+		if absf(c.r - colour.r) < tolerance and absf(c.g - colour.g) < tolerance \
+				and absf(c.b - colour.b) < tolerance:
 			return true
 	return false

@@ -214,7 +214,8 @@ func _detail_texture() -> ImageTexture:
 
 ## The scene's detail texture: neutral grain around 0.85, so the per-vertex
 ## material colours keep a texture up close without an atlas. `world.js`
-## `makeTerrainTexture`, transcribed.
+## `makeTerrainTexture`, transcribed. The grain is authored in display space and
+## stored linear, like the vertex colours (`PORT.md` section 9).
 func _make_detail_texture() -> ImageTexture:
 	var image := Image.create_empty(DETAIL_SIZE, DETAIL_SIZE, false, Image.FORMAT_RGB8)
 	for y in DETAIL_SIZE:
@@ -224,7 +225,8 @@ func _make_detail_texture() -> ImageTexture:
 			var grain: float = 0.13 * Terrain.value_hash(x * 5.7 + y * 17.3)
 			var v: float = clampf(broad + middle + grain, 0.0, 1.0)
 			var c: int = int(round(196.0 + 59.0 * v))
-			image.set_pixel(x, y, Color8(c, int(round(c * 0.97)), int(round(c * 0.88))))
+			image.set_pixel(x, y, Color8(
+				c, int(round(c * 0.97)), int(round(c * 0.88))).srgb_to_linear())
 	return ImageTexture.create_from_image(image)
 
 ## A plain Godot material, which is the decision from `PORT.md` section 5: the

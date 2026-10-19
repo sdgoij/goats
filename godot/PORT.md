@@ -1764,16 +1764,15 @@ Stage 2 is independent of everything else and can start immediately.
   browser is unproven; treat web multiplayer as a spike, not a stage.
 - **The display-space/linear split between the two pipelines.** The scene writes a
   plain framebuffer, so its colours are display-space; Godot renders in linear and
-  encodes to sRGB at the end. The port converts where it is cheap and it shows --
-  the sky's curve colours and cloud tints, once on the CPU in `sky.gd` for the
-  reference renderer (`sky.gdshader`); Sky3D uses its own `source_color` uniforms -- and
-  leaves the ground's and the grass's per-vertex albedos as the scene authored
-  them. So the sky is the scene's sky and the meadow is a shade paler than the
-  client's. Doing it properly is `srgb_to_linear()` on `terrain_mesh.gd`'s colours
-  and `Image.FORMAT_SRGB8` for its detail texture, and then the *light* needs
-  re-tuning, because the scene multiplies in display space and Godot multiplies in
-  linear. Worth knowing before the pallor is mistaken for a bug in the
-  heightfield.
+  encodes to sRGB at the end. The port converts the authored sRGB colours to linear
+  on the CPU: the sky's curve colours and cloud tints in the reference renderer
+  (`sky.gd`), and the ground's, grass's and bot coats' albedos plus the terrain
+  detail texture in `Terrain._rgb`, `grass.gd`, `bots.gd` and `terrain_mesh.gd`.
+  Sky3D uses its own `source_color` uniforms. `Color8` does not convert on its own,
+  which is why the conversion is explicit; without it the ground and the meadow
+  read a shade paler than the client's. The light may want re-tuning after the
+  change, because the scene multiplied in display space and Godot multiplies in
+  linear.
 - **Godot's vector types are float32, and a value type that silently rounds is a
 trap for a deterministic port.** Found by a gate, and it is the kind of thing that
 reads as a *deterministic* divergence until you look. `Meadow.cell_hash` began by

@@ -368,8 +368,9 @@ with until it also reads the host's seed table. What is
 still Godot's rather than the scene's is the *lighting model*: the terrain, the
 grass and the goat are lit by Godot materials under a `DirectionalLight3D` with
 Godot's shadows, not by the scene's own lit program and hand-rolled shadow map
-(`PORT.md` section 5). The port's colours also run through Godot's linear pipeline,
-which the sky compensates for and the ground does not (`PORT.md` section 9). The sky
+(`PORT.md` section 5). The port's colours also run through Godot's linear pipeline;
+the sky and the ground/grass/bot albedos convert their authored sRGB for it
+(`PORT.md` section 9). The sky
 and its two bodies are Sky3D's now — the port's own `celestial.gd` discs are out of
 the frame, and the addon draws its sun and moon in the sky shader so the clouds can
 cover them — while `sky.gd` still owns the clock, the arc and the `light` factor gameplay

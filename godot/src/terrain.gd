@@ -100,7 +100,8 @@ static func height_at(x: float, z: float) -> float:
 
 ## Ground material from the height, the slope (0 flat .. 1 steep) and the
 ## low-frequency patchiness noise. `world.js` `terrainMaterial`, verbatim; the
-## colours are sRGB bytes, as the mesh carries them.
+## colours are the scene's sRGB bytes, converted to linear for Godot's pipeline by
+## `_rgb` (`PORT.md` section 9).
 static func material(y: float, slope: float, m: float) -> Color:
 	if slope > 0.5 or y > 1.15:
 		return _rgb(128, 122, 112)   # rock: peaks and scarps
@@ -112,5 +113,8 @@ static func material(y: float, slope: float, m: float) -> Color:
 		return _rgb(126, 146, 74)    # hill
 	return _rgb(98, 150, 84) if m < 0.5 else _rgb(78, 126, 66)
 
+## The scene's palette is sRGB bytes and Godot's pipeline is linear. `Color8` does
+## not convert, so the conversion is explicit here -- this is the ground's half of
+## the display-space/linear split (`PORT.md` section 9).
 static func _rgb(r: int, g: int, b: int) -> Color:
-	return Color8(r, g, b)
+	return Color8(r, g, b).srgb_to_linear()
