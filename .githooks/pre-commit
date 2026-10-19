@@ -1,0 +1,24 @@
+#!/bin/sh
+# pre-commit: keep clippy and GDScript warnings out of history.
+# Bypass with `git commit --no-verify` when you have a reason.
+cargo clippy --workspace --all-targets -- -D warnings || {
+	echo "pre-commit: clippy is not clean, commit aborted" >&2
+	exit 1
+}
+
+# The language server starts a headless Godot editor and checks every script,
+# so only run it when a GDScript file is staged.
+if git diff --cached --name-only --diff-filter=ACMR | grep -qE '^godot/.*\.gd$'; then
+	if command -v python >/dev/null 2>&1; then
+		python_bin=python
+	elif command -v python3 >/dev/null 2>&1; then
+		python_bin=python3
+	else
+		echo "pre-commit: python is needed for the GDScript check" >&2
+		exit 1
+	fi
+	"$python_bin" godot/tools/gdscript_warnings.py || {
+		echo "pre-commit: GDScript is not warning-free, commit aborted" >&2
+		exit 1
+	}
+fi

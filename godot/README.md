@@ -334,6 +334,13 @@ diagnostic:
 python godot/tools/gdscript_warnings.py
 ```
 
+The pre-commit hook runs the same check when a staged change touches a
+`godot/**/*.gd` file (`cargo clippy` runs first). Enable the tracked hook once:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that
 > never returns looks exactly like one that is thinking. `timeout 200` around
