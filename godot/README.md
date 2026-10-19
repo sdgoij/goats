@@ -319,12 +319,20 @@ sh godot/tools/gates.sh              # GODOT_BIN=…, GATE_TIMEOUT=… if the de
     --script res://tools/verify_voice.gd
 ```
 
-All thirty-five pass against Godot 4.7.2 today. Five more need a live session and are run by
+All forty pass against Godot 4.7.2 today. Five more need a live session and are run by
 `tools/interop.sh` instead: `verify_interop.gd` (join and refuse), `verify_peers_live.gd`
 (two clients, `interop.sh pair`), the herd-death pair — `verify_herd_death.gd` (a client's own
 death and respawn against `goatsd`, `interop.sh death`) and `verify_herd_host.gd` (the same question
 with this scene *hosting*, `interop.sh hostdeath`) — and `verify_host_reference.gd`, the same host
 the *reference* client joins (`interop.sh jsjoin`, which needs a window).
+
+GDScript warnings are the language server's: a headless run parses the scripts but does not print
+them. This opens every `src/` and `tools/` script over Godot's own LSP and exits non-zero on any
+diagnostic:
+
+```sh
+python godot/tools/gdscript_warnings.py
+```
 
 > **Run the gates under a timeout.** A GDScript file that fails to compile can
 > make Godot *loop* rather than error — with no output at all — so a gate that
