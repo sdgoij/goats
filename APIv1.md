@@ -971,10 +971,11 @@ drawing, and a hook that draws nothing leaves nothing behind. Coordinates are th
 platform's own pixels, so a mod that lays itself out against `screen()` is right
 everywhere and one that hard-codes a size is right on one client.
 
-What is **not here yet** is 3D and assets: a mod that puts a model, a cube or a
-texture in the world still needs `goats.gfx` -- handles minted from
-`goats.assets`, and `draw.model` / `draw.cube` to place them -- and until that
-group exists those mods are raylib-client-only.
+The 3D half and the asset handles are `goats.gfx` (§4.19): a mod that puts a
+model, a cube or a texture in the world uses `gfx.model` / `gfx.mesh` /
+`gfx.texture` and `draw.model` / `draw.mesh` / `draw.cube`, all minted from
+`goats.assets`. Do not reach for `rl`: that is raylib, and a mod that reads it
+directly runs only in the reference client.
 
 ### 4.19 World graphics
 

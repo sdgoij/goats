@@ -460,11 +460,26 @@ scene already loaded stays as it was.
 
 Mods are trusted code with one wall: no filesystem. All I/O is the Rust host's,
 and the scene sees only opaque asset names. A mod gets the hook API `goats`
-(events, commands, accessors, registries, world extension) plus the engine's
-`rl` surface, so it can build geometry and textures in JavaScript. `goats.explosions`
-is part of that surface: a mod can read the derived device field (a mine detector is
-a mod), set a bang off through the core blast path, take the core devices out of the
-field, and hook the `"blast"` event -- `APIv1.md` §4.15.
+(events, commands, accessors, registries, world extension) and, for anything it
+draws or plays, the API's own surfaces rather than the engine's:
+
+- `goats.draw` -- the 2D HUD pass: text, rectangles, lines and circles in the
+  pixels of `goats.draw.screen()`.
+- `goats.gfx` -- models, generated meshes and textures, and their placement in
+  world space (`APIv1.md` §4.19).
+- `goats.sfx` -- a mod's own sound, loaded and played by opaque asset name.
+
+**`rl` is not part of that contract.** The reference client still exposes
+raylib's module to JavaScript, and both the scene and older mods can call it,
+but `rl` *is* raylib: a mod that draws through it runs only in the JavaScript
+client -- in the Godot client the `rl` global does not exist. A mod that uses
+`goats.draw` / `goats.gfx` / `goats.sfx` runs in both. The three checked-in mods
+use the API for that reason.
+
+`goats.explosions` is part of that surface too: a mod can read the derived
+device field (a mine detector is a mod), set a bang off through the core blast
+path, take the core devices out of the field, and hook the `"blast"` event --
+`APIv1.md` §4.15.
 
 Three examples ship in `mods/`. `example/` is the small one: a console command, a
 HUD clock, a generated `sfx.bleat` override and a `tuning.json`. `birds/` is the
@@ -483,6 +498,9 @@ All three are
 exercised without a window by the scene suite (`crates/harness/tests/mods.rs`
 and `birds.rs`), and the two that a release ships are also loaded from a zip by
 `crates/mods`'s own cases.
+
+All three draw and play through `goats.draw`, `goats.gfx` and `goats.sfx`, so
+they load in both clients.
 
 `APIv1.md` is the reference for the manifest, the `goats` surface, the
 compatibility handshake and the non-goals.
@@ -533,8 +551,12 @@ metadata from that step.
 
 ## The `rl` model surface
 
-Playing a skinned, animated model needed new bindings in Slag's raylib
+The scene's own skinned, animated model needs a set of bindings in Slag's raylib
 module (committed upstream in `sdgoij/slag`):
+
+> **For the scene, not for mods.** A mod that builds geometry or places a model
+> calls `goats.gfx` (`APIv1.md` §4.19); `rl` is the raylib client's engine
+> module, so a mod that reads it directly runs only in the JavaScript client.
 
 ```
 loadModel  makeModel  isModelValid  unloadModel
@@ -573,8 +595,11 @@ build because the bone VBOs are never uploaded without `SUPPORT_GPU_SKINNING`.
 
 ## The `rl` shader surface
 
-M4's lighting needs a second set of Slag bindings (also upstream in
+The scene's lighting needs a second set of Slag bindings (also upstream in
 `sdgoij/slag`):
+
+The scene owns this path end to end. Shaders are not part of the portable mod
+API: a mod draws through `goats.draw` / `goats.gfx` and never through `rl`.
 
 ```
 loadShaderFromMemory  isShaderValid  unloadShader  getShaderLocation
@@ -626,7 +651,10 @@ gradient and the noise-puff billboards.
 
 ## The `rl` audio surface
 
-The sound effects and music needed a small audio surface (also upstream):
+The scene's sound effects and music need a small audio surface (also upstream):
+
+A mod's own audio is `goats.sfx.load` / `goats.sfx.play` (`APIv1.md` §4.20),
+which each client implements; the bindings below are the scene's.
 
 ```
 initAudioDevice  closeAudioDevice
