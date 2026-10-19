@@ -33,9 +33,10 @@
 // The reflection of the *world* (M20e) is `water_reflect.gd`'s setting and `water_mirror.gd`'s
 // pass, and this is the half that reads it. `WATER_FS` is transcribed where it can be: the
 // fresnel, the reflected direction, and `color = mix(color, sky, fres)` -- with the sample
-// taken at the fragment's **own screen position**, which is the whole reason `renderWaterMirror`
-// mirrors the camera rather than projecting a ray: a reflected ray leaves the same pixel it
-// entered. What the scene seeded `sky` with is the engine's specular reflection, and the
+// taken at the fragment's **own column**, flipped in the row, which is the whole reason
+// `renderWaterMirror` mirrors the camera rather than projecting a ray: a reflected ray leaves
+// the same column it entered, and the row is its equal distance on the other side of the
+// waterline. What the scene seeded `sky` with is the engine's specular reflection, and the
 // mirror **replaces** it wherever the pass drew something -- its clear is transparent, so its
 // alpha is exactly the mask of what it drew, and a ray that met nothing leaves the sky
 // standing, which is the scene's own rule.
@@ -152,11 +153,17 @@ void fragment() {
 	// direction, and the mix. The mirror's own alpha is what it drew -- its clear is
 	// transparent -- so a fragment the pass never touched keeps the engine's sky reflection
 	// rather than being painted over, and the sky tier mixes nothing at all.
+	//
+	// The row is flipped. The pass's camera is an ordinary camera placed under the water, so
+	// it renders the world *upright* -- the goat's head is above its feet in the target, as
+	// it is in the main view. A reflection is the same image about the waterline, which means
+	// a fragment below the line must read the target's row that is equally far *above* it.
+	// Reading at the fragment's own row instead would put an upright copy under every object.
 	vec3 view_dir = normalize(CAMERA_POSITION_WORLD - water_world);
 	float ndv = max(dot(n_world, view_dir), 0.0);
 	float fres = water_fresnel + (1.0 - water_fresnel) * pow(1.0 - ndv, 5.0);
 	if (water_reflect >= 1) {
-		vec4 mirror = texture(water_mirror, SCREEN_UV);
+		vec4 mirror = texture(water_mirror, vec2(SCREEN_UV.x, 1.0 - SCREEN_UV.y));
 		ALBEDO = mix(ALBEDO, mirror.rgb, fres * mirror.a);
 	}
 }

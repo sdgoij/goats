@@ -6,8 +6,8 @@
 # *transparent*, so the surface can tell what the pass actually drew from what it left to the
 # sky. This is that: a `SubViewport` sharing the scene's own `World3D`, a `Camera3D` inside it
 # at the mirrored eye looking at the mirrored target, and the texture the surface samples at
-# its **own screen position** -- which needs no projection of its own, because a reflected ray
-# leaves the same pixel it entered.
+# its own **column**, flipped in the row (`water.gdshader`): the pass's camera is ordinary, so
+# it renders the world upright, while a reflection is that image about the waterline.
 #
 # It is a *second scene submission*, and that is the one thing `PORT.md`'s plan ruled out. It
 # is here because the two things that would have avoided it cannot do this job: Godot's own

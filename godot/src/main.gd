@@ -721,7 +721,7 @@ func _process(delta: float) -> void:
 	_place_camera(camera)
 	# The reflection's pass (M20e): `renderWaterMirror` runs *before* the frame's own 3D pass, and
 	# so does this -- the camera it draws from is the world's own, mirrored through the water's
-	# plane, and the surface reads what it drew at its own screen position.
+	# plane, and the surface reads what it drew at its own column, flipped in the row.
 	water_mirror.run(camera, water.level())
 	if not frozen:
 		_advance(delta)
