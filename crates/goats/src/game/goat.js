@@ -922,7 +922,7 @@ function sceneFrame() {
         // unbinds the texture units when it finishes.
         rl.beginShaderMode(litShader);
         setLitUniforms(cx, cy, cz);
-        drawTufts(goat, TUFT, 576, 180);   // cull beyond 24 units, detail inside ~13
+        drawTufts(goat, TUFT, 576, 180, true);   // cull beyond 24 units, detail inside ~13
         if (!haveModel) drawGoat(goat);
         rl.endShaderMode();
         perfMark("tufts");
@@ -958,7 +958,7 @@ function sceneFrame() {
         // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
         drawTerrain(ambTint);
         perfMark("terrain");
-        drawTufts(goat, ambTuft, 576, 180);
+        drawTufts(goat, ambTuft, 576, 180, true);
         drawShadow();
         perfMark("tufts");
         if (haveModel) {

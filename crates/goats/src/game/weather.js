@@ -486,7 +486,10 @@ function tuftField(out, cellH, eaten, imul, sin, groundY,
     return n;
 }
 
-function drawTufts(g, tuftCol, cull2, detail2) {
+function drawTufts(g, tuftCol, cull2, detail2, marks) {
+    // `marks` splits the phase for `perf on` only; the shadow pass leaves it off so
+    // its identical work is not counted twice. `perfMark` is a no-op when off.
+    if (marks) perfMark("tuft_setup");
     const r = Math.sqrt(cull2);
     const cx0 = Math.floor((g.px - r) * 0.5);
     const cx1 = Math.ceil((g.px + r) * 0.5);
@@ -498,14 +501,21 @@ function drawTufts(g, tuftCol, cull2, detail2) {
     }
     const n = tuftField(TUFT_POOL, TERRAIN_CELL_H, EATEN, Math.imul, Math.sin, terrainHeight,
         cx0, cz0, cx1, cz1, g.px, g.pz, cull2, detail2, swayTime, windSway);
+    if (marks) perfMark("tuft_field");
+    // The per-tuft global write was this loop's cost, not the reads: writing
+    // `perfCubes` inside the loop made `tuft_draw` 6.7 ms, while the same loop with
+    // a local accumulator and the same global reads is 0.5 ms (PERF.md appendix C).
+    let cubes = 0;
     for (let i = 0; i < n; i++) {
         const t = TUFT_POOL[i];
         // A tuft standing under the water is skipped (M20d): the surface is drawn over
         // the ground, so a tuft inside a pool would stand out of it.
         if (waterSubmergedAt(t.ax, t.az)) continue;
-        perfCubes += t.d ? 2 : 1;
+        cubes += t.d ? 2 : 1;
         rl.drawCube(t.ax, t.ay, t.az, 0.14, 0.16, 0.14, tuftCol);
         if (t.d) rl.drawCube(t.bx, t.by, t.bz, 0.11, 0.16, 0.11, tuftCol);
     }
+    perfCubes += cubes;
+    if (marks) perfMark("tuft_draw");
 }
 

@@ -1469,3 +1469,34 @@ Two things were left deliberately. The index and the rect path are **not** measu
 number is still the one above. And the healing steps still rebuild: a crater that heals is a
 real ground change a player can see, and the fix was to make it cost the rectangle it touches
 (~1 ms) rather than to make it invisible.
+
+## Appendix C — the tuft draw loop's global write
+
+After the `178f92f` engine pin, `tufts` was the largest phase, so `drawTufts` now splits it for
+`perf on`: `tuft_setup` (shader mode and the uniform bind), `tuft_field` (hash, `EATEN`, the
+height cache) and `tuft_draw` (water test and cube submissions). The shadow pass passes no
+marks, so its copy of the work stays in `shadow_grass`.
+
+Steady window (`n=240`, no slow frames) on `178f92f`, before the fix, ms/frame:
+
+| part | ms |
+| --- | ---: |
+| `tuft_setup` | 0.09 |
+| `tuft_field` | 0.64 |
+| `tuft_draw` | 6.70 |
+| `tufts` (tail: `endShaderMode`) | 0.03 |
+
+The field is not the problem: ~625 cells of hash, `Set.has`, `Map.get` and terrain sampling cost
+0.64 ms. Disabling the water check or the two `drawCube` calls in the draw loop saved 2.0 and
+1.7 ms, and disabling both left 2.8 ms -- so the floor was the largest single piece, and the
+ablations still had it in common: `perfCubes += ...` ran once per tuft.
+
+Moving that write to a local accumulator and assigning `perfCubes` once after the loop takes
+`tuft_draw` to **0.50 ms** and `shadow_grass` from 1.26 to 0.40, with identical geometry. The
+global *reads* (`TUFT_POOL`, `waterSubmergedAt`, `rl`) are not the cost: the same loop with a
+local accumulator and those reads in place still measures 0.50 ms. The write did not merely cost
+its own time; with the global reads present it made the engine calls pathological. The lever is
+the global write cell, not allocation.
+
+After the change the grass path is ~1.3 ms visible plus ~0.4 ms shadow, and `boundary` grows to
+~6.7 ms of a 16.7 ms budget -- the win is headroom, not fps, on this machine.
