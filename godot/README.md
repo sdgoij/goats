@@ -527,8 +527,9 @@ what CI asserts.
 ## The browser
 
 The Godot client also runs in a tab: `crates/godot` builds as an Emscripten side
-module, `export_presets.cfg`'s `Web` preset packs it, and the project switches to
-Godot's Compatibility renderer under the `web` feature tag. `WEB.md` is the whole
+module, `export_presets.cfg`'s `Web` preset packs it, and Godot's `web` feature
+tag already defaults the renderer to Compatibility, so no project override is
+needed (`WEB.md`, "The renderer"). `WEB.md` is the whole
 of it -- the build script, the flags, what is compiled out and why, and how to
 serve the result. The networking transport is gated out for `wasm32`, but the
 browser still joins a session: it speaks the native bridge's JSON lines to

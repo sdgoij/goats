@@ -279,19 +279,23 @@ it, and a `v*` tag does not deploy it either -- the release jobs are separate.
 
 ## The renderer
 
-Godot's web platform only runs the **Compatibility** (WebGL 2) renderer. The
-project keeps Forward+ on desktop and adds a feature-tag override in
-`project.godot`:
+Godot's web platform only runs the **Compatibility** (WebGL 2) renderer, and
+Godot 4.7 already makes that the `web` feature's default
+(`rendering/renderer/rendering_method.web`). The project therefore needs no
+override: `project.godot` carries no renderer keys, and the desktop build keeps
+the engine's own `Forward+` default.
 
-```ini
-renderer/rendering_method="forward_plus"
-renderer/rendering_method.web="gl_compatibility"
-```
+That is also why the editor "removes" the keys whenever it saves the project.
+Godot rewrites `project.godot` from its settings, drops any value equal to the
+platform default, and drops comments, so a hand-written override will not
+survive a save. If a future Godot changes the web default, or the project ever
+needs a non-default renderer, set it in **Project Settings -> Rendering ->
+Renderer** with the `web` feature tag selected rather than editing the file.
 
-The web build therefore uses the same scene, materials and shaders through a
-different renderer. The Compatibility backend is the one place a visual
-difference is expected, and the first thing to look at if the browser frame is
-not the desktop frame.
+The web build uses the same scene, materials and shaders through a different
+renderer. The Compatibility backend is the one place a visual difference is
+expected, and the first thing to look at if the browser frame is not the
+desktop frame.
 
 ## Known gaps
 
@@ -302,7 +306,10 @@ not the desktop frame.
   headless run reports streams that cannot be sampled until the page is clicked.
 - **Microphone.** Voice chat is compiled out on wasm (`session`, `pull`, `voice`),
   so `voice.gd` returns from `_ready` in the browser instead of building the
-  capture bus. That early return is not optional: `AudioServer.add_bus()` passes
+  capture bus. The project's `audio/driver/enable_input=true` is what makes the
+  desktop build open the input device at all (without it the capture is silence
+  rather than an error); `.web=false` turns the same request off in the tab. That
+  early return is not optional: `AudioServer.add_bus()` passes
   `at_position = -1` to Godot's web audio library, whose `Bus.addAt`/`Bus.move`
   then insert the new bus at the *front* of its array. The following
   `set_bus_mute(1, true)` lands on the reordered master bus, muting the whole game.
