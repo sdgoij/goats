@@ -32,17 +32,18 @@ extends RefCounted
 const SHADOW_NAMES: Array[String] = ["off", "map"]
 const CLOUD_NAMES: Array[String] = ["low", "medium", "high"]
 
-## `SETTINGS`, with the scene's own defaults. `fullscreen` is the one the port starts *differently*
-## from the client: the client boots full-screen, and the port boots windowed because its
-## screenshot and interop harnesses are sized windows (`PORT.md` section 5). The setting and the
-## toggle are the scene's; only the boot value differs.
+## `SETTINGS`, with the scene's own defaults. `fullscreen` is `true` on desktop, so the port
+## boots the way the client does; the browser is the exception, because a tab cannot enter
+## fullscreen without a gesture, so it starts windowed and leaves the page's own control to the
+## player. The screenshot and interop harnesses ask for a window explicitly -- `tools/screenshot.gd`
+## clears the setting before the scene boots, because they size it with `--resolution`.
 var bgm := 90.0
 var sfx := 90.0
 var light := true
 var shadow := "map"
 var sky := true
 var cloud := "medium"
-var fullscreen := false
+var fullscreen := not OS.has_feature("web")
 
 ## `applySettings`, handed in by the frame: everything a change has to reach. Called on every
 ## edit, which is the scene's own shape (`applySettings` runs once per changed control).

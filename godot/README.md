@@ -636,7 +636,9 @@ and `connect <ticket>` / `leave` / `who` / `copy` are how a session is driven by
 `Mods`, `Keymap` and the `` ` ``-equivalent `Console` button, plus `Quit`. A menu freezes the
 world and takes the keyboard and the mouse, and every control on the two screens that matter
 does something real — the audio gains, the lighting, the shadow map, the sky program, the cloud
-quality, the water's reflection, fullscreen and the herd's size. The `Mods` screen now lists
+quality, the water's reflection, fullscreen and the herd's size. The desktop client starts
+full-screen; F11 and the settings toggle still move it, and the browser build starts windowed
+because a tab cannot enter fullscreen without a gesture. The `Mods` screen now lists
 what the runtime found (`mods.gd`, stage 1): a row per mod with its version and side, `FAILED`
 and the error on the ones whose entry threw, and an Enable/Disable button wired to the runtime's own
 `modSetEnabled` -- a toggle turns a mod off for the session, and a world mod is refused while a

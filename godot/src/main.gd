@@ -331,6 +331,11 @@ var _previous := {}
 var _settle := -1.0
 
 func _ready() -> void:
+	# The settings screen owns fullscreen, but a setting nobody pushes at boot is a window the
+	# player did not ask for. A browser tab cannot enter fullscreen without a gesture, so its
+	# boot stays windowed; `_place_window` also leaves a headless run alone.
+	if not OS.has_feature("web"):
+		_place_window()
 	_set_up_sky()
 	# The devices need the goat they hurt and the meadow a trap has to land in; the
 	# scene's own field is wired the same way (`explosions.js` reads the goat and
@@ -2305,6 +2310,18 @@ func _open_console() -> void:
 ## herd's coats; the shadow map is Godot's `sun.shadow_enabled`; and the sky program is the
 ## environment's `sky_material`, with a flat horizon colour standing in for it when it is off.
 ## The reflection tier is the water's own leaf, applied through the pass that draws it.
+## Put the window where `settings.fullscreen` says, if there is a window to put it in. A
+## headless run has none, and the browser's boot is handled by the caller: a tab can only enter
+## fullscreen inside a gesture, so `_ready` leaves the web build windowed and this still serves
+## the menu's toggle, which *is* a gesture.
+func _place_window() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	var wanted: int = DisplayServer.WINDOW_MODE_FULLSCREEN if settings.fullscreen \
+		else DisplayServer.WINDOW_MODE_WINDOWED
+	if DisplayServer.window_get_mode() != wanted:
+		DisplayServer.window_set_mode(wanted)
+
 func _apply_settings() -> void:
 	audio.bgm = settings.bgm
 	audio.sfx = settings.sfx
@@ -2336,10 +2353,7 @@ func _apply_settings() -> void:
 	_set_sky_background(settings.sky)
 
 	# Fullscreen, if the window is not already where the setting says.
-	var wanted: int = DisplayServer.WINDOW_MODE_FULLSCREEN if settings.fullscreen \
-		else DisplayServer.WINDOW_MODE_WINDOWED
-	if DisplayServer.window_get_mode() != wanted:
-		DisplayServer.window_set_mode(wanted)
+	_place_window()
 
 	# The water's reflection is the leaf's, and the pass is what draws it.
 	water_reflect.apply(water_surface, water_mirror)

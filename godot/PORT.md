@@ -553,8 +553,10 @@ Two vocabularies are narrower than `ctl.js`'s on purpose, and both are the rule 
 since stage 5 (**a JavaScript fallback for a build without something Godot always has is not
 ported**): there is no `planar` shadow, because that mode is the scene's fallback for a build with
 no shadow map and Godot always has one, so the shadow words are `off|map` where the scene's are
-three; and the port boots windowed where the client boots full-screen, because its screenshot and
-interop harnesses are sized windows. The look of the chrome is a *lookalike* of raygui's default
+three; and the port now boots full-screen as the client does. The browser is the exception -- a tab
+cannot enter fullscreen without a gesture -- and the screenshot and interop harnesses clear the
+setting before boot, because they size their windows with `--resolution`. The look of the chrome
+is a *lookalike* of raygui's default
 theme -- the port has no raygui -- and the keymap panel reproduces the scene's own geometry,
 overflow and all: 22 rows at 21 px from `y + 44` is 462 px in a 500-tall panel, so the last row
 sits six pixels past the panel's edge and `Back` is drawn over the two before it.

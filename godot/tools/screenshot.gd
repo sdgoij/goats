@@ -34,7 +34,12 @@ func _initialize() -> void:
 	if requested.is_valid_int() and requested.to_int() > 0:
 		_limit = requested.to_int()
 	var packed := load("res://scenes/herd.tscn") as PackedScene
-	root.add_child(packed.instantiate())
+	var game: Node = packed.instantiate()
+	# The desktop client boots full-screen, which would override the `--resolution` this harness
+	# sizes its window with. Clear it before the scene's `_ready` applies it.
+	var settings: Settings = game.get("settings")
+	settings.fullscreen = false
+	root.add_child(game)
 
 func _process(_delta: float) -> bool:
 	_frames += 1
