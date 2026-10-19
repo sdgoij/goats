@@ -41,9 +41,13 @@ const SKY := 0
 const GROUND := 1
 const MIRROR := 2
 
-## `TUNING.water.reflection`'s own default, and `TUNING_CLAMP["water.reflection"]`: the leaf
-## is a *closed* range and nothing else.
-const DEFAULT := 1
+## The port's default tier, and the end of `TUNING_CLAMP["water.reflection"]`: the leaf is a
+## *closed* range and nothing else. The scene's own `TUNING.water.reflection` is `1` (`ground`,
+## `core.js`); the port ships `2` (`mirror`) because its ground tier is the pass drawing only
+## the ground, while the look the scene's top tier describes -- the goat and the herd in the
+## water -- is the one the port can draw. The leaf and its clamp are still the scene's, so
+## `setting reflect ground` and a mod's write land exactly as before.
+const DEFAULT := 2
 const LEAST := 0
 const MOST := 2
 

@@ -407,9 +407,10 @@ pool, because a downpour floods the hollows and nothing else, and with `GOATS_CA
 the same flood is the only way to *see* a wake follow the goat. `GOATS_REFLECT=sky|ground|mirror`
 is the water's reflection (`setting reflect`'s own words, M20e), and it is a *second camera*
 rather than a march: `sky` runs no pass and stands on the sky alone, which is what shipped
-before M20e; the default `ground` runs the pass drawing the ground and not the goat; and
+before M20e; `ground` runs the pass drawing the ground and not the goat; and the default
 `mirror` runs the pass drawing everything but the surface and the meadow, so the goat is in
-the water. (The ground is a second draw of the terrain's own mesh, because a heightfield's
+the water. (The scene's own `TUNING.water.reflection` defaults to `ground`; the port ships
+the top tier because that is the look its own pass exists to draw.) (The ground is a second draw of the terrain's own mesh, because a heightfield's
 quads face away from a camera under it — `terrain_mirror.gdshader`.) It is
 grazing-angle-strong and near-invisible from above, which is what the
 scene's own fresnel says: `GOATS_CAM=0.7,0.10,6` is the aim that shows it. `GOATS_WEATHER` pins the
