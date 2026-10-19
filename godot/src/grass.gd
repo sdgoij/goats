@@ -11,18 +11,21 @@
 # Three things about the transcription are worth naming, because each is a place a
 # plausible tidying would change the field:
 #
-#   * The per-cell hash is **`Meadow.cell_hash`**, not a copy. The scene carries
-#     that arithmetic twice (`food.js` `nearestTuft` and `weather.js` `tuftField`)
-#     to keep the per-frame call depth down; here it is one function, so the grass
-#     a goat can see and the grass it can eat are the same grass by construction.
-#     The hash itself is 32-bit **wrap-around integer mixing** (`Math.imul`, `>>>`,
-#     `| 0`) and GDScript's `int` is 64 bits, so `Meadow` re-implements the wrap --
-#     a subtly wrong `imul` is not a slightly wrong field, it is a different one
-#     that still looks like grass.
-#   * The cell's height is a **deliberate omission of a cache**. The scene memoises
-#     `terrainHeight` per cell (it was ~2 ms/frame at ~500 samples); GDScript does
-#     the ~330 samples the visible field needs in a fraction of a millisecond, and a
-#     pure function is one the gate can call.
+#   * The per-cell hash is **inlined in `field`**, as the scene's `tuftField` does:
+#     a static call plus a `Vector3i` per cell measured ~1.7 ms/frame, and this is
+#     the field's hottest loop. `Meadow.cell_hash` stays the eating path's single
+#     definition, and both are checked against the scene's own JavaScript
+#     (`verify_grass.gd`, `verify_meadow.gd`), so the grass a goat can see and the
+#     grass it can eat cannot drift. The hash itself is 32-bit **wrap-around integer
+#     mixing** (`Math.imul`, `>>>`, `| 0`) and GDScript's `int` is 64 bits, so the
+#     port re-implements the wrap -- a subtly wrong `imul` is not a slightly wrong
+#     field, it is a different one that still looks like grass.
+#   * The cell's height **is cached per cell**, as the scene's `TERRAIN_CELL_H` is:
+#     `Terrain.height_at` measured ~0.75 ms/frame for the ~300 visible tufts, and a
+#     cell's height is world-anchored, so only a crater invalidates it. `main.gd`
+#     drops the cache where it rebuilds the ground for `Craters.dirty`; `field`
+#     computes the height when it is handed no cache, which is how the gate stays
+#     pure.
 #   * The two cubes are the scene's own **two-cube tuft**: a far tuft is one cube,
 #     a near one gets a second, shorter segment so the bend reads up close. A
 #     `MultiMesh` carries both as instances of one unit box, scaled per instance --
@@ -78,6 +81,11 @@ var rebuilds := 0
 ## The water this field is drawn through: a tuft under it is skipped (M20d). `main.gd`
 ## hands it in, and with none nothing is culled.
 var water: Water
+## Per-cell ground height, world-anchored like the scene's `TERRAIN_CELL_H`: a cell
+## never changes unless a crater does, and `main.gd` drops this where it refreshes
+## the ground. `field` still computes the height when it is handed no cache, which
+## is how the gate keeps its pure answer.
+var _height_cache := {}
 
 func _ready() -> void:
 	_multimesh = MultiMesh.new()
@@ -122,7 +130,7 @@ func update(centre: Vector3, sway_time: float, wind_sway: float, eaten: Dictiona
 	if water != null:
 		cull = Callable(water, "submerged_at")
 	var positions: PackedFloat64Array = field(
-		centre.x, centre.z, CULL2, DETAIL2, sway_time, wind_sway, eaten, cull)
+		centre.x, centre.z, CULL2, DETAIL2, sway_time, wind_sway, eaten, cull, _height_cache)
 	var tufts: int = positions.size() / STRIDE
 	rebuilds += 1
 
@@ -150,6 +158,11 @@ func update(centre: Vector3, sway_time: float, wind_sway: float, eaten: Dictiona
 	_multimesh.custom_aabb = AABB(
 		centre + Vector3(-reach, -8.0, -reach), Vector3(reach * 2.0, 16.0, reach * 2.0))
 
+## The ground moved (a crater appeared, healed, or a session replaced the list).
+## `main.gd` calls this where it rebuilds the mesh for `Craters.dirty`.
+func drop_height_cache() -> void:
+	_height_cache.clear()
+
 ## How many tufts the last `update` drew, for a probe.
 func count() -> int:
 	if _multimesh == null:
@@ -166,7 +179,7 @@ func _cube(x: float, y: float, z: float, size: Vector3) -> Transform3D:
 ## line later -- merged here for the reason the header gives.
 static func field(gx: float, gz: float, cull2: float, detail2: float,
 		sway_time: float, wind_sway: float, eaten: Dictionary,
-		submerged: Callable = Callable()) -> PackedFloat64Array:
+		submerged: Callable = Callable(), heights = null) -> PackedFloat64Array:
 	var radius: float = sqrt(cull2)
 	var cx0: int = int(floor((gx - radius) * 0.5))
 	var cx1: int = int(ceil((gx + radius) * 0.5))
@@ -176,30 +189,54 @@ static func field(gx: float, gz: float, cull2: float, detail2: float,
 	var out := PackedFloat64Array()
 	for cx in range(cx0, cx1 + 1):
 		for cz in range(cz0, cz1 + 1):
-			# Existence, and the z jitter.
-			var hash: Vector3i = Meadow.cell_hash(cx, cz)
-			var a: float = Meadow.unit(hash.x)
+			# The cell hash is inlined here, as the scene's `tuftField` does, rather than
+			# calling `Meadow.cell_hash` three times a cell: a static call plus a
+			# `Vector3i` per cell measured ~1.7 ms/frame in GDScript.
+			var h: int = (cx * 374761393 + cz * 668265263) & 0xFFFFFFFF
+			h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
+			h = (h ^ (h >> 16)) & 0xFFFFFFFF
+			var h2: int = (cx * 1103515245 + cz * 12345) & 0xFFFFFFFF
+			h2 = ((h2 ^ (h2 >> 15)) * 2246822519) & 0xFFFFFFFF
+			h2 = (h2 ^ (h2 >> 13)) & 0xFFFFFFFF
+			var h3: int = (cx * 2654435761 + cz * 40503) & 0xFFFFFFFF
+			h3 = ((h3 ^ (h3 >> 16)) * 3266489917) & 0xFFFFFFFF
+			h3 = (h3 ^ (h3 >> 16)) & 0xFFFFFFFF
+			var a: float = float(h) / 4294967296.0
 			if a < 0.45:
 				continue
 			# Eaten cells are skipped entirely, so the field thins as the herd grazes.
-			if eaten.has(Meadow.key(cx, cz)):
+			if eaten.has((cx + 4096) * 8192 + (cz + 4096)):
 				continue
-			var x: float = cx * Terrain.CELL + (Meadow.unit(hash.y) - 0.5) * 1.8
+			var x: float = cx * Terrain.CELL + (float(h2) / 4294967296.0 - 0.5) * 1.8
 			var z: float = cz * Terrain.CELL + (a - 0.5) * 1.8
 			var tx: float = x - gx
 			var tz: float = z - gz
 			var d2: float = tx * tx + tz * tz
 			if d2 > cull2:
 				continue
-			var off: float = sin(sway_time * 3.0 + Meadow.unit(hash.z) * 6.28) * 0.11 * wind_sway
+			var off: float = sin(sway_time * 3.0 + (float(h3) / 4294967296.0) * 6.28) * 0.11 * wind_sway
 			# A tuft standing under the water is skipped (`drawTufts`), and the test is the
 			# tuft's *swayed* place -- the position the scene asks `waterSubmergedAt` about.
 			# Where the count of what it skips lives is `Water`'s business: it is the test's
 			# one caller and the number `state` reports.
 			if submerged.is_valid() and bool(submerged.call(x + off, z + off * 0.4)):
 				continue
-			# The tuft sits on the heightfield, so the grass follows the ground.
-			var gy: float = Terrain.height_at(x, z)
+			# The tuft sits on the heightfield, so the grass follows the ground. The
+			# cache key mirrors `Meadow.key`, inlined for the same reason as the hash;
+			# a cell's height is world-anchored, so only a crater invalidates it.
+			var hkey: int = (cx + 4096) * 8192 + (cz + 4096)
+			var gy: float
+			if heights != null:
+				var cached: Variant = heights.get(hkey, null)
+				if cached == null:
+					gy = Terrain.height_at(x, z)
+					if heights.size() > 32768:
+						heights.clear()
+					heights[hkey] = gy
+				else:
+					gy = float(cached)
+			else:
+				gy = Terrain.height_at(x, z)
 			out.append(x + off)
 			out.append(gy + 0.06)
 			out.append(z + off * 0.4)

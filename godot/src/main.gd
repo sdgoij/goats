@@ -711,6 +711,9 @@ func _process(delta: float) -> void:
 		if Craters.dirty:
 			Craters.dirty = false
 			terrain.refresh()
+			# The grass cached the old ground for its cells; it is world-anchored, so a
+			# crater is the one thing that makes a cached sample wrong.
+			grass.drop_height_cache()
 		terrain.follow(here.x, here.z)
 		# The water is the table over the grid, so it follows the grid: the scene rebuilds it
 		# wherever the terrain mesh is rebuilt (`waterRebuild`), and `rebuilds` is what says
