@@ -107,8 +107,13 @@ function drawMainMenu(sw, sh) {
         uiScreen = "hud";
         if (!consoleOpen) consoleToggle();
     }
-    by += bh + 10;
-    if (rl.guiButton(bx, by, bw, bh, "Quit")) ctlQuit = true;
+    // A browser tab has no process to quit -- closing the page is the page's job. The
+    // embedded surface installs `web` before the scene runs, which is the same test
+    // `goat.js` uses to tell the two builds apart (WASM.md W0).
+    if (typeof web === "undefined") {
+        by += bh + 10;
+        if (rl.guiButton(bx, by, bw, bh, "Quit")) ctlQuit = true;
+    }
 }
 
 function drawSettings(sw, sh) {

@@ -633,7 +633,8 @@ the goat. In a session it is also the chat box: anything that is not a verb is a
 and `connect <ticket>` / `leave` / `who` / `copy` are how a session is driven by hand.
 
 **Escape** opens the **menu**: `menu.js`'s four screens, `main` first and then `Settings`,
-`Mods`, `Keymap` and the `` ` ``-equivalent `Console` button, plus `Quit`. A menu freezes the
+`Mods`, `Keymap` and the `` ` ``-equivalent `Console` button, plus `Quit` on desktop -- a
+browser tab has no process to quit, so both web builds leave it out. A menu freezes the
 world and takes the keyboard and the mouse, and every control on the two screens that matter
 does something real — the audio gains, the lighting, the shadow map, the sky program, the cloud
 quality, the water's reflection, fullscreen and the herd's size. The desktop client starts

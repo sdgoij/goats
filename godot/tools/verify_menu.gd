@@ -31,6 +31,7 @@ function r(v) { return Number(v).toFixed(1); }
 const SIZES = __SIZES__;
 const S = __SETTINGS__;
 const ROWS = __ROWS__;
+const WEB = __WEB__;
 const SHADOW_LIST = ["None", "Shadow map"];
 const CLOUD_LIST = ["Low", "Medium", "High"];
 const REFLECT_LIST = ["Sky only", "Ground", "Mirror"];
@@ -45,7 +46,9 @@ function mainMenu(sw, sh) {
     widget('panel', 'Slag goat', x, y, w, h);
     const bx = x + 30, bw = w - 60, bh = 34;
     let by = y + 46;
-    const labels = [S.frames > 0 ? 'Continue' : 'Play', 'Settings', 'Mods', 'Keymap', 'Console', 'Quit'];
+    const labels = [S.frames > 0 ? 'Continue' : 'Play', 'Settings', 'Mods', 'Keymap', 'Console'];
+    // A tab has no process to quit (`menu.js` tests `typeof web`); the desktop keeps it.
+    if (!WEB) labels.push('Quit');
     for (let i = 0; i < labels.length; i++) {
         widget('button', labels[i], bx, by, bw, bh);
         by += bh + 10;
@@ -164,7 +167,8 @@ func _initialize() -> void:
 	var source: String = LAYOUT_JS \
 		.replace("__SIZES__", JSON.stringify(SIZES)) \
 		.replace("__SETTINGS__", JSON.stringify(SETTINGS_FOR_LAYOUT)) \
-		.replace("__ROWS__", JSON.stringify(_keymap_rows()))
+		.replace("__ROWS__", JSON.stringify(_keymap_rows())) \
+		.replace("__WEB__", JSON.stringify(OS.has_feature("web")))
 	for line in _oracle(host, source, "layout"):
 		var parts: PackedStringArray = line.split(" ")
 		if line.begins_with("log rect ") and parts.size() >= 4:

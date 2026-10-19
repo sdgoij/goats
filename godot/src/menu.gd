@@ -259,11 +259,15 @@ func _main_layout(size: Vector2) -> Array:
 			["settings", "Settings"],
 			["mods", "Mods"],
 			["keymap", "Keymap"],
-			["console", "Console"],
-			["quit", "Quit"]]:
+			["console", "Console"]]:
 		out.append({"kind": "button", "rect": Rect2(bx, by, bw, BUTTON_H),
 			"text": String(entry[1]), "id": String(entry[0])})
 		by += BUTTON_H + BUTTON_GAP
+	# A browser tab has no process to quit -- closing the page is the page's job. `menu.js`
+	# says the same thing with `typeof web`; the desktop build keeps the button.
+	if not OS.has_feature("web"):
+		out.append({"kind": "button", "rect": Rect2(bx, by, bw, BUTTON_H),
+			"text": "Quit", "id": "quit"})
 	return out
 
 func _settings_layout(size: Vector2) -> Array:
