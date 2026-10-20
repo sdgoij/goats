@@ -551,6 +551,7 @@ fn the_scene_runs_the_scripted_timeline() {
         && settings_before["light"] == json!(true)
         && settings_before["shadow"] == json!("map")
         && settings_before["sky"] == json!(true)
+        && settings_before["aa"] == json!(true)
         && settings_before["cloud"] == json!("medium")
         && settings_before["fullscreen"] == json!(true)
         && f64_of(settings_before["herd"].clone()) == 7.0;
@@ -601,6 +602,13 @@ fn the_scene_runs_the_scripted_timeline() {
     let cloud_levels = cloud_low
         && cloud_high
         && command_json(&mut harness, "settings")["cloud"] == json!("medium");
+    // The harness's `rl` records texture modes rather than switching targets, so
+    // the FXAA path stays off there; what this holds is the setting the direct and
+    // accelerated paths both read.
+    harness.command("setting aa off").expect("setting");
+    let aa_off = command_json(&mut harness, "settings")["aa"] == json!(false);
+    harness.command("setting aa on").expect("setting");
+    let aa_on = command_json(&mut harness, "settings")["aa"] == json!(true);
 
     let screen_set = harness.command("ui settings").expect("ui") == "ok ui settings"
         && harness.command("ui").expect("ui") == "ok settings";
@@ -610,6 +618,11 @@ fn the_scene_runs_the_scripted_timeline() {
     checks.check("herd size grows the herd", nine == 9, nine);
     checks.check("herd size shrinks the herd", three == 3, three);
     checks.check("cloud quality can be set", cloud_levels, cloud_levels);
+    checks.check(
+        "anti-aliasing can be toggled",
+        aa_off && aa_on,
+        (aa_off, aa_on),
+    );
     checks.check("menu screens can be opened", screen_set, screen_set);
 
     // The tuning tree: reads and writes are side-effect free apart from the

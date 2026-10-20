@@ -209,6 +209,7 @@ function sceneCommand(line) {
                 lightY: ctlRound(LIGHT_DIR[1]),
                 skyLight: ctlRound(skyLight),
                 sky: useSkyShader,
+                aa: useAA && fxaaShader >= 0 && sceneTarget >= 0,
                 cloud: CLOUD_LEVELS[cloudLevel()],
                 fullscreen: typeof rl.isWindowFullscreen === "function" ? rl.isWindowFullscreen() : false,
                 muted: muted,
@@ -226,6 +227,7 @@ function sceneCommand(line) {
                 light: SETTINGS.light,
                 shadow: SETTINGS.shadow === SHADOW_MAP ? "map" : SETTINGS.shadow === SHADOW_PLANAR ? "planar" : "off",
                 sky: SETTINGS.sky,
+                aa: SETTINGS.aa,
                 cloud: CLOUD_LEVELS[cloudLevel()],
                 reflect: REFLECT_NAMES[Math.round(TUNING.water.reflection)],
                 fullscreen: SETTINGS.fullscreen,
@@ -237,7 +239,7 @@ function sceneCommand(line) {
                 const v = ctlArg(parts, 2);
                 if (v === null) return "error setting " + key + " expects a number";
                 SETTINGS[key] = clamp(Math.round(v), 0, 100);
-            } else if (key === "light" || key === "sky" || key === "fullscreen") {
+            } else if (key === "light" || key === "sky" || key === "aa" || key === "fullscreen") {
                 if (parts[2] === "on" || parts[2] === "off") SETTINGS[key] = parts[2] === "on";
                 else if (parts[2] === "toggle") SETTINGS[key] = !SETTINGS[key];
                 else return "error setting " + key + " expects on|off|toggle";

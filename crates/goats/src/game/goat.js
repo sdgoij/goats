@@ -442,7 +442,10 @@ function sceneLoadStep() {
     else if (i === 3) loadGoat();
     else if (i === 4) makeTerrain();
     else if (i === 5) makeLighting();
-    else if (i === 6) makeSkyShader();
+    else if (i === 6) {
+        makeSkyShader();
+        makePost();
+    }
     else if (i === 7) makeAudio();
     else if (i === 8) makeBotTextures();
     else {
@@ -665,6 +668,10 @@ function sceneFrame() {
         useSkyShader = !useSkyShader;
         SETTINGS.sky = useSkyShader;
     }
+    if (typeof rl.KEY_F10 === "number" && press(rl.KEY_F10) && fxaaShader >= 0) {
+        SETTINGS.aa = !SETTINGS.aa;
+        useAA = SETTINGS.aa;
+    }
     // The water's own bisect (M20f): off is the whole system, which is the frame-cost
     // comparison a review wants and the state a mod's own water would start from.
     if (press(rl.KEY_J)) waterSetEnabled(TUNING.water.enabled === 0);
@@ -875,6 +882,24 @@ function sceneFrame() {
     const lookZ = goat.pz + shakeZ;
 
     rl.beginDrawing();
+    const lit = useLighting && litShader >= 0;
+    // The shadow-map pass must run before the scene target and the main 3D pass,
+    // since it swaps render targets and leaves the model pointing back at the
+    // lit shader.
+    if (lit) renderShadowMap();
+    // ...and so must the water's mirror (M20e), for the same reason and one more:
+    // raylib's `endTextureMode` restores the *screen's* projection, so a texture
+    // pass that nested inside the 3D one would leave everything after it flat. It
+    // draws nothing unless the reflection setting asks for the mirror and there
+    // is water to reflect.
+    if (lit) renderWaterMirror(vx, vy, vz, lookX, lookY, lookZ);
+    perfMark("mirror");
+    // FXAA renders the 3D scene into a target of its own, then resolves it onto
+    // the screen below. The HUD and menus are drawn after the resolve, so text
+    // keeps the window's own pixels. A missing target just falls back to the
+    // direct path.
+    const aaTarget = sceneTargetEnsure();
+    if (aaTarget) rl.beginTextureMode(sceneTarget);
     rl.clearBackground(skyBot);
     const skyShaderOn = useSkyShader && skyShader >= 0;
     // The sky is two passes where the cloud layer can be blended over what is under
@@ -889,16 +914,6 @@ function sceneFrame() {
         rl.drawRectangleGradientV(0, 0, screenW, screenH, skyTop, skyBot);
     }
     perfMark("sky2d");
-    const lit = useLighting && litShader >= 0;
-    // The shadow-map pass must run before the main 3D pass, since it swaps
-    // render targets and leaves the model pointing back at the lit shader.
-    if (lit) renderShadowMap();
-    // ...and so must the water's mirror (M20e), for the same reason and one more: raylib's
-    // `endTextureMode` restores the *screen's* projection, so a texture pass that nested
-    // inside the 3D one would leave everything after it flat. It draws nothing unless the
-    // reflection setting asks for the mirror and there is water to reflect.
-    if (lit) renderWaterMirror(vx, vy, vz, lookX, lookY, lookZ);
-    perfMark("mirror");
     rl.beginMode3D(vx, vy, vz, lookX, lookY, lookZ, 55);
     drawStars();
     drawCelestial(cx, cy, cz);
@@ -986,6 +1001,11 @@ function sceneFrame() {
     perfMark("endmode3d");
 drawRain(screenW, screenH);
 perfMark("rain2d");
+if (aaTarget) {
+    rl.endTextureMode();
+    drawSceneAA();
+    perfMark("fxaa");
+}
 if (uiScreen === "hud") {
     // Ring names are screen-space text, so they go under the HUD they belong to.
     PORTALS.labels(vx, vy, vz, lookX, lookY, lookZ);
@@ -1031,6 +1051,10 @@ function sceneShutdown() {
     if (haveModel) {
         rl.unloadModel(model);
     }
+    if (sceneTarget >= 0 && typeof rl.unloadRenderTexture === "function") {
+        rl.unloadRenderTexture(sceneTarget);
+    }
+    if (fxaaShader >= 0 && typeof rl.unloadShader === "function") rl.unloadShader(fxaaShader);
     if (audioReady) rl.closeAudioDevice();
     rl.closeWindow();
 }

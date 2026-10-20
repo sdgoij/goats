@@ -28,6 +28,7 @@ scene_bundle!(
     "../../goats/src/game/water.js",
     "../../goats/src/game/lighting.js",
     "../../goats/src/game/sky.js",
+    "../../goats/src/game/post.js",
     "../../goats/src/game/audio.js",
     "../../goats/src/game/weather.js",
     "../../goats/src/game/food.js",
@@ -66,6 +67,6 @@ mod tests {
         // *line* dropped from the list too; the banners have since been removed, so
         // that half is now caught only by the scene failing to run (the harness),
         // not here.
-        assert_eq!(PARTS.len(), 18);
+        assert_eq!(PARTS.len(), 19);
     }
 }

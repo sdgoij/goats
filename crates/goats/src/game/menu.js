@@ -24,6 +24,7 @@ const KEYMAP_ROWS = [
     ["B", "toggle the sky shader"],
     ["J", "toggle the water"],
     ["M", "mute audio"],
+    ["F10", "toggle anti-aliasing"],
     ["F11", "toggle fullscreen"],
     ["Mouse drag", "orbit the camera"],
     ["Mouse wheel", "zoom"],
@@ -71,6 +72,7 @@ function applySettings() {
     }
     shadowMode = shadowModeNow();
     if (skyShader >= 0) useSkyShader = SETTINGS.sky;
+    useAA = SETTINGS.aa;
     if (typeof rl.toggleFullscreen === "function" &&
         typeof rl.isWindowFullscreen === "function" &&
         SETTINGS.fullscreen !== rl.isWindowFullscreen()) {
@@ -87,6 +89,7 @@ function applyStartupSettings() {
     if (litShader >= 0 && haveModel) rl.setModelShader(model, modelShaderFor(model, useLighting ? litShader : -1));
     setBotsShader(useLighting ? litShader : -1);
     if (skyShader >= 0) useSkyShader = SETTINGS.sky;
+    useAA = SETTINGS.aa;
     shadowMode = shadowModeNow();
 }
 
