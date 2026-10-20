@@ -212,9 +212,22 @@ impl World {
             .clone()
     }
 
-    /// The flock as rows, for the geometry the cases do by hand.
+    /// The flock as rows, for the geometry the cases do by hand. The payload is
+    /// `{rows, riders}` since 1.2.0; the rows are what the geometry reads.
     fn flock(&mut self) -> Vec<serde_json::Value> {
-        self.published().as_array().cloned().unwrap_or_default()
+        self.published()
+            .get("rows")
+            .and_then(|rows| rows.as_array())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The host's rider map: bird index (as a string key) to the rider's identity.
+    fn riders(&mut self) -> serde_json::Value {
+        self.published()
+            .get("riders")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
     }
 
     /// Teleports the player, which is how a case moves the flock's home.
@@ -363,18 +376,23 @@ fn the_cases(checks: &mut Checks) {
 
         // The published flock has to fit the world datagram budget. Seven numbers a
         // row since protocol 12: the five the flock has always sent, then the attitude
-        // a `RIDE` bird inherits from its goat (`FLIGHT.md` §6.2).
+        // a `RIDE` bird inherits from its goat (`FLIGHT.md` §6.2); the rider map beside
+        // them is empty unless somebody is aboard.
         let flock = world.published();
         let payload = serde_json::to_string(&flock).expect("the payload");
+        let rows = flock.get("rows").and_then(|rows| rows.as_array());
         checks.check(
             "the published flock is one compact record per bird",
-            flock.as_array().is_some_and(|rows| {
+            rows.is_some_and(|rows| {
                 rows.len() == 6
                     && rows
                         .iter()
                         .all(|row| row.as_array().is_some_and(|row| row.len() == 7))
-            }),
-            flock.as_array().map_or(0, Vec::len),
+            }) && flock
+                .get("riders")
+                .and_then(|r| r.as_object())
+                .is_some_and(|r| r.is_empty()),
+            (&flock, payload.len()),
         );
         checks.check(
             "the flock payload stays within the world datagram budget",
@@ -383,7 +401,7 @@ fn the_cases(checks: &mut Checks) {
         );
 
         // `scatter` is the command with an observable effect on the flock.
-        let before = world.published()[0].clone();
+        let before = world.flock()[0].clone();
         let accepted =
             world.harness.command("birds scatter").expect("scatter") == "ok birds scattered";
         let mut moved = false;
@@ -1178,6 +1196,165 @@ fn the_cases(checks: &mut Checks) {
                 world.flag("flightCapable"),
                 world.flag("BOTS[0].flightCapable"),
             ),
+        );
+    }
+
+    // ---- a joiner's goat is captured by the host ----------------------------
+    // `FLIGHT.md` §8: the host's flock reads the joiners through `goats.peers`, a jump in
+    // a peer's snapshot is the capture, and the rider map tells the peer's own client to
+    // grant itself. No wire field changed -- the peer state already carried the mode.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(2);
+        // One peer, in the shape `net.js` `netPeerState` takes. A closure keeps the four
+        // things that matter (gait, height, pitch, roll) readable.
+        let peer = |gait: &str, py: f64, pitch: i32, roll: i32| {
+            json!({"type": "peer", "name": "alice", "state": {
+                "x": 2.0, "z": -1.0, "yaw": 0.5, "phase": 0.0,
+                "gait": gait, "py": py, "pitch": pitch, "roll": roll,
+            }})
+            .to_string()
+        };
+        net_feed(&mut world.harness, &peer("idle", 0.0, 0, 0)).expect("peer");
+        world.step(1);
+        let listed = world.harness.eval("goats.peers.list()").expect("peers");
+        checks.check(
+            "the host reads a joiner through `goats.peers`",
+            listed.as_array().is_some_and(|rows| {
+                rows.len() == 1
+                    && rows[0]["name"] == json!("alice")
+                    && rows[0]["mode"] == json!("idle")
+            }),
+            listed,
+        );
+
+        let sat =
+            world.harness.command("birds sit alice").expect("sit") == "ok bird sitting on alice";
+        world.step(1);
+        let perched = world.status();
+        checks.check(
+            "`birds sit <peer>` perches a bird on a joiner's goat",
+            sat && count(&perched["states"], "perch") == 1.0,
+            &perched,
+        );
+
+        // The jump is the capture, from the peer's own mode: the host never sees its keys.
+        net_feed(&mut world.harness, &peer("jump", 0.0, 0, 0)).expect("jump");
+        world.step(1);
+        let caught = world.status();
+        checks.check(
+            "a joiner's jump captures the bird",
+            caught["captured"] == json!(1) && caught["riders"] == json!(["alice"]),
+            &caught,
+        );
+        checks.check(
+            "the rider map names the joiner",
+            world.riders() == json!({"0": "alice"}),
+            world.riders(),
+        );
+
+        net_feed(&mut world.harness, &peer("run", 0.0, 0, 0)).expect("run");
+        world.step(2);
+        checks.check(
+            "...and the bird rides once the jump ends",
+            count(&world.status()["states"], "ride") == 1.0,
+            world.status(),
+        );
+
+        // The seat is the peer's back point, built from the peer's *broadcast* attitude --
+        // the same `backPoint` the crate draws that peer's own goat with. `updatePeers` is
+        // the scene's easing, which `harnessStep` does not run, so it is stepped here.
+        net_feed(&mut world.harness, &peer("fly", 6.0, 20, -10)).expect("fly");
+        let _ = world.harness.eval("updatePeers(10)");
+        world.step(1);
+        let seat = world
+            .harness
+            .eval(
+                "(function () { const p = goats.peers.list()[0]; \
+                 const b = __flight.backPoint([p.x, p.z, \
+                 goats.world.terrainHeight(p.x, p.z) + p.y, p.yaw, p.pitch, p.roll, \
+                 0, 0, 0, 0, 0, 1], 1.15, \
+                 goats.tuning.get('explosions.fling.pivot')); \
+                 return [b[0], b[1], b[2]]; })()",
+            )
+            .expect("the peer's back point");
+        let seat = seat.as_array().cloned().unwrap_or_default();
+        let row = world.flock()[0].clone();
+        let off = (f64_of(row[0].clone()) - f64_of(seat[0].clone())).abs()
+            + (f64_of(row[1].clone()) - f64_of(seat[1].clone())).abs()
+            + (f64_of(row[2].clone()) - f64_of(seat[2].clone())).abs();
+        checks.check(
+            "the bird rides the joiner's back point",
+            seat.len() == 3 && off < 0.25,
+            (row, seat),
+        );
+
+        // A peer that leaves is a ride that ends: the flock drops the bird and the map.
+        net_feed(
+            &mut world.harness,
+            &json!({"type": "left", "name": "alice"}).to_string(),
+        )
+        .expect("left");
+        world.step(2);
+        let gone = world.status();
+        checks.check(
+            "a joiner that leaves lets the bird go",
+            gone["captured"] == json!(0) && world.riders() == json!({}),
+            (&gone, world.riders()),
+        );
+    }
+
+    // ---- a joiner is armed by the host's rider map ---------------------------
+    // The other half of §8: the host publishes *who* is riding, and only that client can
+    // arm its own goat. The grant is an edge -- a snapshot still naming the same bird must
+    // not undo the joiner's own `E` -- so letting go clears it too.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(1);
+        let _ = world.harness.eval("netMode = 'client'; netName = 'alice'");
+        let id = world.id.clone();
+        let rows = json!([[0.0, 1.15, 0.0, 0.0, 7, 0.0, 0.0]]);
+        let mut data = serde_json::Map::new();
+        data.insert(
+            id.clone(),
+            json!({ "rows": rows.clone(), "riders": { "0": "alice" } }),
+        );
+        world
+            .harness
+            .call("sceneApplyWorldMods", &[json!({ "data": data })])
+            .expect("apply");
+        world.step(2);
+        let ground = world.number("goats.world.terrainHeight(goat.px, goat.pz)");
+        // The goat's own height above that ground, which the seat adds (`player.state().y`:
+        // the cube fallback starts a little above it).
+        let lift = world.number("goats.player.state().y").max(0.0);
+        let row = world.flock()[0].clone();
+        checks.check(
+            "the host naming this goat grants its capability",
+            world.flag("flightCapable"),
+            world.flag("flightCapable"),
+        );
+        checks.check(
+            "...and the bird is seated on this goat exactly",
+            (f64_of(row[0].clone()) - world.number("goat.px")).abs() < 0.15
+                && (f64_of(row[1].clone()) - (ground + lift + 1.15)).abs() < 0.15
+                && (f64_of(row[2].clone()) - world.number("goat.pz")).abs() < 0.15,
+            (row, ground, lift),
+        );
+
+        let mut data = serde_json::Map::new();
+        data.insert(id, json!({ "rows": rows, "riders": {} }));
+        world
+            .harness
+            .call("sceneApplyWorldMods", &[json!({ "data": data })])
+            .expect("apply");
+        world.step(1);
+        checks.check(
+            "the host letting go clears the grant",
+            !world.flag("flightCapable"),
+            world.flag("flightCapable"),
         );
     }
 }

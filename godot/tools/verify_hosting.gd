@@ -221,11 +221,17 @@ func _check() -> void:
 		_failures.append("the mods payload carries no stream, and the flock registered one")
 	var mod_data: Variant = (mods_payload as Dictionary).get("data", null)
 	if not (mod_data is Dictionary) or not (mod_data as Dictionary).has(BIRDS_ID):
-		_failures.append("the mods payload does not carry the flock's published rows: %s" % mod_data)
+		_failures.append("the mods payload does not carry the flock's published state: %s" % mod_data)
 	else:
-		var published_rows: Variant = (mod_data as Dictionary)[BIRDS_ID]
+		# The flock's own payload is `{rows, riders}` since 1.2.0: the rows are the birds, the
+		# riders map is who is aboard (empty on an ordinary frame).
+		var published: Variant = (mod_data as Dictionary)[BIRDS_ID]
+		var published_rows: Variant = (published as Dictionary).get("rows", null) \
+			if published is Dictionary else null
 		if not (published_rows is Array) or (published_rows as Array).is_empty():
-			_failures.append("the flock published no rows: %s" % published_rows)
+			_failures.append("the flock published no rows: %s" % published)
+		elif not ((published as Dictionary).get("riders", null) is Dictionary):
+			_failures.append("the flock published no rider map: %s" % published)
 		else:
 			print("published rows: ", (published_rows as Array).size())
 	var mods_answer: String = String(bridge.call("mods", contribution))
@@ -261,7 +267,11 @@ func _stage_mods() -> void:
 	table[_stream_key] = _stream_value
 	var data: Variant = state.get("data", null)
 	if data is Dictionary:
-		var rows: Variant = (data as Dictionary).get(BIRDS_ID, null)
+		var flock_state: Variant = (data as Dictionary).get(BIRDS_ID, null)
+		# The flock's payload is `{rows, riders}`; only the rows are rewritten, and the
+		# empty rider map is sent through unchanged.
+		var rows: Variant = (flock_state as Dictionary).get("rows", null) \
+			if flock_state is Dictionary else null
 		if rows is Array and not (rows as Array).is_empty():
 			var goat: Object = _main.get("goat")
 			var px: float = float(goat.get("px"))
@@ -269,9 +279,9 @@ func _stage_mods() -> void:
 			var moved: Array = []
 			for _row: Variant in (rows as Array):
 				moved.append([px + 40.0, 0.5, pz, 0.0, 0])
-			(data as Dictionary)[BIRDS_ID] = moved
+			(flock_state as Dictionary)["rows"] = moved
 		else:
-			_failures.append("the flock has no published rows to rewrite")
+			_failures.append("the flock has no published rows to rewrite: %s" % flock_state)
 	_main.call("_handle", JSON.stringify({"type": "welcome", "name": "gate"}))
 	mods.call("apply_world_mods", JSON.stringify(state))
 

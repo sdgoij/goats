@@ -1436,6 +1436,22 @@ if (typeof globalThis.goats === "undefined") {
             },
 
             /**
+             * The *other players* (`APIv1.md` section 4.21): the mirrored goats a world mod
+             * reads, which is the one thing a host-authoritative mod could not get from
+             * `bots` -- a joiner's goat is not the host's herd (`FLIGHT.md` section 8).
+             *
+             * A row is `{name, x, z, yaw, mode, y, pitch, roll}`, where `y` is the height
+             * above the ground under the goat and `mode` is the wire's gait. The scene builds
+             * them from `Peers.state()`; a solo game has none.
+             */
+            peers: {
+                list: function () {
+                    const rows = ask("peers.list", []);
+                    return Array.isArray(rows) ? rows : [];
+                },
+            },
+
+            /**
              * A mod's own sound (`APIv1.md` section 4.20): `load(name)` turns an opaque asset
              * name -- usually one of `goats.assets.all(slot)` -- into a handle or `null`, and
              * `play(handle, volume, pitch)` sounds it.

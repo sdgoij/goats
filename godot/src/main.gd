@@ -1175,6 +1175,11 @@ func _mod_call(verb: String, args_json: String) -> String:
 				return _mod_ok("error nothing to say")
 			cmd_say(chat)
 			return _mod_ok("")
+		"peers.list":
+			# The other players as a world mod reads them (`APIv1.md` section 4.21). The scene's
+			# mirror is the answer -- the same rows this client draws -- and a solo game answers
+			# an empty list rather than refusing, which is what a world mod's loop expects.
+			return _mod_ok(peers.state())
 		"bots.setCount":
 			if args.is_empty() or not _is_number(args[0]):
 				return _mod_err("bots.setCount needs a count")

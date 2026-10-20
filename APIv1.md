@@ -426,6 +426,11 @@ reported, not silently ignored).
 > the port's own constants, and a path it has not got throws the same "unknown path" a typo does, so
 > a leaf the port never ported is never answered with a wrong number. Every member now answers:
 > `assets.override`/`add` are in, gated to a mod's own entry (above).
+>
+> **Added with captured-bird flight:** `goats.peers` (§4.21) -- the *other players*, which a
+> host-authoritative world mod could not read until a joiner's goat had to be a perch. The rows
+> are the mirror's own, and a headless host tracks a peer without a model, so `goatsd`'s flock
+> sees the same goats every peer does.
 
 `goats` is the only global a mod needs. Inside a wrapper, the per-mod handle is
 the argument; `goats` itself is also global for convenience.
@@ -1110,6 +1115,29 @@ This is neither -- there is nothing to read back -- so it takes the callback pat
 mod may `play` from any hook. **Attenuation is the caller's**: a mod that wants a distant
 squawk quieter computes the volume itself and passes the result, which is what `birds`
 already does.
+
+### 4.21 Peers
+
+```js
+const peers = goats.peers.list();
+// [{ name, x, z, yaw, mode, y, pitch, roll }]
+```
+
+The **other players** a session relays -- the goats `net.js` mirrors and `peers.gd` draws.
+It is the one read a host-authoritative world mod needs that `bots` cannot give it: the
+herd is the host's, but a joiner's goat is somebody else's, and a bird perched on it is
+still the host's flock (`mods/birds/FLIGHT.md` §8).
+
+`mode` is the wire's gait (`idle`/`walk`/`trot`/`run`/`jump`/…/`fly`/`fall`), which is
+the closest thing a peer has to a mode; `y` is the height above the ground under the
+goat, the unit `player.state().y` uses; `pitch`/`roll` are radians, as on the player.
+The numbers are the **mirror's** -- what this client is drawing, eased like the goat on
+screen -- and not the last raw snapshot.
+
+A solo game answers an empty array, and so does a client asked about its own goat: the
+list is the peers, not this process's player. A headless host (`goatsd`) tracks the rows
+without models, which is what lets a host's flock seat a bird on a joiner's back. The
+array is built per call, so a mod that reads it in a loop should ask once a frame.
 
 ## 5. Examples
 

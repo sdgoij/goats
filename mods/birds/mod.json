@@ -1,10 +1,10 @@
 {
   "id": "com.github.sdgoij.goats.birds",
   "name": "Birds",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "api": 1,
   "side": "world",
-  "description": "A flock of procedural birds: generated meshes and textures, eight states, boids flocking, a squawk of its own, synced in multiplayer. A bird perched on a goat that jumps is captured, and the goat can then fly.",
+  "description": "A flock of procedural birds: generated meshes and textures, eight states, boids flocking, a squawk of its own, synced in multiplayer. A bird perched on a goat that jumps is captured, and the goat can then fly -- including a joiner's goat, which the host's flock sees through its rider map.",
   "entry": "mod.js",
   "assets": {
     "sfx.squawk": [

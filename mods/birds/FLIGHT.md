@@ -611,7 +611,8 @@ Extend the `birds` verb:
 | --- | --- |
 | `birds mount` | Put `BIRDS[0]` on the player's goat in `RIDE` and grant flight (the test/demo path). |
 | `birds drop` | Release the player's captured bird and call `player.release()` if flying. |
-| `birds ride [bot]` | Put a bird on bot `[bot]` in `RIDE`, grant flight and start its zoomies. |
+| `birds sit [peer]` | Put `BIRDS[0]` on the player's goat in `PERCH` as a landing would, or on the named joiner's goat -- the host's view of a peer's perch. |
+| `birds ride [bot\|peer]` | Put a bird on bot `[bot]` (granting it and starting its zoomies), or on the named joiner's goat in `RIDE` (the rider map grants it on that client). |
 | `birds` (no verb) | Status adds `captured: n` and the riders, beside the existing state counts. |
 
 A feature check keeps the mod usable on an older client:
@@ -905,33 +906,65 @@ tuning leaf in the port so the mod's seat and the goat's mesh read one number.
 R1 and R2 can land in either order. R4 is the same work as the original plan;
 the crate changes none of it.
 
+### R5 — joiners fly
+
+**✅ Landed.** `goats.peers` (§4.21) in both clients; `netPeerState` tracks a headless
+peer; `pickPerch` and the rider seat accept a peer by name (`PERCH_PEER`/`b.peer`); the
+birds payload is `{rows, riders}` (mod 1.2.0) and a joiner grants/clears its own
+capability on the edges of being named. No protocol change.
+
+**Gate:** the peer cases in `crates/harness/tests/birds.rs` (the host's `peers.list`, a
+perch on a joiner, the jump capture, the rider map, the seat against the crate's
+`backPoint`, a leave, and the joiner's grant edge), `verify_mod_surface.gd`'s
+`peers.list` read, and `verify_peers.gd`'s mod-facing row. `interop.sh pair` remains
+the live half: both ends fly, and each mirrors the other's flight.
+
 ---
 
 ## 8. Multiplayer scope
 
-The world mod is host-authoritative: the host simulates the flock and publishes
-it, and clients mirror it. In v1 that means:
+**✅ Landed (R5).** The world mod is host-authoritative: the host simulates the flock
+and publishes it, and clients mirror it. That has not changed -- what changed is that
+the host can now see the joiners, so their goats are part of the flock's world:
 
-- **Host / solo:** the host's player goat and the host's bots can capture and fly.
-  This is the full feature.
-- **Joiner:** a joiner's own goat cannot capture a bird, because the host's flock
-  does not see the joiner's goat (the mod has no peer read — there is no
-  `goats.peers`). A joiner can still see the host's flying goats and bots, and
-  the herd mirrors their flight correctly.
+- **Host / solo:** the host's player goat, the host's bots and every joiner's goat can
+  perch, be captured and fly.
+- **Joiner:** its own goat can capture and fly. The host decides (it owns the flock),
+  the joiner's own client grants the capability (it owns the goat), and the published
+  row keeps the bird on the back the host is drawing.
 
-Making it work for joiners is a clean follow-up, not a redesign:
+How the four pieces landed:
 
-1. add `goats.peers.list()` (name, position, mode, height, pitch, roll) to the
-   world-mod surface;
-2. let the host's flock consider peer goats as perch/capture targets;
-3. publish the rider identity in the birds' row (or a small `rider` field), so
-   each client knows a bird is on *its* goat and can grant its own capability;
-4. the host detects a peer's `jump` from the peer state and publishes the capture,
-   exactly as it does for its own goat.
+1. **`goats.peers.list()`** (`APIv1.md` §4.21) -- name, position, yaw, the wire's gait,
+   the height above the ground and the flight attitude. It is `PEERS` in the reference
+   and `Peers.state()` in the port, and a headless host now tracks a peer with no model
+   (`netPeerState` used to drop a snapshot when it could not load one, which is exactly
+   the `goatsd` case).
+2. **The host's flock considers peer goats.** `pickPerch` offers a standing peer as a
+   perch, and `perchTarget`/`riderState` read its feet and attitude exactly as they
+   read a bot's. A peer's identity is its *name*, so `b.peer` sits beside `b.perch`
+   (`PERCH_PEER`); nothing about the seat differs.
+3. **The payload carries the rider.** It is now `{rows, riders}`: the seven-number
+   rows are unchanged, and `riders` maps a bird's index to `"<player name>"`,
+   `"bot:<index>"` or a peer's name -- an empty object on an ordinary frame. A joiner
+   compares the names with `goats.net.name()` and, on the *edge* into being named, calls
+   its own `setFlight(true)`; on the edge out (a release, a death, a blast, a
+   disconnect) it clears it. The edge matters: re-arming while a name persists would
+   undo the joiner's own `E` for as long as the host takes to notice.
+4. **The host detects a peer's jump** from the pose snapshot's gait, with the same
+   enter-the-mode edge as its own goat. A peer is never armed by the host -- the
+   capability is local, so the host only publishes the capture.
 
-None of that changes the flight physics or the wire fields proposed here; it is
-one more read and one more piece of mod state. It should be a separate slice so
-the single-player/host feature is not blocked on it.
+Two smaller consequences, both in the mod: a bird whose rider is *this* client's goat
+is seated from the local goat rather than the host's eased row (so it does not lag
+its own back), and a peer that leaves (`left`) is a ride that ends like a death.
+
+What is still not carried is a peer's *capability*: the host cannot tell an armed
+joiner from a released one, so a release is inferred from the gait (`fall`), a death,
+or the peer leaving. That is enough for the feature and is why no wire field changed.
+
+Nothing here changed the flight physics or the wire: it is one more read and one more
+piece of mod state, which is what the slice was scoped to be.
 
 ---
 
@@ -981,6 +1014,11 @@ global installed by `crates/flight-js`.
     `botTime`; no capability means no flight.
   - the published row is seven numbers and a client mirrors `ride`.
   - unloading the mod clears the player's and bots' capabilities.
+  - a join, through `goats.peers`: the host reads the row, `birds sit <peer>` perches
+    on it, the peer's `jump` captures, the rider map names the joiner, the bird rides
+    the peer's back point (against the crate), and a `left` lets it go.
+  - a joiner's own client grants on the edge of being named and clears on the edge
+    out; the bird is seated on the *local* goat exactly, not on the host's row.
 - `proto` round-trips `Fly`, `Fall`, `pitch`, `roll`; the world budget test gets
   its new upper bound.
 
@@ -999,12 +1037,13 @@ damage through `PlayerGoat`.
 - `verify_herd.gd`: a mirrored flyer's **basis** -- the node at the crate's
   `back_point` and its `pose` quaternion -- plus the jump-at-0.35 clip fallback.
 - `verify_peers.gd`: the role table with `fly`/`fall` over models that have and
-  lack them, and a live flyer placed on the crate's back point with the wire's
-  attitude.
+  lack them, a live flyer placed on the crate's back point with the wire's
+  attitude, and the mod-facing `state()` row (`goats.peers.list`).
 - `verify_net.gd`: a `pose` and a `world` bot carrying `fly`, `pitch` and `roll`,
   and both arriving unchanged.
 - `verify_mod_surface.gd`: `player.setFlight/fly/release`, the new state fields,
-  bot `setFlight/fly/release`, and the birds mod's `mount` command.
+  bot `setFlight/fly/release`, the birds mod's `mount` command, and `peers.list`
+  answering an empty array with no session.
 - `interop.sh pair`: both ends take off halfway through, so each mirrors the
   other's `fly` gait rather than only its walk.
 - `crates/harness/tests/touch.rs`: the **DROP** button releases a flying goat,
@@ -1142,7 +1181,7 @@ the clamps; a play-through asserts that it feels right.
 
 **Docs**
 
-- `APIv1.md` §4.5, §4.8, §4.10, §4.13 and §6.4 once the slices land.
+- `APIv1.md` §4.5, §4.8, §4.10, §4.13, §4.21 and §6.4 once the slices land.
 - `ROADMAP.md` M14f gets a line pointing at this design and its status.
 - `mods/birds/FLIGHT-RUST.md` — the shared-crate architecture.
 
@@ -1162,4 +1201,4 @@ the clamps; a play-through asserts that it feels right.
 | Does releasing hurt? | Above `safeFall` impact, yes; a fall can kill. |
 | Do bots fly? | Yes, with a ring autopilot; the mod starts it on capture. |
 | What travels on the wire? | `Gait::Fly`/`Fall`, `py`, pitch/roll, protocol 12. |
-| Can clients capture? | Host/solo and the herd in v1; joiners are a scoped follow-up. |
+| Can clients capture? | Yes. The host owns the flock and sees joiners through `goats.peers`; the rider map names the joiner, whose own client grants its capability. No additional wire field. |

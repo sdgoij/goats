@@ -301,8 +301,15 @@ func _live_first() -> void:
 		_failures.append("the first snapshot did not place the yaw")
 	if String(placed["clip"]) != "GoatWalk":
 		_failures.append("a walking peer did not pose the walk clip: %s" % placed["clip"])
-	print("placed: %s yaw %.4f, clip %s" % [placed["position"], float(placed["yaw"]),
-		placed["clip"]])
+	# The mod-facing read (`goats.peers.list`, `APIv1.md` section 4.21): one row, the wire's
+	# gait, and the height the client applies rather than eases.
+	var rows: Array = _live.call("state")
+	if rows.size() != 1 or String((rows[0] as Dictionary).get("name", "")) != "alice" \
+			or String((rows[0] as Dictionary).get("mode", "")) != "walk" \
+			or absf(float((rows[0] as Dictionary).get("y", -1.0))) > TOLERANCE:
+		_failures.append("the peer row a mod reads is not the mirror's: %s" % [rows])
+	print("placed: %s yaw %.4f, clip %s, row %s" % [placed["position"], float(placed["yaw"]),
+		placed["clip"], rows])
 
 	# ...and then a shot gait, a flung height and a target it has to ease toward. The target is
 	# deliberately far, so the gap at the end of this frame is the whole distance to it.
@@ -369,8 +376,19 @@ func _live_second() -> void:
 		if String(flyer["clip"]) != "GoatJump":
 			_failures.append("a mirrored flyer did not fall back to the jump clip: %s"
 				% flyer["clip"])
-		print("fly: bob at %s, pitch %.3f roll %.3f, clip %s"
-			% [flyer["position"], float(flyer["pitch"]), float(flyer["roll"]), flyer["clip"]])
+		# ...and the row a mod reads from the same mirror (`goats.peers.list`).
+		var bob: Dictionary = {}
+		for row: Dictionary in _live.call("state"):
+			if String(row.get("name", "")) == "bob":
+				bob = row
+		if bob.is_empty() or String(bob.get("mode", "")) != "fly" \
+				or absf(float(bob.get("y", 0.0)) - 6.0) > TOLERANCE \
+				or absf(float(bob.get("pitch", 0.0)) - deg_to_rad(20.0)) > TOLERANCE \
+				or absf(float(bob.get("roll", 0.0)) + deg_to_rad(10.0)) > TOLERANCE:
+			_failures.append("the flyer's mod row is not the wire's: %s" % [bob])
+		print("fly: bob at %s, pitch %.3f roll %.3f, clip %s, row %s"
+			% [flyer["position"], float(flyer["pitch"]), float(flyer["roll"]), flyer["clip"],
+				bob])
 		_live.remove("bob")
 	else:
 		_failures.append("the Flight class is not registered, so the mirrored flyer cannot be posed")

@@ -136,6 +136,10 @@ const PROBE_JS := """
         // The handles are the scene's own and are reused (APIv1.md section 4.8).
         out.bots_reused = goats.bots.list() === list && goats.bots.get(0) === list[0];
         out.bots_null = goats.bots.get(99) === null;
+        // The other players (APIv1.md section 4.21). Offline there are none, and the group
+        // answers a list -- the point is that the read exists and is not `undefined`, which
+        // is what a world mod iterating it would throw on.
+        out.peers = goats.peers.list();
 
         out.tuning = {
             max: goats.tuning.get("stats.max"),
@@ -1382,7 +1386,14 @@ func _check_calls(read: Dictionary) -> void:
 		_failures.append("goats.net says a session is up with no ticket")
 	if str(net.get("name")) != "":
 		_failures.append("goats.net.name() is %s with no session" % net.get("name"))
-	print("net: ", net.get("mode"), "  localWorld ", net.get("local"))
+	# The joiners (`APIv1.md` section 4.21): a solo scene has none, and `list` is an empty
+	# array rather than an absent member.
+	var peers: Variant = read.get("peers")
+	if not (peers is Array) or not (peers as Array).is_empty():
+		_failures.append("goats.peers.list() with no session is %s, and it should be empty"
+			% [peers])
+	print("net: ", net.get("mode"), "  localWorld ", net.get("local"), "  peers ",
+		0 if not (peers is Array) else (peers as Array).size())
 
 ## The writes (`APIv1.md` sections 4.5-4.12), held against the **scene's own** fields -- which
 ## is the whole of a write's contract: the simulation is the thing that has to keep its invariants.

@@ -706,6 +706,18 @@ const goatsNet = {
     say: function (text) { return netSay(text); },
 };
 
+// The *other players*, as a world mod reads them (`APIv1.md` section 4.21). This is the one
+// read a host-authoritative world mod needs that `bots` could not give it: the herd is the
+// host's, but a joiner's goat is somebody else's, and a bird perched on it is still the
+// host's flock (`FLIGHT.md` section 8). A solo game has none, and neither does a client
+// looking at its own goat -- `list` is the peers, not this process's player.
+//
+// The rows are the mirror's (`netPeersList`): the eased numbers and the gait the wire carried,
+// with `y` the height above the ground under the goat, the same unit `player.state().y` uses.
+const goatsPeers = {
+    list: function () { return netPeersList(); },
+};
+
 // The asset slots a mod may read and override. The opaque names come from the
 // host's table; a mod never sees a path. `override` re-points a built-in slot
 // at one of them, before the freeze.
@@ -1315,6 +1327,7 @@ function goatsBegin(id) {
         settings: goatsSettings,
         tuning: goatsTuning,
         net: goatsNet,
+        peers: goatsPeers,
         assets: modAssetsFor(id, meta),
         explosions: modExplosionsFor(id),
         water: goatsWater,
@@ -1638,6 +1651,7 @@ const goats = {
     settings: goatsSettings,
     tuning: goatsTuning,
     net: goatsNet,
+    peers: goatsPeers,
     assets: modAssetsFor("-", { assets: {} }),
     explosions: modExplosionsFor("-"),
     water: goatsWater,

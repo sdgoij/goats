@@ -367,6 +367,7 @@ The gameplay slices in `FLIGHT.md` §7 become:
 | **R2** ✅ | `crates/godot/src/flight.rs` class + `main.gd` wiring; `player_goat.gd` flight branch; `tuning.gd` leaves | `verify_flight.gd`, the `verify_goat.gd` flight tape, `verify_pose.gd` |
 | **R3** ✅ | bot flight branch and autopilot in both clients; hop take-off, airborne guards, death in the air | `verify_bots.gd`, the herd section of `crates/harness/tests/flight.rs` |
 | **R4** ✅ | the API surface, tuning tree, wire, mod, HUD, touch | as `FLIGHT.md` §9: the flight probe in `verify_mod_surface.gd`, the flyer basis in `verify_herd.gd`/`verify_peers.gd`, the wire fields in `verify_net.gd`, the DROP button in `touch.rs`, and `crates/harness/tests/birds.rs` for the mod |
+| **R5** ✅ | joiners: `goats.peers`, the peer seat, the rider map, the local grant edge | the peer cases in `crates/harness/tests/birds.rs`, `verify_mod_surface.gd`'s `peers.list`, and `verify_peers.gd`'s mod row |
 
 R0 is pure Rust and can land first with no client changes. R1 and R2 can land in
 either order; the gameplay contract is identical. R4 is the same work as the

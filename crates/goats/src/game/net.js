@@ -355,7 +355,9 @@ let netWorldFrame = -NET_WORLD_EVERY;
 
 function netPeersClear() {
     if (typeof rl.unloadModel === "function") {
-        for (let i = 0; i < PEERS.length; i++) rl.unloadModel(PEERS[i].model);
+        for (let i = 0; i < PEERS.length; i++) {
+            if (PEERS[i].model >= 0) rl.unloadModel(PEERS[i].model);
+        }
     }
     PEERS = [];
 }
@@ -370,8 +372,24 @@ function netPeerFind(name) {
 function netPeerRemove(name) {
     const i = netPeerFind(name);
     if (i < 0) return;
-    if (typeof rl.unloadModel === "function") rl.unloadModel(PEERS[i].model);
+    if (PEERS[i].model >= 0 && typeof rl.unloadModel === "function") {
+        rl.unloadModel(PEERS[i].model);
+    }
     PEERS.splice(i, 1);
+}
+
+// The peers a *world mod* reads (`goats.peers.list`, `APIv1.md` section 4.21). The numbers
+// are the mirror's own -- what this end is drawing, not the last raw snapshot -- and `y` is
+// the height above the ground under the goat, the unit `player.state().y` uses. `mode` is
+// the wire's gait (`net.js`'s vocabulary), which is the closest thing a peer has to a mode.
+function netPeersList() {
+    const out = [];
+    for (let i = 0; i < PEERS.length; i++) {
+        const p = PEERS[i];
+        out.push({ name: p.name, x: p.x, z: p.z, yaw: p.yaw, mode: p.gait,
+            y: p.py, pitch: p.pitch, roll: p.roll });
+    }
+    return out;
 }
 
 // A snapshot from the server. The first one also creates the goat, placed
@@ -380,16 +398,22 @@ function netPeerState(name, state) {
     if (!state || typeof state.x !== "number") return;
     const found = netPeerFind(name);
     if (found < 0) {
-        // No model to drive (headless, or the goat model itself failed to
-        // load): drop the snapshot rather than track a ghost.
-        if (typeof rl.loadModel !== "function" || !haveModel) return;
-        const handle = rl.loadModel(ASSET_SLOTS["model.goat"]);
-        if (handle < 0) return;
-        modelLoaded(handle);
-        if (litShader >= 0) {
-            rl.setModelShader(handle, modelShaderFor(handle, useLighting ? litShader : -1));
+        // A peer's state is not render state. A headless host (`goatsd`) has no model to
+        // load and must still track the goat: the world mods on it read these rows, and a
+        // bird on a joiner's back is positioned from them (`FLIGHT.md` section 8). The
+        // model is `-1` there, and the draw passes skip it.
+        let handle = -1;
+        if (typeof rl.loadModel === "function" && haveModel) {
+            handle = rl.loadModel(ASSET_SLOTS["model.goat"]);
+            if (handle < 0) handle = -1;
         }
-        if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
+        if (handle >= 0) {
+            modelLoaded(handle);
+            if (litShader >= 0) {
+                rl.setModelShader(handle, modelShaderFor(handle, useLighting ? litShader : -1));
+            }
+            if (shadowColor >= 0) rl.setModelTexture(handle, SHADOW_MAP_INDEX, shadowColor);
+        }
         PEERS.push({
             name: name,
             model: handle,
@@ -520,6 +544,10 @@ function peerFlightDraw(p, tint) {
 function drawPeers(tint) {
     for (let i = 0; i < PEERS.length; i++) {
         const p = PEERS[i];
+        // A headless host tracks a peer with no model (see `netPeerState`); this pass only
+        // runs with a renderer, so this is a model that failed to load rather than the
+        // usual case.
+        if (p.model < 0) continue;
         poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);
         // A flung peer is flown by *its own* client (M19c) and arrives here as a gait,
         // a phase and a height (M19f): the fraction poses and rolls it, the clip's own
@@ -543,6 +571,7 @@ function drawPeers(tint) {
 function drawPeersShadow() {
     for (let i = 0; i < PEERS.length; i++) {
         const p = PEERS[i];
+        if (p.model < 0) continue;
         const dx = p.x - goat.px;
         const dz = p.z - goat.pz;
         if (dx * dx + dz * dz > shadowBoxCull2()) continue;

@@ -108,17 +108,17 @@ static func step_phase(phase: float, target: float, once: bool, k: float) -> flo
 		gap += 1.0
 	return fposmod(phase + gap * k, 1.0)
 
-## Take a peer's snapshot: `net.js` `netPeerState`. `state` is the wire's `PeerState` as the
-## bridge hands it over -- `x`, `z`, `yaw`, `phase`, `gait` and `py`. Returns whether there was
-## a goat to place, so a caller can tell "a new peer arrived" from "one moved".
+## Take a peer's snapshot: `net.js` `netPeerState`. `snapshot` is the wire's `PeerState` as the
+## bridge hands it over -- `x`, `z`, `yaw`, `phase`, `gait` and `py`. Returns whether there
+## was a goat to place, so a caller can tell "a new peer arrived" from "one moved".
 ##
 ## The first snapshot a name ever sends **places** the goat rather than starting it at the
 ## origin, which is the client's own rule and the reason a joiner does not see everybody slide
 ## in from the middle of the map.
-func apply(peer_name: String, state: Variant) -> bool:
-	if peer_name.is_empty() or not (state is Dictionary):
+func apply(peer_name: String, snapshot: Variant) -> bool:
+	if peer_name.is_empty() or not (snapshot is Dictionary):
 		return false
-	var wire: Dictionary = state
+	var wire: Dictionary = snapshot
 	if not wire.has("x"):
 		return false
 	var x: float = float(wire.get("x", 0.0))
@@ -197,6 +197,25 @@ func _process(delta: float) -> void:
 ## How many peers are being mirrored.
 func count() -> int:
 	return _goats.size()
+
+## The peers as a *world mod* reads them (`goats.peers.list`, `APIv1.md` section 4.21): the
+## mirror's own numbers, in arrival order, with `y` the height above the ground under the goat
+## and `mode` the wire's gait. A solo game has none; a client's own goat is not one of these.
+func state() -> Array:
+	var out: Array = []
+	for peer_name in _goats:
+		var goat: Dictionary = _goats[peer_name]
+		out.append({
+			"name": String(peer_name),
+			"x": float(goat["x"]),
+			"z": float(goat["z"]),
+			"yaw": float(goat["yaw"]),
+			"mode": String(goat["gait"]),
+			"y": float(goat["py"]),
+			"pitch": float(goat["pitch"]),
+			"roll": float(goat["roll"]),
+		})
+	return out
 
 ## The model's own lowest point, negated: the client's `groundOffset`. A caller that wants to
 ## put something else on the ground the way a peer stands on it needs the same number.
@@ -302,13 +321,14 @@ func _place(goat: Dictionary) -> void:
 		# `py` is the height above the ground it is drawn at, the same number the owner's
 		# state carries (`FLIGHT.md` §6.2). The ground offset is the model's own lowest point
 		# and cancels out of the crate's feet, so it is added back on the way out.
-		var state := PackedFloat32Array([
+		var flight_state := PackedFloat32Array([
 			x, z, ground + float(goat["py"]),
 			float(goat["yaw"]), float(goat["pitch"]), float(goat["roll"]),
 			0.0, 0.0, 0.0, 0.0, 0.0, 2.0 if gait == "fall" else 1.0])
-		var origin: Vector3 = flight.back_point(state, 0.0, PlayerGoat.FLIGHT_PIVOT * model_scale)
+		var origin: Vector3 = flight.back_point(flight_state, 0.0,
+			PlayerGoat.FLIGHT_PIVOT * model_scale)
 		node.position = origin + Vector3(0.0, _ground_offset * model_scale, 0.0)
-		node.quaternion = flight.pose(state)
+		node.quaternion = flight.pose(flight_state)
 	else:
 		node.position = Vector3(x, ground + _ground_offset + float(goat["py"]), z)
 		node.rotation = Vector3(0.0, float(goat["yaw"]), 0.0)
