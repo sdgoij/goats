@@ -379,12 +379,12 @@ provider first, then the greatest version label.
 The client now starts a registry at startup (unless `GOATS_MODS_REGISTRY=0`),
 announces its world mods when `GOATS_MODS_SHARE` is on, learns peers' registry
 tickets from the swarm, and hands the handle to `recover_with`, so a refused join
-falls back to the catalogue for what the host could not serve. The console has
-`mod registry`, `mod share`, `mod fetch` and `mod mirror`, and a mirror has a
-budget and evicts oldest-first. What is left: the Godot port has no registry yet
-(it ignores the swarm's registry tickets), and the endpoint is the registry's
-own -- sharing the swarm's would remove a second socket and make a portal's
-ticket the only one a client needs.
+falls back to the catalogue for what the host could not serve. Both clients have
+the console verbs and the same mirror budget; the Godot port starts its registry
+once its loader has found the mods directory, because its runtime thread is up
+before that. What is left: the endpoint is the registry's own -- sharing the
+swarm's would remove a second socket and make a portal's ticket the only one a
+client needs.
 
 ### The tests
 

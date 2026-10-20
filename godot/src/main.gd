@@ -568,6 +568,11 @@ func _ready() -> void:
 	# retried join presents them. Unset, the per-join `connect <ticket> --pull` is the only way to
 	# fetch, which is `APIv1.md` section 6.3's "consent, always".
 	bridge.call("set_pull", mods.dir, not OS.get_environment("GOATS_PULL").is_empty())
+	# The registry (M18f): its store lives under the mods directory and
+	# `GOATS_MODS_REGISTRY=0` leaves it off. `GOATS_MODS_SHARE=1` announces this
+	# client's mods; peers' tickets arrive on the swarm, and the bridge prints
+	# this node's own.
+	bridge.call("set_registry", mods.dir)
 	menu.mods_list = Callable(mods, "mod_table")
 	# The button's own callback: one argument, and it flips whatever the table says the mod is now.
 	menu.mod_toggle = Callable(mods, "toggle_mod")

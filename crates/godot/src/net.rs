@@ -26,6 +26,7 @@ use godot::prelude::*;
 use serde::Deserialize;
 use serde_json::json;
 use session::bridge::degrees;
+use session::registry::{Registry, RegistryConfig, RegistryPeers};
 use session::swarm::{self, Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use session::{BlastKind, Client, Event as Net, Gait, Host, ModRef, PeerState, WorldState};
 use tokio::sync::mpsc;
@@ -88,6 +89,43 @@ impl Pull {
         self.mods_dir.is_some()
     }
 }
+
+/// The registry's switches (M18f), the port's `RegistryOpts`: the catalogue's
+/// configuration, the directory to share when `GOATS_MODS_SHARE` asks, and where
+/// the store lives (`<mods>/.registry`).
+struct RegistryOpts {
+    config: RegistryConfig,
+    mods_dir: PathBuf,
+    share: Option<PathBuf>,
+}
+
+impl RegistryOpts {
+    fn from_mods_dir(mods_dir: &Path) -> Result<Option<RegistryOpts>, String> {
+        let Some(config) = RegistryConfig::from_env(mods_dir.join(".registry"))? else {
+            return Ok(None);
+        };
+        let share = std::env::var("GOATS_MODS_SHARE")
+            .map(|value| value.trim() != "0")
+            .unwrap_or(false)
+            .then(|| mods_dir.to_path_buf());
+        Ok(Some(RegistryOpts {
+            config,
+            mods_dir: mods_dir.to_path_buf(),
+            share,
+        }))
+    }
+}
+
+/// What the swarm task needs from the registry: the ticket to publish and the handle it seeds
+/// from the tickets it hears. A slot rather than a value because the registry starts after the
+/// swarm -- `main.gd` sets the mods directory once the loader has found it.
+#[derive(Clone)]
+struct RegistryBridge {
+    peers: RegistryPeers,
+    ticket: String,
+}
+
+type RegistrySlot = Arc<Mutex<Option<RegistryBridge>>>;
 
 /// One intent, from a GDScript call. The raylib client parses these out of JSON
 /// lines because its scene is the other side of the bridge; here the call *is*
@@ -162,6 +200,25 @@ enum Command {
     /// is what lets the auto-joined swarm begin beaconing before the scene asks for
     /// anything. It reconfigures nothing.
     Noop,
+    /// Configure the registry from the mods directory (M18f). `None` leaves it off;
+    /// `main.gd` sends this once the loader has found its directory, which is after
+    /// the runtime thread has started. Boxed because the configuration is much larger
+    /// than every other intent here.
+    SetRegistry(Option<Box<RegistryOpts>>),
+    /// `mod registry`: the catalogue, and what this node mirrors.
+    ModsRegistry,
+    /// `mod share`: announce the mods this client loads.
+    ModsShare,
+    /// `mod fetch <id>[@version]`: install one from the catalogue.
+    ModsFetch {
+        id: String,
+        version: Option<String>,
+    },
+    /// `mod mirror <id>[@version]`: keep serving one, within the budget.
+    ModsMirror {
+        id: String,
+        version: Option<String>,
+    },
     Close,
 }
 
@@ -393,6 +450,55 @@ impl NetBridge {
             always,
         };
         GString::from("ok")
+    }
+
+    /// Configure the registry (M18f) from the mods directory. `GOATS_MODS_REGISTRY=0`
+    /// leaves it off; `GOATS_MODS_SHARE=1` announces this client's mods. The scene calls
+    /// this once the loader has found its directory, which is after the runtime thread has
+    /// started, so the registry is started by a command rather than at boot.
+    #[func]
+    fn set_registry(&mut self, mods_dir: GString) -> GString {
+        let dir = mods_dir.to_string();
+        if dir.is_empty() {
+            return GString::from("ok");
+        }
+        match RegistryOpts::from_mods_dir(Path::new(&dir)) {
+            Ok(opts) => self.queue_command(Command::SetRegistry(opts.map(Box::new))),
+            Err(error) => crate::gstring(format!("error: {error}")),
+        }
+    }
+
+    /// `mod registry`: ask for the catalogue. The answer is a `notice` line.
+    #[func]
+    fn mods_registry(&mut self) -> GString {
+        self.queue_command(Command::ModsRegistry)
+    }
+
+    /// `mod share`: announce the mods this client loads on the catalogue.
+    #[func]
+    fn mods_share(&mut self) -> GString {
+        self.queue_command(Command::ModsShare)
+    }
+
+    /// `mod fetch <id>[@version]`: install one from the catalogue. The verb is the
+    /// consent, as `connect --pull` is a join's.
+    #[func]
+    fn mods_fetch(&mut self, id: GString, version: GString) -> GString {
+        let version = version.to_string();
+        self.queue_command(Command::ModsFetch {
+            id: id.to_string(),
+            version: (!version.is_empty()).then_some(version),
+        })
+    }
+
+    /// `mod mirror <id>[@version]`: keep serving one, within `GOATS_MODS_MIRROR_BYTES`.
+    #[func]
+    fn mods_mirror(&mut self, id: GString, version: GString) -> GString {
+        let version = version.to_string();
+        self.queue_command(Command::ModsMirror {
+            id: id.to_string(),
+            version: (!version.is_empty()).then_some(version),
+        })
     }
 
     /// Say a line. A leading `@name` is a whisper; the routing is the
@@ -722,10 +828,17 @@ async fn run(
     // stale list cannot overtake the new swarm's.
     let mut swarm: Option<SwarmCommands> = None;
     let mut swarm_task: Option<tokio::task::JoinHandle<()>> = None;
+    // The registry is started by `SetRegistry` rather than at boot: the mods directory is
+    // known only after the scene's loader runs, and the runtime is already up by then. The
+    // slot is what lets the swarm task, which outlives that moment, hand it the tickets it
+    // hears and publish its own once it exists.
+    let registry_slot: RegistrySlot = Arc::new(Mutex::new(None));
+    let mut registry: Option<Registry> = None;
+    let mut registry_dir: Option<PathBuf> = None;
     if auto_swarm {
         // Zero-config: the default topic is joined before the first command, so the LAN
         // beacon is already introducing this client to the network when the scene asks.
-        match join_swarm(None, Vec::new(), &queue).await {
+        match join_swarm(None, Vec::new(), &registry_slot, &queue).await {
             Ok((commands, task)) => {
                 swarm = Some(commands);
                 swarm_task = Some(task);
@@ -895,7 +1008,7 @@ async fn run(
             // publish while playing.
             Outcome::Command(Some(Command::SwarmJoin { topic, peers })) => {
                 stop_swarm(&mut swarm, &mut swarm_task);
-                match join_swarm(topic, peers, &queue).await {
+                match join_swarm(topic, peers, &registry_slot, &queue).await {
                     Ok((commands, task)) => {
                         if let Some(Live::Host(host)) = &live {
                             advertise_host(host, Some(&commands)).await;
@@ -930,11 +1043,84 @@ async fn run(
                 }
             }
             Outcome::Command(Some(Command::Noop)) => {}
+            // The registry's console surface (M18f). A fetch is the player saying yes, as
+            // `--pull` is on a join; the verbs are the port's counterpart of `mods.js`'s.
+            Outcome::Command(Some(Command::SetRegistry(opts))) => {
+                if registry.is_none()
+                    && let Some(opts) = opts
+                {
+                    let opts = *opts;
+                    match Registry::start(opts.config).await {
+                        Ok(started) => {
+                            push(
+                                &queue,
+                                notice(format!("registry: ticket {}", started.ticket())),
+                            );
+                            let bridge = RegistryBridge {
+                                peers: started.peers(),
+                                ticket: started.ticket().to_string(),
+                            };
+                            *registry_slot.lock().expect("registry slot") = Some(bridge.clone());
+                            if let Some(swarm) = &swarm {
+                                swarm.registry(bridge.ticket);
+                            }
+                            if let Some(dir) = opts.share.as_deref() {
+                                share_mods(&started, dir, &queue).await;
+                            }
+                            registry_dir = Some(opts.mods_dir);
+                            registry = Some(started);
+                        }
+                        Err(error) => {
+                            push(&queue, notice(format!("registry: {error}")));
+                        }
+                    }
+                }
+            }
+            Outcome::Command(Some(Command::ModsRegistry)) => match registry.as_ref() {
+                Some(registry) => push(&queue, notice(registry_status(registry))),
+                None => push(
+                    &queue,
+                    notice("registry: off (GOATS_MODS_REGISTRY=0)".to_string()),
+                ),
+            },
+            Outcome::Command(Some(Command::ModsShare)) => {
+                match (registry.as_ref(), registry_dir.as_deref()) {
+                    (Some(registry), Some(dir)) => share_mods(registry, dir, &queue).await,
+                    (None, _) => push(
+                        &queue,
+                        notice("registry: off (GOATS_MODS_REGISTRY=0)".to_string()),
+                    ),
+                    (_, None) => push(&queue, notice("registry: no mods directory".to_string())),
+                }
+            }
+            Outcome::Command(Some(Command::ModsFetch { id, version })) => {
+                match (registry.as_ref(), registry_dir.as_deref()) {
+                    (Some(registry), Some(dir)) => {
+                        registry_fetch(registry, dir, &id, version.as_deref(), &queue).await
+                    }
+                    (None, _) => push(
+                        &queue,
+                        notice("registry: off (GOATS_MODS_REGISTRY=0)".to_string()),
+                    ),
+                    (_, None) => push(&queue, notice("registry: no mods directory".to_string())),
+                }
+            }
+            Outcome::Command(Some(Command::ModsMirror { id, version })) => {
+                match registry.as_ref() {
+                    Some(registry) => {
+                        registry_mirror(registry, &id, version.as_deref(), &queue).await
+                    }
+                    None => push(
+                        &queue,
+                        notice("registry: off (GOATS_MODS_REGISTRY=0)".to_string()),
+                    ),
+                }
+            }
             Outcome::Command(Some(command)) => {
                 if let Some(session) = live.take() {
                     stop(session, swarm.as_ref()).await;
                 }
-                live = start(command, &queue, swarm.as_ref()).await;
+                live = start(command, &queue, swarm.as_ref(), registry.as_ref()).await;
             }
         }
     }
@@ -942,6 +1128,9 @@ async fn run(
         stop(session, swarm.as_ref()).await;
     }
     stop_swarm(&mut swarm, &mut swarm_task);
+    if let Some(registry) = registry {
+        registry.shutdown().await;
+    }
 }
 
 /// Ends a session, withdrawing its swarm advert first: a host that stops hosting should
@@ -986,6 +1175,7 @@ async fn advertise_host(host: &Host, swarm: Option<&SwarmCommands>) {
 async fn join_swarm(
     topic: Option<String>,
     peers: Vec<String>,
+    registry: &RegistrySlot,
     queue: &Queue,
 ) -> Result<(SwarmCommands, tokio::task::JoinHandle<()>), String> {
     let topic = match topic
@@ -1012,6 +1202,9 @@ async fn join_swarm(
         .await
         .map_err(|error| format!("swarm: {error}"))?;
     let commands = joined.commands();
+    if let Some(bridge) = registry.lock().expect("registry slot").as_ref() {
+        commands.registry(bridge.ticket.clone());
+    }
     let announced = json!({
         "type": "swarm",
         "joined": true,
@@ -1026,6 +1219,7 @@ async fn join_swarm(
     .to_string();
     let task = {
         let queue = queue.clone();
+        let registry = registry.clone();
         tokio::spawn(async move {
             while let Some(event) = joined.next_event().await {
                 let line = match event {
@@ -1040,9 +1234,15 @@ async fn join_swarm(
                     })
                     .to_string(),
                     SwarmEvent::Failed(text) => notice(format!("swarm: {text}")),
-                    // This port has no registry yet; the ticket belongs to a
-                    // client that runs one.
-                    SwarmEvent::Registry(_) => continue,
+                    // A peer's catalogue is a separate endpoint; this is the introduction.
+                    // The registry may start after this task, so the slot is read per event
+                    // rather than captured once.
+                    SwarmEvent::Registry(ticket) => {
+                        if let Some(bridge) = registry.lock().expect("registry slot").as_ref() {
+                            let _ = bridge.peers.join(&ticket);
+                        }
+                        continue;
+                    }
                 };
                 push(&queue, line);
             }
@@ -1052,9 +1252,123 @@ async fn join_swarm(
     Ok((commands, task))
 }
 
+/// Announce the mods this client loads (M18f). The policy is the caller's: this is
+/// reached from `GOATS_MODS_SHARE` at startup and from `mod share` afterwards.
+async fn share_mods(registry: &Registry, dir: &Path, queue: &Queue) {
+    let loader = mods::Loader::discover_with(dir, mods::AssetMode::HashOnly);
+    for error in loader.errors() {
+        push(queue, notice(format!("registry: {error}")));
+    }
+    let shared = pull::share(registry, &loader).await;
+    for (id, reason) in &shared.failed {
+        push(
+            queue,
+            notice(format!("registry: {id} not shared: {reason}")),
+        );
+    }
+    push(queue, notice(format!("registry: {}", shared.describe())));
+}
+
+/// The catalogue as one console line: what it knows, and what this node keeps.
+fn registry_status(registry: &Registry) -> String {
+    let records = registry.records();
+    let mirrored = registry.mirrored();
+    let mut parts = vec![format!("registry: {} record(s)", records.len())];
+    for record in records {
+        parts.push(format!(
+            "{}@{} {} {}B {} provider(s)",
+            record.id,
+            record.version,
+            match record.side {
+                session::ModSide::World => "world",
+                session::ModSide::Client => "client",
+            },
+            record.size,
+            registry.providers(&record.root).len()
+        ));
+    }
+    if !mirrored.is_empty() {
+        let used: u64 = mirrored.iter().map(|(_, size)| *size).sum();
+        parts.push(format!("mirroring {} ({used}B)", mirrored.len()));
+    }
+    parts.join("; ")
+}
+
+/// `mod fetch <id>[@version]`: install from the catalogue. The verb is the consent;
+/// the same verify-then-install path a refused join takes does the rest. The scene
+/// loads what arrived from the `pulled` event, as it does after a join's fetch.
+async fn registry_fetch(
+    registry: &Registry,
+    dir: &Path,
+    id: &str,
+    version: Option<&str>,
+    queue: &Queue,
+) {
+    let Some(record) = registry.find_by(id, version) else {
+        push(queue, notice(format!("registry: no record for {id}")));
+        return;
+    };
+    let loader = mods::Loader::discover_with(dir, mods::AssetMode::HashOnly);
+    match pull::pull_registry(registry, &loader, dir, vec![record.reference()]).await {
+        Ok(report) if !report.installed.is_empty() => {
+            let ids: Vec<String> = report
+                .installed
+                .iter()
+                .map(|reference| reference.id.clone())
+                .collect();
+            push(
+                queue,
+                json!({"type": "pulled", "text": report.describe(), "ids": ids}).to_string(),
+            );
+        }
+        Ok(report) => push(queue, notice(format!("registry: {}", report.describe()))),
+        Err(error) => push(queue, notice(format!("registry: fetch failed: {error}"))),
+    }
+}
+
+/// `mod mirror <id>[@version]`: download if needed, pin, announce and restate,
+/// within `GOATS_MODS_MIRROR_BYTES` (default one gibibyte).
+async fn registry_mirror(registry: &Registry, id: &str, version: Option<&str>, queue: &Queue) {
+    let Some(record) = registry.find_by(id, version) else {
+        push(queue, notice(format!("registry: no record for {id}")));
+        return;
+    };
+    match registry.mirror(&record, mirror_budget()).await {
+        Ok(mirrored) => {
+            let evicted = match mirrored.evicted.len() {
+                0 => String::new(),
+                count => format!(", evicted {count}"),
+            };
+            push(
+                queue,
+                notice(format!(
+                    "registry: mirroring {}@{} ({} bytes, {}B mirrored{evicted})",
+                    record.id, record.version, mirrored.size, mirrored.used
+                )),
+            );
+        }
+        Err(error) => push(
+            queue,
+            notice(format!("registry: could not mirror {}: {error}", record.id)),
+        ),
+    }
+}
+
+fn mirror_budget() -> u64 {
+    std::env::var("GOATS_MODS_MIRROR_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(session::registry::DEFAULT_MIRROR_BYTES)
+}
+
 /// Bring up the session a `Host` or `Join` asks for, replacing whatever was
 /// live (the caller has already closed it).
-async fn start(command: Command, queue: &Queue, swarm: Option<&SwarmCommands>) -> Option<Live> {
+async fn start(
+    command: Command,
+    queue: &Queue,
+    swarm: Option<&SwarmCommands>,
+    registry: Option<&Registry>,
+) -> Option<Live> {
     match command {
         Command::Host { name, mods, pull } => {
             // A host serves what it runs, so a joiner missing a world mod can fetch it here
@@ -1095,7 +1409,7 @@ async fn start(command: Command, queue: &Queue, swarm: Option<&SwarmCommands>) -
             mods,
             asked,
             pull,
-        } => match join(&ticket, &name, mods, asked, &pull, queue).await {
+        } => match join(&ticket, &name, mods, asked, &pull, queue, registry).await {
             Ok(client) => {
                 // The canonical name, which may differ from the one asked for:
                 // names are first come, first served.
@@ -1121,6 +1435,11 @@ async fn start(command: Command, queue: &Queue, swarm: Option<&SwarmCommands>) -
         | Command::SwarmJoin { .. }
         | Command::SwarmLeave
         | Command::Noop
+        | Command::SetRegistry(_)
+        | Command::ModsRegistry
+        | Command::ModsShare
+        | Command::ModsFetch { .. }
+        | Command::ModsMirror { .. }
         | Command::Close => None,
     }
 }
@@ -1143,6 +1462,7 @@ async fn join(
     asked: bool,
     pull: &Pull,
     queue: &Queue,
+    registry: Option<&Registry>,
 ) -> Result<Client, String> {
     let refusal = match Client::join_with_mods(ticket, name, mods).await {
         Ok(client) => return Ok(client),
@@ -1160,7 +1480,7 @@ async fn join(
     // rather than replacing it, and that verdict has to be about the directory as it is now, not
     // as it was when this thread started.
     let before = mods::Loader::discover_with(mods_dir, mods::AssetMode::HashOnly);
-    let fetched = match pull::recover(ticket, &before, mods_dir).await {
+    let fetched = match pull::recover_with(ticket, &before, mods_dir, registry).await {
         Ok(pull::Recovery::Pulled(report)) if !report.installed.is_empty() => report,
         // Nothing was installed, so a retry would meet the same refusal: say what stopped it
         // rather than dialing a second time for the same answer.

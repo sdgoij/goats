@@ -395,6 +395,28 @@ impl Registry {
         self.catalogue.lock().expect("catalogue").find(reference)
     }
 
+    /// The record `id[@version]` names, preferring a package with a live provider
+    /// and then the greatest version label. The console's `mod fetch` and `mod
+    /// mirror` share this rule, so `birds` and `birds@1.0.0` mean the same thing in
+    /// both clients.
+    pub fn find_by(&self, id: &str, version: Option<&str>) -> Option<ModRecord> {
+        let mut matches: Vec<ModRecord> = self
+            .records()
+            .into_iter()
+            .filter(|record| {
+                record.id == id && version.is_none_or(|wanted| record.version == wanted)
+            })
+            .collect();
+        matches.sort_by(|a, b| {
+            (self.providers(&a.root).is_empty(), &a.version, a.root).cmp(&(
+                self.providers(&b.root).is_empty(),
+                &b.version,
+                b.root,
+            ))
+        });
+        matches.pop()
+    }
+
     /// The endpoints that restated a have for `root`, author first.
     pub fn providers(&self, root: &[u8; 32]) -> Vec<EndpointId> {
         self.catalogue.lock().expect("catalogue").providers(root)

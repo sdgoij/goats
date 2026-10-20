@@ -911,22 +911,6 @@ fn registry_status(registry: &Registry) -> String {
 /// The record `id[@version]` names: a package with a live provider wins, then
 /// the greatest version label, so `mods fetch birds` picks the newest one the
 /// catalogue shows.
-fn find_record(registry: &Registry, id: &str, version: Option<&str>) -> Option<session::ModRecord> {
-    let mut matches: Vec<session::ModRecord> = registry
-        .records()
-        .into_iter()
-        .filter(|record| record.id == id && version.is_none_or(|wanted| record.version == wanted))
-        .collect();
-    matches.sort_by(|a, b| {
-        (registry.providers(&a.root).is_empty(), &a.version, a.root).cmp(&(
-            registry.providers(&b.root).is_empty(),
-            &b.version,
-            b.root,
-        ))
-    });
-    matches.pop()
-}
-
 /// `mods fetch <id>[@version]`: install from the catalogue. The verb is the
 /// consent; the same verify-then-install path a refused join takes does the rest.
 async fn registry_fetch(
@@ -946,7 +930,7 @@ async fn registry_fetch(
         );
         return;
     };
-    let Some(record) = find_record(registry, id, version) else {
+    let Some(record) = registry.find_by(id, version) else {
         emit(
             events,
             Event::Notice {
@@ -998,7 +982,7 @@ async fn registry_mirror(
     version: Option<&str>,
     events: &mpsc::UnboundedSender<String>,
 ) {
-    let Some(record) = find_record(registry, id, version) else {
+    let Some(record) = registry.find_by(id, version) else {
         emit(
             events,
             Event::Notice {

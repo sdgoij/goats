@@ -747,7 +747,24 @@ func _mod(parts: PackedStringArray) -> String:
 		if parts.size() < 3:
 			return "error mod reload expects an id"
 		return mods.reload_mod(parts[2])
-	return "error mod expects list|info|key|enable|disable|reload"
+	# The registry verbs (M18f), `mod registry|share|fetch|mirror`.
+	if verb == "registry":
+		return String(_call("mods_registry"))
+	if verb == "share":
+		return String(_call("mods_share"))
+	if verb == "fetch" or verb == "mirror":
+		if parts.size() < 3:
+			return "error mod " + verb + " expects an id[@version]"
+		var target: String = parts[2]
+		var at: int = target.find("@")
+		var id: String = target if at < 0 else target.substr(0, at)
+		var version: String = "" if at < 0 else target.substr(at + 1)
+		if id == "" or (at >= 0 and version == ""):
+			return "error mod " + verb + " expects an id[@version]"
+		if verb == "fetch":
+			return String(_call("mods_fetch", [id, version]))
+		return String(_call("mods_mirror", [id, version]))
+	return "error mod expects list|info|key|enable|disable|reload|registry|share|fetch|mirror"
 
 ## A compiled mod's own report, or `null`. The host answers the string `"null"` for a mod with no
 ## module rather than an empty reply, so the two answers parse the same way and there is one path.
