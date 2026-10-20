@@ -60,6 +60,28 @@ function sTwoLoops(n) {
     return s;
 }
 
+// Loops in different blocks: mutually exclusive branches, and a loop followed by a
+// conditional loop. Tells us whether the gate counts loop headers per function or
+// per block.
+function sBranches(n, b) {
+    let s = 0;
+    if (b) {
+        for (let i = 0; i < n; i++) s += i * 3;
+    } else {
+        for (let i = 0; i < n; i++) s += i * 5;
+    }
+    return s;
+}
+
+function sLoopThenBranch(n, b) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += i * 3;
+    if (b) {
+        for (let i = 0; i < n; i++) s += i * 5;
+    }
+    return s;
+}
+
 function vOuterRead(n) {                // one outer (wrapper-scope) read
     let s = 0;
     for (let i = 0; i < n; i++) s += i * 3 + SCALAR;
@@ -770,6 +792,8 @@ function probeAll() {
     lines.push(row("s one loop", timeIt(sOneLoop, [N], 1, N)));
     lines.push(row("s nested", timeIt(sNested, [N], 1, N * 3)));
     lines.push(row("s two loops", timeIt(sTwoLoops, [N], 1, N * 2)));
+    lines.push(row("s branches", timeIt(sBranches, [N, 1], 1, N)));
+    lines.push(row("s loop+branch", timeIt(sLoopThenBranch, [N, 1], 1, N * 2)));
     // 7 bots: 2 passes x (7 player pairs + 21 bot pairs) = 56 pair steps.
     lines.push(row("collide-current", timeIt(collideCurrent, [bots, 0, 0], 2000, 56)));
     lines.push(row("collide-leaf", timeIt(collideLeaf, [bots, 7, 0, 0, 1.5, 1.5], 2000, 56)));
