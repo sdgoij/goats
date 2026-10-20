@@ -269,6 +269,7 @@ impl Swarm {
             secret: config.secret.take(),
             reach: config.reach,
             blobs: None,
+            session: false,
         })
         .await?;
         Self::join_on(node, config).await

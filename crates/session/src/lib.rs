@@ -38,6 +38,8 @@ use proto::{
 };
 use tokio::sync::{Mutex, mpsc};
 
+use crate::node::Node;
+
 /// The line protocol the scene speaks, shared by the native clients and the
 /// browser gateway. It lives here so the JSON shapes have one definition.
 pub mod bridge;
@@ -616,6 +618,12 @@ async fn route_chat(
 /// A session the local player is hosting.
 pub struct Host {
     endpoint: Endpoint,
+    /// The endpoint is the node's when the session shares one, in which case it
+    /// outlives the host; this is the handle that keeps it alive.
+    node: Option<Arc<Node>>,
+    /// The task that accepts session connections. A bound endpoint answers them
+    /// from its own accept loop; a shared node's router hands them over.
+    accept: tokio::task::JoinHandle<()>,
     ticket: String,
     name: String,
     seed: u32,
@@ -627,6 +635,17 @@ pub struct Host {
     /// snapshot rather than applying it late; only `publish_world` touches it, and only to
     /// advance it.
     world_seq: AtomicU32,
+}
+
+/// Where a host's accepted connections come from.
+enum Accept {
+    /// The host bound the endpoint and loops on it.
+    Bound,
+    /// The node's router accepted the session's ALPNs and hands them over.
+    Routed {
+        node: Arc<Node>,
+        connections: mpsc::UnboundedReceiver<Connection>,
+    },
 }
 
 /// A fresh session seed, mixed from the clock so two sessions rarely share one.
@@ -673,7 +692,62 @@ impl Host {
     ) -> Result<Host, Error> {
         let endpoint = bind_endpoint().await?;
         let ticket = EndpointTicket::new(endpoint.addr()).encode_string();
+        Self::assemble(
+            host_name,
+            world_mods,
+            archives,
+            endpoint,
+            ticket,
+            Accept::Bound,
+        )
+        .await
+    }
 
+    /// Starts a session on `node`'s endpoint instead of binding one. The node's
+    /// router accepts the session's ALPNs, so the ticket is the node's: one ticket
+    /// introduces the session, the catalogue and the swarm, and a client that can
+    /// dial one can reach all three.
+    ///
+    /// The node must have been bound with [`crate::node::NodeConfig::session`];
+    /// a node without it has nothing to route a session connection to. One node
+    /// serves one host.
+    pub async fn start_on(
+        node: Arc<Node>,
+        host_name: &str,
+        world_mods: Vec<ModRef>,
+        archives: Vec<(ModRef, Vec<u8>)>,
+    ) -> Result<Host, Error> {
+        let Some(port) = node.session() else {
+            return Err(Error::Bind(
+                "the node was not bound to accept sessions (NodeConfig::session)".to_string(),
+            ));
+        };
+        let Some(connections) = port.claim() else {
+            return Err(Error::Bind("the node already serves a host".to_string()));
+        };
+        let endpoint = node.endpoint().clone();
+        let ticket = node.ticket().to_string();
+        Self::assemble(
+            host_name,
+            world_mods,
+            archives,
+            endpoint,
+            ticket,
+            Accept::Routed { node, connections },
+        )
+        .await
+    }
+
+    /// The half both constructors share: the session state, the event channel and
+    /// the task that feeds it accepted connections.
+    async fn assemble(
+        host_name: &str,
+        world_mods: Vec<ModRef>,
+        archives: Vec<(ModRef, Vec<u8>)>,
+        endpoint: Endpoint,
+        ticket: String,
+        accept: Accept,
+    ) -> Result<Host, Error> {
         let local_name = proto::sanitize_name(host_name);
         let seed = new_seed();
         let server = Arc::new(Mutex::new(Server {
@@ -696,30 +770,48 @@ impl Host {
                 .collect(),
         );
 
-        let accepting = endpoint.clone();
         let state = server.clone();
         let serving = archives.clone();
-        tokio::spawn(async move {
-            while let Some(incoming) = accepting.accept().await {
-                let Ok(connection) = incoming.await else {
-                    continue;
-                };
-                // The accept loop is shared by both ALPNs, so the negotiated one
-                // decides which protocol this connection speaks.
-                if connection.alpn() == mod_fetch_alpn().as_slice() {
-                    tokio::spawn(handle_mod_fetch(connection, serving.clone()));
-                } else {
-                    tokio::spawn(handle_connection(
-                        connection,
-                        state.clone(),
-                        broadcaster.clone(),
-                    ));
-                }
+        let (accept, node) = match accept {
+            Accept::Bound => {
+                let accepting = endpoint.clone();
+                let task = tokio::spawn(async move {
+                    while let Some(incoming) = accepting.accept().await {
+                        let Ok(connection) = incoming.await else {
+                            continue;
+                        };
+                        serve_connection(
+                            connection,
+                            state.clone(),
+                            broadcaster.clone(),
+                            serving.clone(),
+                        );
+                    }
+                });
+                (task, None)
             }
-        });
+            Accept::Routed {
+                node,
+                mut connections,
+            } => {
+                let task = tokio::spawn(async move {
+                    while let Some(connection) = connections.recv().await {
+                        serve_connection(
+                            connection,
+                            state.clone(),
+                            broadcaster.clone(),
+                            serving.clone(),
+                        );
+                    }
+                });
+                (task, Some(node))
+            }
+        };
 
         Ok(Host {
             endpoint,
+            node,
+            accept,
             ticket,
             name: local_name,
             seed,
@@ -895,8 +987,31 @@ impl Host {
     }
 
     /// Closes the endpoint, which ends every connection and stops accepting.
+    ///
+    /// A host that borrowed a node's endpoint does not close it: the swarm and the
+    /// catalogue are subscriptions on it, and the node outlives the session. It
+    /// stops accepting instead, so a dial after this is closed rather than queued
+    /// for a host that is gone.
     pub async fn close(self) {
-        self.endpoint.close().await;
+        self.accept.abort();
+        if self.node.is_none() {
+            self.endpoint.close().await;
+        }
+    }
+}
+
+/// Hands one accepted connection to the protocol its ALPN names. The accept loop
+/// is shared by the session and the mod fetch, so the negotiated ALPN decides.
+fn serve_connection(
+    connection: Connection,
+    state: Arc<Mutex<Server>>,
+    events: mpsc::UnboundedSender<Event>,
+    archives: Arc<ModArchives>,
+) {
+    if connection.alpn() == mod_fetch_alpn().as_slice() {
+        tokio::spawn(handle_mod_fetch(connection, archives));
+    } else {
+        tokio::spawn(handle_connection(connection, state, events));
     }
 }
 
@@ -1691,6 +1806,48 @@ mod tests {
     #[test]
     fn the_alpn_carries_the_protocol_version() {
         assert_eq!(alpn(), format!("goats/{PROTOCOL_VERSION}").into_bytes());
+    }
+
+    /// A host can serve on the endpoint the swarm and the catalogue are on. The
+    /// router accepts the session's ALPNs, so one ticket introduces all of it.
+    #[tokio::test]
+    async fn a_host_can_serve_on_a_shared_node() {
+        within(async {
+            let node = crate::node::Node::bind(crate::node::NodeConfig {
+                secret: None,
+                reach: crate::swarm::Reach::Direct,
+                blobs: None,
+                session: true,
+            })
+            .await
+            .expect("node");
+
+            let host = Host::start_on(node.clone(), "host", Vec::new(), Vec::new())
+                .await
+                .expect("host");
+            assert_eq!(host.ticket(), node.ticket());
+
+            let mut alice = Client::join(host.ticket(), "alice")
+                .await
+                .expect("join alice");
+            assert_eq!(alice.name(), "alice");
+            match alice.next_event().await.expect("client seed") {
+                Event::Session { seed } => assert_eq!(seed, host.seed()),
+                other => panic!("expected a seed, got {other:?}"),
+            }
+
+            // A node serves one host, and a second claim is refused rather than
+            // quietly splitting the connections.
+            assert!(
+                Host::start_on(node.clone(), "second", Vec::new(), Vec::new())
+                    .await
+                    .is_err()
+            );
+
+            host.close().await;
+            node.shutdown().await;
+        })
+        .await;
     }
 
     #[tokio::test]

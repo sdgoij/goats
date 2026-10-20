@@ -1189,6 +1189,7 @@ async fn start_registry(
         secret: opts.config.secret.take(),
         reach: opts.config.reach,
         blobs: Some(opts.config.store.clone()),
+        session: false,
     };
     let bound = bind_node(node, bind).await?;
     let registry = Registry::start_on(bound, opts.config)
@@ -1233,6 +1234,7 @@ async fn join_swarm(
             secret: config.secret.take(),
             reach: config.reach,
             blobs: None,
+            session: false,
         },
     )
     .await?;

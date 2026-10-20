@@ -56,7 +56,8 @@
 # Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server), GOATS_BIN (the
 # reference client, `jsjoin`), GOATSD_HERD (the host's herd size -- `--herd`; the
 # `herd` mode at a large count is what shows the world datagram carries the larger
-# herd).
+# herd), and GOATSD_FLAGS (extra server flags, word-split -- e.g.
+# `GOATSD_FLAGS=--one-endpoint` to host the session on the discovery endpoint).
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -282,7 +283,7 @@ cd "$root"
 : > "$log"
 # `GOATSD_HERD`, when set, sizes the host's herd through the shipping `--herd` flag:
 # `herd` at a large count is the only run that proves the world datagram carries it.
-"$server" godot-host $mods_flag ${GOATSD_HERD:+--herd "$GOATSD_HERD"} > "$log" 2>&1 &
+"$server" godot-host $mods_flag ${GOATSD_HERD:+--herd "$GOATSD_HERD"} ${GOATSD_FLAGS:+$GOATSD_FLAGS} > "$log" 2>&1 &
 server_pid=$!
 
 cleanup() {

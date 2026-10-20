@@ -383,6 +383,7 @@ async fn run(
                 secret: opts.config.secret.take(),
                 reach: opts.config.reach,
                 blobs: Some(opts.config.store.clone()),
+                session: false,
             };
             match bind_node(&mut node, bind).await {
                 Ok(bound) => match Registry::start_on(bound, opts.config).await {
@@ -838,6 +839,7 @@ async fn join_swarm(
             secret: config.secret.take(),
             reach: config.reach,
             blobs: None,
+            session: false,
         },
     )
     .await?;

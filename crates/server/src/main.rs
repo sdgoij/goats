@@ -47,6 +47,7 @@ const USAGE: &str = "\
 goatsd [name] [--listen address:port] [--gateway address:port] [--download URL] [--mods DIRECTORY] [--no-mods] [--herd N]
         [--nojoin] [--topicid ID] [--peer ID|TICKET]... [--swarm-key HEX]
         [--no-registry] [--registry-store DIR] [--registry-topic ID] [--registry-peer ID|TICKET]... [--share-mods]
+        [--one-endpoint]
 
   name                the name to host under (default: server)
   -l, --listen ADDR   serve a status page on ADDR; a bare port means 0.0.0.0:port.
@@ -85,6 +86,9 @@ goatsd [name] [--listen address:port] [--gateway address:port] [--download URL] 
                       a catalogue node to seed from on its own topic; repeatable,
                       and also read from $GOATS_REGISTRY_PEERS (comma-separated)
       --share-mods    announce the mods this server runs on the registry
+      --one-endpoint  host the session on the discovery endpoint too, so one
+                      ticket and one socket cover the session, the swarm and the
+                      catalogue. Prototype: the clients still bind two
   -h, --help          this text";
 
 /// What the command line asked for.
@@ -106,6 +110,7 @@ struct Options {
     registry_topic: Option<String>,
     registry_peers: Vec<String>,
     share_mods: bool,
+    one_endpoint: bool,
 }
 
 /// Asking for help is not an error, but it ends the process the same way.
@@ -136,6 +141,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
         registry_topic: None,
         registry_peers: Vec::new(),
         share_mods: false,
+        one_endpoint: false,
     };
     let mut named = false;
     let mut args = args;
@@ -171,6 +177,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
             }
             "--no-registry" => options.no_registry = true,
             "--share-mods" => options.share_mods = true,
+            "--one-endpoint" => options.one_endpoint = true,
             "--registry-store" => {
                 options.registry_store = Some(PathBuf::from(
                     args.next().ok_or("--registry-store needs a directory")?,
@@ -381,14 +388,47 @@ async fn main() {
     // set in use rather than assembling it by hand. Built once at boot.
     let (listed_mods, mods_zip) = status_page_mods(&loader, mods_dir.as_deref());
 
-    let mut host =
-        match Host::start_with_mods_and_archives(&options.name, world_mods, archives).await {
-            Ok(host) => host,
+    // One node carries discovery, the catalogue and -- with `--one-endpoint` --
+    // the session itself. The registry's blob store and the session's ALPNs are
+    // part of the router that gossip is accepted on, so one ticket and one socket
+    // reach all three. A node is bound before the host because the router's ALPNs
+    // are fixed at spawn; `--no-registry` leaves the store off.
+    let store = match options.no_registry {
+        true => None,
+        false => Some(registry_store(&options, mods_dir.as_deref())),
+    };
+    let node = match node_config(&options, store.clone()) {
+        Ok(config) => match Node::bind(config).await {
+            Ok(node) => Some(node),
             Err(error) => {
-                eprintln!("goatsd: could not host: {error}");
-                std::process::exit(1);
+                eprintln!("goatsd: could not bind the shared endpoint: {error}");
+                eprintln!(
+                    "goatsd: discovery and the registry are off; the session still hosts on its own endpoint"
+                );
+                None
             }
-        };
+        },
+        Err(error) => {
+            eprintln!("goatsd: {error}");
+            None
+        }
+    };
+
+    let hosting = match (&node, options.one_endpoint) {
+        (Some(node), true) => {
+            Host::start_on(node.clone(), &options.name, world_mods, archives).await
+        }
+        // The default: the session binds an endpoint of its own, so its identity is
+        // this launch's and the discovery node's is the seed's.
+        _ => Host::start_with_mods_and_archives(&options.name, world_mods, archives).await,
+    };
+    let mut host = match hosting {
+        Ok(host) => host,
+        Err(error) => {
+            eprintln!("goatsd: could not host: {error}");
+            std::process::exit(1);
+        }
+    };
     let mut sim = match headless::Sim::start(host.seed(), &loader, options.herd) {
         Ok(sim) => sim,
         Err(error) => {
@@ -403,32 +443,6 @@ async fn main() {
     println!("goatsd: paste that into a client's console with `connect <ticket> <name>`");
     println!("goatsd: internet reach (n0 relays + DNS discovery); Ctrl-C to stop");
     let _ = std::io::stdout().flush();
-
-    // One node carries both discovery and the catalogue. The registry's blob
-    // store is part of the router that gossip is accepted on, so a client seeded
-    // with the swarm ticket can fetch a package from this server without a second
-    // introduction, and the two cannot print two different ids. `--no-registry`
-    // leaves the store off; the node is still the swarm's.
-    let store = match options.no_registry {
-        true => None,
-        false => Some(registry_store(&options, mods_dir.as_deref())),
-    };
-    let node = match node_config(&options, store.clone()) {
-        Ok(config) => match Node::bind(config).await {
-            Ok(node) => Some(node),
-            Err(error) => {
-                eprintln!("goatsd: could not bind the discovery endpoint: {error}");
-                eprintln!(
-                    "goatsd: discovery and the registry are off; the session is by ticket only"
-                );
-                None
-            }
-        },
-        Err(error) => {
-            eprintln!("goatsd: {error}");
-            None
-        }
-    };
 
     // The discovery swarm. `goatsd` is the natural seed for a WAN: it joins by
     // default and prints the id and ticket a client needs to seed from it. A
@@ -728,6 +742,9 @@ fn node_config(options: &Options, blobs: Option<PathBuf>) -> Result<NodeConfig, 
         secret,
         reach: Reach::Wan,
         blobs,
+        // One node serves the session too when asked, which is why the flag is read
+        // here rather than by the host: the router cannot gain an ALPN later.
+        session: options.one_endpoint,
     })
 }
 

@@ -198,6 +198,7 @@ impl Registry {
             secret: config.secret.take(),
             reach: config.reach,
             blobs: Some(config.store.clone()),
+            session: false,
         })
         .await?;
         Self::start_on(node, config).await
@@ -1450,6 +1451,7 @@ mod tests {
             secret: None,
             reach: Reach::Direct,
             blobs: Some(workspace("shared-node").join("store")),
+            session: false,
         })
         .await
         .expect("node");

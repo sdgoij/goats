@@ -124,6 +124,7 @@ Flags:
 | `--registry-topic ID` | the catalogue to join (default: the game's own) |
 | `--registry-peer ID\|TICKET` | a catalogue node to seed from on its own topic; repeatable |
 | `--share-mods` | announce this server's mods on the registry |
+| `--one-endpoint` | host the session on the discovery endpoint too: one ticket, one socket (prototype) |
 
 `--swarm-key` (or `$GOATS_SWARM_KEY`) matters for a seed: clients dial it by id,
 and a random key would make that id change every restart. The catalogue is on the
@@ -132,6 +133,13 @@ same node, so that one id and one ticket cover both; `--registry-key`
 which keeps an id a deployment pinned there before the two were one endpoint.
 `$GOATS_REGISTRY_PEERS` is what seeds a catalogue on a node with no swarm to
 hear -- `--nojoin`, or a test.
+
+`--one-endpoint` goes one step further and hosts the *session* on that node too,
+so the ticket a player joins with is also the seed's identity for discovery and
+the catalogue, and the process holds one socket instead of two. It is a
+prototype: the clients still bind a session endpoint and a discovery endpoint
+separately, because a player's play identity is deliberately short-lived while a
+seed's is not.
 
 ## The first peer
 
@@ -390,6 +398,12 @@ identity, one ticket -- so the port's loader runs `set_registry` before
 second endpoint; it is what a catalogue with no swarm in front of it cannot do:
 nobody can be pointed at a topic by a ticket alone, so `$GOATS_REGISTRY_PEERS`
 remains the cold-start seed.
+
+`goatsd --one-endpoint` is the first step past the split on the server side: the
+session, the swarm and the catalogue are one node and one ticket. The client path
+still binds two, deliberately -- a player's play identity is ephemeral and a
+seed's is not -- and whether that should change is an open question rather than a
+todo.
 
 ### The tests
 

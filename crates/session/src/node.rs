@@ -8,16 +8,17 @@
 //! then subscribe to their own topics on the same node, so one ticket introduces
 //! both, and a client needs one socket rather than two.
 //!
-//! A node without a blob store is a gossip-only node: the swarm is the only thing
-//! that can attach. A node with one always serves the blobs protocol, because the
-//! router cannot gain an ALPN after it has spawned.
+//! A node is gossip-only unless it is bound with more: `NodeConfig::blobs` adds
+//! the registry's transfer protocol and `NodeConfig::session` the session's
+//! ALPNs, so a `Host` can serve on the same endpoint. Both are fixed at bind
+//! time, because the router cannot gain an ALPN after it has spawned.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use iroh::address_lookup::memory::MemoryLookup;
-use iroh::endpoint::presets;
-use iroh::protocol::Router;
+use iroh::endpoint::{Connection, presets};
+use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_blobs::BlobsProtocol;
 use iroh_blobs::api::Store;
@@ -25,6 +26,7 @@ use iroh_blobs::store::fs::FsStore;
 use iroh_gossip::Gossip;
 use iroh_tickets::Ticket;
 use iroh_tickets::endpoint::EndpointTicket;
+use tokio::sync::mpsc;
 
 use crate::Error;
 use crate::swarm::Reach;
@@ -36,6 +38,10 @@ pub struct NodeConfig {
     /// The blob store to serve, if this node should accept the registry's transfer
     /// protocol. The directory is created if missing.
     pub blobs: Option<PathBuf>,
+    /// Accept the session's ALPNs too, so a `Host` can serve on this endpoint.
+    /// The router is what accepts them, and it cannot gain an ALPN after spawn,
+    /// so a node that is ever going to host says so at bind time.
+    pub session: bool,
 }
 
 /// The transport both discovery and the catalogue ride on.
@@ -45,8 +51,58 @@ pub struct Node {
     router: Router,
     lookup: MemoryLookup,
     store: Option<Store>,
+    /// The session half, when this node accepts one.
+    session: Option<SessionPort>,
     addr: EndpointAddr,
     ticket: String,
+}
+
+/// The session half of a [`Node`]: what a `Host` serves from.
+///
+/// The node's router accepts the session's ALPNs and hands each connection here;
+/// a host claims the queue once, which is also how the node learns that somebody
+/// is now serving a session. A dial before that is closed rather than queued,
+/// which is what dialing a node that is not hosting should do.
+pub struct SessionPort {
+    /// Where the protocol handler offers a connection. `None` between the bind and
+    /// the claim, and again if the host goes away.
+    slot: Arc<StdMutex<Option<mpsc::UnboundedSender<Connection>>>>,
+    sender: mpsc::UnboundedSender<Connection>,
+    inbox: StdMutex<Option<mpsc::UnboundedReceiver<Connection>>>,
+}
+
+impl SessionPort {
+    /// Hands out the connections this node accepts, and starts routing new ones to
+    /// them. `None` on a second call: one node serves one session at a time.
+    pub fn claim(&self) -> Option<mpsc::UnboundedReceiver<Connection>> {
+        let inbox = self.inbox.lock().expect("session inbox").take()?;
+        *self.slot.lock().expect("session slot") = Some(self.sender.clone());
+        Some(inbox)
+    }
+}
+
+/// The router side of [`SessionPort`]: one clone per accepted connection.
+#[derive(Clone)]
+struct SessionProtocol {
+    slot: Arc<StdMutex<Option<mpsc::UnboundedSender<Connection>>>>,
+}
+
+impl std::fmt::Debug for SessionProtocol {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SessionProtocol")
+    }
+}
+
+impl ProtocolHandler for SessionProtocol {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let sender = self.slot.lock().expect("session slot").clone();
+        if let Some(sender) = sender {
+            let _ = sender.send(connection);
+        }
+        // No host: the connection is dropped here, which closes it. The peer sees
+        // a closed connection rather than a queue that grows until somebody hosts.
+        Ok(())
+    }
 }
 
 impl Node {
@@ -81,7 +137,27 @@ impl Node {
         };
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
-        let builder = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone());
+        // The session's ALPNs go on the same router as gossip and blobs: a client
+        // that finds this node by one ticket can join the session it hosts without
+        // a second endpoint, and a client that does not host never dials them.
+        let session = config.session.then(|| {
+            let (sender, inbox) = mpsc::unbounded_channel();
+            let slot = Arc::new(StdMutex::new(None));
+            (
+                SessionPort {
+                    slot: slot.clone(),
+                    sender,
+                    inbox: StdMutex::new(Some(inbox)),
+                },
+                SessionProtocol { slot },
+            )
+        });
+        let mut builder =
+            Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone());
+        if let Some((_, handler)) = &session {
+            builder = builder.accept(crate::alpn(), handler.clone());
+            builder = builder.accept(proto::mod_fetch_alpn(), handler.clone());
+        }
         let router = match &store {
             Some(store) => builder
                 .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, None))
@@ -97,6 +173,7 @@ impl Node {
             router,
             lookup,
             store,
+            session: session.map(|(port, _)| port),
             addr,
             ticket,
         }))
@@ -115,6 +192,11 @@ impl Node {
     /// The blob store, when this node serves the registry.
     pub fn store(&self) -> Option<&Store> {
         self.store.as_ref()
+    }
+
+    /// The session half, when this node was bound to accept a session.
+    pub fn session(&self) -> Option<&SessionPort> {
+        self.session.as_ref()
     }
 
     /// The lookup a ticket learned out of band is added to.
