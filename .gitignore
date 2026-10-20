@@ -24,3 +24,7 @@ web/dist
 # game writes it wherever `mods/` is.
 mods/pulled-*
 mods/pulled.json
+# The registry's blob store and a fetch's staging directory: both are the game's
+# own working state under `mods/`, and neither is a mod.
+mods/.registry/
+mods/.staging/

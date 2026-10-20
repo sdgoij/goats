@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::Error;
-use crate::swarm::Reach;
+use crate::swarm::{Reach, parse_peer, parse_secret, parse_topic};
 
 /// `SHA-256("goats/mods/v1")`, in the hex form a [`TopicId`] parses. A separate
 /// topic from the host list on purpose: a record flood must not evict portals,
@@ -107,6 +107,52 @@ impl RegistryConfig {
     /// The game's own registry topic.
     pub fn default_topic() -> TopicId {
         TopicId::from_str(DEFAULT_TOPIC).expect("the default topic is 32 bytes of hex")
+    }
+
+    /// The registry's configuration from the environment, or `None` when
+    /// `GOATS_MODS_REGISTRY=0`.
+    ///
+    /// The registry has its own endpoint for now, so its seeds are endpoint
+    /// tickets in `GOATS_REGISTRY_PEERS`, not the swarm's peer ids; a persistent
+    /// identity is `GOATS_REGISTRY_KEY`, and `GOATS_REGISTRY_TOPIC` selects
+    /// another catalogue.
+    pub fn from_env(store: PathBuf) -> Result<Option<RegistryConfig>, String> {
+        if std::env::var("GOATS_MODS_REGISTRY").is_ok_and(|value| value.trim() == "0") {
+            return Ok(None);
+        }
+        let topic = match std::env::var("GOATS_REGISTRY_TOPIC") {
+            Ok(text) if !text.trim().is_empty() => {
+                parse_topic(&text).map_err(|error| format!("GOATS_REGISTRY_TOPIC: {error}"))?
+            }
+            _ => RegistryConfig::default_topic(),
+        };
+        let mut peers = Vec::new();
+        if let Ok(list) = std::env::var("GOATS_REGISTRY_PEERS") {
+            for entry in list.split(',') {
+                let entry = entry.trim();
+                if entry.is_empty() {
+                    continue;
+                }
+                peers.push(
+                    parse_peer(entry).map_err(|error| format!("GOATS_REGISTRY_PEERS: {error}"))?,
+                );
+            }
+        }
+        let secret = match std::env::var("GOATS_REGISTRY_KEY") {
+            Ok(text) if !text.trim().is_empty() => {
+                Some(parse_secret(&text).map_err(|error| format!("GOATS_REGISTRY_KEY: {error}"))?)
+            }
+            _ => None,
+        };
+        Ok(Some(RegistryConfig {
+            topic,
+            peers,
+            secret,
+            reach: Reach::Wan,
+            store,
+            every: RECORD_EVERY,
+            ttl: RECORD_TTL,
+        }))
     }
 }
 

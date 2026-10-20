@@ -16,11 +16,12 @@
 //! `pull`'s; what lives here is the policy -- consent, the retry, and telling the
 //! frame loop to load what arrived.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 
-use mods::{AssetMode, Loader};
+use mods::{AssetMode, Loader, ModSource};
 use serde::Deserialize;
+use session::registry::{Registry, RegistryConfig};
 use session::swarm::{self, Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use tokio::runtime;
 use tokio::sync::mpsc;
@@ -74,6 +75,32 @@ impl Pull {
     }
 }
 
+/// The registry's switches for this run. The embedding host builds this from the
+/// environment; the test constructor passes `None`, so no test starts an extra
+/// endpoint or joins a catalogue it did not ask for.
+pub struct RegistryOpts {
+    pub config: RegistryConfig,
+    /// The directory to announce when sharing is on. `None` is the default: a
+    /// client reads the catalogue and can fetch from it, but publishes nothing.
+    pub share: Option<PathBuf>,
+}
+
+impl RegistryOpts {
+    /// `GOATS_MODS_REGISTRY=0` disables the registry. `GOATS_MODS_SHARE=1`
+    /// announces this client's world mods, which is off by default because it is
+    /// a public claim about what this machine has.
+    pub fn from_env(mods_dir: &Path) -> Result<Option<RegistryOpts>, String> {
+        let Some(config) = RegistryConfig::from_env(mods_dir.join(".registry"))? else {
+            return Ok(None);
+        };
+        let share = std::env::var("GOATS_MODS_SHARE")
+            .map(|value| value.trim() != "0")
+            .unwrap_or(false)
+            .then(|| mods_dir.to_path_buf());
+        Ok(Some(RegistryOpts { config, share }))
+    }
+}
+
 /// The frame loop's handle on the networking thread.
 pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
@@ -90,14 +117,19 @@ impl Net {
     /// The game uses [`Net::start_with_swarm`].
     #[cfg(test)]
     pub fn start(world_mods: Vec<session::ModRef>, pull: Pull) -> Net {
-        Self::start_with_swarm(world_mods, pull, false)
+        Self::start_with_swarm(world_mods, pull, None, false)
     }
 
     /// Starts the runtime thread, optionally joining the default swarm before
     /// the first command. A joined swarm is what discovery runs on: the LAN
     /// beacon needs an endpoint to advertise, and auto-joining is what makes the
     /// client zero-config on a local network.
-    pub fn start_with_swarm(world_mods: Vec<session::ModRef>, pull: Pull, auto_swarm: bool) -> Net {
+    pub fn start_with_swarm(
+        world_mods: Vec<session::ModRef>,
+        pull: Pull,
+        registry: Option<RegistryOpts>,
+        auto_swarm: bool,
+    ) -> Net {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (voice_tx, voice_rx) = mpsc::channel(VOICE_BACKLOG);
@@ -112,7 +144,7 @@ impl Net {
                     }
                 };
                 runtime.block_on(run(
-                    command_rx, event_tx, voice_tx, world_mods, pull, auto_swarm,
+                    command_rx, event_tx, voice_tx, world_mods, pull, registry, auto_swarm,
                 ));
             })
             .expect("spawn the networking thread");
@@ -320,6 +352,7 @@ async fn run(
     voice: mpsc::Sender<VoiceIn>,
     world_mods: Vec<session::ModRef>,
     pull: Pull,
+    registry: Option<RegistryOpts>,
     auto_swarm: bool,
 ) {
     let mut live: Option<Live> = None;
@@ -344,6 +377,39 @@ async fn run(
     // change has to outlive the join that caused it: the host command uses the
     // same set (M18d).
     let mut world_mods = world_mods;
+    // The registry: a catalogue on its own topic and the blobs a fetch moves.
+    // It is opt-in at the host level (the test constructor passes `None`), and
+    // sharing is a second opt-in (`GOATS_MODS_SHARE`).
+    let registry = match registry {
+        Some(opts) => match Registry::start(opts.config).await {
+            Ok(registry) => {
+                // The ticket is the only way another node can seed this registry
+                // until the swarm carries it, and a console line is hard to copy
+                // from a game window. stderr is where the host ticket goes too.
+                eprintln!("[net] registry ticket: {}", registry.ticket());
+                emit(
+                    &events,
+                    Event::Notice {
+                        text: format!("registry: ticket {}", registry.ticket()),
+                    },
+                );
+                if let Some(dir) = opts.share.as_deref() {
+                    share_mods(&registry, dir, &events).await;
+                }
+                Some(registry)
+            }
+            Err(error) => {
+                emit(
+                    &events,
+                    Event::Notice {
+                        text: format!("registry: {error}"),
+                    },
+                );
+                None
+            }
+        },
+        None => None,
+    };
     // The last thing said about each high-rate datagram. The host sends them ten
     // times a second, so a report belongs on the change, not on every send.
     let mut last_world = session::WorldOutcome::Whole;
@@ -579,6 +645,7 @@ async fn run(
                         &mut world_mods,
                         &pull,
                         swarm.as_ref(),
+                        registry.as_ref(),
                     )
                     .await
                 }
@@ -590,6 +657,9 @@ async fn run(
         stop(session, swarm.as_ref()).await;
     }
     stop_swarm(&mut swarm, &mut swarm_task);
+    if let Some(registry) = registry {
+        registry.shutdown().await;
+    }
 }
 
 /// Ends a session, withdrawing its swarm advert first: a host that stops hosting
@@ -691,6 +761,70 @@ async fn join_swarm(
     Ok((commands, task))
 }
 
+/// Announce the mods this client loads (M18f). Sharing is a public claim about
+/// what this machine has, so it happens only when `GOATS_MODS_SHARE` asks for
+/// it -- never as a side effect of hosting or of joining a topic.
+async fn share_mods(registry: &Registry, mods_dir: &Path, events: &mpsc::UnboundedSender<String>) {
+    let loader = Loader::discover_with(mods_dir, AssetMode::HashOnly);
+    for error in loader.errors() {
+        emit(
+            events,
+            Event::Notice {
+                text: format!("registry: {error}"),
+            },
+        );
+    }
+
+    let scratch = std::env::temp_dir().join(format!("goats-share-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let mut shared = 0usize;
+    for (index, manifest) in loader.mods().iter().enumerate() {
+        let record = session::ModRecord {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            api: manifest.api,
+            side: match manifest.side {
+                mods::Side::World => session::ModSide::World,
+                mods::Side::Client => session::ModSide::Client,
+            },
+            hash: manifest.hash,
+            root: [0u8; 32],
+            size: 0,
+            author: [0u8; 32],
+        };
+        let result = match &manifest.source {
+            ModSource::Dir(dir) => registry.share(record, dir).await,
+            source => {
+                // A zip or an in-memory source has to become the canonical tree
+                // first; the tree, not the archive, is what the registry names.
+                let dest = scratch.join(format!("mod-{index}"));
+                let result = match source.materialize(&dest) {
+                    Ok(_) => registry.share(record, &dest).await,
+                    Err(error) => Err(error),
+                };
+                let _ = std::fs::remove_dir_all(&dest);
+                result
+            }
+        };
+        match result {
+            Ok(_) => shared += 1,
+            Err(error) => emit(
+                events,
+                Event::Notice {
+                    text: format!("registry: {} not shared: {error}", manifest.id),
+                },
+            ),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    emit(
+        events,
+        Event::Notice {
+            text: format!("registry: sharing {shared} mod(s)"),
+        },
+    );
+}
+
 /// Runs one command, replacing whatever session was live.
 async fn start(
     command: Command,
@@ -699,6 +833,7 @@ async fn start(
     world_mods: &mut Vec<session::ModRef>,
     pull: &Pull,
     swarm: Option<&SwarmCommands>,
+    registry: Option<&Registry>,
 ) -> Option<Live> {
     if let Some(session) = current {
         stop(session, swarm).await;
@@ -767,7 +902,7 @@ async fn start(
             name,
             pull: asked,
             ..
-        } => match join(&ticket, &name, asked, pull, world_mods, events).await {
+        } => match join(&ticket, &name, asked, pull, world_mods, events, registry).await {
             Ok(client) => {
                 // This client is a player now, not a host: whatever it said on
                 // the swarm before is no longer true.
@@ -809,6 +944,7 @@ async fn join(
     pull: &Pull,
     world_mods: &mut Vec<session::ModRef>,
     events: &mpsc::UnboundedSender<String>,
+    registry: Option<&Registry>,
 ) -> Result<session::Client, String> {
     let refusal = match session::Client::join_with_mods(ticket, name, world_mods.clone()).await {
         Ok(client) => return Ok(client),
@@ -826,7 +962,7 @@ async fn join(
     // is already there rather than replacing it, and that verdict has to be about
     // the directory as it is now, not as it was when this thread started.
     let before = Loader::discover_with(mods_dir, AssetMode::HashOnly);
-    let fetched = match pull::recover(ticket, &before, mods_dir).await {
+    let fetched = match pull::recover_with(ticket, &before, mods_dir, registry).await {
         Ok(pull::Recovery::Pulled(report)) if !report.installed.is_empty() => report,
         // Nothing was installed, so a retry would meet the same refusal: say what
         // stopped it rather than dialing a second time for the same answer.
@@ -1359,8 +1495,8 @@ mod tests {
             // The machine-wide opt-out; there is nothing to discover with.
             return;
         }
-        let mut host = Net::start_with_swarm(Vec::new(), pull_off(), true);
-        let mut player = Net::start_with_swarm(Vec::new(), pull_off(), true);
+        let mut host = Net::start_with_swarm(Vec::new(), pull_off(), None, true);
+        let mut player = Net::start_with_swarm(Vec::new(), pull_off(), None, true);
         // Each joins by itself; the event is what says the endpoint is up before
         // either asks it to do anything.
         wait_for(&mut host, "\"type\":\"swarm\"");

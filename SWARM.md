@@ -264,11 +264,13 @@ carry a mod catalogue. The mechanism is the one already built: postcard
 `Wire::{Record, Have, Gone}` with the same nonce, restated every `RECORD_EVERY`
 and forgotten after `RECORD_TTL` without a restatement.
 
-The topic is seeded the same way as the host topic (`--peer`,
-`$GOATS_SWARM_PEERS`, the LAN beacon), and in practice the meshes overlap: a
-client can hand endpoint ids heard on one topic to `join_peers` on the other.
-`GOATS_MODS_REGISTRY=0` -- and a `mods registry off` verb later -- turns it off
-for a run, like `swarm leave`.
+The registry has its own endpoint for now, so it is seeded with endpoint tickets
+in `$GOATS_REGISTRY_PEERS` rather than the swarm's peer ids; `$GOATS_REGISTRY_KEY`
+gives it a stable identity and `$GOATS_REGISTRY_TOPIC` selects another catalogue.
+A client starts one at startup when it has a mods directory and prints its
+ticket, and `GOATS_MODS_REGISTRY=0` turns it off for a run, like `swarm leave`.
+Once the endpoint is shared with the swarm, registry tickets can ride the host
+topic and the LAN beacon instead of being copied by hand.
 
 ### Fetching is a hook, not a protocol
 
@@ -299,9 +301,9 @@ Three separate switches, because they are three different promises.
   restates the have for what it holds and pins it against GC; the byte budget and
   eviction are the caller's policy, because only it knows how much disk it is
   offering -- unbounded mirroring is a disk commitment.
-- **fetch** (on for a join that needs it): install a mod the registry names.
-  Never implied by joining the topic, and never applied to a `side: "client"`
-  mod, which is the player's own choice.
+- **fetch** (only when the player asked, or `--pull` is standing consent): install
+  a mod the registry names. Never implied by joining the topic, and never applied
+  to a `side: "client"` mod, which is the player's own choice.
 
 ### Security and limits
 
@@ -346,14 +348,15 @@ Three separate switches, because they are three different promises.
 
 ### What remains
 
-The subsystem is implemented and tested; what is not yet wired is the client
-surface. The runtime thread owns the mods directory and the world-mod list, so it
-is the natural owner of a `Registry` handle: start one on `GOATS_MODS_REGISTRY`
-unless it is `0`, share the world mods when hosting, and pass the handle to
-`recover_with`. The console verbs (`mods share`, `mods mirror <root>`, `mods
-fetch <id>`) and the registry's own LAN beacon are the rest. The endpoint is the
-registry's own for now; sharing the swarm's would mean one router accepting both
-gossip and blobs ALPNs, which is a refactor of `Swarm::join`.
+The client now starts a registry at startup (unless `GOATS_MODS_REGISTRY=0`),
+announces its world mods when `GOATS_MODS_SHARE` is on, and hands the handle to
+`recover_with`, so a refused join falls back to the catalogue for what the host
+could not serve. What is left: registry tickets are still copied by hand into
+`GOATS_REGISTRY_PEERS` instead of riding the swarm; the console verbs (`mods
+share`, `mods mirror <root>`, `mods fetch <id>`) are not there; and a mirror's
+byte budget and eviction are the caller's policy. The endpoint is the registry's
+own; sharing the swarm's would mean one router accepting both gossip and blobs
+ALPNs, which is a refactor of `Swarm::join`.
 
 ### The tests
 

@@ -1051,6 +1051,21 @@ pub fn run() {
     let auto_swarm = std::env::var("GOATS_SWARM")
         .map(|value| value != "0")
         .unwrap_or(true);
+    // The registry is opt-in at the host level and starts beside the swarm: a
+    // client that only plays still benefits from a catalogue, and `GOATS_MODS_SHARE`
+    // is what makes it publish its own mods. Without a mods directory there is
+    // nowhere for a store or an install, so it stays off.
+    #[cfg(not(target_arch = "wasm32"))]
+    let registry = match mods_dir.as_deref() {
+        Some(dir) => match net::RegistryOpts::from_env(dir) {
+            Ok(opts) => opts,
+            Err(error) => {
+                eprintln!("[net] registry: {error}");
+                None
+            }
+        },
+        None => None,
+    };
     #[cfg(not(target_arch = "wasm32"))]
     let mut net = net::Net::start_with_swarm(
         world_mods,
@@ -1058,6 +1073,7 @@ pub fn run() {
             mods_dir: mods_dir.clone(),
             always: options.pull,
         },
+        registry,
         auto_swarm,
     );
     #[cfg(not(target_arch = "wasm32"))]
