@@ -481,11 +481,6 @@ function peerRole(p) {
 function drawPeers(tint) {
     for (let i = 0; i < PEERS.length; i++) {
         const p = PEERS[i];
-        const dx = p.x - goat.px;
-        const dz = p.z - goat.pz;
-        if (dx * dx + dz * dz > shadowBoxCull2()) {
-            rl.drawCube(p.x, terrainHeight(p.x, p.z) + 0.06, p.z, 1.3, 0.012, 1.75, ambShadow);
-        }
         poseModelOn(p.model, clipAt(peerRole(p), 0), p.phase);
         // A flung peer is flown by *its own* client (M19c) and arrives here as a gait,
         // a phase and a height (M19f): the fraction poses and rolls it, the clip's own

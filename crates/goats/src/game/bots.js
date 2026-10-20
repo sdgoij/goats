@@ -674,17 +674,11 @@ function botGroundY(b) {
     return b.gy;
 }
 
-// Draw the herd. Bots outside the shadow map's box get a small contact blob so
-// they stay grounded; inside the box the map shadow covers them instead.
+// Draw the herd. The box no longer needs a fallback: the map reaches the whole
+// field, so a bot outside it is one nobody can see, and the contact blobs are gone.
 function drawBots(tint) {
     for (let i = 0; i < BOTS.length; i++) {
         const b = BOTS[i];
-        const dx = b.x - goat.px;
-        const dz = b.z - goat.pz;
-        if (dx * dx + dz * dz > shadowBoxCull2()) {
-            rl.drawCube(b.x, botGroundY(b) + 0.06, b.z,
-                1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
-        }
         const role = botRole(b);
         // One-shot roles (jump, eat, death, flung) pose from their own clock; the rest
         // loop. The death clip is the model's, so the fraction is real there; with no

@@ -620,7 +620,9 @@ goats.on("update", function (dt) {
     }
 });
 
-goats.on("draw3d", function () {
+// His placement, shared by the lit pass and the shadow pass: `draw.mesh` is the same
+// call in both, and the scene routes it through the depth program while `shadow` runs.
+function drawGuy() {
     if (model === null) return;
     const dx = x + knockX;
     const dz = z + knockZ;
@@ -651,7 +653,14 @@ goats.on("draw3d", function () {
     // Passing degrees straight through is what made him spin rather than face where he was going.
     goats.gfx.draw.mesh(model, dx, y + goats.world.terrainHeight(dx, dz) + bob + hop, dz,
         axisX, axisY, axisZ, (yaw * Math.PI) / 180, SCALE, goats.draw.WHITE);
-});
+}
+
+goats.on("draw3d", function () { drawGuy(); });
+
+// He casts too: a model drawn inside `shadow` goes through the scene's depth program
+// (APIv1.md section 4.2), so the same placement is the shadow -- no blob, and it
+// moves with the arc, the wobble and the stagger.
+goats.on("shadow", function () { drawGuy(); });
 
 // ---- the console ----------------------------------------------------------
 

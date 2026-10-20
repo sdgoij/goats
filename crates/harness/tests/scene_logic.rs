@@ -617,7 +617,7 @@ fn the_scene_runs_the_scripted_timeline() {
     let tuning_defaults = f64_of(tuning_get(&mut harness, "stats.max")) == 100.0
         && f64_of(tuning_get(&mut harness, "movement.turnRate")) == 1.8
         && f64_of(tuning_get(&mut harness, "weather.rainSlow")) == 0.28
-        && f64_of(tuning_get(&mut harness, "lighting.shadow.half")) == 20.0;
+        && f64_of(tuning_get(&mut harness, "lighting.shadow.half")) == 30.0;
     checks.check(
         "tuning tree carries the defaults",
         tuning_defaults,
