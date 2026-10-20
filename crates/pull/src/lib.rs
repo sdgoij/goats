@@ -590,7 +590,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn the_registry_installs_a_world_mod_the_host_cannot_serve() {
         use session::registry::{Registry, RegistryConfig};
-        use session::swarm::{Reach, parse_peer};
+        use session::swarm::Reach;
 
         let dir = temp_dir("registry");
         let host_mods = dir.join("host-mods");
@@ -629,11 +629,17 @@ mod tests {
         assert_eq!(shared.shared[0].reference(), reference);
 
         let client = Registry::start(RegistryConfig {
-            peers: vec![parse_peer(host.ticket()).expect("the host ticket")],
+            peers: Vec::new(),
             ..config("client-store")
         })
         .await
         .expect("client registry");
+        // The ticket arrived out of band (the swarm carries it in the client);
+        // the runtime seed is the path a peer learned at a neighbour-up takes.
+        client
+            .peers()
+            .join(host.ticket())
+            .expect("the host ticket seeds the client");
         let mut listed = false;
         for _ in 0..200 {
             if let Some(record) = client.find(&reference)

@@ -242,6 +242,10 @@ pub enum SwarmEvent {
     /// The gossip stream failed. The task keeps whatever it has; this is a line
     /// for the console, not a shutdown.
     Failed(String),
+    /// A peer's registry endpoint ticket. The catalogue is on that endpoint and
+    /// its own topic, so this is only the introduction -- exactly what an advert
+    /// is for a session.
+    Registry(String),
 }
 
 /// A handle to a joined swarm.
@@ -392,6 +396,13 @@ impl SwarmCommands {
         let _ = self.0.try_send(Command::Withdraw);
     }
 
+    /// Names this node's registry endpoint so peers can join its catalogue. The
+    /// task restates it with the adverts; a node with no registry publishes
+    /// nothing.
+    pub fn registry(&self, ticket: String) {
+        let _ = self.0.try_send(Command::Registry(ticket));
+    }
+
     /// Leaves the topic. The task broadcasts a withdrawal if it had an advert,
     /// then shuts the router down.
     pub fn leave(&self) {
@@ -402,6 +413,7 @@ impl SwarmCommands {
 enum Command {
     Advert(Advert),
     Withdraw,
+    Registry(String),
     Peers(Vec<EndpointId>),
     Leave,
 }
@@ -411,8 +423,20 @@ enum Command {
 /// be dropped before it reached the other side.
 #[derive(Debug, Serialize, Deserialize)]
 enum Wire {
-    Advert { advert: Advert, nonce: u64 },
-    Gone { ticket: String, nonce: u64 },
+    Advert {
+        advert: Advert,
+        nonce: u64,
+    },
+    Gone {
+        ticket: String,
+        nonce: u64,
+    },
+    /// Where this peer's mod catalogue is. A separate endpoint and topic, so a
+    /// node that does not run one simply never sends this.
+    Registry {
+        ticket: String,
+        nonce: u64,
+    },
 }
 
 impl Wire {
@@ -437,6 +461,7 @@ async fn run(
     advert_ttl: Duration,
 ) {
     let mut own: Option<Advert> = None;
+    let mut own_registry: Option<String> = None;
     let mut last_broadcast: Option<Instant> = None;
     let mut hosts: HashMap<String, (Advert, Instant)> = HashMap::new();
     let mut neighbours: HashSet<EndpointId> = HashSet::new();
@@ -462,6 +487,12 @@ async fn run(
                 Some(Command::Withdraw) => {
                     if let Some(advert) = own.take() {
                         let _ = broadcast_gone(&sender, &advert.ticket).await;
+                    }
+                }
+                Some(Command::Registry(ticket)) => {
+                    if let Some(ticket) = clean_ticket(&ticket) {
+                        let _ = broadcast_registry(&sender, &ticket).await;
+                        own_registry = Some(ticket);
                     }
                 }
                 // A peer heard on the LAN. Gossip dials it by id, and the
@@ -509,6 +540,11 @@ async fn run(
                             let _ = events.send(SwarmEvent::Hosts(list(&hosts))).await;
                         }
                         Some(Wire::Gone { .. }) => {}
+                        Some(Wire::Registry { ticket, .. }) => {
+                            if let Some(ticket) = clean_ticket(&ticket) {
+                                let _ = events.send(SwarmEvent::Registry(ticket)).await;
+                            }
+                        }
                         None => {}
                     }
                 }
@@ -523,6 +559,9 @@ async fn run(
                     if let Some(advert) = &own {
                         let _ = broadcast_advert(&sender, advert).await;
                         last_broadcast = Some(Instant::now());
+                    }
+                    if let Some(ticket) = &own_registry {
+                        let _ = broadcast_registry(&sender, ticket).await;
                     }
                 }
                 Some(Ok(GossipEvent::NeighborDown(id))) => {
@@ -544,10 +583,13 @@ async fn run(
                 if hosts.len() != before {
                     let _ = events.send(SwarmEvent::Hosts(list(&hosts))).await;
                 }
-                if let Some(advert) = &own
-                    && last_broadcast.is_none_or(|when| now.duration_since(when) >= advert_every)
-                {
-                    let _ = broadcast_advert(&sender, advert).await;
+                if last_broadcast.is_none_or(|when| now.duration_since(when) >= advert_every) {
+                    if let Some(advert) = &own {
+                        let _ = broadcast_advert(&sender, advert).await;
+                    }
+                    if let Some(ticket) = &own_registry {
+                        let _ = broadcast_registry(&sender, ticket).await;
+                    }
                     last_broadcast = Some(now);
                 }
             }
@@ -675,6 +717,27 @@ async fn broadcast_advert(sender: &GossipSender, advert: &Advert) -> Result<(), 
         return Err(());
     };
     sender.broadcast(bytes).await.map_err(|_| ())
+}
+
+async fn broadcast_registry(sender: &GossipSender, ticket: &str) -> Result<(), ()> {
+    let wire = Wire::Registry {
+        ticket: ticket.to_string(),
+        nonce: nonce(),
+    };
+    let Some(bytes) = wire.encode() else {
+        return Err(());
+    };
+    sender.broadcast(bytes).await.map_err(|_| ())
+}
+
+/// Trim and bound a registry ticket. A ticket is a claim like an advert, and a
+/// control character in one would be shown in a console line.
+fn clean_ticket(ticket: &str) -> Option<String> {
+    let ticket = ticket.trim();
+    (!ticket.is_empty()
+        && ticket.len() <= MAX_TICKET_BYTES
+        && !ticket.chars().any(char::is_control))
+    .then(|| ticket.to_string())
 }
 
 async fn broadcast_gone(sender: &GossipSender, ticket: &str) -> Result<(), ()> {
@@ -850,6 +913,29 @@ mod tests {
 
         host.commands().withdraw();
         hosts(&mut watcher, |list| list.is_empty()).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_swarm_carries_a_registry_ticket() {
+        let topic = topic(13);
+        let host = Swarm::join(config(topic)).await.expect("host swarm");
+        let mut watcher = Swarm::join(SwarmConfig {
+            peers: vec![seed(&host)],
+            ..config(topic)
+        })
+        .await
+        .expect("watcher swarm");
+
+        // A ticket with a control character is not a ticket.
+        host.commands().registry("not\r\na ticket".to_string());
+        host.commands().registry("registry-ticket".to_string());
+        loop {
+            if let SwarmEvent::Registry(ticket) = next(&mut watcher).await
+                && ticket == "registry-ticket"
+            {
+                break;
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

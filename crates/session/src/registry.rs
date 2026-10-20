@@ -177,6 +177,9 @@ pub struct Registry {
     catalogue: Arc<Mutex<Catalogue>>,
     commands: mpsc::Sender<Command>,
     events: mpsc::Receiver<RegistryEvent>,
+    /// Kept so a ticket learned elsewhere can be added to the lookup before the
+    /// task dials it.
+    lookup: MemoryLookup,
     /// The tags that keep what this node shares alive against garbage
     /// collection. They live for as long as the handle does; a restart
     /// re-imports the same trees, which is why the records expire anyway.
@@ -210,7 +213,7 @@ impl Registry {
         for peer in &peers {
             lookup.add_endpoint_info(peer.clone());
         }
-        builder = builder.address_lookup(lookup);
+        builder = builder.address_lookup(lookup.clone());
         if let Some(secret) = secret {
             builder = builder.secret_key(secret);
         }
@@ -259,6 +262,7 @@ impl Registry {
             catalogue,
             commands,
             events,
+            lookup,
             tags: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -355,6 +359,17 @@ impl Registry {
         &self.ticket
     }
 
+    /// A cloneable handle for another task to seed this registry with tickets it
+    /// hears. The swarm's registry announcement is the caller: it lives in the
+    /// event task, while the registry handle lives here.
+    pub fn peers(&self) -> RegistryPeers {
+        RegistryPeers {
+            lookup: self.lookup.clone(),
+            commands: self.commands.clone(),
+            id: self.addr.id,
+        }
+    }
+
     pub fn topic(&self) -> TopicId {
         self.topic
     }
@@ -440,6 +455,30 @@ impl Registry {
         while self.events.recv().await.is_some() {}
         self.endpoint.close().await;
         let _ = self.store.shutdown().await;
+    }
+}
+
+/// A cloneable handle that only seeds the catalogue. It carries the endpoint
+/// lookup and the task's command queue, not the store or the events.
+#[derive(Clone)]
+pub struct RegistryPeers {
+    lookup: MemoryLookup,
+    commands: mpsc::Sender<Command>,
+    id: EndpointId,
+}
+
+impl RegistryPeers {
+    /// Seed the registry with a peer ticket learned elsewhere. The ticket is an
+    /// introduction; whether the peer is in the catalogue's topic is gossip's
+    /// answer, not this function's.
+    pub fn join(&self, ticket: &str) -> Result<(), String> {
+        let addr = crate::swarm::parse_peer(ticket)?;
+        if addr.id == self.id {
+            return Ok(());
+        }
+        self.lookup.add_endpoint_info(addr.clone());
+        let _ = self.commands.try_send(Command::Peers(vec![addr.id]));
+        Ok(())
     }
 }
 
@@ -596,6 +635,7 @@ enum Command {
     Publish(ModRecord),
     Have(Vec<[u8; 32]>),
     Withdraw([u8; 32]),
+    Peers(Vec<EndpointId>),
     Leave,
 }
 
@@ -692,6 +732,9 @@ async fn run(task: Task) {
                     own.remove(&root);
                     haves.remove(&root);
                     let _ = broadcast_gone(&sender, root).await;
+                }
+                Some(Command::Peers(peers)) => {
+                    let _ = sender.join_peers(peers).await;
                 }
                 Some(Command::Leave) => break,
             },

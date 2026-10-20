@@ -128,8 +128,8 @@ Flags:
 `--swarm-key` (or `$GOATS_SWARM_KEY`) matters for a seed: clients dial it by id,
 and a random key would make that id change every restart. `--registry-key`
 (`$GOATS_REGISTRY_KEY`) is the same argument for the catalogue, which has its own
-endpoint for now -- so a client seeds it with `$GOATS_REGISTRY_PEERS` and the
-registry ticket, not the swarm ticket.
+endpoint for now. A client in the same swarm learns the registry ticket from the
+swarm itself; `$GOATS_REGISTRY_PEERS` is what seeds one with no swarm to hear.
 
 ## The first peer
 
@@ -276,13 +276,14 @@ carry a mod catalogue. The mechanism is the one already built: postcard
 `Wire::{Record, Have, Gone}` with the same nonce, restated every `RECORD_EVERY`
 and forgotten after `RECORD_TTL` without a restatement.
 
-The registry has its own endpoint for now, so it is seeded with endpoint tickets
-in `$GOATS_REGISTRY_PEERS` rather than the swarm's peer ids; `$GOATS_REGISTRY_KEY`
-gives it a stable identity and `$GOATS_REGISTRY_TOPIC` selects another catalogue.
+The registry has its own endpoint, so its introduction is a ticket rather than
+an endpoint id. The swarm carries it: a node that runs a catalogue restates its
+registry ticket beside its advert, and a peer that hears one hands it to the
+catalogue's peer set. `$GOATS_REGISTRY_PEERS` is the standing form for a node
+with no swarm at all (a test, or `--nojoin`), and `$GOATS_REGISTRY_KEY` gives the
+catalogue a stable identity.
 A client starts one at startup when it has a mods directory and prints its
 ticket, and `GOATS_MODS_REGISTRY=0` turns it off for a run, like `swarm leave`.
-Once the endpoint is shared with the swarm, registry tickets can ride the host
-topic and the LAN beacon instead of being copied by hand.
 
 ### Fetching is a hook, not a protocol
 
@@ -361,14 +362,13 @@ Three separate switches, because they are three different promises.
 ### What remains
 
 The client now starts a registry at startup (unless `GOATS_MODS_REGISTRY=0`),
-announces its world mods when `GOATS_MODS_SHARE` is on, and hands the handle to
-`recover_with`, so a refused join falls back to the catalogue for what the host
-could not serve. What is left: registry tickets are still copied by hand into
-`GOATS_REGISTRY_PEERS` instead of riding the swarm; the console verbs (`mods
-share`, `mods mirror <root>`, `mods fetch <id>`) are not there; and a mirror's
-byte budget and eviction are the caller's policy. The endpoint is the registry's
-own; sharing the swarm's would mean one router accepting both gossip and blobs
-ALPNs, which is a refactor of `Swarm::join`.
+announces its world mods when `GOATS_MODS_SHARE` is on, learns peers' registry
+tickets from the swarm, and hands the handle to `recover_with`, so a refused join
+falls back to the catalogue for what the host could not serve. What is left: the
+console verbs (`mods share`, `mods mirror <root>`, `mods fetch <id>`) and a
+mirror's byte budget and eviction, which is the caller's policy. The endpoint is
+the registry's own; sharing the swarm's would remove a second socket and make a
+portal's ticket the only one a client needs.
 
 ### The tests
 

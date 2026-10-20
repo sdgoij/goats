@@ -101,6 +101,15 @@ impl RegistryOpts {
     }
 }
 
+/// What the swarm task needs from the registry: the ticket to publish and the
+/// handle it seeds from the tickets it hears. Cloned into the event task, which
+/// is why it is the small handle and not the registry itself.
+#[derive(Clone)]
+struct RegistryBridge {
+    peers: session::registry::RegistryPeers,
+    ticket: String,
+}
+
 /// The frame loop's handle on the networking thread.
 pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
@@ -361,18 +370,6 @@ async fn run(
     // topic switch so a stale list cannot overtake the new swarm's.
     let mut swarm: Option<SwarmCommands> = None;
     let mut swarm_task: Option<tokio::task::JoinHandle<()>> = None;
-    if auto_swarm {
-        // Zero-config: join the default topic before the first command, so the
-        // LAN beacon and any seed in the environment are already running when a
-        // player starts `host` or looks for a session.
-        match join_swarm(None, Vec::new(), &events).await {
-            Ok((commands, task)) => {
-                swarm = Some(commands);
-                swarm_task = Some(task);
-            }
-            Err(text) => emit(&events, Event::Notice { text }),
-        }
-    }
     // What this client presents at its next join. A pull can change it, and the
     // change has to outlive the join that caused it: the host command uses the
     // same set (M18d).
@@ -410,6 +407,24 @@ async fn run(
         },
         None => None,
     };
+    // The registry is up before the swarm, because the swarm is how a peer learns
+    // this ticket and how this node learns everybody else's.
+    let registry_bridge = registry.as_ref().map(|registry| RegistryBridge {
+        peers: registry.peers(),
+        ticket: registry.ticket().to_string(),
+    });
+    if auto_swarm {
+        // Zero-config: join the default topic before the first command, so the
+        // LAN beacon and any seed in the environment are already running when a
+        // player starts `host` or looks for a session.
+        match join_swarm(None, Vec::new(), registry_bridge.as_ref(), &events).await {
+            Ok((commands, task)) => {
+                swarm = Some(commands);
+                swarm_task = Some(task);
+            }
+            Err(text) => emit(&events, Event::Notice { text }),
+        }
+    }
     // The last thing said about each high-rate datagram. The host sends them ten
     // times a second, so a report belongs on the change, not on every send.
     let mut last_world = session::WorldOutcome::Whole;
@@ -598,7 +613,7 @@ async fn run(
                 // offline, and a host can publish while playing.
                 Command::SwarmJoin { topic, peers } => {
                     stop_swarm(&mut swarm, &mut swarm_task);
-                    match join_swarm(topic, peers, &events).await {
+                    match join_swarm(topic, peers, registry_bridge.as_ref(), &events).await {
                         Ok((commands, task)) => {
                             if let Some(Live::Host(host)) = &live {
                                 advertise_host(host, Some(&commands)).await;
@@ -701,10 +716,12 @@ async fn advertise_host(host: &session::Host, swarm: Option<&SwarmCommands>) {
 
 /// Joins a swarm and starts the task that turns its events into scene lines.
 /// `topic` absent means the default; `peers` are the seed nodes, from the console
-/// or a ticket.
+/// or a ticket. `registry` is the catalogue this node runs, if any: its ticket is
+/// published with the advert, and peers' tickets are handed to its peer set.
 async fn join_swarm(
     topic: Option<String>,
     peers: Vec<String>,
+    registry: Option<&RegistryBridge>,
     events: &mpsc::UnboundedSender<String>,
 ) -> Result<(SwarmCommands, tokio::task::JoinHandle<()>), String> {
     let topic = match topic
@@ -731,6 +748,9 @@ async fn join_swarm(
         .await
         .map_err(|error| format!("swarm: {error}"))?;
     let commands = joined.commands();
+    if let Some(registry) = registry {
+        commands.registry(registry.ticket.clone());
+    }
     let announced = Event::Swarm {
         joined: true,
         topic: joined.topic().to_string(),
@@ -740,6 +760,7 @@ async fn join_swarm(
     };
     let task = {
         let events = events.clone();
+        let registry = registry.cloned();
         tokio::spawn(async move {
             while let Some(event) = joined.next_event().await {
                 match event {
@@ -753,6 +774,14 @@ async fn join_swarm(
                             text: format!("swarm: {text}"),
                         },
                     ),
+                    // A peer's catalogue is a separate endpoint; this is the
+                    // introduction, and a bad or unreachable ticket is gossip's
+                    // problem rather than a line for the console.
+                    SwarmEvent::Registry(ticket) => {
+                        if let Some(registry) = &registry {
+                            let _ = registry.peers.join(&ticket);
+                        }
+                    }
                 }
             }
         })

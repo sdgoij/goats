@@ -1040,6 +1040,9 @@ async fn join_swarm(
                     })
                     .to_string(),
                     SwarmEvent::Failed(text) => notice(format!("swarm: {text}")),
+                    // This port has no registry yet; the ticket belongs to a
+                    // client that runs one.
+                    SwarmEvent::Registry(_) => continue,
                 };
                 push(&queue, line);
             }
