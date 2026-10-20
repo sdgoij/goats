@@ -747,11 +747,13 @@ func _mod(parts: PackedStringArray) -> String:
 		if parts.size() < 3:
 			return "error mod reload expects an id"
 		return mods.reload_mod(parts[2])
-	# The registry verbs (M18f), `mod registry|share|fetch|mirror`.
+	# The registry verbs (M18f), `mod registry|share|fetch|mirror`. The reply prefix is the
+	# reference's (`net.js`'s `netMods*`); the bridge returns `ok` for a queued intent, and
+	# only an immediate failure is worth propagating.
 	if verb == "registry":
-		return String(_call("mods_registry"))
+		return _queued("mods_registry", "ok mod registry")
 	if verb == "share":
-		return String(_call("mods_share"))
+		return _queued("mods_share", "ok mod share")
 	if verb == "fetch" or verb == "mirror":
 		if parts.size() < 3:
 			return "error mod " + verb + " expects an id[@version]"
@@ -762,9 +764,14 @@ func _mod(parts: PackedStringArray) -> String:
 		if id == "" or (at >= 0 and version == ""):
 			return "error mod " + verb + " expects an id[@version]"
 		if verb == "fetch":
-			return String(_call("mods_fetch", [id, version]))
-		return String(_call("mods_mirror", [id, version]))
+			return _queued("mods_fetch", "ok mod fetch " + id, [id, version])
+		return _queued("mods_mirror", "ok mod mirror " + id, [id, version])
 	return "error mod expects list|info|key|enable|disable|reload|registry|share|fetch|mirror"
+
+## Queue one registry intent, returning the bridge's error or the reference's `ok ...` line.
+func _queued(method: String, ok: String, args: Array = []) -> String:
+	var reply := String(_call(method, args))
+	return reply if reply.begins_with("error") else ok
 
 ## A compiled mod's own report, or `null`. The host answers the string `"null"` for a mod with no
 ## module rather than an empty reply, so the two answers parse the same way and there is one path.
