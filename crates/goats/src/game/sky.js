@@ -523,16 +523,22 @@ function drawSky(cx, cy, cz, tx, ty, tz, sw, sh, dt, layer) {
     // up = cross(right, forward), with right.y = 0
     SKY_UP[0] = -rz * fy; SKY_UP[1] = rz * fx - rx * fz; SKY_UP[2] = rx * fy;
 
-    rl.beginShaderMode(skyShader);
-    setSkyUniforms(sw, sh, layer);
     // The cloud layer is a *compositing* pass: it returns premultiplied light and
     // the transmittance it leaves behind it, so the blend has to be ONE /
     // ONE-MINUS-SRC-ALPHA. The default alpha blend would not attenuate the bodies
     // under it -- it would draw a second helping of sky over them.
+    //
+    // Set the mode *before* the shader and its samplers: raylib flushes the
+    // render batch when the blend mode changes, and that flush clears the batch's
+    // active-texture registrations. Doing it after `setSkyUniforms` leaves the
+    // cumulus samplers pointing at units the flush did not bind -- which reads as
+    // no clouds at all once the water mirror has clobbered the units.
     if (layer === SKY_LAYER_CLOUD) rl.beginBlendMode(rl.BLEND_ALPHA_PREMULTIPLY);
+    rl.beginShaderMode(skyShader);
+    setSkyUniforms(sw, sh, layer);
     rl.drawRectangle(0, 0, sw, sh, rl.WHITE);
-    if (layer === SKY_LAYER_CLOUD) rl.endBlendMode();
     rl.endShaderMode();
+    if (layer === SKY_LAYER_CLOUD) rl.endBlendMode();
 }
 
 // The sky shader's uniforms for one view: the basis above, the screen, and which
