@@ -579,6 +579,14 @@ function waterMirrorEnsure() {
         return false;
     }
     waterMirrorColor = rl.renderTextureColor(waterMirrorRT);
+    // A render texture comes back point-sampled, like `makeTexture`; the mirror is read at
+    // half resolution across the whole screen, so point sampling turns the reflection into
+    // horizontal bands at a grazing angle. The bake asks for the same filter for the same
+    // reason: the sampled image is what gets smoothed, not the surface's own normal.
+    if (typeof rl.setTextureFilter === "function" &&
+        typeof rl.TEXTURE_FILTER_BILINEAR === "number") {
+        rl.setTextureFilter(waterMirrorColor, rl.TEXTURE_FILTER_BILINEAR);
+    }
     waterMirrorW = w;
     waterMirrorH = h;
     waterBoundTex = -2;                 // the texture under map 2 is a new one
