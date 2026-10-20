@@ -354,6 +354,45 @@ function updateBotFlight(b, dt) {
     }
 }
 
+// One frame of a bot's free fall: no input, the crate's gravity and contact. A release
+// is a choice, so a hard one hurts -- and can kill, like the corpse rule's own bang.
+function updateBotFall(b, dt) {
+    botFlightState(b, 2);
+    BOT_FLIGHT_INPUT[0] = 0;
+    BOT_FLIGHT_INPUT[1] = 0;
+    BOT_FLIGHT_INPUT[2] = 0;
+    BOT_FLIGHT_INPUT[3] = 0;
+    BOT_FLIGHT_INPUT[4] = Infinity;
+    const out = FLIGHT.step(BOT_FLIGHT_STATE, BOT_FLIGHT_INPUT, dt, terrainHeight);
+    if (!Array.isArray(out)) return;
+    botFlightApply(b, out);
+    const fallInfo = clipAt("fall", 0);
+    if (CLIP.fall && fallInfo !== null && fallInfo !== undefined && fallInfo.duration > 0) {
+        b.phase = Math.min(b.flightTime / fallInfo.duration, 1);
+    }
+    if (!out[17]) return;
+    // Landed. The bird is already gone (`release` took it), so this is the ground
+    // cooldown and, at a hard enough impact, a corpse.
+    b.health = Math.max(0, b.health - FLIGHT.fallDamage(out[18]));
+    botFlightReset(b);
+    b.py = 0;
+    b.flightCooldown = TUNING.flight.botCooldown;
+    if (b.health <= 0) {
+        botDie(b);
+        return;
+    }
+    b.mode = "idle";
+    b.timer = 1.5 + botRnd() * 3;
+}
+
+// `goats.bots.get(i).release()`: end a flight into its fall, and take the bird with it.
+function releaseBotFlight(b) {
+    if (b.mode !== "fly") return false;
+    b.mode = "fall";
+    b.flightCapable = false;
+    return true;
+}
+
 // The flying pose: the crate's axis-angle and its back point with `perch = 0`, which
 // is the corrected origin the body rotates about -- the player's `flightDraw`.
 function botFlightDraw(b, tint) {
@@ -602,6 +641,9 @@ function updateBots(dt) {
             // Powered flight (R3): the autopilot's ring around the player, stepped by
             // the same crate the player's flight is.
             updateBotFlight(b, dt);
+        } else if (b.mode === "fall") {
+            // A released flight (the API's `release`, since the AI never chooses one).
+            updateBotFall(b, dt);
         } else if (b.mode === "jump") {
             // Airborne: the jump clip's root motion does the hop, so this only
             // carries the bot forward along its heading.

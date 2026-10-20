@@ -555,13 +555,17 @@ invariants (cooldowns, collision, mode legality).
 
 ```js
 const s = goats.player.state();
-// { mode, health, energy, exhausted, satiety, x, y, z, yaw, phase, speed, clip }
-goats.player.teleport(x, z);
-goats.player.face(yaw);
-goats.player.giveEnergy(20);
-goats.player.giveHealth(10);
-goats.player.setMode("trot");     // rejected for "dead"/"jump"; see docs
-goats.player.restart();           // only meaningful in "dead"
+// { mode, health, energy, exhausted, satiety, x, y, z, yaw, phase, speed, clip,
+//   flight, flying, pitch, roll, flaps }
+goat.player.teleport(x, z);
+goat.player.face(yaw);
+goat.player.giveEnergy(20);
+goat.player.giveHealth(10);
+goat.player.setMode("trot");     // rejected for "dead"/"jump"; see docs
+goat.player.restart();           // only meaningful in "dead"
+goat.player.setFlight(true);     // grant the captured bird's capability
+goat.player.fly();               // scripted take-off; false without the grant
+goat.player.release();           // the E action; false when not flying
 ```
 
 `setMode` accepts `idle`, `walk`, `trot`, `run`, `sleep`, `eat`. Entering
@@ -571,6 +575,16 @@ took, and a refusal leaves the goat exactly as it was -- `setMode("sleep")` is
 `false` where the goat is standing in the water (`goats.water.depthAt` at its own
 position, the line the HUD's water read-out is drawn from), which is the same
 refusal the `Z` key and the `sleep` console verb get.
+
+**Captured-bird flight.** A bird mod grants the capability with `setFlight(true)`;
+the next **running** jump then enters `fly`, and `W`/`S` pitch, `A`/`D` bank,
+`Space` flaps and `E` releases. `fly()` is the scripted form of run + jump and
+`release()` the scripted `E`; both answer whether they took, and neither can skip
+the capability check. `setFlight(false)` while flying is a release. The state adds
+`flight` (the grant), `flying` (`mode === "fly"`), `pitch` and `roll` (radians,
++ nose up and + right side down, zero on the ground) and `flaps` (since take-off).
+A blast, a death, a restart and a session's unload all clear the grant; `setMode`
+still refuses `fly` and `fall`, so the crate is the only way in or out.
 
 ### 4.6 Camera
 
@@ -600,21 +614,25 @@ do nothing authoritative.
 ### 4.8 Bots
 
 ```js
-goats.bots.count();               // current herd size
-goats.bots.setCount(n);           // 0..10, same path as the setting
-goats.bots.list();                // [{ id, x, z, yaw, mode, satiety }]
+goat.bots.count();               // current herd size
+goat.bots.setCount(n);           // 0..10, same path as the setting
+goat.bots.list();                // [{ id, x, z, yaw, mode, satiety,
+                                 //    y, pitch, roll, flight, flying, flaps }]
 const b = goats.bots.get(0);      // a handle or null
 b.zoomies(3);                     // seconds of sprint
 b.startle();
 b.teleport(x, z);
 b.face(yaw);
+b.setFlight(true);                // the captured bird's grant (ignored on a client)
+b.fly();                          // scripted take-off
+b.release();                      // end a flight into a fall
 ```
 
 On a client in a session, bot state is server-owned (`netWorldLocal()` is
 false); writes are ignored with a note, reads mirror the last snapshot.
 
 `list()` and `get()` hand back objects the **scene owns**: the array, and one handle
-per bot, are reused from call to call, and a handle's five numbers are refreshed on
+per bot, are reused from call to call, and a handle's numbers are refreshed on
 every read. Read what you need before the next call, or copy it -- a handle kept across
 frames reports the bot's current state rather than the state it had when it was read,
 and the array follows the herd's size. (The four verbs always acted on the live bot;

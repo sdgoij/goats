@@ -36,8 +36,14 @@ const GOAT_SCENE := preload("res://assets/goat_animated.glb")
 const SMOOTH := 12.0
 
 ## The gaits `netPeerShot` calls one-shots. A gait on this list is posed at the fraction the
-## snapshot carried and nothing else; everything off it loops and is wrapped.
-const SHOTS := ["jump", "dead", "eat", "flung"]
+## snapshot carried and nothing else; everything off it loops and is wrapped. `fall` is one:
+## a released goat's pose is its progress down, and `fly` is a loop (`FLIGHT.md` §6.2).
+const SHOTS := ["jump", "dead", "eat", "flung", "fall"]
+
+## The flight controller (`crates/flight`), handed in by `main.gd` for a mirrored flyer's
+## pose -- the same instance the player's and the herd's use. Null in a gate that made none,
+## and a flyer is then drawn level, which is the guard `Herd` has for the same reason.
+var flight: Flight = null
 
 var _goats := {}
 ## The client's `groundOffset` (`model.js` `loadGoat`), measured once off the first goat so a
@@ -63,6 +69,10 @@ static func role(gait: String, has_clip: Callable) -> String:
 		return "eat"
 	if gait == "flung":
 		return "flung" if bool(has_clip.call("flung")) else "jump"
+	if gait == "fly":
+		return "fly" if bool(has_clip.call("fly")) else "jump"
+	if gait == "fall":
+		return "fall" if bool(has_clip.call("fall")) else "jump"
 	if gait == "jump" and bool(has_clip.call("jump")):
 		return "jump"
 	if gait == "run" and bool(has_clip.call("run")):
@@ -116,6 +126,10 @@ func apply(peer_name: String, state: Variant) -> bool:
 	var yaw: float = float(wire.get("yaw", 0.0))
 	var phase: float = float(wire.get("phase", 0.0))
 	var gait: String = String(wire.get("gait", "idle"))
+	# The flight attitude (protocol 12), in degrees on the wire and radians here -- eased like
+	# the yaw, because an angle is a look and not a trajectory.
+	var tpitch: float = deg_to_rad(float(wire.get("pitch", 0.0)))
+	var troll: float = deg_to_rad(float(wire.get("roll", 0.0)))
 	# `netPeerHeight`: absent, or a goat that has never been airborne, is zero.
 	var lift: float = maxf(float(wire.get("py", 0.0)), 0.0)
 	var once: bool = shot(gait)
@@ -133,6 +147,10 @@ func apply(peer_name: String, state: Variant) -> bool:
 		fresh["py"] = lift
 		fresh["gait"] = gait
 		fresh["shot"] = once
+		fresh["pitch"] = tpitch
+		fresh["roll"] = troll
+		fresh["tpitch"] = tpitch
+		fresh["troll"] = troll
 		_place(fresh)
 		return true
 
@@ -149,6 +167,8 @@ func apply(peer_name: String, state: Variant) -> bool:
 	goat["tphase"] = phase
 	goat["py"] = lift
 	goat["gait"] = gait
+	goat["tpitch"] = tpitch
+	goat["troll"] = troll
 	return true
 
 ## A peer left the session (`net.js` `netPeerRemove`). Leaving is the only thing that removes
@@ -170,6 +190,8 @@ func _process(delta: float) -> void:
 		goat["yaw"] = step_yaw(float(goat["yaw"]), float(goat["tyaw"]), k)
 		goat["phase"] = step_phase(float(goat["phase"]), float(goat["tphase"]),
 			bool(goat["shot"]), k)
+		goat["pitch"] = step_axis(float(goat["pitch"]), float(goat["tpitch"]), k)
+		goat["roll"] = step_axis(float(goat["roll"]), float(goat["troll"]), k)
 		_place(goat)
 
 ## How many peers are being mirrored.
@@ -215,6 +237,10 @@ func report_of(peer_name: String) -> Dictionary:
 		"phase": float(goat["phase"]),
 		"target_phase": float(goat["tphase"]),
 		"py": float(goat["py"]),
+		"pitch": float(goat["pitch"]),
+		"roll": float(goat["roll"]),
+		"target_pitch": float(goat["tpitch"]),
+		"target_roll": float(goat["troll"]),
 		"gait": String(goat["gait"]),
 		"shot": bool(goat["shot"]),
 		"clip": String(goat["clip"]),
@@ -251,6 +277,10 @@ func _goat_for(peer_name: String) -> Dictionary:
 		"tyaw": 0.0,
 		"tphase": 0.0,
 		"py": 0.0,
+		"pitch": 0.0,
+		"roll": 0.0,
+		"tpitch": 0.0,
+		"troll": 0.0,
 		"gait": "idle",
 		"shot": false,
 	}
@@ -258,14 +288,31 @@ func _goat_for(peer_name: String) -> Dictionary:
 	return goat
 
 ## Put the goat where its eased numbers say, and pose it. The client's own placement
-## (`net.js` `drawPeers`): `terrainHeight(x, z) + groundOffset + py`.
+## (`net.js` `drawPeers`): `terrainHeight(x, z) + groundOffset + py`. A flyer is drawn the way
+## its owner drew it: the body rotates about `explosions.fling.pivot`, so the node goes at the
+## crate's corrected origin and the basis is its quaternion (`net.js` `peerFlightDraw`).
 func _place(goat: Dictionary) -> void:
 	var node: Node3D = goat["node"]
 	var x: float = goat["x"]
 	var z: float = goat["z"]
-	node.position = Vector3(x, Terrain.height_at(x, z) + _ground_offset + float(goat["py"]), z)
-	node.rotation.y = goat["yaw"]
-	_pose(goat, String(goat["gait"]), float(goat["phase"]))
+	var gait: String = String(goat["gait"])
+	var ground: float = Terrain.height_at(x, z)
+	var model_scale: float = node.scale.x
+	if (gait == "fly" or gait == "fall") and flight != null:
+		# `py` is the height above the ground it is drawn at, the same number the owner's
+		# state carries (`FLIGHT.md` §6.2). The ground offset is the model's own lowest point
+		# and cancels out of the crate's feet, so it is added back on the way out.
+		var state := PackedFloat32Array([
+			x, z, ground + float(goat["py"]),
+			float(goat["yaw"]), float(goat["pitch"]), float(goat["roll"]),
+			0.0, 0.0, 0.0, 0.0, 0.0, 2.0 if gait == "fall" else 1.0])
+		var origin: Vector3 = flight.back_point(state, 0.0, PlayerGoat.FLIGHT_PIVOT * model_scale)
+		node.position = origin + Vector3(0.0, _ground_offset * model_scale, 0.0)
+		node.quaternion = flight.pose(state)
+	else:
+		node.position = Vector3(x, ground + _ground_offset + float(goat["py"]), z)
+		node.rotation = Vector3(0.0, float(goat["yaw"]), 0.0)
+	_pose(goat, gait, float(goat["phase"]))
 
 ## Play the clip for a gait and pose it at the snapshot's phase -- the port's `clipAt(role, 0)`
 ## plus `poseModelOn`. A peer's variant is always the first: the wire carries the owner's phase
@@ -274,6 +321,12 @@ func _pose(goat: Dictionary, gait: String, phase: float) -> void:
 	var anim: AnimationPlayer = goat["anim"]
 	var which: String = role(gait, _has_clip.bind(anim))
 	var clip: String = _clip_name(which)
+	var at: float = phase
+	if (gait == "fly" or gait == "fall") and which == "jump":
+		# The jump stands in for a flight the model has no clip for, held at a leap's
+		# fraction -- the same placeholder the player's own pose uses (`FLIGHT.md` §3).
+		# Without this the fly phase would loop the jump's last half a dozen times a second.
+		at = 0.35
 	if clip != goat["clip"]:
 		goat["clip"] = clip
 		if anim != null and anim.has_animation(clip):
@@ -283,7 +336,7 @@ func _pose(goat: Dictionary, gait: String, phase: float) -> void:
 		# pose a one-shot gait -- a jump, the death, the fling -- and `Pose` is where it lands
 		# (`model.js` `poseModelOn`): the last frame at 1.0 and never a wrap to the first, so a
 		# remote goat on its death gait keeps the pose it fell in.
-		Pose.on(anim, clip, phase)
+		Pose.on(anim, clip, at)
 
 ## Whether the model has a clip for a role. `role`'s own predicate, which is what makes the
 ## fallback chain testable with a model that is missing one.

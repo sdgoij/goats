@@ -25,6 +25,7 @@ use std::thread;
 use godot::prelude::*;
 use serde::Deserialize;
 use serde_json::json;
+use session::bridge::degrees;
 use session::swarm::{self, Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use session::{BlastKind, Client, Event as Net, Gait, Host, ModRef, PeerState, WorldState};
 use tokio::sync::mpsc;
@@ -417,7 +418,8 @@ impl NetBridge {
 
     /// Publish this player's goat: `x`, `z` and `yaw` in metres and turns,
     /// `phase` through the clip, `speed` in metres per second, `gait` by name,
-    /// and `py` the flung arc's height above the ground.
+    /// `py` the flung arc's height above the ground, and `pitch`/`roll` the
+    /// flyer's attitude in degrees (protocol 12).
     ///
     /// Datagrams are unreliable by design, so this is called about twenty times
     /// a second and a lost one does not matter -- the next replaces it. It is
@@ -433,6 +435,8 @@ impl NetBridge {
         speed: f64,
         gait: GString,
         py: f64,
+        pitch: f64,
+        roll: f64,
     ) -> GString {
         self.queue_command(Command::Pose(PeerState {
             x: x as f32,
@@ -442,6 +446,8 @@ impl NetBridge {
             speed: speed as f32,
             gait: parse_gait(&gait.to_string()),
             py: py as f32,
+            pitch: degrees(pitch as f32),
+            roll: degrees(roll as f32),
         }))
     }
 
@@ -1375,6 +1381,8 @@ fn parse_gait(name: &str) -> Gait {
         "sleep" => Gait::Sleep,
         "eat" => Gait::Eat,
         "dead" => Gait::Dead,
+        "fly" => Gait::Fly,
+        "fall" => Gait::Fall,
         _ => Gait::Idle,
     }
 }

@@ -52,6 +52,13 @@ pub enum Command {
         /// makes that a promise rather than a hope.
         #[serde(default)]
         py: f32,
+        /// The flyer's attitude in **degrees** (protocol 12): nose-up is positive pitch,
+        /// right-bank positive roll. Defaulted for the same reason `py` is; zero is a
+        /// grounded goat, which is what every other gait means.
+        #[serde(default)]
+        pitch: f32,
+        #[serde(default)]
+        roll: f32,
     },
     /// The server's world, queued by the scene only while it is hosting. A
     /// client never sends this; the runtime ignores it outside a host session.
@@ -345,7 +352,21 @@ pub fn parse_gait(name: &str) -> crate::Gait {
         "sleep" => crate::Gait::Sleep,
         "eat" => crate::Gait::Eat,
         "dead" => crate::Gait::Dead,
+        "fly" => crate::Gait::Fly,
+        "fall" => crate::Gait::Fall,
         _ => crate::Gait::Idle,
+    }
+}
+
+/// A scene angle in degrees as the wire's one byte. The attitude is a *look*, not a
+/// trajectory -- the owner's position and yaw are the authoritative half -- so a
+/// degree is plenty, and a value outside `i8` is clamped rather than wrapped: a
+/// sideways goat is better than a flipped one.
+pub fn degrees(angle: f32) -> i8 {
+    if angle.is_finite() {
+        angle.round().clamp(-128.0, 127.0) as i8
+    } else {
+        0
     }
 }
 

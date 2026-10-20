@@ -109,6 +109,9 @@ const PROBE_JS := """
             mode: p.mode, health: p.health, energy: p.energy, exhausted: p.exhausted,
             satiety: p.satiety, x: p.x, y: p.y, z: p.z, yaw: p.yaw,
             phase: p.phase, speed: p.speed, clip: p.clip,
+            // Captured-bird flight (`APIv1.md` section 4.5): the capability, the mode, the
+            // attitude a rider reads, and the flap count.
+            flight: p.flight, flying: p.flying, pitch: p.pitch, roll: p.roll, flaps: p.flaps,
         };
         const c = goats.camera.get();
         out.camera = { yaw: c.yaw, pitch: c.pitch, dist: c.dist };
@@ -126,7 +129,9 @@ const PROBE_JS := """
         out.bots_len = list.length;
         if (list.length > 0) {
             out.bot0 = { id: list[0].id, x: list[0].x, z: list[0].z, yaw: list[0].yaw,
-                         mode: list[0].mode, satiety: list[0].satiety };
+                         mode: list[0].mode, satiety: list[0].satiety,
+                         y: list[0].y, pitch: list[0].pitch, roll: list[0].roll,
+                         flight: list[0].flight, flying: list[0].flying, flaps: list[0].flaps };
         }
         // The handles are the scene's own and are reused (APIv1.md section 4.8).
         out.bots_reused = goats.bots.list() === list && goats.bots.get(0) === list[0];
@@ -434,6 +439,47 @@ const PROBE_JS := """
     goats.command("modtuning", function () {
         return JSON.stringify(globalThis.__surfaceTuning);
     });
+
+    // Captured-bird flight (`APIv1.md` sections 4.5 and 4.8), a command of its own because it
+    // changes the goat's mode and position: the writes above hold the goat where they put it, and
+    // a take-off here would move it out from under them. The gate runs this *after* them.
+    goats.command("modflight", function (args) {
+        const verb = args.length > 1 ? String(args[1]) : "state";
+        const out = {};
+        const b = goats.bots.get(0);
+        if (verb === "arm") {
+            out.arm = goats.player.setFlight(true);
+        } else if (verb === "fly") {
+            out.fly = goats.player.fly();
+        } else if (verb === "release") {
+            out.release = goats.player.release();
+        } else if (verb === "bot-arm") {
+            out.arm = b === null ? null : b.setFlight(true);
+        } else if (verb === "bot-fly") {
+            out.fly = b === null ? null : b.fly();
+        } else if (verb === "bot-release") {
+            out.release = b === null ? null : b.release();
+        } else {
+            // The *pushed snapshot*, which is the only view the mod realm has: a write is held
+            // against the scene's own fields by the gate, and this is the read after a frame.
+            const p = goats.player.state();
+            out.mode = p.mode;
+            out.flying = p.flying;
+            out.flight = p.flight;
+            out.pitch = p.pitch;
+            out.roll = p.roll;
+            out.flaps = p.flaps;
+            if (b !== null) {
+                out.bot_mode = b.mode;
+                out.bot_flying = b.flying;
+                out.bot_flight = b.flight;
+                out.bot_pitch = b.pitch;
+                out.bot_roll = b.roll;
+                out.bot_flaps = b.flaps;
+            }
+        }
+        return JSON.stringify(out);
+    });
 })();
 """
 
@@ -571,6 +617,9 @@ func _check() -> void:
 		_failures.append("the write probe did not answer with a table: " + wrote_raw)
 	else:
 		_check_writes(wrote as Dictionary, _main)
+	# ...and the captured bird's grant (`APIv1.md` sections 4.5 and 4.8), after the writes for the
+	# same reason: a take-off moves the goat, and the writes' positions are held where they put it.
+	_check_flight(host, _main, mods)
 	# The `"tuning"` events the writes queued (`APIv1.md` section 4.2): the mods *say* them at the end
 	# of a frame (outside every hook, for `blast`'s reason), so one more run and the probe's listener
 	# can be read back.
@@ -1475,6 +1524,99 @@ func _check_writes(read: Dictionary, main: Node) -> void:
 	main.set("_joined", false)
 	print("writes: player/camera/settings/world/net/bots/tuning took, the two local-only ones " +
 		"answer false for a client, and the asset writes are refused outside an entry")
+
+## The captured bird's grant (`APIv1.md` sections 4.5 and 4.8), held against the goat and the herd
+## rather than against the probe's own answers. `setFlight` is a *capability* and not a mode,
+## `fly` is the scripted take-off, and `release` is the `E` that ends it; the scene's own fields
+## are the only evidence that a write reached the simulation. The birds mod's `mount` is the demo
+## path the same surface gives a mod (`FLIGHT.md` section 4.6), so it is held here too.
+func _check_flight(host: Object, main: Node, mods: Object) -> void:
+	var goat: Object = main.get("goat")
+	var bots: Object = main.get("bots")
+	# The grant is a capability and not a mode: the scene keeps the goat standing, and the
+	# capability is the *scene's* field -- the mod realm's `state()` is the last pushed snapshot
+	# and cannot show a write made in this frame.
+	var arm: Dictionary = _flight_step(host, "arm")
+	if arm.get("arm") != true or not bool(goat.get("flight_capable")):
+		_failures.append("player.setFlight(true) did not arm the goat: %s / capable %s"
+			% [arm, goat.get("flight_capable")])
+	_flight_frame(mods, main)
+	var armed: Dictionary = _flight_step(host, "state")
+	if armed.get("flight") != true or str(armed.get("mode")) != "trot":
+		_failures.append("an armed goat is not reported armed on the ground: %s" % [armed])
+
+	# `fly` is the scripted take-off: the mode is in the air, the bird stays aboard, and the
+	# crate starts the attitude at its own `takeoffPitch` with no flap yet.
+	var fly: Dictionary = _flight_step(host, "fly")
+	if fly.get("fly") != true or String(goat.get("mode")) != "fly":
+		_failures.append("player.fly did not take off: %s / mode %s" % [fly, goat.get("mode")])
+	if not bool(goat.get("flight_capable")):
+		_failures.append("a take-off cleared the captured bird")
+	_flight_frame(mods, main)
+	var up: Dictionary = _flight_step(host, "state")
+	if up.get("flying") != true or str(up.get("mode")) != "fly":
+		_failures.append("the goat's snapshot does not report the flight: %s" % [up])
+	if not _near(float(up.get("pitch", 9.0)), float(PlayerGoat.FLIGHT["takeoffPitch"])) \
+			or not _near(float(up.get("roll", 9.0)), 0.0):
+		_failures.append("a take-off did not start at the crate's pitch: %s" % [up])
+	if int(up.get("flaps", -1)) != 0:
+		_failures.append("a take-off counted %s flaps" % up.get("flaps"))
+
+	# The release is the `E` action: mode `fall`, the capability gone.
+	var rel: Dictionary = _flight_step(host, "release")
+	if rel.get("release") != true or String(goat.get("mode")) != "fall" \
+			or bool(goat.get("flight_capable")):
+		_failures.append("player.release did not end the flight: %s / mode %s capable %s"
+			% [rel, goat.get("mode"), goat.get("flight_capable")])
+
+	# The herd's half: `setFlight`/`fly`/`release` move a bot the same way.
+	var bot_arm: Dictionary = _flight_step(host, "bot-arm")
+	var row: Dictionary = {}
+	var rows: Array = bots.call("report")
+	if not rows.is_empty():
+		row = rows[0]
+	if bot_arm.get("arm") != true or row.get("flight") != true:
+		_failures.append("bot.setFlight(true) did not arm the bot: %s / %s" % [bot_arm, row])
+	var bot_fly: Dictionary = _flight_step(host, "bot-fly")
+	rows = bots.call("report")
+	row = rows[0] if not rows.is_empty() else {}
+	if bot_fly.get("fly") != true or str(row.get("mode")) != "fly" or row.get("flying") != true:
+		_failures.append("bot.fly did not take off: %s / %s" % [bot_fly, row])
+	var bot_rel: Dictionary = _flight_step(host, "bot-release")
+	rows = bots.call("report")
+	row = rows[0] if not rows.is_empty() else {}
+	if bot_rel.get("release") != true or str(row.get("mode")) != "fall" \
+			or row.get("flight") != false:
+		_failures.append("bot.release did not end the flight: %s / %s" % [bot_rel, row])
+
+	# ...and the mod's own demo path: `birds mount` seats a bird and grants the capability. The
+	# command answers `ok <json>` like every console verb, so the table is read after the prefix.
+	var mount: String = str(host.call("run_command", "birds", "birds mount"))
+	if mount != "ok bird mounted":
+		_failures.append("`birds mount` answered %s" % mount)
+	else:
+		var reply: String = str(host.call("run_command", "birds", "birds"))
+		var status: Variant = JSON.parse_string(
+			reply.substr(3) if reply.begins_with("ok ") else reply)
+		if not (status is Dictionary) or int((status as Dictionary).get("captured", 0)) < 1 \
+				or (status as Dictionary).get("flight") != true:
+			_failures.append("`birds mount` did not leave a captured bird: %s" % [status])
+	if not bool(goat.get("flight_capable")):
+		_failures.append("`birds mount` did not arm the goat")
+	print("flight: setFlight/fly/release on the goat and the herd, `birds mount` ",
+		"captured ", goat.get("flight_capable"))
+
+## One step of the flight probe, answered as a table.
+func _flight_step(host: Object, verb: String) -> Dictionary:
+	var raw: String = str(host.call("run_command", "modflight", "modflight " + verb))
+	var parsed: Variant = JSON.parse_string(raw)
+	return parsed if parsed is Dictionary else {}
+
+## Push a fresh snapshot to the mod realm, so its `state()` is this frame's. The scene's own
+## simulation is not stepped: the gate is holding the fields it just wrote.
+func _flight_frame(mods: Object, main: Node) -> void:
+	mods.call("frame", main.call("cmd_hours"), Vector2(1280.0, 720.0), true,
+		main.get_node("Camera3D"), main.call("_mod_snapshot"))
 
 ## The two code-side slot writes (`APIv1.md` section 4.11) are legal only while a mod's *own entry*
 ## runs -- this client's stand-in for "before the freeze" -- so the success path needs an entry, and

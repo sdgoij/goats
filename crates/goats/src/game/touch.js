@@ -80,6 +80,11 @@ function touchLayout() {
         // and the top-right for the health bars.
         stick: { x: Math.round(left + stickR), y: Math.round(h - bottom - stickR), r: Math.round(stickR) },
         jump: { x: Math.round(w - right - buttonR), y: Math.round(h - bottom - buttonR), r: Math.round(buttonR) },
+        // The bail-out, above the jump: in a flight the jump button is the *flap*, so `E`
+        // (release) is the one action a phone would otherwise have no control for. Its
+        // place is reserved even on the ground, so a thumb aiming at the flap cannot
+        // land on it by accident.
+        release: { x: Math.round(w - right - buttonR), y: Math.round(h - bottom - buttonR * 3.1), r: Math.round(buttonR * 0.72) },
         menu: { x: Math.round(left + menuR), y: Math.round(top + menuR), r: Math.round(menuR) },
         // A thumb lands *near* a control rather than on it, so the zone that claims
         // a touch is wider than what is drawn -- but only as wide as it can be
@@ -117,7 +122,7 @@ let touchPrevDown = 0;
 // until it lifts, whatever it does afterwards: a thumb that slides off the stick
 // is still steering, and letting go is the only way to stop.
 let touchStickId = -1;
-const TOUCH_BUTTONS = { jump: -1, menu: -1 };
+const TOUCH_BUTTONS = { jump: -1, menu: -1, release: -1 };
 const TOUCH_STICK = { x: 0, y: 0 };      // the stick's deflection, -1..1 each way
 let touchCamId = -1;
 let touchCamX = 0;
@@ -183,6 +188,9 @@ function touchDraw() {
         Math.round(layout.stick.r * 0.42), touchStickId >= 0 ? lit : ink);
 
     touchDrawButton(layout.jump, "jump", "JUMP", ink, fill, lit);
+    // Only while flying: the same button is the jump on the ground, and a second control
+    // for "come down" has no meaning until the goat is up.
+    if (mode === "fly") touchDrawButton(layout.release, "release", "DROP", ink, fill, lit);
     touchDrawButton(layout.menu, "menu", "MENU", ink, fill, lit);
 }
 
@@ -309,6 +317,11 @@ function touchHold(code, down) {
 // The buttons, each on its own finger's down edge.
 function touchButtons(layout) {
     if (touchPress(layout.jump, layout.buttonGrab, "jump")) sceneCommand("jump");
+    // `E` while flying: the release into the fall (`ctl.js`'s `release`). Gated on the mode
+    // so a finger that came down over the spot on the ground is not a bail-out later.
+    if (mode === "fly" && touchPress(layout.release, layout.buttonGrab, "release")) {
+        sceneCommand("release");
+    }
     if (touchPress(layout.menu, layout.buttonGrab, "menu")) sceneCommand("ui main");
 }
 

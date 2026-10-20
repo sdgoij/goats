@@ -253,8 +253,35 @@ func run(line: String) -> String:
 				return "error cannot jump while dead"
 			if goat.mode == "sleep":
 				return "error cannot jump while asleep"
+			if goat.mode == "fall":
+				return "error cannot jump while falling"
+			if goat.mode == "fly":
+				# The touch overlay's jump button is this verb; in the air it is the flap,
+				# consumed by the next flight frame (`goat.js` does the same).
+				goat.flight_flap_queued = true
+				return "ok flap"
 			goat.start_jump(int(_call("cmd_held_move")), String(_call("cmd_held_gait")))
 			return "ok jump"
+		"fly":
+			if not goat.fly():
+				return "error cannot fly (no captured bird)"
+			return "ok fly"
+		"release":
+			if not goat.release():
+				return "error not flying"
+			return "ok release"
+		"flight":
+			# The captured bird's capability (`APIv1.md` section 4.5): `on` arms the next
+			# running jump, `off` is a release in the air and a disarm on the ground.
+			if parts.size() < 2:
+				return "ok " + ("on" if goat.flight_capable else "off")
+			if parts[1] == "on":
+				goat.set_flight(true)
+				return "ok flight on"
+			if parts[1] == "off":
+				goat.set_flight(false)
+				return "ok flight off"
+			return "error flight expects on|off"
 		"sleep":
 			if goat.mode == "dead":
 				return "error cannot sleep while dead"

@@ -129,7 +129,11 @@ static var FLIGHT: Dictionary = {
 ## `TUNING.explosions.fling.pivot`: the height above the feet the body rotates about.
 ## The flight pose swings the model around this point, so a pitched goat's hooves move
 ## rather than its head; `_place` puts the node here and offsets the model below it.
-const FLIGHT_PIVOT := 0.7
+##
+## A `static var` rather than a `const` because the tree addresses it: the birds mod
+## reads the same leaf to seat a captured rider on the goat's drawn back, and a write
+## must move both. `Tuning._leaves` is the other half.
+static var FLIGHT_PIVOT: float = 0.7
 
 ## `TUNING.weather` / `TUNING.food.rainShelter`, for the two things the weather does
 ## to a goat that is ported: how fast it moves and how fast it tires. `windNorm` is the
@@ -197,6 +201,10 @@ var flight_capable := false
 var flight_pitch := 0.0
 var flight_roll := 0.0
 var flight_flaps := 0
+## A flap asked for by the console (`jump` while flying), consumed by the next flight
+## frame: the key is an edge in `main.gd`, and a verb has no key to leave held. The
+## reference's `flightFlapQueued`, and the reason its `jump` verb answers `ok flap`.
+var flight_flap_queued := false
 var _flight_speed := 0.0
 var _flight_vy := 0.0
 var _flight_time := 0.0
@@ -344,8 +352,9 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 	elif mode == "fly":
 		# W/S pitch, A/D bank, Space flaps, E releases -- the crate applies the
 		# mode-specific meaning of the same held axes the ground uses.
-		_step_flight(delta, move, turn, bool(controls.get("jump", false)),
-			bool(controls.get("eat", false)))
+		var flap: bool = bool(controls.get("jump", false)) or flight_flap_queued
+		flight_flap_queued = false
+		_step_flight(delta, move, turn, flap, bool(controls.get("eat", false)))
 	elif mode == "fall":
 		_step_fall(delta, move)
 	elif mode == "eat":
@@ -915,6 +924,7 @@ func _flight_reset() -> void:
 	flight_pitch = 0.0
 	flight_roll = 0.0
 	flight_flaps = 0
+	flight_flap_queued = false
 
 ## `Terrain.height_at` as the crate's ground callback.
 func _flight_ground() -> Callable:

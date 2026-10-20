@@ -1,5 +1,8 @@
 # One client of a *pair*: joins the session `GOATSD_TICKET` names and holds it for a fixed
-# window, reporting whether the other player's goat was ever there and whether it settled.
+# window, reporting whether the other player's goat was ever there, whether it settled, and
+# whether it was ever mirrored on the **fly** gait -- each end arms its own goat and takes off
+# halfway through, so the flight's gait and attitude cross the same peer frame (`FLIGHT.md`
+# section 6.2).
 #
 #   GOATSD_TICKET=<ticket> "Godot" --headless --path godot --script res://tools/verify_peers_live.gd
 #
@@ -30,10 +33,17 @@ const WINDOW := 15.0
 ## is a handshake, and what this claims is a goat that *stayed*.
 const HELD := 2.0
 
+## When each end takes off, in seconds into the window. Both ends run this script, so both are
+## flying for most of it: the claim is that *the other* goat's gait arrived as `fly`, and the
+## attitude with it (`FLIGHT.md` section 6.2).
+const TAKE_OFF := 4.0
+
 var _main: Node = null
 var _started := 0
 var _held := 0.0
 var _seen := {}
+var _flew := {}
+var _took_off := false
 var _frames := 0
 
 func _initialize() -> void:
@@ -61,17 +71,34 @@ func _process(delta: float) -> bool:
 	if not seen.is_empty():
 		for name in seen:
 			_seen[name] = true
+			# The mirrored gait is the wire's own word; a flyer is the one this slice added.
+			var row: Dictionary = peers.call("report_of", name)
+			if String(row.get("gait", "")) == "fly":
+				_flew[name] = true
 		_held += delta
 	var waited: float = float(Time.get_ticks_msec() - _started) / 1000.0
+	# Halfway in, this end arms its own goat and takes off: a *peer* frame is somebody else's
+	# goat, so the only way to see a flight on the wire is for the other end to fly.
+	if not _took_off and waited >= TAKE_OFF:
+		_took_off = true
+		var goat: Object = _main.get("goat")
+		if goat != null:
+			goat.call("set_flight", true)
+			goat.call("fly")
 	if waited < WINDOW:
 		return false
 
 	print("peers seen: ", _seen.keys(), " held %.1f s of %.0f, %d frame(s)"
 		% [_held, WINDOW, _frames])
+	print("flew: ", _flew.keys())
 	for line in peers.call("describe"):
 		print(line)
 	if _held < HELD:
 		print("FAIL: no peer held the session for even %.1f s" % HELD)
+		quit(1)
+		return true
+	if not _seen.is_empty() and _flew.is_empty():
+		print("FAIL: no peer was ever mirrored on the fly gait")
 		quit(1)
 		return true
 	print("OK: a Godot client mirrors the other player's goat, gap %.4f m"

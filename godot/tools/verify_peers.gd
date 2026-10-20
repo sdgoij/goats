@@ -43,13 +43,16 @@ extends SceneTree
 const ROLES_JS := """
 (function () {
 function netPeerShot(gait) {
-    return gait === "jump" || gait === "dead" || gait === "eat" || gait === "flung";
+    return gait === "jump" || gait === "dead" || gait === "eat" || gait === "flung" ||
+        gait === "fall";
 }
 function peerRole(gait, clip) {
     if (gait === "dead" && clip.death) return "death";
     if (gait === "sleep" && clip.sleep) return "sleep";
     if (gait === "eat" && clip.eat) return "eat";
     if (gait === "flung") return clip.flung ? "flung" : "jump";
+    if (gait === "fly") return clip.fly ? "fly" : "jump";
+    if (gait === "fall") return clip.fall ? "fall" : "jump";
     if (gait === "jump" && clip.jump) return "jump";
     if (gait === "run" && clip.run) return "run";
     if (gait === "trot" && clip.trot) return "trot";
@@ -102,20 +105,25 @@ for (let i = 0; i < STEPS.length; i++) {
 """
 
 ## The gaits the wire can name, which is `proto::Gait` and `net.js`'s own vocabulary.
-const GAITS := ["walk", "trot", "run", "jump", "sleep", "eat", "death", "flung", "idle"]
+const GAITS := ["walk", "trot", "run", "jump", "sleep", "eat", "death", "flung", "idle",
+	"fly", "fall"]
 
 ## The roles a model can carry a clip for, in the bit order the subsets index.
-const CLIPS := ["idle", "walk", "trot", "run", "jump", "sleep", "eat", "death", "flung"]
+const CLIPS := ["idle", "walk", "trot", "run", "jump", "sleep", "eat", "death", "flung",
+	"fly", "fall"]
 
 ## The models the role table is asked about: this one, none, each single clip, every pair the
 ## fallback chain actually distinguishes, and each one-clip-short model. The chains that matter
 ## are `flung -> jump -> walk` and the last-resort `walk`, and a one-clip-short model is the
 ## only way to reach either.
 const SUBSETS := [
-	511, 0,
-	1, 2, 4, 8, 16, 32, 64, 128, 256,
+	2047, 0,
+	1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024,
 	272, 3,
 	255, 495, 510, 383, 447, 479, 509, 507, 503, 270,
+	# The flight roles (protocol 12): a model with them, one without either, and the
+	# two chains that matter -- `fly -> jump -> walk` and `fall -> jump -> walk`.
+	1535, 1023, 2031, 528, 1040, 1536, 2047 - 16 - 512, 2047 - 16 - 1024,
 ]
 
 ## How many easing rows go into one `eval_js`. See the header: the whole grid at once produces
@@ -330,6 +338,42 @@ func _live_second() -> void:
 			% [float(_staged["gap"]), gap])
 	print("held: y %.4f (py 1.5 applied), clip %s, phase %.4f, gap %.4f -> %.4f m"
 		% [position.y, after["clip"], float(after["phase"]), float(_staged["gap"]), gap])
+
+	# The mirrored flight basis (protocol 12): a flyer's node sits at the crate's back point and
+	# wears its quaternion, exactly what the reference's `peerFlightDraw` draws. The controller is
+	# the same `Flight` class the goat and the herd use, and the state is built the way `_place`
+	# builds it -- so this is the placement held against the crate, not against a copy of it.
+	if ClassDB.class_exists("Flight"):
+		_live.flight = ClassDB.instantiate("Flight")
+		_live.flight.configure(PlayerGoat.flight_config())
+		_live.apply("bob", {
+			"x": 7.0, "z": -3.0, "yaw": 1.0, "phase": 0.3, "gait": "fly",
+			"py": 6.0, "pitch": 20.0, "roll": -10.0,
+		})
+		var flyer: Dictionary = _live.report_of("bob")
+		var state := PackedFloat32Array([
+			7.0, -3.0, Terrain.height_at(7.0, -3.0) + 6.0,
+			1.0, deg_to_rad(20.0), deg_to_rad(-10.0),
+			0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+		var want: Vector3 = _live.flight.back_point(state, 0.0, PlayerGoat.FLIGHT_PIVOT) \
+			+ Vector3(0.0, _live.ground_offset(), 0.0)
+		if (flyer["position"] as Vector3).distance_to(want) > 1e-4:
+			_failures.append("a mirrored flyer is not on the crate's back point: %s, want %s"
+				% [flyer["position"], want])
+		if absf(float(flyer["pitch"]) - deg_to_rad(20.0)) > TOLERANCE \
+				or absf(float(flyer["roll"]) + deg_to_rad(10.0)) > TOLERANCE:
+			_failures.append("a mirrored flyer's attitude is not the wire's: %s / %s"
+				% [flyer["pitch"], flyer["roll"]])
+		# The model has no `GoatFly`, so the role falls back to the jump -- and it is the *jump*
+		# clip that is posed, not whatever was playing before.
+		if String(flyer["clip"]) != "GoatJump":
+			_failures.append("a mirrored flyer did not fall back to the jump clip: %s"
+				% flyer["clip"])
+		print("fly: bob at %s, pitch %.3f roll %.3f, clip %s"
+			% [flyer["position"], float(flyer["pitch"]), float(flyer["roll"]), flyer["clip"]])
+		_live.remove("bob")
+	else:
+		_failures.append("the Flight class is not registered, so the mirrored flyer cannot be posed")
 
 	# ...and a `left` is the one thing that removes a peer.
 	_live.remove("alice")

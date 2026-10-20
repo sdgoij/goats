@@ -290,6 +290,11 @@ func report() -> Array:
 		out.append({
 			"x": bot.x, "z": bot.z, "yaw": bot.yaw,
 			"mode": bot.mode, "belly": bot.satiety,
+			# The captured-bird fields (`APIv1.md` section 4.8): the height above the
+			# ground (the player's own `y`), the attitude and the grant.
+			"y": bot.py, "pitch": bot.flight_pitch, "roll": bot.flight_roll,
+			"flight": bot.flight_capable, "flying": bot.mode == "fly",
+			"flaps": bot.flight_flaps,
 		})
 	return out
 
@@ -314,6 +319,11 @@ func wire() -> Array:
 			"gait": bot.mode,
 			"variant": 0 if variant == null else int(variant),
 			"py": int(roundf(bot.py * 100.0)),
+			# The flight attitude (protocol 12) in degrees, and zero on the ground.
+			"pitch": int(roundf(rad_to_deg(bot.flight_pitch)))
+				if (bot.mode == "fly" or bot.mode == "fall") else 0,
+			"roll": int(roundf(rad_to_deg(bot.flight_roll)))
+				if (bot.mode == "fly" or bot.mode == "fall") else 0,
 		})
 	return out
 
@@ -329,6 +339,10 @@ func net_bot_phase(bot: Bot) -> float:
 			return minf(bot.jump_time / bot.jump_dur, 1.0)
 		"eat":
 			return minf(bot.eat_time / bot.eat_dur, 1.0)
+		"fall":
+			# The fall's pose is a one-shot over its clip, so the fraction travels.
+			var length: float = clip_length("fall", 0)
+			return minf(bot.flight_time / length, 1.0) if length > 0.0 else 0.35
 	return bot.phase
 
 ## `net.js` `netRound3`: `Math.round(v * 1000) / 1000`, half toward +infinity, which is what the
@@ -591,6 +605,62 @@ func _flight_ground() -> Callable:
 func _ground_at(x: float, z: float) -> float:
 	return Terrain.height_at(x, z)
 
+## One frame of a released bot's free fall: no input, the crate's gravity and contact.
+## A release is a choice, so a hard one hurts -- and can kill, like the corpse rule's bang.
+func _update_bot_fall(bot: Bot, delta: float) -> void:
+	if flight == null:
+		bot.mode = "idle"
+		return
+	var input := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, INF])
+	var out: PackedFloat32Array = flight.step(
+		_flight_state(bot, 2), input, delta, _flight_ground())
+	if out.size() < 20:
+		return
+	_flight_apply(bot, out)
+	var length: float = clip_length("fall", 0)
+	if has_role("fall") and length > 0.0:
+		bot.phase = minf(bot.flight_time / length, 1.0)
+	if out[17] == 0.0:
+		return
+	bot.health = maxf(0.0, bot.health - float(flight.fall_damage(out[18])))
+	_flight_reset(bot)
+	bot.py = 0.0
+	bot.flight_cooldown = float(PlayerGoat.FLIGHT["botCooldown"])
+	if bot.health <= 0.0:
+		die(bot)
+		return
+	bot.mode = "idle"
+	bot.timer = 1.5 + bot_rnd() * 3.0
+
+## `goats.bots.get(i).setFlight(on)` (`APIv1.md` section 4.8). Disarming a flying bot
+## releases it, which is the same statement the player's own `setFlight(false)` makes.
+func set_flight_at(index: int, on: bool) -> bool:
+	var bot: Bot = _bot_at(index)
+	if bot == null:
+		return false
+	if not on:
+		release_at(index)
+	bot.flight_capable = on
+	return true
+
+## `goats.bots.get(i).fly()`: a scripted take-off, which requires the grant.
+func fly_at(index: int) -> bool:
+	var bot: Bot = _bot_at(index)
+	if bot == null:
+		return false
+	var speed: float = bot.flight_speed if bot.flight_speed > 0.0 else (
+		bot.jump_speed if bot.jump_speed > 0.0 else float(PlayerGoat.FLIGHT["minSpeed"]))
+	return start_flight(bot, speed)
+
+## `goats.bots.get(i).release()`: end a flight into its fall, and take the bird with it.
+func release_at(index: int) -> bool:
+	var bot: Bot = _bot_at(index)
+	if bot == null or bot.mode != "fly":
+		return false
+	bot.mode = "fall"
+	bot.flight_capable = false
+	return true
+
 ## Whether a bot is over the ground rather than on it. A jump is airborne by mode (the
 ## clip's root motion does the hop, so there is no height to read), a flung bot owns its
 ## own height, and so do flight and its fall.
@@ -802,6 +872,9 @@ func update(delta: float, weather: Dictionary) -> void:
 			# Powered flight (R3): the autopilot's ring around the player, stepped by the
 			# same crate the player's flight is.
 			_update_flight(bot, delta)
+		elif bot.mode == "fall":
+			# A released flight (the API's `release`; the AI never chooses one).
+			_update_bot_fall(bot, delta)
 		elif bot.mode == "jump":
 			# Airborne: the jump clip's root motion does the hop, so this only carries the
 			# bot forward along its heading.
@@ -1062,7 +1135,7 @@ func _gait(bot: Bot, delta: float, rain: float, sway: float) -> void:
 	# that re-chose `idle` moves to the next idle clip and advances *that* one's phase from
 	# its first frame. Reusing the speed's index instead is worth 4e-4 of phase -- one
 	# frame's advance -- which is small, invisible, and a divergence that never comes back.
-	if bot.mode != "jump" and bot.mode != "fly":
+	if bot.mode != "jump" and bot.mode != "fly" and bot.mode != "fall":
 		var current: int = int(bot.variants.get(role, 0))
 		var duration: float = clip_length(role, current)
 		if duration <= 0.0:

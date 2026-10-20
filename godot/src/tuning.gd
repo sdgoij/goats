@@ -122,6 +122,7 @@ const CLAMP := {
 	"explosions.flash.time": [0.0, 3.0],
 	"explosions.flash.energy": [0.0, 8.0],
 	"explosions.flash.lift": [0.0, 6.0],
+	"explosions.fling.pivot": [0.0, 2.0],
 	"explosions.fx.blast.time": [0.0, 10.0],
 	"explosions.fx.blast.scale": [0.0, 40.0],
 	"explosions.fx.blast.lift": [0.0, 20.0],
@@ -341,6 +342,10 @@ static func _leaves() -> Dictionary:
 			"explosions.flash.time": [Explosions, &"FLASH_TIME", PackedStringArray()],
 			"explosions.flash.energy": [Explosions, &"FLASH_ENERGY", PackedStringArray()],
 			"explosions.flash.lift": [Explosions, &"FLASH_LIFT", PackedStringArray()],
+			# The body centre the flung arc and the flight pose turn about. The birds mod
+			# reads it to seat a captured rider, so it is a leaf for the same reason
+			# `movement.modelScale` is: two owners of one number would drift.
+			"explosions.fling.pivot": [PlayerGoat, &"FLIGHT_PIVOT", PackedStringArray()],
 			"explosions.fx.blast.time": [Explosions, &"FX_BLAST_TIME", PackedStringArray()],
 			"explosions.fx.blast.scale": [Explosions, &"FX_BLAST_SCALE", PackedStringArray()],
 			"explosions.fx.blast.lift": [Explosions, &"FX_BLAST_LIFT", PackedStringArray()],

@@ -194,6 +194,8 @@ async fn apply(
             speed,
             gait,
             py,
+            pitch,
+            roll,
         } => {
             if let Some(joined) = client.as_ref() {
                 joined.publish(&PeerState {
@@ -204,6 +206,8 @@ async fn apply(
                     speed,
                     gait: bridge::parse_gait(&gait),
                     py,
+                    pitch: bridge::degrees(pitch),
+                    roll: bridge::degrees(roll),
                 });
             }
         }

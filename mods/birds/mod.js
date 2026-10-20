@@ -1,4 +1,4 @@
-// The `birds` mod: a flock of procedural birds with generated textures, seven
+// The `birds` mod: a flock of procedural birds with generated textures, eight
 // animation states and boids flocking, shared in multiplayer.
 //
 // It is a `side: "world"` mod, so the host simulates the flock and every peer
@@ -12,6 +12,14 @@
 // bird walking over a device sets it off and is flung away by it -- with a squawk,
 // the only sound this mod ships -- and a bird perched on the player's goat gives the
 // goat energy and health back while it sits there.
+//
+// The third is captured-bird flight (`FLIGHT.md` §4): a bird perched on a goat that
+// jumps is *captured*, and a goat with a captured bird can run and jump into the air.
+// The controllers are the scene's -- `goats.player.setFlight` and the herd's -- and
+// this mod only grants the capability, keeps the bird on the goat's back in 3D, and
+// lets it go when the goat releases it. What is *here* rather than in the engine is
+// the seat: the goat's own back point, rotated about the body pivot its mesh turns
+// about, so a banking goat carries its bird through the turn.
 //
 // Two facts about the *surface* shape the code:
 //
@@ -48,8 +56,17 @@ const MIN_GAP = 1.2;             // airborne birds are pushed apart to this
 // at `SCALE` with `LEG` off the ground, and this is the radius around it.
 const BODY_R = 0.35;
 
-const ST = { IDLE: 0, WALK: 1, TAKEOFF: 2, FLY: 3, LAND: 4, PERCH: 5, FLUNG: 6 };
-const ST_NAME = ["idle", "walk", "takeoff", "fly", "land", "perch", "flung"];
+const ST = { IDLE: 0, WALK: 1, TAKEOFF: 2, FLY: 3, LAND: 4, PERCH: 5, FLUNG: 6, RIDE: 7 };
+const ST_NAME = ["idle", "walk", "takeoff", "fly", "land", "perch", "flung", "ride"];
+
+// A captured bird's wingbeat, which is a *strong* flap rather than a boid's glide:
+// it is the only thing that moves on the goat's back (`FLIGHT.md` §4.3).
+const RIDE_FLAP_AMP = 0.9;
+const RIDE_FLAP_HZ = 3.2;
+
+// `FLIGHT.md` §4.6: a client older than the flight slice has no `setFlight`, and the
+// flock then behaves exactly as it did before -- no capture, no ride, no grant.
+const FLIGHT_API = typeof goats.player.setFlight === "function";
 
 // ---- the goat's friends ---------------------------------------------------
 //
@@ -173,6 +190,8 @@ function hex2(v) { return HEX[clamp(ROUND(v), 0, 255)]; }
 const Q_TMP1 = { x: 0, y: 0, z: 0, w: 1 };
 const Q_TMP2 = { x: 0, y: 0, z: 0, w: 1 };
 const Q_BODY = { x: 0, y: 0, z: 0, w: 1 };
+const Q_RIDE = { x: 0, y: 0, z: 0, w: 1 };
+const V_RIDE = { x: 0, y: 0, z: 0 };
 const AA_BODY = { x: 0, y: 0, z: 0, rad: 0 };
 const AA_WING = { x: 0, y: 0, z: 0, rad: 0 };
 const V_WING = { x: 0, y: 0, z: 0 };
@@ -386,6 +405,7 @@ let trips = 0;      // devices the flock has set off (M19g's surface, below)
 let mineTrips = 0;  // ...and which kind they were: a case can tell a trap from a mine
 let trapTrips = 0;
 let blessed = 0;    // seconds a bird has spent on the player's back
+let ridePivot = 0.7; // `explosions.fling.pivot`, refreshed with the flock's frame
 let SQUAWKS = [];   // the two macaw calls the manifest declares, loaded at build
 
 function newBird() {
@@ -393,8 +413,10 @@ function newBird() {
         x: 0, y: 0, z: 0, yaw: 0, st: ST.IDLE, t: 0, dur: 1,
         vx: 0, vy: 0, vz: 0, flap: 0, pitch: 0, roll: 0, yawRate: 0, prevYaw: 0,
         cruise: 9, perch: -1, size: 1, // client mirror targets
-        tx: 0, ty: 0, tz: 0, tyaw: 0,
+        tx: 0, ty: 0, tz: 0, tyaw: 0, tpitch: 0, troll: 0,
         trip: -1, sent: false,         // the device bucket, and a bird on an errand
+        captured: false,               // the bird is a goat's rider (`FLIGHT.md` §4)
+        justCaptured: false,           // the grant was made this frame (see `updateRiders`)
     };
 }
 
@@ -404,6 +426,9 @@ function syncFlock(n) {
 }
 
 function seedFlock() {
+    // A reseed is a new flock: no bird of it is anybody's rider, so the grants go with
+    // the birds `scatter` replaces.
+    dropRiders();
     syncFlock(COUNT);
     for (let i = 0; i < BIRDS.length; i++) placeBird(BIRDS[i], i);
 }
@@ -429,6 +454,9 @@ function placeBird(b, i) {
     b.perch = -1;
     b.trip = -1;
     b.sent = false;
+    b.captured = false;
+    b.justCaptured = false;
+    b.tpitch = b.troll = 0;
 }
 
 function ensureBuilt() {
@@ -506,6 +534,9 @@ function setSt(b, st, dur) { b.st = st; b.t = 0; b.dur = dur; }
 // goat, facing it. The console command `birds gather` uses it, which is also
 // the quickest way to confirm the models are being drawn at all.
 function gatherBirds() {
+    // The flock comes to the ground beside the goat, so any ride is over: a bird cannot
+    // be in the ring and on a back at once.
+    dropRiders();
     const p = goats.player.state();
     const n = MAX(1, BIRDS.length);
     for (let i = 0; i < BIRDS.length; i++) {
@@ -520,9 +551,19 @@ function gatherBirds() {
         b.pitch = b.roll = b.yawRate = 0;
         b.perch = -1;
         b.sent = false;
+        b.captured = false;
         setSt(b, ST.IDLE, 2);
         // A client mirrors the host, so its own move is only a target update.
         b.tx = b.x; b.ty = b.y; b.tz = b.z; b.tyaw = b.yaw;
+    }
+}
+
+// Sever every ride, for the commands that move the whole flock somewhere a rider cannot
+// stay (`FLIGHT.md` §4.6). `dismount` clears the grant as well as the seat, so a goat left
+// armed with no bird on its back cannot happen through a console verb.
+function dropRiders() {
+    for (let i = 0; i < BIRDS.length; i++) {
+        if (BIRDS[i].captured) dismount(BIRDS[i]);
     }
 }
 
@@ -530,6 +571,8 @@ function gatherBirds() {
 // `birds sit` uses it, which is the friend mechanic at its most literal and the way
 // the suite drives it without waiting for a landing to pick the player.
 function perchOnGoat(b) {
+    // A rider put back into a plain perch is not a rider any more: the grant goes too.
+    if (b.captured) dismount(b);
     const p = goats.player.state();
     b.perch = PERCH_PLAYER;
     b.x = p.x;
@@ -540,6 +583,7 @@ function perchOnGoat(b) {
     b.vx = b.vz = b.vy = 0;
     b.pitch = b.roll = b.yawRate = 0;
     b.sent = false;
+    b.captured = false;
     b.tx = b.x; b.ty = b.y; b.tz = b.z; b.tyaw = b.yaw;
     setSt(b, ST.PERCH, 600);   // long enough to watch the goat fill up
 }
@@ -577,7 +621,7 @@ function blessGoat(dt, exact) {
     let px = 0, pz = 0, have = false;
     for (let i = 0; i < BIRDS.length; i++) {
         const b = BIRDS[i];
-        if (b.st !== ST.PERCH) continue;
+        if (b.st !== ST.PERCH && b.st !== ST.RIDE) continue;
         if (exact) {
             if (b.perch === PERCH_PLAYER) sitting += 1;
             continue;
@@ -592,9 +636,11 @@ function blessGoat(dt, exact) {
         if (dx * dx + dz * dz <= BLESS_R2) sitting += 1;
     }
     if (sitting === 0) return;   // the usual frame: no flock query, no state at all
-    // A dead goat is left alone: a bird is not a resurrection.
+    // A dead goat is left alone: a bird is not a resurrection. A rider heals its goat
+    // on the ground *and* in the air (`FLIGHT.md` §4.5), which is the energy that pays
+    // for the flight -- but not at zero health, because the heal would revive it.
     const p = goats.player.state();
-    if (p.mode === "dead") return;
+    if (p.mode === "dead" || p.health <= 0) return;
     goats.player.giveEnergy(BLESS_ENERGY * sitting * dt);
     goats.player.giveHealth(BLESS_HEALTH * sitting * dt);
     blessed += sitting * dt;
@@ -604,6 +650,8 @@ function startTakeoff(b) {
     setSt(b, ST.TAKEOFF, TAKEOFF_TIME);
     b.cruise = rand(CRUISE_MIN, CRUISE_MAX);
     b.perch = -1;   // chosen again when this flight decides to land
+    b.captured = false; // a bird that leaves the ground is nobody's rider
+    b.justCaptured = false;
     b.sent = false; // any errand is over the moment the bird leaves the ground
     b.vx = COS(b.yaw) * 2;
     b.vz = -SIN(b.yaw) * 2;
@@ -611,15 +659,20 @@ function startTakeoff(b) {
 
 // The nearest settled goat to perch on: the player's or a bot's, whichever is
 // closer. A moving goat is skipped -- chasing one never reaches it -- and only
-// some landings near a goat choose it, so the flock still uses the ground.
+// some landings near a goat choose it, so the flock still uses the ground. A goat
+// that already carries a rider is skipped too: one bird per goat.
 function pickPerch(b) {
     let best = -1, bd = PERCH_R * PERCH_R;
     const p = goats.player.state();
     const pdx = p.x - b.x, pdz = p.z - b.z;
-    if ((p.speed || 0) < 1.5 && pdx * pdx + pdz * pdz < bd) { bd = pdx * pdx + pdz * pdz; best = PERCH_PLAYER; }
+    if (!p.flight && (p.speed || 0) < 1.5 && pdx * pdx + pdz * pdz < bd) {
+        bd = pdx * pdx + pdz * pdz;
+        best = PERCH_PLAYER;
+    }
     const bots = goats.bots.list();
     for (let i = 0; i < bots.length; i++) {
         const bot = bots[i];
+        if (bot.flight) continue;
         if (bot.mode === "run" || bot.mode === "trot") continue;
         const dx = bot.x - b.x, dz = bot.z - b.z;
         const d2 = dx * dx + dz * dz;
@@ -650,6 +703,210 @@ function perchTarget(b) {
         speed: bot.mode === "run" ? 4 : 0 };
 }
 
+// ---- captured riders ------------------------------------------------------
+//
+// A bird perched on a goat that jumps is *captured* (`FLIGHT.md` §4.2). The grant is
+// the goat's: `setFlight(true)` arms it, and its next *running* jump goes into the
+// air. The bird then rides the goat's back in 3D -- the same seat the perch uses at
+// zero attitude, rotated about the body pivot the goat's own mesh turns about --
+// until the goat releases it (`E`), dies, or is blown off its flight.
+//
+// The poll is the seam: the port's event surface is partial, so the mod watches the
+// goat's mode rather than listening for a `jump`. Both clients put the goat's new
+// mode in place before `modFrameTick`, so the frame after the key is the capture.
+
+// The rider's live state, or null when its goat is gone. `base` is the goat's feet in
+// world space: the ground under it plus its own height above that ground, which is
+// what `y`/`py` is on both clients (`FLIGHT.md` §4.3).
+//
+// One reusable record, filled and returned: `updateRiders` asks once per rider per
+// frame and consumes the answer before the next ask, and the flock's update is the
+// hottest loop this mod runs (PERF.md appendix B).
+const RIDE_STATE = { mode: "", x: 0, z: 0, base: 0, yaw: 0, pitch: 0, roll: 0, flight: false, speed: 0 };
+const RIDE_TARGET = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0 };
+
+function riderState(perch) {
+    const r = RIDE_STATE;
+    if (perch === PERCH_PLAYER) {
+        const p = goats.player.state();
+        r.mode = p.mode;
+        r.x = p.x;
+        r.z = p.z;
+        r.base = groundAt(p.x, p.z) + (p.y > 0 ? p.y : 0);
+        r.yaw = p.yaw;
+        r.pitch = p.pitch || 0;
+        r.roll = p.roll || 0;
+        r.flight = p.flight === true;
+        r.speed = p.speed || 0;
+        return r;
+    }
+    // One bot, by index -- `get` rather than `list`, the same reason `perchTarget`
+    // gives: a handle per bot is an object and four closures, and this reads one.
+    const bot = goats.bots.get(perch);
+    if (bot === null) return null;
+    r.mode = bot.mode;
+    r.x = bot.x;
+    r.z = bot.z;
+    r.base = groundAt(bot.x, bot.z) + (bot.y > 0 ? bot.y : 0);
+    r.yaw = bot.yaw;
+    r.pitch = bot.pitch || 0;
+    r.roll = bot.roll || 0;
+    r.flight = bot.flight === true;
+    r.speed = 0;
+    return r;
+}
+
+// Where the bird sits: on the goat's *drawn* back, not at its feet. The mesh turns
+// about `explosions.fling.pivot` (its barrel), so the seat is the point the flung arc
+// rotates: `feet + pivot + R * (PERCH_H - pivot)`. At zero attitude that is exactly
+// `feet + PERCH_H`, the old perch height -- a bird on a standing goat does not move.
+function riderTarget(b, pivot) {
+    const r = riderState(b.perch);
+    if (r === null) return null;
+    bodyQuatInto(Q_RIDE, r);
+    qRotInto(V_RIDE, Q_RIDE, 0, PERCH_H - pivot, 0);
+    const t = RIDE_TARGET;
+    t.x = r.x + V_RIDE.x;
+    t.y = r.base + pivot + V_RIDE.y;
+    t.z = r.z + V_RIDE.z;
+    t.yaw = r.yaw;
+    t.pitch = r.pitch;
+    t.roll = r.roll;
+    return t;
+}
+
+// One frame on the goat's back. `dur`, `speed` and `tooFar` are the goat's problem
+// now: a rider goes where it goes. The attitude is the goat's own, so the bird leans
+// through a turn and pitches up in a climb with it. False when the rider is gone.
+function stepRide(b, pivot) {
+    const t = riderTarget(b, pivot);
+    if (t === null) return false;
+    b.x = t.x;
+    b.y = t.y;
+    b.z = t.z;
+    b.yaw = t.yaw;
+    b.pitch = t.pitch;
+    b.roll = t.roll;
+    return true;
+}
+
+// The first settled, uncaptured bird perched on `rider`, or null.
+function perchedOn(rider) {
+    for (let i = 0; i < BIRDS.length; i++) {
+        const b = BIRDS[i];
+        if (b.st === ST.PERCH && b.perch === rider && !b.captured) return b;
+    }
+    return null;
+}
+
+// The bird already riding `rider`, or null. One bird per goat (`FLIGHT.md` §12), so
+// a second bird that landed on the same back stays an ordinary perch.
+function riderOf(rider) {
+    for (let i = 0; i < BIRDS.length; i++) {
+        if (BIRDS[i].captured && BIRDS[i].perch === rider) return BIRDS[i];
+    }
+    return null;
+}
+
+// The goat jumped with a bird on its back: the bird is its rider from now on. `RIDE`
+// waits until the jump ends (`updateRiders`), because the capture jump's clip hop is
+// the goat's own and re-clocking the bird in the middle of it would make the seat
+// jump for a frame. A bot is captured on a hop it took during a zoomies run, so its
+// `zoom` clock is still running and the next hop takes off -- deliberately *not*
+// nudged here, because `zoomies()` sets the mode to `run` and would cancel the jump
+// that just captured the bird (`FLIGHT.md` §4.2).
+function captureBird(b, rider) {
+    b.captured = true;
+    b.justCaptured = true;
+    b.perch = rider;
+    b.sent = false;
+    if (rider === PERCH_PLAYER) {
+        goats.player.setFlight(true);
+    } else {
+        const bot = goats.bots.get(rider);
+        // A bot that vanished between the hop and this frame has nothing to arm.
+        if (bot !== null) bot.setFlight(true);
+    }
+    // The joke needs a sound: a bird that has just been kidnapped says so.
+    playSquawk(b.x, b.z);
+}
+
+// The goat came down without its bird, or lost it. It leaves the way any other bird
+// does, and the capability goes with it -- `setFlight(false)` is the `E` a dead or
+// unloaded goat never got to make.
+function releaseBird(b) {
+    dismount(b);
+    startTakeoff(b);
+    playSquawk(b.x, b.z);
+}
+
+// Sever the ride without sending the bird away: the capability goes, the seat does
+// not. `releaseBird` is the flight's exit; this is the order to come down with the
+// rest of the flock (`birds land`), and the half both share.
+function dismount(b) {
+    const perch = b.perch;
+    b.captured = false;
+    b.perch = -1;
+    if (!FLIGHT_API) return;
+    if (perch === PERCH_PLAYER) {
+        goats.player.setFlight(false);
+    } else if (perch >= 0) {
+        const bot = goats.bots.get(perch);
+        if (bot !== null) bot.setFlight(false);
+    }
+}
+
+// Capture polling and the riders' transitions, once a frame at the top of the sim.
+// The `last` tables are what make this an edge rather than a state: the goat spends
+// several frames in `jump`, and a capture is the *entering* of it.
+let lastPlayerMode = "";
+const lastBotMode = [];
+
+function updateRiders(pivot) {
+    if (!FLIGHT_API) return;
+    const p = goats.player.state();
+    if (p.mode === "jump" && lastPlayerMode !== "jump" && riderOf(PERCH_PLAYER) === null) {
+        const b = perchedOn(PERCH_PLAYER);
+        if (b !== null) captureBird(b, PERCH_PLAYER);
+    }
+    lastPlayerMode = p.mode;
+
+    const list = goats.bots.list();
+    for (let i = 0; i < list.length; i++) {
+        const mode = list[i].mode;
+        if (mode === "jump" && lastBotMode[i] !== "jump" && riderOf(i) === null) {
+            const b = perchedOn(i);
+            if (b !== null) captureBird(b, i);
+        }
+        lastBotMode[i] = mode;
+    }
+    // The herd can be resized under the table; a shorter list leaves stale entries
+    // that the next bot at that index would inherit, so trim it here.
+    lastBotMode.length = list.length;
+
+    // Then the riders: a capture becomes a ride once its goat is out of the jump, and
+    // a goat that lost the bird lets it go. One pass over the flock, so a rider's own
+    // step finds the state settled rather than seeing last frame's capture.
+    for (let i = 0; i < BIRDS.length; i++) {
+        const b = BIRDS[i];
+        if (!b.captured) continue;
+        // The grant is made *in this pass*, and the port's mod realm reads the snapshot the
+        // frame pushed before these hooks ran -- so a capture would see its own goat still
+        // unarmed and release the bird on the spot. One frame of grace is the whole fix, and
+        // it is only the `!flight` clause: a death or a release this frame still counts.
+        const granted = b.justCaptured;
+        b.justCaptured = false;
+        const r = riderState(b.perch);
+        // `fall` is the release, `dead` is the end of the goat, and `!flight` is a
+        // capability taken away by a blast, a restart, or another mod.
+        if (r === null || r.mode === "fall" || r.mode === "dead" || (!r.flight && !granted)) {
+            releaseBird(b);
+            continue;
+        }
+        if (b.st === ST.PERCH && r.mode !== "jump") setSt(b, ST.RIDE, 0);
+    }
+}
+
 function flapWave(t, amp, hz) { return amp * (0.5 - 0.5 * COS(t * hz * PI * 2)); }
 
 // A grounded bird that has been left behind flies to catch up; walking at 1.1
@@ -674,6 +931,7 @@ function flapFor(b) {
         case ST.LAND: return flapWave(b.t, 0.7, 1.2) * (1 - 0.6 * clamp(b.t / LAND_TIME, 0, 1));
         case ST.WALK: return 0.06 * (1 + SIN(b.t * 8));
         case ST.PERCH: return 0.04 * (1 + SIN(b.t * 5));
+        case ST.RIDE: return flapWave(b.t, RIDE_FLAP_AMP, RIDE_FLAP_HZ);
         case ST.FLUNG: return flapWave(b.t, 0.95, 3.2);   // frantic, and getting nowhere
         default: return 0;
     }
@@ -923,6 +1181,10 @@ function stepFly(b, dt) {
 }
 
 function poseTargets(b) {
+    // A rider's attitude is its goat's, written by `stepRide`: easing it toward the
+    // boid targets here would fight the seat. A mirrored rider takes the host's angles
+    // in `mirror` instead, so it is the state as well as the flag.
+    if (b.captured || b.st === ST.RIDE) return;
     let pitch = 0;
     if (b.st === ST.TAKEOFF) pitch = 0.5 * clamp(b.t / TAKEOFF_TIME, 0, 1);
     else if (b.st === ST.LAND) pitch = -0.25 + 0.4 * clamp(b.t / LAND_TIME, 0, 1);
@@ -968,13 +1230,25 @@ function separateFlock() {
 
 function simulate(dt) {
     updateHome();
+    // The pivot the goat's own body turns about (`FLIGHT.md` §4.3). A tuning write can
+    // move it while the game runs, so it is read with the flock's frame rather than
+    // cached at load; the bound is the reference's own clamp.
+    ridePivot = goats.tuning.get("explosions.fling.pivot");
+    if (typeof ridePivot !== "number" || !IS_FINITE(ridePivot)) ridePivot = 0.7;
+    // Capture and release first: the frame the goat jumps is the frame the bird
+    // becomes its rider, and a goat that has lost its bird is a plain perch again.
+    updateRiders(ridePivot);
     for (let i = 0; i < BIRDS.length; i++) {
         const b = BIRDS[i];
         // A non-finite position draws as nothing, so recover the bird rather
-        // than let it silently vanish.
+        // than let it silently vanish. A captured bird's recovery is its rider: a
+        // teleporting flock must not leave the rider behind on the old ground.
         if (!IS_FINITE(b.x) || !IS_FINITE(b.y) || !IS_FINITE(b.z) ||
             !IS_FINITE(b.yaw)) {
-            placeBird(b, i);
+            if (!(b.captured && stepRide(b, ridePivot) && IS_FINITE(b.x) &&
+                IS_FINITE(b.y) && IS_FINITE(b.z))) {
+                placeBird(b, i);
+            }
             continue;
         }
         b.prevYaw = b.yaw;
@@ -984,13 +1258,16 @@ function simulate(dt) {
             case ST.TAKEOFF: stepTakeoff(b, dt); break;
             case ST.FLY: stepFly(b, dt); break;
             case ST.LAND: stepLand(b, dt); break;
-            case ST.PERCH: stepPerch(b, dt); break;
+            // A captured bird is on its goat's back until the jump that captured it
+            // ends; only the *state* waits for `RIDE` (`FLIGHT.md` §4.2).
+            case ST.PERCH: if (b.captured) stepRide(b, ridePivot); else stepPerch(b, dt); break;
+            case ST.RIDE: stepRide(b, ridePivot); break;
             case ST.FLUNG: stepFlung(b, dt); break;
             default: stepIdle(b, dt); break;
         }
         // On the ground is where a device can be tripped. A bird on a goat's back is
         // 1.15 m up, over the `clearance` a mine needs -- the goat it is riding trips
-        // that one, if anything does.
+        // that one, if anything does. A rider never trips one either.
         if (b.st === ST.IDLE || b.st === ST.WALK) tripDevices(b);
         b.yawRate = angleDelta(b.yaw, b.prevYaw) / dt;
         poseTargets(b);
@@ -1015,7 +1292,15 @@ function mirror(dt) {
         b.z += (b.tz - b.z) * k;
         b.yaw += angleDelta(b.tyaw, b.yaw) * k;
         b.yawRate = angleDelta(b.yaw, b.prevYaw) / dt;
-        poseTargets(b);
+        if (b.st === ST.RIDE) {
+            // A rider's attitude is its goat's, so the host *sends* it -- the row's last
+            // two numbers (`FLIGHT.md` §6.2) -- and the client eases toward it. The boid
+            // targets would build a different attitude from the position's own motion.
+            b.pitch += (b.tpitch - b.pitch) * k;
+            b.roll += (b.troll - b.roll) * k;
+        } else {
+            poseTargets(b);
+        }
     }
 }
 
@@ -1026,10 +1311,12 @@ goats.world.extend(MOD_ID, {
         const out = [];
         for (let i = 0; i < BIRDS.length; i++) {
             const b = BIRDS[i];
-            // Five numbers per bird. `publishRows` rounds them and refuses a
-            // NaN, so a bug here lands in the log with this mod's name on it
-            // rather than arriving at every peer as `null`.
-            out.push([r1(b.x), r1(b.y), r1(b.z), r2(b.yaw), b.st]);
+            // Seven numbers per bird: the five the flock has always published, then
+            // the attitude a `RIDE` bird inherits from its goat (`FLIGHT.md` §6.2).
+            // `publishRows` rounds them and refuses a NaN, so a bug here lands in the
+            // log with this mod's name on it rather than arriving at every peer as
+            // `null`; it accepts up to eight wide, so the row is still legal.
+            out.push([r1(b.x), r1(b.y), r1(b.z), r2(b.yaw), b.st, r2(b.pitch), r2(b.roll)]);
         }
         return goats.world.publishRows(out);
     },
@@ -1048,6 +1335,12 @@ goats.world.extend(MOD_ID, {
             if (b.st !== st) b.t = 0;
             b.st = st;
             b.tx = s[0]; b.ty = s[1]; b.tz = s[2]; b.tyaw = s[3];
+            // The two attitude numbers arrived with protocol 12. An older row has no
+            // fifth/sixth value, and a client in a mixed session cannot happen anyway
+            // (the mod's hash is in the handshake) -- but reading a missing slot as 0
+            // is what makes the row's shape additive rather than a second version.
+            b.tpitch = IS_FINITE(s[5]) ? s[5] : 0;
+            b.troll = IS_FINITE(s[6]) ? s[6] : 0;
         }
     },
 });
@@ -1138,6 +1431,14 @@ goats.on("draw3d", function (cam) {
 });
 
 goats.on("shutdown", function () {
+    // The grant is this mod's, so it goes with the mod: a goat left armed by a bird
+    // that no longer exists could still take off. On a client the bot writes are
+    // ignored, exactly as every other bot write is (the host owns the herd).
+    if (FLIGHT_API) {
+        goats.player.setFlight(false);
+        const list = goats.bots.list();
+        for (let i = 0; i < list.length; i++) list[i].setFlight(false);
+    }
     if (bodyModel !== null) goats.gfx.unload(bodyModel);
     if (wingR !== null) goats.gfx.unload(wingR);
     if (wingL !== null) goats.gfx.unload(wingL);
@@ -1153,15 +1454,66 @@ goats.command("birds", function (parts) {
     if (verb === "scatter") { seedFlock(); return "ok birds scattered"; }
     if (verb === "gather" || verb === "here") { gatherBirds(); return "ok birds gathered"; }
     if (verb === "fly") {
+        dropRiders();
         for (let i = 0; i < BIRDS.length; i++) startTakeoff(BIRDS[i]);
         return "ok birds flying";
     }
     if (verb === "land") {
         for (let i = 0; i < BIRDS.length; i++) {
+            // A landing order ends a ride too: an order that left a goat armed with
+            // no bird on its back would be the one way to fly away from the flock.
+            if (BIRDS[i].captured) dismount(BIRDS[i]);
             BIRDS[i].perch = -1;
             setSt(BIRDS[i], ST.LAND, LAND_TIME);
         }
         return "ok birds landing";
+    }
+    if (verb === "mount") {
+        // The test/demo path (`FLIGHT.md` §4.6): a bird straight onto the player's
+        // goat, armed, without waiting for a landing to pick it.
+        if (!FLIGHT_API) return "error birds: this client has no flight";
+        if (!goats.net.localWorld()) return "error birds: the host owns the flock";
+        if (BIRDS.length === 0) return "ok no birds";
+        const b = riderOf(PERCH_PLAYER) || BIRDS[0];
+        b.captured = true;
+        b.perch = PERCH_PLAYER;
+        b.sent = false;
+        stepRide(b, ridePivot);   // seated this frame, not the next
+        setSt(b, ST.RIDE, 0);
+        goats.player.setFlight(true);
+        return "ok bird mounted";
+    }
+    if (verb === "drop") {
+        if (!goats.net.localWorld()) return "error birds: the host owns the flock";
+        const b = riderOf(PERCH_PLAYER);
+        if (b === null) return "ok no bird aboard";
+        // `E` first, so the bird leaves a goat that is already falling rather than one
+        // still in the air with its capability taken away.
+        goats.player.release();
+        releaseBird(b);
+        return "ok bird released";
+    }
+    if (verb === "ride") {
+        if (!FLIGHT_API) return "error birds: this client has no flight";
+        if (!goats.net.localWorld()) return "error birds: the host owns the flock";
+        const want = Number(parts[2] === undefined ? 0 : parts[2]);
+        if (!IS_FINITE(want)) return "error birds: ride expects a bot index";
+        const index = FLOOR(want);
+        const bot = goats.bots.get(index);
+        if (bot === null) return "error birds: no bot " + index;
+        if (BIRDS.length === 0) return "ok no birds";
+        const b = riderOf(index) || BIRDS[0];
+        b.captured = true;
+        b.perch = index;
+        b.sent = false;
+        stepRide(b, ridePivot);
+        setSt(b, ST.RIDE, 0);
+        bot.setFlight(true);
+        // The bot's take-off is the zoomies run's hop (`bots.js`), so start one: it
+        // hops, and the hop is the flight. A capture path never does this -- it would
+        // cancel the jump that captured the bird (`FLIGHT.md` §4.2).
+        bot.zoomies(3);
+        return "ok bird riding bot " + index;
     }
     if (verb === "sit") {
         // A bird on the goat's back, and the rest of the flock on the ground beside it.
@@ -1176,6 +1528,9 @@ goats.command("birds", function (parts) {
         if (dev === null) return "ok no device in reach";
         if (BIRDS.length === 0) return "ok no birds";
         const b = BIRDS[0];
+        // Sending a rider into a mine field is still a ride ending: the goat is disarmed
+        // before the errand, not left holding a grant for a bird that has flown off.
+        if (b.captured) dismount(b);
         b.x = dev.x;
         b.z = dev.z;
         b.y = groundAt(dev.x, dev.z) + LEG;
@@ -1188,17 +1543,25 @@ goats.command("birds", function (parts) {
     }
     const counts = {};
     let near = Infinity, far = 0;
+    let captured = 0;
+    const riders = [];
     const p = goats.player.state();
     for (let i = 0; i < BIRDS.length; i++) {
-        const name = ST_NAME[BIRDS[i].st] || "?";
+        const b = BIRDS[i];
+        const name = ST_NAME[b.st] || "?";
         counts[name] = (counts[name] || 0) + 1;
-        const d = HYPOT(BIRDS[i].x - p.x, BIRDS[i].z - p.z);
+        if (b.captured) {
+            captured += 1;
+            riders.push(b.perch === PERCH_PLAYER ? "player" : b.perch);
+        }
+        const d = HYPOT(b.x - p.x, b.z - p.z);
         if (d < near) near = d;
         if (d > far) far = d;
     }
     return "ok " + JSON.stringify({ count: BIRDS.length, local: goats.net.localWorld(),
         anchor: anchorPlayer ? "player" : "herd", near: BIRDS.length ? r1(near) : null,
-        far: BIRDS.length ? r1(far) : null, states: counts,
+        far: BIRDS.length ? r1(far) : null, states: counts, captured: captured,
+        riders: riders, flight: FLIGHT_API,
         trips: trips, mineTrips: mineTrips, trapTrips: trapTrips, blessed: r1(blessed) });
 });
 

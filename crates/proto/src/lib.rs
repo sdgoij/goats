@@ -46,7 +46,7 @@ mod wire;
 /// `466b967` was about. A backwards-compatible variant was not worth it: part 0 of a split
 /// world is a *legal-looking* world with fewer bots, which is exactly the shape an old peer
 /// would misread rather than reject.
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 
 /// A frame's length prefix is a big-endian `u32`.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
@@ -466,6 +466,11 @@ pub enum Gait {
     Sleep,
     Eat,
     Dead,
+    /// Powered flight (protocol 12): a loop, with the attitude in `pitch`/`roll` and
+    /// the height above the ground in `py`.
+    Fly,
+    /// Released free fall (protocol 12): a one-shot, posed from its own progress.
+    Fall,
 }
 
 /// One player's goat, as it travels over the unreliable datagram channel.
@@ -486,6 +491,14 @@ pub struct PeerState {
     /// parabola flattens its apex, so a flung peer would fly through a lower arc than
     /// the one its owner simulated. Zero is every other gait.
     pub py: f32,
+    /// The flyer's nose-up angle, in degrees (protocol 12). Zero when grounded, which
+    /// is why it is defaulted for the JSON bridge; the datagram path is positional
+    /// and versioned, so a missing field there is a refusal.
+    #[serde(default)]
+    pub pitch: i8,
+    /// The flyer's right-bank angle, in degrees. See [`PeerState::pitch`].
+    #[serde(default)]
+    pub roll: i8,
 }
 
 impl PeerState {
@@ -541,6 +554,13 @@ pub struct BotState {
     /// rather than a default.
     #[serde(default)]
     pub py: i16,
+    /// The flyer's nose-up angle, in degrees (protocol 12): the one part of an attitude
+    /// that `Gait::Fly` and a height could not say. Zero for every grounded gait.
+    #[serde(default)]
+    pub pitch: i8,
+    /// The flyer's right-bank angle, in degrees. See [`BotState::pitch`].
+    #[serde(default)]
+    pub roll: i8,
 }
 
 impl BotState {
@@ -1554,6 +1574,8 @@ mod tests {
                 speed: 1.25,
                 gait: Gait::Trot,
                 py: 0.0,
+                pitch: 20,
+                roll: -15,
             },
         };
         let payload = encode_frame(&frame).expect("encode");
@@ -1575,6 +1597,8 @@ mod tests {
             speed: 0.0,
             gait: Gait::Idle,
             py: 0.0,
+            pitch: 0,
+            roll: 0,
         };
         assert!(state.is_finite());
         state.x = f32::NAN;
@@ -1611,6 +1635,8 @@ mod tests {
                     gait: Gait::Idle,
                     variant: 2,
                     py: 0,
+                    pitch: 0,
+                    roll: 0,
                 },
                 BotState {
                     index: 1,
@@ -1621,6 +1647,8 @@ mod tests {
                     gait: Gait::Eat,
                     variant: 1,
                     py: 0,
+                    pitch: 0,
+                    roll: 0,
                 },
             ],
             weather: WeatherState {
@@ -1722,6 +1750,8 @@ mod tests {
                 speed: 1.25,
                 gait: Gait::Walk,
                 py: 2.5,
+                pitch: 10,
+                roll: -10,
             },
         });
         let bytes = encode_datagram(&peer).expect("encode");
@@ -1824,6 +1854,8 @@ mod tests {
             gait: Gait::Walk,
             variant: 1,
             py: 250,
+            pitch: 25,
+            roll: -25,
         }
     }
 
@@ -2237,6 +2269,8 @@ mod tests {
                     speed: 0.0,
                     gait: Gait::Idle,
                     py: 0.0,
+                    pitch: 0,
+                    roll: 0,
                 },
             })
         };

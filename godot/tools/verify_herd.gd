@@ -142,6 +142,28 @@ func _process(delta: float) -> bool:
 			print("worlds: ", worlds, ", last snapshot: ", last, " bot(s)")
 			for line in herd.call("describe"):
 				print(line)
+			# ...and a **flyer** (protocol 12): the attitude travels, and a model without a
+			# `GoatFly` is posed from the jump held at a leap's fraction. Its basis is checked
+			# once it has eased onto the snapshot, in the next phase.
+			_world({"bots": [{"index": 0, "x": 3.0, "z": 1.0, "yaw": 0.5, "phase": 0.3,
+				"gait": "fly", "py": 600, "pitch": 20, "roll": -10}]})
+			_phase = 4
+			_settle = 0.0
+		4:
+			# `worst_gap` deliberately leaves an airborne goat out, so this phase waits on its
+			# own clock: the feet, the height and the bank all ease at the same rate, and a
+			# flyer is not on the wire's spot until that rate has done its work.
+			_settle += delta
+			if _settle < SETTLE_SECONDS * 1.5:
+				return false
+			var flyer: Dictionary = _state_row(herd, 0)
+			if flyer.is_empty():
+				_failures.append("the mirror holds no flyer to read")
+				return _finish()
+			_expect_count(herd, 1, "a world naming one flyer")
+			_expect_gait(herd, 0, "fly", "a mirrored flyer")
+			_expect_clip(herd, 0, "GoatJump", "a flyer without a `GoatFly` clip")
+			_expect_flyer_basis(herd, flyer)
 			return _finish()
 	return false
 
@@ -227,6 +249,39 @@ func _expect_spots(herd: Node) -> void:
 			_failures.append("goat %d is drawn at %s, not the snapshot's %s"
 				% [index, str(got), str(want)])
 	print("spots:   ", rows.size(), " goat(s) on the wire's spots")
+
+## One row of `Herd.state()`, by index: the mod surface's own read of a mirrored goat.
+func _state_row(herd: Node, index: int) -> Dictionary:
+	for row: Dictionary in herd.call("state"):
+		if int(row.get("index", -1)) == index:
+			return row
+	return {}
+
+## A flyer's **basis**: the node sits at the crate's back point and wears its quaternion, which
+## is what the reference's `peerFlightDraw` draws (`FLIGHT.md` §3, §6.2). The expected position
+## is the crate's own `back_point` at the wire's feet, so this is held against `crates/flight`
+## rather than against a copy of the formula. `state()` reports the *drawn* height, so the
+## expected vector is rebuilt from it and the herd's own ground offset.
+func _expect_flyer_basis(herd: Node, row: Dictionary) -> void:
+	var flight: Variant = herd.get("flight")
+	if flight == null:
+		_failures.append("the herd has no Flight controller, so a flyer cannot be posed")
+		return
+	var x: float = float(row.get("x", 0.0))
+	var z: float = float(row.get("z", 0.0))
+	var offset: float = float(herd.call("ground_offset"))
+	var feet := Vector3(3.0, Terrain.height_at(3.0, 1.0) + 6.0, 1.0)
+	var state := PackedFloat32Array([
+		feet.x, feet.z, feet.y,
+		float(row.get("yaw", 0.0)), float(row.get("pitch", 0.0)), float(row.get("roll", 0.0)),
+		0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+	var want: Vector3 = flight.back_point(state, 0.0, PlayerGoat.FLIGHT_PIVOT) \
+		+ Vector3(0.0, offset, 0.0)
+	var got := Vector3(x, float(row.get("py", 0.0)) + Terrain.height_at(x, z) + offset, z)
+	if got.distance_to(want) > TOLERANCE:
+		_failures.append("the mirrored flyer is at %s, and the crate's back point is %s"
+			% [got, want])
+	print("flyer:   at %s, the crate's back point is %s" % [got, want])
 
 func _finish() -> bool:
 	# The scene's bridge is a real node with a runtime thread; this scene never started it, but the

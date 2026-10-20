@@ -462,6 +462,13 @@ const goatsPlayer = {
             phase: goat.phase,
             speed: curSpeed,
             clip: curClipName,
+            // Captured-bird flight (`APIv1.md` section 4.5, protocol 12): the capability,
+            // whether it is flying, and the attitude a rider or a HUD reads.
+            flight: flightCapable,
+            flying: mode === "fly",
+            pitch: flightPitch,
+            roll: flightRoll,
+            flaps: flightFlaps,
         };
     },
     teleport: function (x, z) {
@@ -494,6 +501,24 @@ const goatsPlayer = {
     },
     restart: function () {
         restart();
+    },
+    // The captured bird's grant, a scripted take-off and the E action (`APIv1.md`
+    // section 4.5). `setFlight(false)` while flying is a release, which is the same
+    // statement the key makes.
+    setFlight: function (on) {
+        if (on) {
+            flightCapable = true;
+            return true;
+        }
+        if (mode === "fly") releaseFlight();
+        flightCapable = false;
+        return true;
+    },
+    fly: function () {
+        return startFlight();
+    },
+    release: function () {
+        return releaseFlight();
     },
 };
 
@@ -551,6 +576,14 @@ function modBotHandle(b) {
         yaw: b.yaw,
         mode: b.mode,
         satiety: b.satiety,
+        // Captured-bird flight (`APIv1.md` section 4.8, protocol 12): the height above
+        // the ground (the player's own `y`), the attitude, the grant and the count.
+        y: b.py,
+        pitch: b.flightPitch,
+        roll: b.flightRoll,
+        flight: b.flightCapable,
+        flying: b.mode === "fly",
+        flaps: b.flightFlaps,
         zoomies: function (seconds) {
             b.zoom = Number(seconds === undefined ? 3 : seconds);
             b.mode = "run";
@@ -561,6 +594,25 @@ function modBotHandle(b) {
         },
         teleport: function (x, z) { b.x = Number(x); b.z = Number(z); },
         face: function (yaw) { b.yaw = Number(yaw); },
+        // The bird's grant and the two scripted verbs. `setFlight(false)` mid-flight
+        // releases, so a bird leaves the same way the player's E takes it away.
+        setFlight: function (on) {
+            if (on) {
+                b.flightCapable = true;
+                return true;
+            }
+            if (b.mode === "fly") releaseBotFlight(b);
+            b.flightCapable = false;
+            return true;
+        },
+        fly: function () {
+            const speed = b.flightSpeed > 0 ? b.flightSpeed : b.jumpSpeed > 0
+                ? b.jumpSpeed : TUNING.flight.minSpeed;
+            return startBotFlight(b, speed);
+        },
+        release: function () {
+            return releaseBotFlight(b);
+        },
     };
 }
 
@@ -590,6 +642,12 @@ function modBotView(b, i) {
     h.yaw = b.yaw;
     h.mode = b.mode;
     h.satiety = b.satiety;
+    h.y = b.py;
+    h.pitch = b.flightPitch;
+    h.roll = b.flightRoll;
+    h.flight = b.flightCapable;
+    h.flying = b.mode === "fly";
+    h.flaps = b.flightFlaps;
     return h;
 }
 

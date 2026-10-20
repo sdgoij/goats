@@ -25,7 +25,7 @@ use session::swarm::{self, Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use tokio::runtime;
 use tokio::sync::mpsc;
 
-use session::bridge::{Command, Event, parse_blast_kind, parse_gait, to_event as bridge};
+use session::bridge::{Command, Event, degrees, parse_blast_kind, parse_gait, to_event as bridge};
 
 /// A delivered frame on its way to the audio module: the speaker's canonical
 /// name (stamped by the relay), the sequence number and the encoded payload.
@@ -433,6 +433,8 @@ async fn run(
                     speed,
                     gait,
                     py,
+                    pitch,
+                    roll,
                 } => {
                     if let Some(session) = live.as_ref() {
                         session
@@ -444,6 +446,8 @@ async fn run(
                                 speed,
                                 gait: parse_gait(&gait),
                                 py,
+                                pitch: degrees(pitch),
+                                roll: degrees(roll),
                             })
                             .await;
                     }
@@ -973,7 +977,7 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         match serde_json::from_str::<Command>(
-            r#"{"type":"pose","x":1.0,"z":2.0,"yaw":0.5,"phase":0.25,"speed":3.0,"gait":"run","py":1.25}"#,
+            r#"{"type":"pose","x":1.0,"z":2.0,"yaw":0.5,"phase":0.25,"speed":3.0,"gait":"fly","py":1.25,"pitch":20,"roll":-10}"#,
         )
         .expect("pose")
         {
@@ -985,10 +989,12 @@ mod tests {
                 speed,
                 gait,
                 py,
+                pitch,
+                roll,
             } => {
                 assert_eq!((x, z, yaw, phase, speed), (1.0, 2.0, 0.5, 0.25, 3.0));
-                assert_eq!(gait, "run");
-                assert_eq!(py, 1.25);
+                assert_eq!(gait, "fly");
+                assert_eq!((py, pitch, roll), (1.25, 20.0, -10.0));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1155,8 +1161,10 @@ mod tests {
                 yaw: 0.0,
                 phase: 0.0,
                 speed: 0.0,
-                gait: session::Gait::Idle,
+                gait: session::Gait::Fly,
                 py: 1.25,
+                pitch: 20,
+                roll: -10,
             },
         }))
         .expect("encode");
@@ -1174,6 +1182,8 @@ mod tests {
                 gait: session::Gait::Idle,
                 variant: 0,
                 py: 0,
+                pitch: 0,
+                roll: 0,
             }],
             weather: session::WeatherState {
                 kind: session::WeatherKind::Cloudy,

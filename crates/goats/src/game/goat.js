@@ -811,7 +811,7 @@ function sceneFrame() {
     // handler below eats it.
     foodTarget = nearestTuft(goat.px, goat.pz, TUNING.food.eatRange);
     foodReady = foodTarget !== null && mode !== "dead" && mode !== "sleep" &&
-        mode !== "jump" && mode !== "eat";
+        mode !== "jump" && mode !== "eat" && mode !== "fly" && mode !== "fall";
     perfMark("food");
 
     // day/night: advance the clock, then refresh the sky and the ambient

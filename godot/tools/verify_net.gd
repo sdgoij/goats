@@ -113,16 +113,24 @@ func _initialize() -> void:
 	#    client. A yaw is periodic, so what has to survive is the *heading*, not the number.
 	const YAW := 4.0
 	for i in 10:
-		_client.call("pose", 1.5, -2.0, YAW, 0.5, 2.0, "trot", 0.0)
+		# The last two are the flight attitude in degrees (protocol 12): a flyer's pitch and
+		# bank travel with the pose, because the owner's trajectory is the authoritative half.
+		_client.call("pose", 1.5, -2.0, YAW, 0.5, 2.0, "fly", 0.0, 20.0, -10.0)
 		OS.delay_msec(20)
-	var peer: String = _wait(_host, ["\"type\":\"peer\"", CLIENT_NAME, "trot"], 30000)
+	var peer: String = _wait(_host, ["\"type\":\"peer\"", CLIENT_NAME, "fly"], 30000)
 	print("host saw:       ", peer)
 	if peer.is_empty():
 		failures.append("the host did not see the client's goat")
 	else:
-		var got_yaw: float = float(JSON.parse_string(peer)["state"]["yaw"])
+		var state: Dictionary = JSON.parse_string(peer)["state"]
+		var got_yaw: float = float(state["yaw"])
 		if absf(sin(got_yaw) - sin(YAW)) > 0.001 or absf(cos(got_yaw) - cos(YAW)) > 0.001:
 			failures.append("the yaw arrived as a different heading: %f, not %f" % [got_yaw, YAW])
+		if String(state.get("gait", "")) != "fly":
+			failures.append("the gait arrived as %s, not fly" % state.get("gait"))
+		if int(state.get("pitch", 0)) != 20 or int(state.get("roll", 0)) != -10:
+			failures.append("the flight attitude arrived as %s/%s, not 20/-10"
+				% [state.get("pitch"), state.get("roll")])
 
 	# 7. The world. A host publishes it and a client adopts the snapshot instead of
 	#    simulating (`net.js` `netMaybePublishWorld`). The payload is `WorldState`'s own
@@ -135,8 +143,8 @@ func _initialize() -> void:
 	#    and the streams travel as they stand and come back exact.
 	var world := {
 		"bots": [
-			{"index": 0, "x": 1.5, "z": -2.5, "yaw": 0.75, "phase": 0.25, "gait": "trot",
-				"variant": 3, "py": 0},
+			{"index": 0, "x": 1.5, "z": -2.5, "yaw": 0.75, "phase": 0.25, "gait": "fly",
+				"variant": 3, "py": 450, "pitch": 15, "roll": -10},
 			{"index": 1, "x": -4.0, "z": 0.5, "yaw": -1.25, "phase": 0.5, "gait": "flung",
 				"variant": 0, "py": 120},
 		],
@@ -160,8 +168,11 @@ func _initialize() -> void:
 		var got_bots: Array = received.get("bots", [])
 		if got_bots.size() != 2:
 			failures.append("the snapshot carried %d bot(s), not 2" % got_bots.size())
-		elif String(got_bots[0].get("gait", "")) != "trot" \
+		elif String(got_bots[0].get("gait", "")) != "fly" \
 				or absf(float(got_bots[0].get("x", 0.0)) - 1.5) > 0.011 \
+				or int(got_bots[0].get("py", 0)) != 450 \
+				or int(got_bots[0].get("pitch", 0)) != 15 \
+				or int(got_bots[0].get("roll", 0)) != -10 \
 				or String(got_bots[1].get("gait", "")) != "flung" \
 				or int(got_bots[1].get("py", 0)) != 120:
 			failures.append("the snapshot's herd is not the one published: %s" % got_bots)

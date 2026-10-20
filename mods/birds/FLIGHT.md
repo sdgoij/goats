@@ -889,10 +889,18 @@ guard and the death in the air) and the herd section of `crates/harness/tests/fl
 
 ### R4 — the API, wire, mod and polish
 
-Everything in §5, §6 and §4 that is not the physics: `setFlight`/`fly`/
-`release`, the state fields, the bot row fields, the birds mod's capture/ride/
-release, `Gait::Fly`/`Fall`, pitch/roll on the wire, protocol 12, the HUD/touch
-polish, the optional camera follow and the `GoatFly`/`GoatFall` art.
+**✅ Landed.** The surface is `setFlight`/`fly`/`release` on the player and every bot
+handle, the five state fields and the bot row's five; the birds mod captures on a
+jump, seats the bird on the goat's back point, publishes `ride` with the attitude,
+releases on `E`, death or a lost grant, and answers `birds mount`/`drop`/`ride`. The
+wire is protocol 12: `Gait::Fly`/`Fall`, `pitch`/`roll` on peers *and* bots, and the
+port's mirrored herd *and* peers draw a flyer from the crate's `back_point`/`pose`.
+
+Both clients also carry the parity work the mechanics needed: the jump/food prompt
+is off in the air, the reference's touch overlay gains a **DROP** button while
+flying (`touch.js`), the port's console gains `fly`/`release`/`flight on|off` and a
+jump-that-is-a-flap in the air (`commands.gd`), and `explosions.fling.pivot` is a
+tuning leaf in the port so the mod's seat and the goat's mesh read one number.
 
 R1 and R2 can land in either order. R4 is the same work as the original plan;
 the crate changes none of it.
@@ -980,23 +988,37 @@ global installed by `crates/flight-js`.
 
 These are the *binding* tests: the GDScript integration of the same crate.
 
-- `verify_flight.gd` (new): calls the `Flight` class directly for the maths and
-  the pose, then walks take-off/landing/fall-damage through `PlayerGoat`.
-- `verify_goat.gd`: extend the tape with a flight run (capability on, run, jump,
-  pitch/bank/flap, release, fall, land), comparing position, `py`, mode, pitch,
-  roll, health, energy, speed and flaps every frame. The oracle is the same
-  `Flight` class, so the gate checks the GDScript integration rather than a
-  second transcription of the maths. The wire phase waits for R4's
-  `GoatFly`/`GoatFall` clips; without them the model holds its take-off pose.
+- `verify_flight.gd`: the `Flight` class directly, then take-off/landing/fall
+damage through `PlayerGoat`.
+- `verify_goat.gd`: the flight tape (capability on, run, jump, pitch/bank/flap,
+  release, fall, land), comparing position, `py`, mode, pitch, roll, health, energy,
+  speed and flaps every frame against the same `Flight` class.
 - `verify_pose.gd`: the yaw/pitch/roll basis and the rider's back point at a
   known attitude.
 - `verify_bots.gd`: bot take-off, orbit, landing and cooldown.
-- `verify_peers.gd` / `verify_net.gd`: `peer` and `world` payloads with
-  `fly`/`fall` and pitch/roll, and a mirrored model's basis.
+- `verify_herd.gd`: a mirrored flyer's **basis** -- the node at the crate's
+  `back_point` and its `pose` quaternion -- plus the jump-at-0.35 clip fallback.
+- `verify_peers.gd`: the role table with `fly`/`fall` over models that have and
+  lack them, and a live flyer placed on the crate's back point with the wire's
+  attitude.
+- `verify_net.gd`: a `pose` and a `world` bot carrying `fly`, `pitch` and `roll`,
+  and both arriving unchanged.
 - `verify_mod_surface.gd`: `player.setFlight/fly/release`, the new state fields,
   bot `setFlight/fly/release`, and the birds mod's `mount` command.
-- `interop.sh` (`join`/`pair`): a host with a flying goat and a flying bot is
-  mirrored by a joiner; the joiner sees the flight poses, not a goat on the grass.
+- `interop.sh pair`: both ends take off halfway through, so each mirrors the
+  other's `fly` gait rather than only its walk.
+- `crates/harness/tests/touch.rs`: the **DROP** button releases a flying goat,
+  which is `E` on a phone.
+
+**The birds mod**
+
+- `crates/harness/tests/birds.rs` is the mod's own gate, in release
+  (`--test birds -- --ignored`). It drives both kinds of world the file already
+  had: `harnessStep` for the flock-only rules (the heal, the mirror, the unload)
+  and the scene's own frames for the capture, the take-off, the seat and the
+  release, because a real jump is the frame.
+- `flush` of the row shape: seven numbers, and a client that applies a `ride`
+  row (seat, `st`, pitch, roll) draws it whole.
 
 ### What is *not* a test
 
@@ -1026,9 +1048,9 @@ the clamps; a play-through asserts that it feels right.
    host/solo and the herd, and the follow-up is scoped.
 6. **Fall damage and the bird's heal.** The mod must not bless a goat at 0 health
    mid-fall (it would revive). The guard is in §4.5 and should be tested.
-7. **Touch release.** The Android overlay has no release button. R4 adds one
-   (the stick is already pitch/bank and the jump button is already flap). Until
-   then, a phone can fly but cannot bail out.
+7. **Touch release.** ✅ A phone can now bail out: `touch.js` draws a **DROP** button
+   above the jump (which is the flap in the air) while the goat is flying. It is the
+   only control that has no key-shaped twin on the overlay.
 8. **A `GoatFly` clip.** The fallback jump pose held at a fixed fraction is a
    placeholder. The artist's contract is one looping `GoatFly` grounded at the
    origin with no root motion, and an optional `GoatFall`; until then the root

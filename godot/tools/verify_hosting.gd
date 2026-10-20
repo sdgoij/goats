@@ -38,8 +38,9 @@ const WEATHER_KEYS := ["kind", "cloudiness", "rain_amount", "wind_x", "wind_z", 
 	"world_time"]
 ## `proto::Streams` / `net.js` `sceneStreams`: the four PRNG states.
 const STREAM_KEYS := ["weather", "bots", "food", "audio"]
-## `proto::BotState` / `net.js` `sceneWorldBots`, including the flung height in centimetres.
-const BOT_KEYS := ["index", "x", "z", "yaw", "phase", "gait", "variant", "py"]
+## `proto::BotState` / `net.js` `sceneWorldBots`, including the flung height in centimetres and
+## the flight attitude in degrees (protocol 12).
+const BOT_KEYS := ["index", "x", "z", "yaw", "phase", "gait", "variant", "py", "pitch", "roll"]
 ## `proto::EatenCell` / `net.js` `sceneEaten`.
 const EATEN_KEYS := ["key", "left"]
 ## `proto::Crater` / `net.js` `netWorldCraters`: four fields, no age and no heal clock.

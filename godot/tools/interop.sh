@@ -29,7 +29,9 @@
 # (`mods.world_mod_refs`) and the host requires exactly them, so the join is
 # accepted and the flock travels. `pair` is the
 # same scene twice against one host, which is the only way to see a *peer*: a
-# `peer` frame is somebody else's goat, so one client can never produce one. And
+# `peer` frame is somebody else's goat, so one client can never produce one. Each
+# end also takes off halfway through (`GOATSD_TICKET`'s pair and the flight slice),
+# so the *fly* gait and its pitch/roll are what the other end mirrors. And
 # `offline` checks the thing a player hits first: pressing play with no session
 # must leave them in a *world*, not in an error. `shot` is the one piece of
 # evidence no gate can carry -- whether it *looks* like a world -- and it needs a
@@ -334,8 +336,8 @@ if [ "$mode" = "pair" ]; then
     fi
     # Both ends are read, not only the exit codes: a client that never saw a peer
     # says so, and which one failed is the first thing worth knowing.
-    grep -E "^(OK|FAIL|peers:)" "$a" || true
-    grep -E "^(OK|FAIL|peers:)" "$b" || true
+    grep -E "^(OK|FAIL|peers:|flew:)" "$a" || true
+    grep -E "^(OK|FAIL|peers:|flew:)" "$b" || true
 elif [ "$mode" = "herd" ]; then
     # The real scene, with the probe switched on: it settles, reports and exits. `GOATSD_HERD`
     # is handed through as `GOATS_PROBE_HERD`, so a large herd is not only *mirrored* but

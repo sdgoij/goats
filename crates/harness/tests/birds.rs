@@ -101,6 +101,79 @@ impl World {
         World { harness, id }
     }
 
+    /// The same world with the scene's own frame loop, which is what a *real* jump
+    /// needs -- `harnessStep` drives only the mods' update. The mod is loaded first,
+    /// then `run()` loads the world exactly as the game does; it ends with
+    /// `sceneShutdown`, so the herd is rebuilt and the flock is reseeded by the
+    /// updates that follow.
+    fn in_frame() -> World {
+        World::in_frame_with_herd(0)
+    }
+
+    /// The frame-loop world with `herd` bots. The count is set both sides of `run()`:
+    /// before because the load steps build the herd, and after because
+    /// `sceneShutdown` unloads it.
+    fn in_frame_with_herd(herd: u32) -> World {
+        let mut world = World::new();
+        // The stub's scripted keyboard stands down, so only the console's held keys
+        // move the goat -- the same seam `crates/harness/tests/flight.rs` uses.
+        world.harness.touch(&json!([])).expect("the touch surface");
+        world
+            .harness
+            .eval(&format!("goats.bots.setCount({herd})"))
+            .expect("the herd");
+        world.harness.run(24).expect("load the scene");
+        if herd > 0 {
+            world
+                .harness
+                .eval(&format!("goats.bots.setCount({herd})"))
+                .expect("the herd");
+        }
+        world
+            .harness
+            .call("harnessSetTotal", &[json!(1_000_000)])
+            .expect("the frame budget");
+        world.harness.reset_frame().expect("the frame clock");
+        world
+    }
+
+    /// Advances the scene's own frame loop, for the cases that need the goat's real
+    /// controllers rather than the mods' update alone.
+    fn frame(&mut self, frames: u32) {
+        for _ in 0..frames {
+            let running = self.harness.call("sceneFrame", &[]).expect("sceneFrame");
+            assert_eq!(running, json!(true), "the frame loop stopped mid-case");
+        }
+    }
+
+    /// Runs one console line, failing the case loudly if it throws.
+    fn command(&mut self, line: &str) -> String {
+        self.harness
+            .command(line)
+            .unwrap_or_else(|error| panic!("{line}: {error}"))
+    }
+
+    fn text(&mut self, code: &str) -> String {
+        self.harness
+            .eval(code)
+            .expect(code)
+            .as_str()
+            .unwrap_or("")
+            .to_string()
+    }
+
+    fn number(&mut self, code: &str) -> f64 {
+        f64_of(self.harness.eval(code).expect(code))
+    }
+
+    fn flag(&mut self, code: &str) -> bool {
+        self.harness
+            .eval(code)
+            .expect(code)
+            .as_bool()
+            .unwrap_or(false)
+    }
+
     /// Steps the mod's `update` `frames` times.
     fn step(&mut self, frames: u32) {
         self.harness
@@ -288,7 +361,9 @@ fn the_cases(checks: &mut Checks) {
             min_gap,
         );
 
-        // The published flock has to fit the world datagram budget.
+        // The published flock has to fit the world datagram budget. Seven numbers a
+        // row since protocol 12: the five the flock has always sent, then the attitude
+        // a `RIDE` bird inherits from its goat (`FLIGHT.md` §6.2).
         let flock = world.published();
         let payload = serde_json::to_string(&flock).expect("the payload");
         checks.check(
@@ -297,7 +372,7 @@ fn the_cases(checks: &mut Checks) {
                 rows.len() == 6
                     && rows
                         .iter()
-                        .all(|row| row.as_array().is_some_and(|row| row.len() == 5))
+                        .all(|row| row.as_array().is_some_and(|row| row.len() == 7))
             }),
             flock.as_array().map_or(0, Vec::len),
         );
@@ -837,6 +912,272 @@ fn the_cases(checks: &mut Checks) {
             "no bird stands where the water is over its feet",
             under == 0.0 && settled == 0.0,
             (under, settled, wet),
+        );
+    }
+
+    // ---- a bird is captured, rides, flies and is released ---------------------
+    // The mechanics are the scene's (`crates/flight`); what this block is for is the
+    // mod half: the capture *is* a jump, the seat is the goat's back point in 3D, and
+    // `E` gives the bird back (`FLIGHT.md` §4). A real jump needs the scene's frame,
+    // not `harnessStep`.
+    {
+        let mut world = World::in_frame();
+        world.frame(2);
+        let sat = world.command("birds sit") == "ok birds sitting";
+        world.frame(1);
+        let perched = world.status();
+        checks.check(
+            "`birds sit` seats a bird before the capture",
+            sat && count(&perched["states"], "perch") == 1.0 && perched["captured"] == json!(0),
+            &perched,
+        );
+
+        // A jump with the bird aboard is the capture. There is no capability yet, so
+        // it is an ordinary jump -- and the bird's grant is what comes out of it.
+        world.command("stop");
+        world.command("jump");
+        world.frame(1);
+        let caught = world.status();
+        checks.check(
+            "a jump with a bird on the goat captures it",
+            caught["captured"] == json!(1) && caught["riders"] == json!(["player"]),
+            &caught,
+        );
+        checks.check(
+            "...and grants the goat the captured bird",
+            world.flag("flightCapable"),
+            world.flag("flightCapable"),
+        );
+
+        // The state waits for the jump to end, then publishes `ride`. The clip's
+        // length is the model's, so this waits for the mode rather than for a number.
+        for _ in 0..240 {
+            if world.text("mode") != "jump" {
+                break;
+            }
+            world.frame(1);
+        }
+        world.frame(2);
+        let riding = world.status();
+        checks.check(
+            "the bird publishes `ride` when the jump ends",
+            count(&riding["states"], "ride") == 1.0,
+            &riding["states"],
+        );
+        checks.check(
+            "a ride's row carries the attitude",
+            world
+                .flock()
+                .first()
+                .and_then(|row| row.as_array())
+                .is_some_and(|row| row.len() == 7),
+            world.flock(),
+        );
+
+        // Run + jump is the take-off.
+        world.command("run");
+        world.command("jump");
+        world.frame(2);
+        checks.check(
+            "a run + jump with a captured bird takes off",
+            world.text("mode") == "fly",
+            world.text("mode"),
+        );
+        checks.check(
+            "...and the scene calls it airborne",
+            world.flag("goatAirborne()"),
+            world.flag("goatAirborne()"),
+        );
+
+        // The seat is the goat's *back point*: the crate's own `backPoint` at the perch
+        // height, which is where the goat's mesh rotates. `S` noses up, so after this
+        // the seat is not the flat perch any more -- which is the whole point of the
+        // rotation.
+        world.command("back");
+        world.frame(90);
+        let pitch = world.number("goats.player.state().pitch");
+        checks.check("the flight pitches up on `S`", pitch > 0.2, pitch);
+        let seat = world
+            .harness
+            .eval(
+                "(function () { const b = __flight.backPoint(playerFlightState(), 1.15, \
+                 goats.tuning.get('explosions.fling.pivot')); \
+                 return [b[0], b[1], b[2]]; })()",
+            )
+            .expect("the crate's back point");
+        let seat = seat.as_array().cloned().unwrap_or_default();
+        let row = world.flock()[0].clone();
+        let off = (f64_of(row[0].clone()) - f64_of(seat[0].clone())).abs()
+            + (f64_of(row[1].clone()) - f64_of(seat[1].clone())).abs()
+            + (f64_of(row[2].clone()) - f64_of(seat[2].clone())).abs();
+        checks.check(
+            "the rider sits on the goat's back point",
+            seat.len() == 3 && off < 0.25,
+            (row, seat),
+        );
+
+        // `E` is the release: the bird leaves and the goat falls.
+        world.command("release");
+        world.frame(2);
+        let released = world.status();
+        let away = count(&released["states"], "takeoff") + count(&released["states"], "fly");
+        checks.check(
+            "`E` releases the bird and the goat falls",
+            released["captured"] == json!(0) && away >= 1.0,
+            &released,
+        );
+        checks.check(
+            "...with the capability gone",
+            !world.flag("flightCapable"),
+            world.flag("flightCapable"),
+        );
+        world.frame(240);
+        checks.check(
+            "...and the goat is back on the ground",
+            world.text("mode") != "fall" && world.number("goat.py") <= 0.01,
+            (world.text("mode"), world.number("goat.py")),
+        );
+    }
+
+    // ---- a rider still heals its goat ----------------------------------------
+    // The perch's gift is the energy that pays for a flight, and it must not stop when
+    // the bird is captured (`FLIGHT.md` §4.5). `harnessStep` drives the mods' update
+    // alone, so the goat's own idle drain is not in this loop -- which makes the gift
+    // the only thing that can move the two numbers.
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(2);
+        // The control's own numbers: half-full, so the gift is visible against the
+        // clamp rather than hidden by it.
+        let _ = world.harness.eval("stats.energy = 40; stats.health = 40");
+        let mounted = world.command("birds mount") == "ok bird mounted";
+        world.step(2);
+        let riding = world.status();
+        let (e0, h0) = world.stats();
+        world.step(300);
+        let (e1, h1) = world.stats();
+        checks.check(
+            "`birds mount` puts a rider on the goat",
+            mounted && count(&riding["states"], "ride") == 1.0,
+            &riding["states"],
+        );
+        checks.check(
+            "a rider heals its goat",
+            e1 > e0 + 10.0 && h1 > h0 + 5.0,
+            (e0, e1, h0, h1),
+        );
+
+        // A bird is not a resurrection: the heal is gated on a living goat, and a dead
+        // one lets the bird go on the same frame (`updateRiders`).
+        let _ = world.harness.eval("mode = 'dead'; stats.health = 0;");
+        let (e2, h2) = world.stats();
+        world.step(120);
+        let (e3, h3) = world.stats();
+        let after = world.status();
+        checks.check(
+            "a rider does not revive a dead goat",
+            (e3 - e2).abs() < 0.01 && (h3 - h2).abs() < 0.01 && after["captured"] == json!(0),
+            (e2, e3, h2, h3, &after["captured"]),
+        );
+    }
+
+    // ---- the herd flies too --------------------------------------------------
+    // `birds ride 0` is the same grant on a bot; its next zoomies hop is the take-off
+    // (`bots.js`), and a landing keeps the bird (`FLIGHT.md` §4.2, §9).
+    {
+        let mut world = World::in_frame_with_herd(1);
+        world.frame(30);
+        // A short flight so the landing is in this case rather than eighteen seconds out.
+        let _ = world.harness.eval("tuningSet('flight.botTime', 1.5)");
+        let rode = world.command("birds ride 0");
+        checks.check(
+            "`birds ride` puts a bird on a bot",
+            rode == "ok bird riding bot 0",
+            rode,
+        );
+        let mut flew = false;
+        for _ in 0..240 {
+            world.frame(1);
+            if world.text("BOTS[0].mode") == "fly" {
+                flew = true;
+                break;
+            }
+        }
+        checks.check(
+            "a bot with a captured bird flies",
+            flew,
+            world.text("BOTS[0].mode"),
+        );
+        world.frame(30);
+        checks.check(
+            "...and climbs into the ring",
+            world.number("BOTS[0].py") > 0.3,
+            world.number("BOTS[0].py"),
+        );
+        world.frame(240);
+        checks.check(
+            "a bot lands with the bird still aboard",
+            world.text("BOTS[0].mode") != "fly" && world.flag("BOTS[0].flightCapable"),
+            (
+                world.text("BOTS[0].mode"),
+                world.flag("BOTS[0].flightCapable"),
+            ),
+        );
+    }
+
+    // ---- a joiner mirrors a ride ---------------------------------------------
+    // The host publishes the seat and the attitude; a client is not told *which* goat
+    // a bird chose and does not need to be (`FLIGHT.md` §8).
+    {
+        let mut world = World::new();
+        world.no_herd();
+        world.step(1);
+        let id = world.id.clone();
+        world.harness.eval("netMode = 'client'").expect("client");
+        let mut data = serde_json::Map::new();
+        data.insert(id, json!([[12.0, 3.0, -4.0, 0.5, 7, 0.3, -0.2]]));
+        world
+            .harness
+            .call("sceneApplyWorldMods", &[json!({ "data": data })])
+            .expect("apply");
+        world.step(30);
+        let row = world.flock()[0].clone();
+        checks.check(
+            "a client mirrors a `ride` bird's seat and attitude",
+            row[4] == json!(7)
+                && (f64_of(row[0].clone()) - 12.0).abs() < 0.5
+                && (f64_of(row[1].clone()) - 3.0).abs() < 0.5
+                && (f64_of(row[2].clone()) + 4.0).abs() < 0.5
+                && (f64_of(row[5].clone()) - 0.3).abs() < 0.03
+                && (f64_of(row[6].clone()) + 0.2).abs() < 0.03,
+            row,
+        );
+        let _ = world.harness.eval("netMode = 'off'");
+    }
+
+    // ---- unload takes the grant with it --------------------------------------
+    // The bird granted the capability, so a flock that is unloaded must not leave a
+    // goat armed with nothing on its back.
+    {
+        let mut world = World::new();
+        world.harness.call("botAdd", &[json!(0)]).expect("botAdd");
+        world.step(2);
+        let mounted = world.command("birds mount") == "ok bird mounted";
+        let _ = world.harness.eval("BOTS[0].flightCapable = true");
+        let id = world.id.clone();
+        world
+            .harness
+            .call("sceneModEnd", &[json!(id)])
+            .expect("sceneModEnd");
+        checks.check(
+            "unloading the flock clears the goat's and the herd's grants",
+            mounted && !world.flag("flightCapable") && !world.flag("BOTS[0].flightCapable"),
+            (
+                mounted,
+                world.flag("flightCapable"),
+                world.flag("BOTS[0].flightCapable"),
+            ),
         );
     }
 }

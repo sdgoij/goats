@@ -533,6 +533,8 @@ func _ready() -> void:
 	flight.configure(PlayerGoat.flight_config())
 	goat.flight = flight
 	bots.flight = flight
+	herd.flight = flight
+	peers.flight = flight
 	_tuning_version = Tuning.version
 	# The camera's boot pose is the *tree's* (`TUNING.camera`), read here rather than at declaration
 	# so a mod's declared `tuning.json` -- merged in the runtime's own `_ready`, just above -- aims it,
@@ -867,6 +869,11 @@ func _mod_snapshot() -> Dictionary:
 			"x": goat.px, "y": goat.py, "z": goat.pz,
 			"yaw": goat.yaw, "phase": goat.phase, "speed": goat.speed,
 			"clip": goat.playing_clip(),
+			# Captured-bird flight (`APIv1.md` section 4.5, protocol 12): the capability,
+			# the mode, and the attitude a rider or a HUD reads.
+			"flight": goat.flight_capable, "flying": goat.mode == "fly",
+			"pitch": goat.flight_pitch, "roll": goat.flight_roll,
+			"flaps": goat.flight_flaps,
 		},
 		"camera": {"yaw": _cam_yaw, "pitch": _cam_pitch, "dist": _cam_dist},
 		"weather": {
@@ -912,6 +919,10 @@ func _mod_bots() -> Array:
 				"x": entry.get("x", 0.0), "z": entry.get("z", 0.0),
 				"yaw": entry.get("yaw", 0.0),
 				"mode": entry.get("gait", "idle"), "satiety": 0.0,
+				"y": entry.get("py", 0.0),
+				"pitch": entry.get("pitch", 0.0), "roll": entry.get("roll", 0.0),
+				"flight": false, "flying": entry.get("gait", "") == "fly",
+				"flaps": 0,
 			})
 	else:
 		for entry: Dictionary in bots.report():
@@ -920,6 +931,11 @@ func _mod_bots() -> Array:
 				"x": entry.get("x", 0.0), "z": entry.get("z", 0.0),
 				"yaw": entry.get("yaw", 0.0),
 				"mode": entry.get("mode", "idle"), "satiety": entry.get("belly", 0.0),
+				"y": entry.get("y", 0.0),
+				"pitch": entry.get("pitch", 0.0), "roll": entry.get("roll", 0.0),
+				"flight": entry.get("flight", false),
+				"flying": entry.get("flying", false),
+				"flaps": entry.get("flaps", 0),
 			})
 	return out
 
@@ -1088,6 +1104,30 @@ func _mod_call(verb: String, args_json: String) -> String:
 		"player.restart":
 			goat.restart()
 			return _mod_ok(null)
+		"player.setFlight":
+			# The captured bird's grant (`APIv1.md` section 4.5): a capability, not a mode.
+			# Disarming a flying goat releases it, which is the `E` the player has. Answers the
+			# reference's own `true`, so a mod's feature check reads the same on both clients.
+			if args.is_empty():
+				return _mod_err("player.setFlight needs on")
+			goat.set_flight(args[0] != false)
+			return _mod_ok(true)
+		"player.fly":
+			return _mod_ok(goat.fly())
+		"player.release":
+			return _mod_ok(goat.release())
+		"bots.setFlight":
+			if args.size() < 2 or not _is_number(args[0]):
+				return _mod_err("bots.setFlight needs an index and on")
+			return _mod_ok(bots.set_flight_at(int(args[0]), args[1] != false))
+		"bots.fly":
+			if args.is_empty() or not _is_number(args[0]):
+				return _mod_err("bots.fly needs an index")
+			return _mod_ok(bots.fly_at(int(args[0])))
+		"bots.release":
+			if args.is_empty() or not _is_number(args[0]):
+				return _mod_err("bots.release needs an index")
+			return _mod_ok(bots.release_at(int(args[0])))
 		"camera.set":
 			# Partial by the API's own words: the facade sends the object as three slots, and a slot
 			# that is not a number is "not given" rather than a write to zero. `cmd_set_camera`
@@ -1369,8 +1409,12 @@ func _publish_pose(delta: float) -> void:
 	if _pose_timer < POSE_INTERVAL:
 		return
 	_pose_timer = 0.0
+	var flying: bool = goat.mode == "fly" or goat.mode == "fall"
+	var airborne: bool = goat.mode == "flung" or flying
 	bridge.call("pose", goat.px, goat.pz, goat.yaw, goat.one_shot_fraction(), goat.speed,
-		goat.mode, goat.py)
+		goat.mode, goat.py if airborne else 0.0,
+		rad_to_deg(goat.flight_pitch) if flying else 0.0,
+		rad_to_deg(goat.flight_roll) if flying else 0.0)
 
 ## Publish the server's world, about ten times a second -- `net.js` `netMaybePublishWorld`, which
 ## is a *host's* alone: a client simulates no world and mirrors one instead. It is the whole of

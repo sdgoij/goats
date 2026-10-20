@@ -36,6 +36,9 @@ const GOAT_SCENE := preload("res://assets/goat_animated.glb")
 const SMOOTH := 12.0
 
 var _goats := {}
+## The flight controller, handed in by `main.gd` for a mirrored flyer's pose. Null in a
+## gate that made none: the mirror then draws a flyer level, which is the old behaviour.
+var flight: Flight = null
 ## The client's `groundOffset`: the model's own lowest point, negated, so its feet
 ## land on the ground rather than at the origin (`model.js` `loadGoat`: `groundOffset
 ## = -bounds.minY`). Measured once, off the first goat instantiated.
@@ -64,6 +67,10 @@ func apply(world: Dictionary) -> void:
 		# `terrainHeight(x, z) + groundOffset + py`.
 		goat["target"] = Vector3(x, Terrain.height_at(x, z) + _ground_offset + lift, z)
 		goat["yaw"] = float(entry.get("yaw", 0.0))
+		# The flight attitude (protocol 12), in degrees on the wire and radians here --
+		# eased like the yaw, because an angle is a look and not a trajectory.
+		goat["tpitch"] = deg_to_rad(float(entry.get("pitch", 0.0)))
+		goat["troll"] = deg_to_rad(float(entry.get("roll", 0.0)))
 		_pose(goat, String(entry.get("gait", "idle")), float(entry.get("phase", 0.0)))
 
 	# A bot off the end of the snapshot has left the host's herd. There is no
@@ -81,9 +88,31 @@ func _process(delta: float) -> void:
 	var k: float = minf(1.0, delta * SMOOTH)
 	for goat: Dictionary in _goats.values():
 		var node: Node3D = goat["node"]
-		node.position = node.position.lerp(goat["target"], k)
+		# The *feet* are eased in their own field rather than read back off the node, because
+		# a flyer's node is the crate's corrected origin and not where the goat's feet are:
+		# easing from the corrected point would feed the pivot offset back in every frame.
+		var feet: Vector3 = (goat["feet"] as Vector3).lerp(goat["target"], k)
+		goat["feet"] = feet
+		node.position = feet
 		var dyaw: float = wrapf(float(goat["yaw"]) - node.rotation.y, -PI, PI)
-		node.rotation.y += dyaw * k
+		goat["yaw"] = node.rotation.y + dyaw * k
+		goat["pitch"] = float(goat["pitch"]) + (float(goat["tpitch"]) - float(goat["pitch"])) * k
+		goat["roll"] = float(goat["roll"]) + (float(goat["troll"]) - float(goat["roll"])) * k
+		var gait: String = String(goat["gait"])
+		if (gait == "fly" or gait == "fall") and flight != null:
+			# A flyer's body rotates about the pivot: the node sits at the crate's
+			# corrected origin, exactly what the reference's `peerFlightDraw` draws.
+			var model_scale: float = node.scale.x
+			var flight_state := PackedFloat32Array([
+				feet.x, feet.z, feet.y - _ground_offset * model_scale,
+				goat["yaw"], goat["pitch"], goat["roll"],
+				0.0, 0.0, 0.0, 0.0, 0.0, 2.0 if gait == "fall" else 1.0])
+			var origin: Vector3 = flight.back_point(flight_state, 0.0,
+				PlayerGoat.FLIGHT_PIVOT * model_scale)
+			node.position = origin + Vector3(0.0, _ground_offset * model_scale, 0.0)
+			node.quaternion = flight.pose(flight_state)
+		else:
+			node.rotation = Vector3(0.0, goat["yaw"], 0.0)
 
 ## The herd's centre: the terrain and the camera follow this. The origin when
 ## there is no herd, which is where the grid is built at startup.
@@ -129,7 +158,9 @@ func state() -> Array:
 		var node: Node3D = goat["node"]
 		out.append({
 			"index": int(index), "x": node.position.x, "z": node.position.z,
-			"yaw": node.rotation.y, "gait": String(goat["gait"]),
+			"yaw": float(goat["yaw"]), "gait": String(goat["gait"]),
+			"py": node.position.y - Terrain.height_at(node.position.x, node.position.z) - _ground_offset,
+			"pitch": float(goat["pitch"]), "roll": float(goat["roll"]),
 		})
 	return out
 
@@ -217,9 +248,15 @@ func _goat_for(index: int) -> Dictionary:
 		"node": node,
 		"anim": _find_animation(node),
 		"target": node.position,
+		# The eased feet, which is not `node.position` once a flyer's basis moves it.
+		"feet": node.position,
 		"yaw": 0.0,
 		"clip": "",
 		"gait": "idle",
+		"pitch": 0.0,
+		"roll": 0.0,
+		"tpitch": 0.0,
+		"troll": 0.0,
 	}
 	_goats[index] = goat
 	return goat
@@ -228,6 +265,13 @@ func _goat_for(index: int) -> Dictionary:
 ## authored origin -- the feet -- at y = 0, so this is 0.0 for this model, which is
 ## what the client measures too (`loadGoat` logs `y 0.000..1.470`). Measuring it
 ## rather than assuming it is what keeps a re-exported model from sinking.
+##
+## Reported, like `Peers.ground_offset`: a caller that wants to put something on the
+## ground the way a mirrored goat stands on it needs the same number -- `verify_herd`
+## rebuilds a flyer's drawn height from it.
+func ground_offset() -> float:
+	return _ground_offset
+
 func _measure_ground_offset(goat: Node3D) -> void:
 	_ground_measured = true
 	var mesh_instance := _find_mesh(goat)
@@ -259,9 +303,16 @@ func _pose(goat: Dictionary, gait: String, phase: float) -> void:
 	goat["gait"] = gait
 	var clip: String = _clip_for(gait)
 	var anim: AnimationPlayer = goat["anim"]
+	var at: float = phase
+	if (gait == "fly" or gait == "fall") and (anim == null or not anim.has_animation(clip)):
+		# The jump stands in for a flight the model has no clip for, held at a leap's
+		# fraction -- the player's own placeholder (`FLIGHT.md` §3), and the reason a
+		# mirrored flyer does not loop the jump.
+		clip = "GoatJump"
+		at = 0.35
 	if clip != goat["clip"]:
 		goat["clip"] = clip
-		if anim != null:
+		if anim != null and anim.has_animation(clip):
 			anim.play(clip)
 	if anim != null and anim.has_animation(clip):
 		# The snapshot carries the fraction through the clip, which is the only
@@ -270,7 +321,7 @@ func _pose(goat: Dictionary, gait: String, phase: float) -> void:
 		# `Pose` is where it lands (`model.js` `poseModelOn`): the clip's *last* frame at a phase
 		# of 1.0 and never a wrap to its first, so a mirrored corpse keeps the pose it fell in
 		# until the host says something else.
-		Pose.on(anim, clip, phase)
+		Pose.on(anim, clip, at)
 
 func _clip_for(gait: String) -> String:
 	match gait:
@@ -284,6 +335,10 @@ func _clip_for(gait: String) -> String:
 		# `dead` is the one gait whose clip is not simply its name capitalised:
 		# the model's is `GoatDeath`.
 		"dead": return "GoatDeath"
+		# Optional, like the player's own roles: the pose falls back to the jump when the
+		# model has no flight action (`_pose` only plays a clip the model has).
+		"fly": return "GoatFly"
+		"fall": return "GoatFall"
 		_: return "GoatIdle"
 
 func _find_animation(node: Node) -> AnimationPlayer:

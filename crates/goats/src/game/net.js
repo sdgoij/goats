@@ -400,6 +400,13 @@ function netPeerState(name, state) {
             // eased is a lower parabola, so this is applied *directly*, every
             // snapshot.
             py: netPeerHeight(state),
+            // The flight attitude (protocol 12), in radians. It *is* eased -- unlike the
+            // height, an angle is a look rather than a trajectory -- so `tpitch`/`troll`
+            // are the targets and the draw reads the smoothed pair.
+            pitch: netPeerAngle(state.pitch),
+            roll: netPeerAngle(state.roll),
+            tpitch: netPeerAngle(state.pitch),
+            troll: netPeerAngle(state.roll),
             gait: state.gait,
             shot: netPeerShot(state.gait),
         });
@@ -421,7 +428,15 @@ function netPeerState(name, state) {
     // reason above and one more -- the arc's shape is the host's simulation, and a
     // smoothed copy of a parabola is a different, lower trajectory.
     p.py = netPeerHeight(state);
+    p.tpitch = netPeerAngle(state.pitch);
+    p.troll = netPeerAngle(state.roll);
     p.gait = state.gait;
+}
+
+// A peer's attitude, from the frame's degrees (protocol 12). Absent is level, which is
+// every grounded goat.
+function netPeerAngle(degrees) {
+    return typeof degrees === "number" && isFinite(degrees) ? degrees * Math.PI / 180 : 0;
 }
 
 // A peer's height above its ground, from the frame. Absent (an older scene, or a goat
@@ -443,6 +458,8 @@ function updatePeers(dt) {
         while (dy > Math.PI) dy -= 2 * Math.PI;
         while (dy < -Math.PI) dy += 2 * Math.PI;
         p.yaw += dy * k;
+        p.pitch += (p.tpitch - p.pitch) * k;
+        p.roll += (p.troll - p.roll) * k;
         if (p.shot) {
             // A one-shot is posed at the fraction the snapshot carried, with
             // nothing to ease toward -- and the wrap below would read the jump
@@ -461,7 +478,8 @@ function updatePeers(dt) {
 // is a fraction through that clip, so it is neither eased nor wrapped the way a
 // loop phase is.
 function netPeerShot(gait) {
-    return gait === "jump" || gait === "dead" || gait === "eat" || gait === "flung";
+    return gait === "jump" || gait === "dead" || gait === "eat" || gait === "flung" ||
+        gait === "fall";
 }
 
 // The clip role a peer's gait plays, falling back like `clipRole` does.
@@ -470,12 +488,33 @@ function peerRole(p) {
     if (p.gait === "sleep" && CLIP.sleep) return "sleep";
     if (p.gait === "eat" && CLIP.eat) return "eat";
     if (p.gait === "flung") return CLIP.flung ? "flung" : "jump";
+    if (p.gait === "fly") return CLIP.fly ? "fly" : "jump";
+    if (p.gait === "fall") return CLIP.fall ? "fall" : "jump";
     if (p.gait === "jump" && CLIP.jump) return "jump";
     if (p.gait === "run" && CLIP.run) return "run";
     if (p.gait === "trot" && CLIP.trot) return "trot";
     if (p.gait === "walk" && CLIP.walk) return "walk";
     if (CLIP.idle) return "idle";
     return "walk";
+}
+
+// The mirrored flyer's pose: the crate's axis-angle and its back point with `perch = 0`,
+// exactly what the owner drew -- the same rule as `flightDraw` for this client's goat.
+// One array for the whole pass, because the crate reads only the feet and the angles.
+const PEER_FLIGHT_STATE = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+function peerFlightDraw(p, tint) {
+    PEER_FLIGHT_STATE[0] = p.x;
+    PEER_FLIGHT_STATE[1] = p.z;
+    PEER_FLIGHT_STATE[2] = terrainHeight(p.x, p.z) + p.py;
+    PEER_FLIGHT_STATE[3] = p.yaw;
+    PEER_FLIGHT_STATE[4] = p.pitch;
+    PEER_FLIGHT_STATE[5] = p.roll;
+    PEER_FLIGHT_STATE[11] = p.gait === "fall" ? 2 : 1;
+    const aa = FLIGHT.axisAngle(PEER_FLIGHT_STATE);
+    const origin = FLIGHT.backPoint(PEER_FLIGHT_STATE, 0, TUNING.explosions.fling.pivot);
+    rl.drawModelEx(p.model, origin[0], origin[1] + groundOffset, origin[2],
+        aa[0], aa[1], aa[2], aa[3] * 180 / Math.PI, 1, 1, 1, tint);
 }
 
 function drawPeers(tint) {
@@ -488,7 +527,9 @@ function drawPeers(tint) {
         // mirrored goat somersaults on the grass. The roll stays the placeholder's on
         // the same rule as `clipRole`'s.
         const py = terrainHeight(p.x, p.z) + groundOffset + p.py;
-        if (p.gait === "flung") {
+        if ((p.gait === "fly" || p.gait === "fall") && FLIGHT !== null) {
+            peerFlightDraw(p, tint);
+        } else if (p.gait === "flung") {
             const d = flingDraw(p.x, py, p.z, p.yaw, flingTumble(p.phase),
                 TUNING.explosions.fling.pivot);
             rl.drawModelEx(p.model, d.x, d.y, d.z, d.ax, d.ay, d.az, d.deg, 1, 1, 1, tint);
@@ -512,7 +553,9 @@ function drawPeersShadow() {
         // so a remote goat is skinned once a frame rather than twice. The roll is
         // the same as the visible pass leaves it, for the same reason.
         const py = terrainHeight(p.x, p.z) + groundOffset + p.py;
-        if (p.gait === "flung") {
+        if ((p.gait === "fly" || p.gait === "fall") && FLIGHT !== null) {
+            peerFlightDraw(p, rl.WHITE);
+        } else if (p.gait === "flung") {
             const d = flingDraw(p.x, py, p.z, p.yaw, flingTumble(p.phase),
                 TUNING.explosions.fling.pivot);
             rl.drawModelEx(p.model, d.x, d.y, d.z, d.ax, d.ay, d.az, d.deg, 1, 1, 1, rl.WHITE);
@@ -532,6 +575,7 @@ function drawPeersShadow() {
 // instead, the way `netBotPhase` carries the bots'.
 function netPeerPhase() {
     if (mode === "flung") return flingProgress();
+    if (mode === "fall" && CLIP.fall) return Math.min(flightTime / CLIP.fall.duration, 1);
     if (mode === "jump" && CLIP.jump) return Math.min(jumpTime / CLIP.jump.duration, 1);
     if (mode === "dead" && CLIP.death) return Math.min(deathTime / CLIP.death.duration, 1);
     if (mode === "eat" && CLIP.eat) return Math.min(eatTime / CLIP.eat.duration, 1);
@@ -556,8 +600,12 @@ function netMaybePublish() {
         // The flung arc's height, in metres (M19f): the one thing a gait and a phase
         // could not say. Zero for every other mode, so a grounded goat costs a number
         // rather than nothing -- and it is what a viewer needs to put the tumble where
-        // the throw actually went.
-        py: netRound3(mode === "flung" ? goat.py : 0),
+        // the throw actually went. A flyer's height is the same kind of number.
+        py: netRound3(mode === "flung" || mode === "fly" || mode === "fall" ? goat.py : 0),
+        // The flight attitude (protocol 12) in degrees: a look rather than a
+        // trajectory, so the wire's one byte each is plenty.
+        pitch: mode === "fly" || mode === "fall" ? Math.round(flightPitch * 180 / Math.PI) : 0,
+        roll: mode === "fly" || mode === "fall" ? Math.round(flightRoll * 180 / Math.PI) : 0,
     });
 }
 
@@ -613,6 +661,11 @@ function sceneWorldBots() {
             // `BotState::py` is typed in -- the scene is where a bot's height lives,
             // so this is the only conversion there is.
             py: Math.round(b.py * 100),
+            // The flight attitude (protocol 12) in degrees, and zero on the ground.
+            pitch: b.mode === "fly" || b.mode === "fall"
+                ? Math.round(b.flightPitch * 180 / Math.PI) : 0,
+            roll: b.mode === "fly" || b.mode === "fall"
+                ? Math.round(b.flightRoll * 180 / Math.PI) : 0,
         });
     }
     return out;
@@ -669,6 +722,10 @@ function netApplyWorld(bots, weather, streams, eaten, craters, spent) {
         // (M19c2), and its corpse is a `dead` row with a height on it. An older row
         // without the field is a grounded bot, which is what zero means.
         b.py = (s.py === undefined ? 0 : s.py) / 100;
+        // The flight attitude (protocol 12) in radians, from the wire's degrees. It is
+        // read by the draw, not by any simulation: a mirrored bot does not fly.
+        b.flightPitch = (s.pitch === undefined ? 0 : s.pitch) * Math.PI / 180;
+        b.flightRoll = (s.roll === undefined ? 0 : s.roll) * Math.PI / 180;
         // A one-shot gait is posed from its own clock in `drawBots`, so point
         // that clock at the fraction the server resolved.
         if (s.gait === "jump") {
@@ -692,6 +749,11 @@ function netApplyWorld(bots, weather, streams, eaten, craters, spent) {
             // costs no protocol version.
             b.deathTime = s.phase;
             b.deathDur = 1;
+        } else if (s.gait === "fall") {
+            // The fall's pose is a one-shot over its clip, so the fraction travels as
+            // the phase and is turned back into the clock the draw divides by.
+            const dur = CLIP.fall ? CLIP.fall.duration : 1;
+            b.flightTime = s.phase * dur;
         }
         const v = s.variant | 0;
         b.var.idle = v;

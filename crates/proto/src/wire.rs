@@ -148,6 +148,10 @@ pub(crate) struct WirePeer {
     /// The flung arc's height above the ground, on the same centimetre grid as every
     /// other distance here (M19f). Zero for every grounded gait, so it is a byte.
     py: i16,
+    /// The flight attitude in degrees (protocol 12): two bytes a frame, and the one
+    /// thing a flying goat's heading and height could not say.
+    pitch: i8,
+    roll: i8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -198,6 +202,10 @@ pub(crate) struct WireBot {
     /// quantisation: two bytes a bot against the ten the rest of the row costs, and
     /// what the flung arc needed to travel.
     py: i16,
+    /// The flight attitude in degrees (protocol 12). `BotState` already carries it as
+    /// `i8`, so these are copies for the same reason `py` is.
+    pitch: i8,
+    roll: i8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -276,6 +284,8 @@ impl WirePeer {
             speed: speed_units(frame.state.speed),
             gait: frame.state.gait,
             py: centimetres(frame.state.py),
+            pitch: frame.state.pitch,
+            roll: frame.state.roll,
         }
     }
 
@@ -290,6 +300,8 @@ impl WirePeer {
                 speed: speed_of(self.speed),
                 gait: self.gait,
                 py: metres(self.py),
+                pitch: self.pitch,
+                roll: self.roll,
             },
         }
     }
@@ -419,6 +431,8 @@ impl WireBot {
             gait: bot.gait,
             variant: bot.variant,
             py: bot.py,
+            pitch: bot.pitch,
+            roll: bot.roll,
         }
     }
 
@@ -432,6 +446,8 @@ impl WireBot {
             gait: self.gait,
             variant: self.variant,
             py: self.py,
+            pitch: self.pitch,
+            roll: self.roll,
         }
     }
 }
@@ -472,6 +488,8 @@ mod tests {
             variant: 2,
             // A flung bot, so the round trips below carry a height rather than a zero.
             py: 312,
+            pitch: 20,
+            roll: -30,
         }
     }
 
@@ -486,6 +504,8 @@ mod tests {
                 speed: 1.25,
                 gait: Gait::Run,
                 py: 3.12,
+                pitch: -20,
+                roll: 30,
             },
         }
     }

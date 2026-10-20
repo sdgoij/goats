@@ -237,5 +237,28 @@ fn the_touch_controls_drive_the_goat() {
         );
     }
 
+    // ---- the bail-out, which only exists in the air --------------------------
+    {
+        let mut harness = Harness::start().expect("evaluate the scene");
+        let (rx, ry) = spot(&mut harness, "release");
+        harness
+            .touch(&json!([[20, [[1, rx, ry]]], [30, []]]))
+            .expect("touches");
+        // A goat already up, with the height to still be up when the tap lands: the touch
+        // layer's own gate, not the flight's (`crates/harness/tests/flight.rs` has the
+        // take-off). `release` is `E`, and the tap is the phone's only way to make it.
+        harness.eval("mode = 'fly'; goat.py = 8").expect("airborne");
+        harness.run(25).expect("run the scene");
+        let mode = harness
+            .eval("mode")
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string));
+        checks.check(
+            "the release button releases a flying goat",
+            mode.as_deref() == Some("fall"),
+            mode,
+        );
+    }
+
     checks.finish();
 }

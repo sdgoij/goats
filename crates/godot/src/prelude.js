@@ -112,6 +112,9 @@ if (typeof globalThis.goats === "undefined") {
             if (handle === undefined) {
                 handle = BOT_VIEW[index] = {
                     id: index, x: 0, z: 0, yaw: 0, mode: "idle", satiety: 0,
+                    // The captured-bird fields (`APIv1.md` section 4.8, protocol 12): the
+                    // height above the ground, the attitude, the grant and the count.
+                    y: 0, pitch: 0, roll: 0, flight: false, flying: false, flaps: 0,
                     // The index goes with the verb, because one handle per position is what the
                     // loop keeps -- and `zoomies`'s own default of 3 seconds is `mods.js`'s.
                     zoomies: function (seconds) {
@@ -125,6 +128,17 @@ if (typeof globalThis.goats === "undefined") {
                     },
                     face: function (yaw) {
                         ask("bots.face", [index, Number(yaw)]);
+                    },
+                    // The bird's grant and its two scripted verbs. `setFlight(false)` mid-flight
+                    // releases, so a bird leaves the way the player's E takes it away.
+                    setFlight: function (on) {
+                        return ask("bots.setFlight", [index, on !== false]);
+                    },
+                    fly: function () {
+                        return ask("bots.fly", [index]);
+                    },
+                    release: function () {
+                        return ask("bots.release", [index]);
                     },
                 };
             }
@@ -146,6 +160,12 @@ if (typeof globalThis.goats === "undefined") {
             handle.yaw = entry.yaw;
             handle.mode = entry.mode;
             handle.satiety = entry.satiety;
+            handle.y = typeof entry.y === "number" ? entry.y : 0;
+            handle.pitch = typeof entry.pitch === "number" ? entry.pitch : 0;
+            handle.roll = typeof entry.roll === "number" ? entry.roll : 0;
+            handle.flight = entry.flight === true;
+            handle.flying = entry.flying === true;
+            handle.flaps = typeof entry.flaps === "number" ? entry.flaps : 0;
             return handle;
         }
 
@@ -1192,6 +1212,9 @@ if (typeof globalThis.goats === "undefined") {
                         exhausted: p.exhausted, satiety: p.satiety,
                         x: p.x, y: p.y, z: p.z, yaw: p.yaw,
                         phase: p.phase, speed: p.speed, clip: p.clip,
+                        // Captured-bird flight (`APIv1.md` section 4.5).
+                        flight: p.flight === true, flying: p.flying === true,
+                        pitch: p.pitch, roll: p.roll, flaps: p.flaps,
                     };
                 },
                 teleport: function (x, z) {
@@ -1217,6 +1240,17 @@ if (typeof globalThis.goats === "undefined") {
                 },
                 restart: function () {
                     ask("player.restart", []);
+                },
+                // The bird's grant, a scripted take-off and the E action (`APIv1.md`
+                // section 4.5). `setFlight(false)` while flying releases.
+                setFlight: function (on) {
+                    return ask("player.setFlight", [on !== false]);
+                },
+                fly: function () {
+                    return ask("player.fly", []);
+                },
+                release: function () {
+                    return ask("player.release", []);
                 },
             },
 
