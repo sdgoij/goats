@@ -26,7 +26,8 @@ use godot::prelude::*;
 use serde::Deserialize;
 use serde_json::json;
 use session::bridge::degrees;
-use session::registry::{Registry, RegistryConfig, RegistryPeers};
+use session::node::{Node as SessionNode, NodeConfig};
+use session::registry::{Registry, RegistryConfig};
 use session::swarm::{self, Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use session::{BlastKind, Client, Event as Net, Gait, Host, ModRef, PeerState, WorldState};
 use tokio::sync::mpsc;
@@ -116,17 +117,6 @@ impl RegistryOpts {
     }
 }
 
-/// What the swarm task needs from the registry: the ticket to publish and the handle it seeds
-/// from the tickets it hears. A slot rather than a value because the registry starts after the
-/// swarm -- `main.gd` sets the mods directory once the loader has found it.
-#[derive(Clone)]
-struct RegistryBridge {
-    peers: RegistryPeers,
-    ticket: String,
-}
-
-type RegistrySlot = Arc<Mutex<Option<RegistryBridge>>>;
-
 /// One intent, from a GDScript call. The raylib client parses these out of JSON
 /// lines because its scene is the other side of the bridge; here the call *is*
 /// the parse, so the enum is built directly.
@@ -196,14 +186,10 @@ enum Command {
     /// Leave the swarm. Discovery stops and, if this client is hosting, its advert is
     /// withdrawn rather than left for the TTL.
     SwarmLeave,
-    /// A no-op. `set_swarm_auto` sends one so the runtime thread starts at boot, which
-    /// is what lets the auto-joined swarm begin beaconing before the scene asks for
-    /// anything. It reconfigures nothing.
-    Noop,
     /// Configure the registry from the mods directory (M18f). `None` leaves it off;
-    /// `main.gd` sends this once the loader has found its directory, which is after
-    /// the runtime thread has started. Boxed because the configuration is much larger
-    /// than every other intent here.
+    /// `main.gd` sends this once the loader has found its directory, before it asks for
+    /// the swarm, because the node the catalogue binds is the one the swarm joins.
+    /// Boxed because the configuration is much larger than every other intent here.
     SetRegistry(Option<Box<RegistryOpts>>),
     /// `mod registry`: the catalogue, and what this node mirrors.
     ModsRegistry,
@@ -325,10 +311,6 @@ struct NetBridge {
     /// and its mods directory -- and read at each `join`/`host`, so the fetch consent is the
     /// player's rather than a default.
     pull: Pull,
-    /// Join the default swarm when the runtime thread starts. Off until the scene asks
-    /// (`set_swarm_auto`), so a gate that constructs a bridge is never joined by a beacon it
-    /// did not ask for; `main.gd` turns it on from `GOATS_SWARM` (default on).
-    swarm_auto: bool,
     /// The codec half (`crate::voice`): the speech gate, the Opus coder and the mix the scene
     /// plays. It lives on this node rather than a second one because the *wire* is here -- a
     /// captured frame goes out and a delivered one comes back through the same session, and
@@ -349,7 +331,6 @@ impl INode for NetBridge {
                 mods_dir: None,
                 always: false,
             },
-            swarm_auto: false,
             voice: crate::voice::Voice::new(),
         }
     }
@@ -459,8 +440,10 @@ impl NetBridge {
 
     /// Configure the registry (M18f) from the mods directory. `GOATS_MODS_REGISTRY=0`
     /// leaves it off; `GOATS_MODS_SHARE=1` announces this client's mods. The scene calls
-    /// this once the loader has found its directory, which is after the runtime thread has
-    /// started, so the registry is started by a command rather than at boot.
+    /// this once the loader has found its directory, and it is the *first* transport
+    /// command it sends: the catalogue's node accepts the blobs protocol from the first
+    /// connection, and a router cannot gain an ALPN after it has spawned, so the swarm
+    /// joins the node this binds rather than the other way round.
     #[func]
     fn set_registry(&mut self, mods_dir: GString) -> GString {
         let dir = mods_dir.to_string();
@@ -668,18 +651,24 @@ impl NetBridge {
         self.queue_command(Command::SwarmLeave)
     }
 
-    /// Whether the runtime joins the default swarm when it starts. The game turns this on at
-    /// boot (`main.gd`, from `GOATS_SWARM`); a gate leaves it off, because a bridge that
+    /// Whether the runtime joins the default swarm. The game turns this on at boot
+    /// (`main.gd`, from `GOATS_SWARM`); a gate leaves it off, because a bridge that
     /// started advertising on the shared multicast group would join every other gate's
     /// bridge on the machine.
+    ///
+    /// It queues the join rather than starting one here: `set_registry` runs first, so
+    /// the node this joins has the catalogue's store and blobs protocol, and the game
+    /// prints one ticket for both.
     #[func]
     fn set_swarm_auto(&mut self, on: bool) {
-        self.swarm_auto = on;
-        if on && self.commands.is_none() {
-            // Start the runtime here rather than on the first session command: discovery
+        if on {
+            // Starting the runtime here rather than on the first session command: discovery
             // should be live from boot, so the `swarm` status and the portal list are
             // populated before the player decides to host or join anything.
-            let _ = self.queue_command(Command::Noop);
+            self.queue_command(Command::SwarmJoin {
+                topic: None,
+                peers: Vec::new(),
+            });
         }
     }
 
@@ -764,7 +753,7 @@ impl NetBridge {
     /// Make sure the runtime thread is up, then hand it the intent.
     fn queue_command(&mut self, command: Command) -> GString {
         if self.commands.is_none() {
-            match start_runtime(self.queue.clone(), self.voice_in.clone(), self.swarm_auto) {
+            match start_runtime(self.queue.clone(), self.voice_in.clone()) {
                 Ok((commands, thread)) => {
                     self.commands = Some(commands);
                     self.thread = Some(thread);
@@ -803,7 +792,6 @@ impl NetBridge {
 fn start_runtime(
     queue: Queue,
     voice_in: VoiceQueue,
-    auto_swarm: bool,
 ) -> Result<(mpsc::UnboundedSender<Command>, thread::JoinHandle<()>), String> {
     let (commands, receiver) = mpsc::unbounded_channel();
     let thread = thread::Builder::new()
@@ -823,7 +811,7 @@ fn start_runtime(
                     return;
                 }
             };
-            runtime.block_on(run(receiver, queue, voice_in, auto_swarm));
+            runtime.block_on(run(receiver, queue, voice_in));
         })
         .map_err(|error| format!("could not start the networking thread: {error}"))?;
     Ok((commands, thread))
@@ -831,36 +819,20 @@ fn start_runtime(
 
 /// The session loop. Mirrors `net.rs`: with a session up, wait on a command and
 /// an event at once; with none, wait on a command.
-async fn run(
-    mut commands: mpsc::UnboundedReceiver<Command>,
-    queue: Queue,
-    voice_in: VoiceQueue,
-    auto_swarm: bool,
-) {
+async fn run(mut commands: mpsc::UnboundedReceiver<Command>, queue: Queue, voice_in: VoiceQueue) {
     let mut live: Option<Live> = None;
     // The swarm this client is in, if any, and the task draining its events. The command
     // side is what hosts advertise through; the task is aborted on a topic switch so a
     // stale list cannot overtake the new swarm's.
     let mut swarm: Option<SwarmCommands> = None;
     let mut swarm_task: Option<tokio::task::JoinHandle<()>> = None;
-    // The registry is started by `SetRegistry` rather than at boot: the mods directory is
-    // known only after the scene's loader runs, and the runtime is already up by then. The
-    // slot is what lets the swarm task, which outlives that moment, hand it the tickets it
-    // hears and publish its own once it exists.
-    let registry_slot: RegistrySlot = Arc::new(Mutex::new(None));
+    // The one endpoint this client uses, bound on first need. The catalogue binds it with
+    // a blob store and the swarm reuses it, so one ticket introduces both and there is
+    // never a second socket. `main.gd` calls `set_registry` before `set_swarm_auto` for
+    // exactly that reason: the router's ALPNs are fixed at spawn.
+    let mut node: Option<Arc<SessionNode>> = None;
     let mut registry: Option<Registry> = None;
     let mut registry_dir: Option<PathBuf> = None;
-    if auto_swarm {
-        // Zero-config: the default topic is joined before the first command, so the LAN
-        // beacon is already introducing this client to the network when the scene asks.
-        match join_swarm(None, Vec::new(), &registry_slot, &queue).await {
-            Ok((commands, task)) => {
-                swarm = Some(commands);
-                swarm_task = Some(task);
-            }
-            Err(text) => push(&queue, notice(text)),
-        }
-    }
     // How often a hosting client restates its advert. The interval is only polled inside a
     // live session; the swarm task's own timer covers the gaps.
     let mut announce = tokio::time::interval(session::swarm::ADVERT_EVERY);
@@ -1023,7 +995,7 @@ async fn run(
             // publish while playing.
             Outcome::Command(Some(Command::SwarmJoin { topic, peers })) => {
                 stop_swarm(&mut swarm, &mut swarm_task);
-                match join_swarm(topic, peers, &registry_slot, &queue).await {
+                match join_swarm(&mut node, topic, peers, &queue).await {
                     Ok((commands, task)) => {
                         if let Some(Live::Host(host)) = &live {
                             advertise_host(host, Some(&commands)).await;
@@ -1057,7 +1029,6 @@ async fn run(
                     push(&queue, notice("swarm: not in a swarm".to_string()));
                 }
             }
-            Outcome::Command(Some(Command::Noop)) => {}
             // The registry's console surface (M18f). A fetch is the player saying yes, as
             // `--pull` is on a join; the verbs are the port's counterpart of `mods.js`'s.
             Outcome::Command(Some(Command::SetRegistry(opts))) => {
@@ -1065,29 +1036,19 @@ async fn run(
                     && let Some(opts) = opts
                 {
                     let opts = *opts;
-                    match Registry::start(opts.config).await {
-                        Ok(started) => {
+                    match start_registry(&mut node, opts).await {
+                        Ok((started, mods_dir, share)) => {
                             push(
                                 &queue,
                                 notice(format!("registry: ticket {}", started.ticket())),
                             );
-                            let bridge = RegistryBridge {
-                                peers: started.peers(),
-                                ticket: started.ticket().to_string(),
-                            };
-                            *registry_slot.lock().expect("registry slot") = Some(bridge.clone());
-                            if let Some(swarm) = &swarm {
-                                swarm.registry(bridge.ticket);
-                            }
-                            if let Some(dir) = opts.share.as_deref() {
+                            if let Some(dir) = share.as_deref() {
                                 share_mods(&started, dir, &queue).await;
                             }
-                            registry_dir = Some(opts.mods_dir);
+                            registry_dir = Some(mods_dir);
                             registry = Some(started);
                         }
-                        Err(error) => {
-                            push(&queue, notice(format!("registry: {error}")));
-                        }
+                        Err(text) => push(&queue, notice(text)),
                     }
                 }
             }
@@ -1156,6 +1117,11 @@ async fn run(
     if let Some(registry) = registry {
         registry.shutdown().await;
     }
+    // The catalogue left the node alone; closing it is the client's, and it has to happen
+    // on this thread while the runtime is still up.
+    if let Some(node) = node {
+        node.shutdown().await;
+    }
 }
 
 /// Ends a session, withdrawing its swarm advert first: a host that stops hosting should
@@ -1195,12 +1161,50 @@ async fn advertise_host(host: &Host, swarm: Option<&SwarmCommands>) {
     });
 }
 
+/// Binds the client's one node the first time something needs it, or hands back the one
+/// already bound. The configuration is the first caller's: a node is bound once, and the
+/// router cannot gain an ALPN afterwards.
+async fn bind_node(
+    node: &mut Option<Arc<SessionNode>>,
+    config: NodeConfig,
+) -> Result<Arc<SessionNode>, String> {
+    if let Some(node) = node {
+        return Ok(node.clone());
+    }
+    let bound = SessionNode::bind(config)
+        .await
+        .map_err(|error| error.to_string())?;
+    *node = Some(bound.clone());
+    Ok(bound)
+}
+
+/// Starts the catalogue on the client's node, binding it with a blob store if this is the
+/// first thing to need one. Answers the registry, the directory a share and a fetch
+/// install into, and the directory to announce now when `GOATS_MODS_SHARE` asks.
+async fn start_registry(
+    node: &mut Option<Arc<SessionNode>>,
+    mut opts: RegistryOpts,
+) -> Result<(Registry, PathBuf, Option<PathBuf>), String> {
+    let bind = NodeConfig {
+        secret: opts.config.secret.take(),
+        reach: opts.config.reach,
+        blobs: Some(opts.config.store.clone()),
+    };
+    let bound = bind_node(node, bind).await?;
+    let registry = Registry::start_on(bound, opts.config)
+        .await
+        .map_err(|error| format!("registry: {error}"))?;
+    Ok((registry, opts.mods_dir, opts.share))
+}
+
 /// Joins a swarm and starts the task that turns its events into scene lines. `topic`
 /// absent means the default; `peers` are the seed nodes, from the console or a ticket.
+/// The swarm subscribes on the client's node, so the ticket it announces is the
+/// catalogue's too.
 async fn join_swarm(
+    node: &mut Option<Arc<SessionNode>>,
     topic: Option<String>,
     peers: Vec<String>,
-    registry: &RegistrySlot,
     queue: &Queue,
 ) -> Result<(SwarmCommands, tokio::task::JoinHandle<()>), String> {
     let topic = match topic
@@ -1215,7 +1219,7 @@ async fn join_swarm(
     for peer in peers {
         seeds.push(swarm::parse_peer(&peer)?);
     }
-    let config = SwarmConfig {
+    let mut config = SwarmConfig {
         secret: swarm::secret_from_env()?,
         peers: seeds,
         lan: std::env::var("GOATS_SWARM_LAN")
@@ -1223,13 +1227,19 @@ async fn join_swarm(
             .unwrap_or(true),
         ..SwarmConfig::new(topic)
     };
-    let mut joined = session::swarm::Swarm::join(config)
+    let bound = bind_node(
+        node,
+        NodeConfig {
+            secret: config.secret.take(),
+            reach: config.reach,
+            blobs: None,
+        },
+    )
+    .await?;
+    let mut joined = session::swarm::Swarm::join_on(bound, config)
         .await
         .map_err(|error| format!("swarm: {error}"))?;
     let commands = joined.commands();
-    if let Some(bridge) = registry.lock().expect("registry slot").as_ref() {
-        commands.registry(bridge.ticket.clone());
-    }
     let announced = json!({
         "type": "swarm",
         "joined": true,
@@ -1244,7 +1254,6 @@ async fn join_swarm(
     .to_string();
     let task = {
         let queue = queue.clone();
-        let registry = registry.clone();
         tokio::spawn(async move {
             while let Some(event) = joined.next_event().await {
                 let line = match event {
@@ -1259,15 +1268,6 @@ async fn join_swarm(
                     })
                     .to_string(),
                     SwarmEvent::Failed(text) => notice(format!("swarm: {text}")),
-                    // A peer's catalogue is a separate endpoint; this is the introduction.
-                    // The registry may start after this task, so the slot is read per event
-                    // rather than captured once.
-                    SwarmEvent::Registry(ticket) => {
-                        if let Some(bridge) = registry.lock().expect("registry slot").as_ref() {
-                            let _ = bridge.peers.join(&ticket);
-                        }
-                        continue;
-                    }
                 };
                 push(&queue, line);
             }
@@ -1459,7 +1459,6 @@ async fn start(
         | Command::Voice { .. }
         | Command::SwarmJoin { .. }
         | Command::SwarmLeave
-        | Command::Noop
         | Command::SetRegistry(_)
         | Command::ModsRegistry
         | Command::ModsShare

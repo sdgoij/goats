@@ -41,16 +41,15 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use iroh::address_lookup::memory::MemoryLookup;
-use iroh::endpoint::presets;
-use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+use iroh::{EndpointAddr, EndpointId, SecretKey};
+use iroh_gossip::TopicId;
 use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
-use iroh_gossip::{Gossip, TopicId};
 use iroh_tickets::Ticket;
 use iroh_tickets::endpoint::EndpointTicket;
 use n0_future::StreamExt;
@@ -59,6 +58,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::mpsc;
 
 use crate::Error;
+use crate::node::{Node, NodeConfig};
 
 /// The default swarm: SHA-256 of `goats/swarm/v1`, in the hex form a
 /// [`TopicId`] parses. A stable hash rather than a random id means every build
@@ -242,82 +242,69 @@ pub enum SwarmEvent {
     /// The gossip stream failed. The task keeps whatever it has; this is a line
     /// for the console, not a shutdown.
     Failed(String),
-    /// A peer's registry endpoint ticket. The catalogue is on that endpoint and
-    /// its own topic, so this is only the introduction -- exactly what an advert
-    /// is for a session.
-    Registry(String),
 }
 
 /// A handle to a joined swarm.
 ///
-/// The endpoint, router and gossip actor live in a task; this is the command
-/// side plus the event stream, so a caller can drain events in one task and
-/// advertise from another.
+/// The endpoint, router and gossip actor live on the [`Node`]; this is the
+/// subscription's command side plus the event stream, so a caller can drain
+/// events in one task and advertise from another. A swarm is one topic on a node
+/// that the registry may share, which is why leaving does not close the node.
 pub struct Swarm {
     topic: TopicId,
-    addr: EndpointAddr,
-    ticket: String,
+    node: Arc<Node>,
     commands: mpsc::Sender<Command>,
     events: mpsc::Receiver<SwarmEvent>,
 }
 
 impl Swarm {
-    /// Binds a swarm endpoint, joins `config.topic`, and starts the task that
+    /// Binds a gossip-only node, joins `config.topic`, and starts the task that
     /// keeps the list and restates the advert. It returns as soon as the
     /// subscription exists; neighbours arrive as events.
-    pub async fn join(config: SwarmConfig) -> Result<Swarm, Error> {
+    ///
+    /// A caller that also wants the registry binds the [`Node`] itself and uses
+    /// [`Swarm::join_on`], so both share one ticket.
+    pub async fn join(mut config: SwarmConfig) -> Result<Swarm, Error> {
+        let node = Node::bind(NodeConfig {
+            secret: config.secret.take(),
+            reach: config.reach,
+            blobs: None,
+        })
+        .await?;
+        Self::join_on(node, config).await
+    }
+
+    /// Joins `config.topic` on `node`. `config.secret` and `config.reach` are the
+    /// node's: a node is bound once, and a subscription does not rebind it.
+    pub async fn join_on(node: Arc<Node>, config: SwarmConfig) -> Result<Swarm, Error> {
         let SwarmConfig {
             topic,
             peers,
-            secret,
-            reach,
             lan,
             advert_every,
             advert_ttl,
+            ..
         } = config;
 
-        let mut builder = match reach {
-            Reach::Wan => Endpoint::builder(presets::N0),
-            Reach::Direct => Endpoint::builder(presets::Minimal),
-        };
-        // A ticket's addresses are learned on this endpoint rather than by a DNS
-        // lookup: gossip dials by id, and the LAN beacon adds to the same table
-        // as tickets are heard there. The lookup is installed even with no
-        // seeds, because that is exactly the case the beacon fills in.
-        let lookup = MemoryLookup::new();
         for peer in &peers {
-            lookup.add_endpoint_info(peer.clone());
+            node.add_peer(peer.clone());
         }
-        builder = builder.address_lookup(lookup.clone());
-        if let Some(secret) = secret {
-            builder = builder.secret_key(secret);
-        }
-        let endpoint = builder
-            .bind()
-            .await
-            .map_err(|error| Error::Swarm(format!("bind: {error}")))?;
-        let gossip = Gossip::builder().spawn(endpoint.clone());
-        let router = Router::builder(endpoint.clone())
-            .accept(iroh_gossip::ALPN, gossip.clone())
-            .spawn();
-
         let peer_ids: Vec<EndpointId> = peers.iter().map(|peer| peer.id).collect();
-        let (sender, receiver) = gossip
+        let (sender, receiver) = node
+            .gossip()
             .subscribe(topic, peer_ids)
             .await
             .map_err(|error| Error::Swarm(format!("subscribe: {error}")))?
             .split();
-        let ticket = EndpointTicket::new(endpoint.addr()).encode_string();
-        let addr = endpoint.addr();
 
         let (commands, command_rx) = mpsc::channel(COMMAND_BACKLOG);
         let (event_tx, events) = mpsc::channel(COMMAND_BACKLOG);
         if lan {
             spawn_lan(
                 topic,
-                ticket.clone(),
-                addr.id,
-                lookup,
+                node.ticket().to_string(),
+                node.id(),
+                node.lookup().clone(),
                 commands.clone(),
                 event_tx.clone(),
             );
@@ -327,18 +314,22 @@ impl Swarm {
             sender,
             command_rx,
             event_tx,
-            router,
             advert_every,
             advert_ttl,
         ));
 
         Ok(Swarm {
             topic,
-            addr,
-            ticket,
+            node,
             commands,
             events,
         })
+    }
+
+    /// The node this swarm is a subscription on, so a registry (or a second swarm
+    /// after `swarm join`) can use the same endpoint and ticket.
+    pub fn node(&self) -> &Arc<Node> {
+        &self.node
     }
 
     /// The topic this swarm is.
@@ -346,21 +337,22 @@ impl Swarm {
         self.topic
     }
 
-    /// This node's swarm endpoint id, which is what a peer list needs when the
+    /// This node's endpoint id, which is what a peer list needs when the
     /// address lookup can resolve it.
     pub fn id(&self) -> EndpointId {
-        self.addr.id
+        self.node.id()
     }
 
     /// This node's endpoint address, addresses included.
     pub fn addr(&self) -> &EndpointAddr {
-        &self.addr
+        self.node.addr()
     }
 
-    /// A ticket for this node's swarm endpoint. Hand it to a node that has
-    /// nothing else: it carries the addresses, so no lookup is involved.
+    /// A ticket for this node. Hand it to a node that has nothing else: it
+    /// carries the addresses, so no lookup is involved, and it introduces the
+    /// catalogue as well as the session.
     pub fn ticket(&self) -> &str {
-        &self.ticket
+        self.node.ticket()
     }
 
     /// A cloneable command side, for the caller that advertises while another
@@ -396,15 +388,9 @@ impl SwarmCommands {
         let _ = self.0.try_send(Command::Withdraw);
     }
 
-    /// Names this node's registry endpoint so peers can join its catalogue. The
-    /// task restates it with the adverts; a node with no registry publishes
-    /// nothing.
-    pub fn registry(&self, ticket: String) {
-        let _ = self.0.try_send(Command::Registry(ticket));
-    }
-
-    /// Leaves the topic. The task broadcasts a withdrawal if it had an advert,
-    /// then shuts the router down.
+    /// Leaves the topic. The task broadcasts a withdrawal if it had an advert.
+    /// The node stays open, because a catalogue may be a second subscription on
+    /// it; whoever bound the node closes it.
     pub fn leave(&self) {
         let _ = self.0.try_send(Command::Leave);
     }
@@ -413,7 +399,6 @@ impl SwarmCommands {
 enum Command {
     Advert(Advert),
     Withdraw,
-    Registry(String),
     Peers(Vec<EndpointId>),
     Leave,
 }
@@ -423,20 +408,8 @@ enum Command {
 /// be dropped before it reached the other side.
 #[derive(Debug, Serialize, Deserialize)]
 enum Wire {
-    Advert {
-        advert: Advert,
-        nonce: u64,
-    },
-    Gone {
-        ticket: String,
-        nonce: u64,
-    },
-    /// Where this peer's mod catalogue is. A separate endpoint and topic, so a
-    /// node that does not run one simply never sends this.
-    Registry {
-        ticket: String,
-        nonce: u64,
-    },
+    Advert { advert: Advert, nonce: u64 },
+    Gone { ticket: String, nonce: u64 },
 }
 
 impl Wire {
@@ -456,12 +429,10 @@ async fn run(
     sender: GossipSender,
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<SwarmEvent>,
-    router: Router,
     advert_every: Duration,
     advert_ttl: Duration,
 ) {
     let mut own: Option<Advert> = None;
-    let mut own_registry: Option<String> = None;
     let mut last_broadcast: Option<Instant> = None;
     let mut hosts: HashMap<String, (Advert, Instant)> = HashMap::new();
     let mut neighbours: HashSet<EndpointId> = HashSet::new();
@@ -487,12 +458,6 @@ async fn run(
                 Some(Command::Withdraw) => {
                     if let Some(advert) = own.take() {
                         let _ = broadcast_gone(&sender, &advert.ticket).await;
-                    }
-                }
-                Some(Command::Registry(ticket)) => {
-                    if let Some(ticket) = clean_ticket(&ticket) {
-                        let _ = broadcast_registry(&sender, &ticket).await;
-                        own_registry = Some(ticket);
                     }
                 }
                 // A peer heard on the LAN. Gossip dials it by id, and the
@@ -540,11 +505,6 @@ async fn run(
                             let _ = events.send(SwarmEvent::Hosts(list(&hosts))).await;
                         }
                         Some(Wire::Gone { .. }) => {}
-                        Some(Wire::Registry { ticket, .. }) => {
-                            if let Some(ticket) = clean_ticket(&ticket) {
-                                let _ = events.send(SwarmEvent::Registry(ticket)).await;
-                            }
-                        }
                         None => {}
                     }
                 }
@@ -559,9 +519,6 @@ async fn run(
                     if let Some(advert) = &own {
                         let _ = broadcast_advert(&sender, advert).await;
                         last_broadcast = Some(Instant::now());
-                    }
-                    if let Some(ticket) = &own_registry {
-                        let _ = broadcast_registry(&sender, ticket).await;
                     }
                 }
                 Some(Ok(GossipEvent::NeighborDown(id))) => {
@@ -587,9 +544,6 @@ async fn run(
                     if let Some(advert) = &own {
                         let _ = broadcast_advert(&sender, advert).await;
                     }
-                    if let Some(ticket) = &own_registry {
-                        let _ = broadcast_registry(&sender, ticket).await;
-                    }
                     last_broadcast = Some(now);
                 }
             }
@@ -598,11 +552,11 @@ async fn run(
 
     // Leaving is not silent: a node that closes the window should take its
     // portal with it rather than wait out the TTL. This is best effort -- the
-    // process may be going away -- which is why the TTL exists.
+    // process may be going away -- which is why the TTL exists. The node itself
+    // stays open: a catalogue may be a second subscription on it.
     if let Some(advert) = own {
         let _ = broadcast_gone(&sender, &advert.ticket).await;
     }
-    let _ = router.shutdown().await;
 }
 
 /// Announce this endpoint on the local network and join whoever else is there.
@@ -717,27 +671,6 @@ async fn broadcast_advert(sender: &GossipSender, advert: &Advert) -> Result<(), 
         return Err(());
     };
     sender.broadcast(bytes).await.map_err(|_| ())
-}
-
-async fn broadcast_registry(sender: &GossipSender, ticket: &str) -> Result<(), ()> {
-    let wire = Wire::Registry {
-        ticket: ticket.to_string(),
-        nonce: nonce(),
-    };
-    let Some(bytes) = wire.encode() else {
-        return Err(());
-    };
-    sender.broadcast(bytes).await.map_err(|_| ())
-}
-
-/// Trim and bound a registry ticket. A ticket is a claim like an advert, and a
-/// control character in one would be shown in a console line.
-fn clean_ticket(ticket: &str) -> Option<String> {
-    let ticket = ticket.trim();
-    (!ticket.is_empty()
-        && ticket.len() <= MAX_TICKET_BYTES
-        && !ticket.chars().any(char::is_control))
-    .then(|| ticket.to_string())
 }
 
 async fn broadcast_gone(sender: &GossipSender, ticket: &str) -> Result<(), ()> {
@@ -913,29 +846,6 @@ mod tests {
 
         host.commands().withdraw();
         hosts(&mut watcher, |list| list.is_empty()).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_swarm_carries_a_registry_ticket() {
-        let topic = topic(13);
-        let host = Swarm::join(config(topic)).await.expect("host swarm");
-        let mut watcher = Swarm::join(SwarmConfig {
-            peers: vec![seed(&host)],
-            ..config(topic)
-        })
-        .await
-        .expect("watcher swarm");
-
-        // A ticket with a control character is not a ticket.
-        host.commands().registry("not\r\na ticket".to_string());
-        host.commands().registry("registry-ticket".to_string());
-        loop {
-            if let SwarmEvent::Registry(ticket) = next(&mut watcher).await
-                && ticket == "registry-ticket"
-            {
-                break;
-            }
-        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

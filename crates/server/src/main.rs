@@ -26,8 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use session::node::{Node, NodeConfig};
 use session::registry::{Registry, RegistryConfig};
-use session::swarm::{Advert, SwarmCommands, SwarmConfig, SwarmEvent};
+use session::swarm::{Advert, Reach, SwarmCommands, SwarmConfig, SwarmEvent};
 use session::{Event, Host, ModsOutcome, WorldOutcome, WorldState, describe_mods};
 
 /// The world snapshot cadence, in sim frames (the sim runs at a fixed 60 Hz).
@@ -45,7 +46,7 @@ const DEFAULT_HERD: usize = 7;
 const USAGE: &str = "\
 goatsd [name] [--listen address:port] [--gateway address:port] [--download URL] [--mods DIRECTORY] [--no-mods] [--herd N]
         [--nojoin] [--topicid ID] [--peer ID|TICKET]... [--swarm-key HEX]
-        [--no-registry] [--registry-store DIR] [--registry-key HEX] [--registry-topic ID] [--registry-peer ID|TICKET]... [--share-mods]
+        [--no-registry] [--registry-store DIR] [--registry-topic ID] [--registry-peer ID|TICKET]... [--share-mods]
 
   name                the name to host under (default: server)
   -l, --listen ADDR   serve a status page on ADDR; a bare port means 0.0.0.0:port.
@@ -68,20 +69,21 @@ goatsd [name] [--listen address:port] [--gateway address:port] [--download URL] 
       --peer ID|TICKET
                       a node already in the swarm to seed from; repeatable, and
                       also read from $GOATS_SWARM_PEERS (comma-separated)
-      --swarm-key HEX a persistent swarm endpoint secret, so this host keeps its
-                      id across restarts (also $GOATS_SWARM_KEY)
+      --swarm-key HEX a persistent endpoint secret, so this host keeps its id
+                      across restarts (also $GOATS_SWARM_KEY). The catalogue is
+                      on the same endpoint, so this is its identity too
       --no-registry   do not start the mod registry
       --registry-store DIR
                       where the registry's blob store lives (default: .registry
                       under the mods directory, or the working directory)
       --registry-key HEX
-                      a persistent registry endpoint secret (also
-                      $GOATS_REGISTRY_KEY)
+                      a persistent endpoint secret, honoured only when --swarm-key
+                      is unset (also $GOATS_REGISTRY_KEY)
       --registry-topic ID
                       the registry topic (default: the game's catalogue)
       --registry-peer ID|TICKET
-                      a registry node to seed from; repeatable, and also read
-                      from $GOATS_REGISTRY_PEERS (comma-separated)
+                      a catalogue node to seed from on its own topic; repeatable,
+                      and also read from $GOATS_REGISTRY_PEERS (comma-separated)
       --share-mods    announce the mods this server runs on the registry
   -h, --help          this text";
 
@@ -402,22 +404,47 @@ async fn main() {
     println!("goatsd: internet reach (n0 relays + DNS discovery); Ctrl-C to stop");
     let _ = std::io::stdout().flush();
 
+    // One node carries both discovery and the catalogue. The registry's blob
+    // store is part of the router that gossip is accepted on, so a client seeded
+    // with the swarm ticket can fetch a package from this server without a second
+    // introduction, and the two cannot print two different ids. `--no-registry`
+    // leaves the store off; the node is still the swarm's.
+    let store = match options.no_registry {
+        true => None,
+        false => Some(registry_store(&options, mods_dir.as_deref())),
+    };
+    let node = match node_config(&options, store.clone()) {
+        Ok(config) => match Node::bind(config).await {
+            Ok(node) => Some(node),
+            Err(error) => {
+                eprintln!("goatsd: could not bind the discovery endpoint: {error}");
+                eprintln!(
+                    "goatsd: discovery and the registry are off; the session is by ticket only"
+                );
+                None
+            }
+        },
+        Err(error) => {
+            eprintln!("goatsd: {error}");
+            None
+        }
+    };
+
     // The discovery swarm. `goatsd` is the natural seed for a WAN: it joins by
     // default and prints the id and ticket a client needs to seed from it. A
     // gossip topic with nobody in it cannot be found by anybody, so a deployment
     // that turns this off (`--nojoin`) is reachable by ticket only.
     let mut swarm: Option<SwarmCommands> = None;
-    if options.nojoin {
-        println!("goatsd: discovery off (--nojoin); reachable by ticket only");
-    } else {
-        match start_swarm(&options).await {
+    match (&options.nojoin, &node) {
+        (true, _) => println!("goatsd: discovery off (--nojoin); reachable by ticket only"),
+        (false, Some(node)) => match start_swarm(&options, node.clone()).await {
             Ok((commands, joined)) => {
                 println!("goatsd: swarm topic {}", joined.topic());
                 println!("goatsd: swarm seed id {}", joined.id());
                 println!("goatsd: swarm ticket {}", joined.ticket());
                 let _ = std::io::stdout().flush();
                 swarm = Some(commands);
-                // The task owns the endpoint, so it has to outlive this scope.
+                // The task owns the subscription, so it has to outlive this scope.
                 // Its events are drained (a full channel would stall the gossip
                 // task); the only one worth a line is the neighbour count.
                 tokio::spawn(async move {
@@ -433,13 +460,22 @@ async fn main() {
             Err(error) => {
                 eprintln!("goatsd: could not join the swarm: {error}; reachable by ticket only")
             }
-        }
+        },
+        (false, None) => {}
     }
 
     // The registry: a catalogue of what peers have, and, with `--share-mods`, a
     // provider for the world set this server runs. It is the WAN seed the swarm
-    // is not: a catalogue outlives any one session.
-    let registry = start_registry(&options, mods_dir.as_deref(), &loader).await;
+    // is not: a catalogue outlives any one session, and it is on the same node as
+    // the swarm, so its ticket is the one printed above.
+    let registry = match (&node, store) {
+        (Some(node), Some(store)) => start_registry(&options, node.clone(), store, &loader).await,
+        // A node bound without a store cannot accept the transfer protocol, and a
+        // router cannot gain it after it has spawned: starting the catalogue here
+        // would advertise bytes nothing serves.
+        (Some(_), None) => None,
+        (None, _) => None,
+    };
 
     // The status page, only when asked for. It reports the ticket, the client
     // count and where to get the client; the count is kept up to date from the
@@ -618,12 +654,20 @@ async fn main() {
     if let Some(registry) = registry {
         registry.shutdown().await;
     }
+    // The catalogue left the node alone; closing it is the server's, and it has
+    // to happen while the runtime is still up.
+    if let Some(node) = node {
+        node.shutdown().await;
+    }
 }
 
-/// Joins the discovery swarm from the command line: the topic, the seed peers,
-/// and the identity (a persistent one matters for a seed, whose id is what
-/// clients are pointed at).
-async fn start_swarm(options: &Options) -> Result<(SwarmCommands, session::swarm::Swarm), String> {
+/// Joins the discovery swarm from the command line: the topic and the seed
+/// peers. The node was bound before this -- it also carries the catalogue -- so
+/// the identity is its own and the ticket this prints is both.
+async fn start_swarm(
+    options: &Options,
+    node: Arc<Node>,
+) -> Result<(SwarmCommands, session::swarm::Swarm), String> {
     let topic = match &options.topic_id {
         Some(text) => session::swarm::parse_topic(text)?,
         None => SwarmConfig::default_topic(),
@@ -632,42 +676,71 @@ async fn start_swarm(options: &Options) -> Result<(SwarmCommands, session::swarm
     for peer in &options.peers {
         peers.push(session::swarm::parse_peer(peer)?);
     }
-    let secret = match &options.swarm_key {
-        Some(text) => Some(session::swarm::parse_secret(text)?),
-        None => session::swarm::secret_from_env()?,
-    };
     let config = SwarmConfig {
-        secret,
         peers,
         lan: std::env::var("GOATS_SWARM_LAN")
             .map(|value| value != "0")
             .unwrap_or(true),
         ..SwarmConfig::new(topic)
     };
-    let swarm = session::swarm::Swarm::join(config)
+    let swarm = session::swarm::Swarm::join_on(node, config)
         .await
         .map_err(|error| error.to_string())?;
     let commands = swarm.commands();
     Ok((commands, swarm))
 }
 
-/// The registry this server seeds. It is the catalogue a WAN deployment needs
-/// when no player happens to be hosting, and `--share-mods` makes it a provider
-/// for the world set it runs.
-async fn start_registry(
-    options: &Options,
-    mods_dir: Option<&Path>,
-    loader: &mods::Loader,
-) -> Option<Registry> {
-    if options.no_registry {
-        return None;
-    }
-    let store = options.registry_store.clone().unwrap_or_else(|| {
+/// Where the catalogue's blob store lives: `--registry-store`, else `.registry`
+/// under the mods directory, else under the working directory.
+fn registry_store(options: &Options, mods_dir: Option<&Path>) -> PathBuf {
+    options.registry_store.clone().unwrap_or_else(|| {
         mods_dir
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".registry")
-    });
+    })
+}
+
+/// The identity of the one node. `--swarm-key` (`$GOATS_SWARM_KEY`) is the name
+/// for it; the catalogue's older names are honoured only when the swarm's are
+/// absent, because a deployment that pinned its catalogue id there should keep
+/// it. One node means one identity, so the first match wins.
+fn node_config(options: &Options, blobs: Option<PathBuf>) -> Result<NodeConfig, String> {
+    let secret = if let Some(key) = options.swarm_key.as_deref() {
+        Some(session::swarm::parse_secret(key).map_err(|error| format!("--swarm-key: {error}"))?)
+    } else if let Some(secret) = session::swarm::secret_from_env()? {
+        Some(secret)
+    } else if let Some(key) = options.registry_key.as_deref() {
+        Some(
+            session::swarm::parse_secret(key)
+                .map_err(|error| format!("--registry-key: {error}"))?,
+        )
+    } else {
+        match std::env::var("GOATS_REGISTRY_KEY") {
+            Ok(text) if !text.trim().is_empty() => Some(
+                session::swarm::parse_secret(&text)
+                    .map_err(|error| format!("GOATS_REGISTRY_KEY: {error}"))?,
+            ),
+            _ => None,
+        }
+    };
+    Ok(NodeConfig {
+        secret,
+        reach: Reach::Wan,
+        blobs,
+    })
+}
+
+/// The registry this server seeds. It is the catalogue a WAN deployment needs
+/// when no player happens to be hosting, and `--share-mods` makes it a provider
+/// for the world set it runs. The node is the swarm's, so the store and the
+/// ticket are already in place.
+async fn start_registry(
+    options: &Options,
+    node: Arc<Node>,
+    store: PathBuf,
+    loader: &mods::Loader,
+) -> Option<Registry> {
     let mut config = match RegistryConfig::from_env(store) {
         Ok(Some(config)) => config,
         Ok(None) => return None,
@@ -685,15 +758,6 @@ async fn start_registry(
             }
         }
     }
-    if let Some(key) = options.registry_key.as_deref() {
-        match session::swarm::parse_secret(key) {
-            Ok(secret) => config.secret = Some(secret),
-            Err(error) => {
-                eprintln!("goatsd: --registry-key: {error}");
-                return None;
-            }
-        }
-    }
     for peer in &options.registry_peers {
         match session::swarm::parse_peer(peer) {
             Ok(peer) => config.peers.push(peer),
@@ -704,10 +768,9 @@ async fn start_registry(
         }
     }
 
-    match Registry::start(config).await {
+    match Registry::start_on(node, config).await {
         Ok(registry) => {
             println!("goatsd: registry topic {}", registry.topic());
-            println!("goatsd: registry ticket {}", registry.ticket());
             if options.share_mods {
                 let shared = pull::share(&registry, loader).await;
                 println!("goatsd: registry {}", shared.describe());

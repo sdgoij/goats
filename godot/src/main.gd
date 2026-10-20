@@ -436,11 +436,8 @@ func _ready() -> void:
 	var node := ClassDB.instantiate("NetBridge") as Node
 	add_child(node)
 	bridge = node
-	# Discovery is on by default: the bridge joins the default swarm before its first
-	# command, and the LAN beacon introduces this client to the others on the network with
-	# no ticket. `GOATS_SWARM=0` opts out; `swarm leave` does the same for the rest of the
-	# run.
-	bridge.call("set_swarm_auto", OS.get_environment("GOATS_SWARM") != "0")
+	# Discovery is on by default, but it is started much further down: see
+	# `set_swarm_auto` beside `set_registry`.
 	# The browser has no UDP transport; the page passes the WebSocket gateway's URL
 	# on the command line (`--gateway=ws://...`, from `goatsd --gateway`). A desktop
 	# build has none and ignores it.
@@ -570,9 +567,17 @@ func _ready() -> void:
 	bridge.call("set_pull", mods.dir, not OS.get_environment("GOATS_PULL").is_empty())
 	# The registry (M18f): its store lives under the mods directory and
 	# `GOATS_MODS_REGISTRY=0` leaves it off. `GOATS_MODS_SHARE=1` announces this
-	# client's mods; peers' tickets arrive on the swarm, and the bridge prints
-	# this node's own.
+	# client's mods, and the bridge prints this node's own ticket.
+	#
+	# This is the *first* transport call and has to stay that way. The registry binds the one
+	# endpoint with the blobs protocol on its router, and the swarm then joins that node, so a
+	# portal's ticket introduces the catalogue too. A router accepts its protocols at spawn
+	# and cannot gain one later, so the other order would leave the catalogue without a store.
 	bridge.call("set_registry", mods.dir)
+	# Discovery is on by default: the bridge joins the default swarm on the node above, and
+	# the LAN beacon introduces this client to the others on the network with no ticket.
+	# `GOATS_SWARM=0` opts out; `swarm leave` does the same for the rest of the run.
+	bridge.call("set_swarm_auto", OS.get_environment("GOATS_SWARM") != "0")
 	menu.mods_list = Callable(mods, "mod_table")
 	# The button's own callback: one argument, and it flips whatever the table says the mod is now.
 	menu.mod_toggle = Callable(mods, "toggle_mod")

@@ -97,17 +97,17 @@ same `NetBridge` the console's `swarm` verb reaches.
 ## `goatsd`
 
 `goatsd` joins the default swarm unless told not to. It is the natural seed for a
-WAN: it prints the three things a client needs for the session, and the registry
-ticket when the catalogue is on.
+WAN: it prints the three things a client needs for the session, and, when the
+catalogue is on, its topic -- on the same endpoint, so the swarm ticket is the
+catalogue's too.
 
 ```
-$ goatsd --swarm-key <64 hex> --registry-key <64 hex> --share-mods
+$ goatsd --swarm-key <64 hex> --share-mods
 ...
 goatsd: swarm topic 32b19c7a81bb09d6147d1a2511bbd3668b0c81a68abb7cfbe2f65d97dd195a9e
 goatsd: swarm seed id 8f3c...   (64 hex characters)
 goatsd: swarm ticket endpoint...
 goatsd: registry topic 93a3969b8c2b4e679f4cfdd4704d58f8ccc4413cc6ee25d3bac16796647f783f
-goatsd: registry ticket endpoint...
 ```
 
 Flags:
@@ -120,16 +120,18 @@ Flags:
 | `--swarm-key HEX` | a persistent endpoint secret, so the seed keeps its id across restarts |
 | `--no-registry` | do not start the mod registry |
 | `--registry-store DIR` | where the registry's blob store lives |
-| `--registry-key HEX` | a persistent registry identity, so clients can keep pointing at it |
+| `--registry-key HEX` | the older name for the identity; honoured only when `--swarm-key` is unset |
 | `--registry-topic ID` | the catalogue to join (default: the game's own) |
-| `--registry-peer ID\|TICKET` | a registry node to seed from; repeatable |
+| `--registry-peer ID\|TICKET` | a catalogue node to seed from on its own topic; repeatable |
 | `--share-mods` | announce this server's mods on the registry |
 
 `--swarm-key` (or `$GOATS_SWARM_KEY`) matters for a seed: clients dial it by id,
-and a random key would make that id change every restart. `--registry-key`
-(`$GOATS_REGISTRY_KEY`) is the same argument for the catalogue, which has its own
-endpoint for now. A client in the same swarm learns the registry ticket from the
-swarm itself; `$GOATS_REGISTRY_PEERS` is what seeds one with no swarm to hear.
+and a random key would make that id change every restart. The catalogue is on the
+same node, so that one id and one ticket cover both; `--registry-key`
+(`$GOATS_REGISTRY_KEY`) is still read, but only when the swarm's key is absent,
+which keeps an id a deployment pinned there before the two were one endpoint.
+`$GOATS_REGISTRY_PEERS` is what seeds a catalogue on a node with no swarm to
+hear -- `--nojoin`, or a test.
 
 ## The first peer
 
@@ -276,14 +278,16 @@ carry a mod catalogue. The mechanism is the one already built: postcard
 `Wire::{Record, Have, Gone}` with the same nonce, restated every `RECORD_EVERY`
 and forgotten after `RECORD_TTL` without a restatement.
 
-The registry has its own endpoint, so its introduction is a ticket rather than
-an endpoint id. The swarm carries it: a node that runs a catalogue restates its
-registry ticket beside its advert, and a peer that hears one hands it to the
-catalogue's peer set. `$GOATS_REGISTRY_PEERS` is the standing form for a node
-with no swarm at all (a test, or `--nojoin`), and `$GOATS_REGISTRY_KEY` gives the
-catalogue a stable identity.
+The registry uses the node's endpoint, so its introduction is the ticket a
+portal already uses: one socket, one identity, one ticket. The catalogues are
+still a second topic -- the two lists have different caps and joining a swarm to
+find a game has not thereby agreed to carry a catalogue -- but a node subscribed
+to both is one address to dial. `$GOATS_REGISTRY_PEERS` is the standing form for
+a node with no swarm at all (a test, or `--nojoin`).
 A client starts one at startup when it has a mods directory and prints its
 ticket, and `GOATS_MODS_REGISTRY=0` turns it off for a run, like `swarm leave`.
+The identity is the node's (`GOATS_SWARM_KEY`), not a second key: there is no
+separate registry endpoint left to give one.
 
 ### Fetching is a hook, not a protocol
 
@@ -367,8 +371,8 @@ provider first, then the greatest version label.
   holds every bound.
 - `session::registry`, beside `swarm`: the second topic, the catalogue, the
   `ContentDiscovery` implementation and `share`/`serve`/`relay`/`fetch`/`pin`.
-  `iroh-blobs` is a dependency of `session`, which is already the only crate that
-  owns an endpoint.
+  `iroh-blobs` is a dependency of `session`; the endpoint, router and ticket are
+  `session::node`'s, which the swarm and the catalogue both subscribe on.
 - `pull`: `pull_registry` fetches a record's collection, verifies it with the
   loader and installs it as `pulled-<id>/`; `recover_with` keeps the host first
   and uses the registry only for what the host could not serve. The host fetch
@@ -376,15 +380,16 @@ provider first, then the greatest version label.
 
 ### What remains
 
-The client now starts a registry at startup (unless `GOATS_MODS_REGISTRY=0`),
-announces its world mods when `GOATS_MODS_SHARE` is on, learns peers' registry
-tickets from the swarm, and hands the handle to `recover_with`, so a refused join
-falls back to the catalogue for what the host could not serve. Both clients have
-the console verbs and the same mirror budget; the Godot port starts its registry
-once its loader has found the mods directory, because its runtime thread is up
-before that. What is left: the endpoint is the registry's own -- sharing the
-swarm's would remove a second socket and make a portal's ticket the only one a
-client needs.
+The client starts a registry at startup (unless `GOATS_MODS_REGISTRY=0`),
+announces its world mods when `GOATS_MODS_SHARE` is on, and hands the handle to
+`recover_with`, so a refused join falls back to the catalogue for what the host
+could not serve. Both clients have the console verbs and the same mirror budget.
+The catalogue is a subscription on the same node as the swarm -- one socket, one
+identity, one ticket -- so the port's loader runs `set_registry` before
+`set_swarm_auto` and a portal's ticket introduces both. What is left is not a
+second endpoint; it is what a catalogue with no swarm in front of it cannot do:
+nobody can be pointed at a topic by a ticket alone, so `$GOATS_REGISTRY_PEERS`
+remains the cold-start seed.
 
 ### The tests
 

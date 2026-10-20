@@ -57,6 +57,10 @@ pub use proto::{
 /// advert a host restates on it.
 pub mod swarm;
 
+/// The one endpoint discovery and the catalogue share: gossip and, when asked for,
+/// the blobs protocol on the same router and ticket.
+pub mod node;
+
 /// The mod registry: a gossip catalogue of packages, and `iroh-blobs` for the
 /// bytes. See `SWARM.md`, "A mod registry".
 pub mod registry;
@@ -167,6 +171,8 @@ pub enum Error {
     Swarm(String),
     /// The mod registry could not be opened, joined or served.
     Registry(String),
+    /// The shared endpoint could not be bound or its store opened.
+    Node(String),
 }
 
 impl std::fmt::Display for Error {
@@ -181,6 +187,7 @@ impl std::fmt::Display for Error {
             Error::Message(message) => write!(formatter, "message: {message}"),
             Error::Swarm(message) => write!(formatter, "swarm: {message}"),
             Error::Registry(message) => write!(formatter, "registry: {message}"),
+            Error::Node(message) => write!(formatter, "node: {message}"),
         }
     }
 }

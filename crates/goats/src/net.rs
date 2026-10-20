@@ -17,10 +17,12 @@
 //! frame loop to load what arrived.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 
 use mods::{AssetMode, Loader};
 use serde::Deserialize;
+use session::node::{Node, NodeConfig};
 use session::registry::{Registry, RegistryConfig};
 use session::swarm::{self, Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use tokio::runtime;
@@ -99,15 +101,6 @@ impl RegistryOpts {
             .then(|| mods_dir.to_path_buf());
         Ok(Some(RegistryOpts { config, share }))
     }
-}
-
-/// What the swarm task needs from the registry: the ticket to publish and the
-/// handle it seeds from the tickets it hears. Cloned into the event task, which
-/// is why it is the small handle and not the registry itself.
-#[derive(Clone)]
-struct RegistryBridge {
-    peers: session::registry::RegistryPeers,
-    ticket: String,
 }
 
 /// The frame loop's handle on the networking thread.
@@ -374,50 +367,64 @@ async fn run(
     // change has to outlive the join that caused it: the host command uses the
     // same set (M18d).
     let mut world_mods = world_mods;
+    // The one endpoint this client uses, bound on first need. The catalogue binds
+    // it with a blob store and the swarm reuses it, so a portal's ticket
+    // introduces the catalogue as well and there is never a second socket.
+    let mut node: Option<Arc<Node>> = None;
     // The registry: a catalogue on its own topic and the blobs a fetch moves.
     // It is opt-in at the host level (the test constructor passes `None`), and
-    // sharing is a second opt-in (`GOATS_MODS_SHARE`).
+    // sharing is a second opt-in (`GOATS_MODS_SHARE`). It starts before the
+    // swarm because the router's ALPNs are fixed at spawn: a node bound for a
+    // catalogue accepts the blobs protocol, one bound for a swarm does not have
+    // it to add.
     let registry = match registry {
-        Some(opts) => match Registry::start(opts.config).await {
-            Ok(registry) => {
-                // The ticket is the only way another node can seed this registry
-                // until the swarm carries it, and a console line is hard to copy
-                // from a game window. stderr is where the host ticket goes too.
-                eprintln!("[net] registry ticket: {}", registry.ticket());
-                emit(
-                    &events,
-                    Event::Notice {
-                        text: format!("registry: ticket {}", registry.ticket()),
-                    },
-                );
-                if let Some(dir) = opts.share.as_deref() {
-                    share_mods(&registry, dir, &events).await;
+        Some(mut opts) => {
+            let bind = NodeConfig {
+                secret: opts.config.secret.take(),
+                reach: opts.config.reach,
+                blobs: Some(opts.config.store.clone()),
+            };
+            match bind_node(&mut node, bind).await {
+                Ok(bound) => match Registry::start_on(bound, opts.config).await {
+                    Ok(registry) => {
+                        // A console line is hard to copy from a game window, and
+                        // this is the ticket a peer without a swarm seeds from.
+                        // stderr is where the host ticket goes too.
+                        eprintln!("[net] registry ticket: {}", registry.ticket());
+                        emit(
+                            &events,
+                            Event::Notice {
+                                text: format!("registry: ticket {}", registry.ticket()),
+                            },
+                        );
+                        if let Some(dir) = opts.share.as_deref() {
+                            share_mods(&registry, dir, &events).await;
+                        }
+                        Some(registry)
+                    }
+                    Err(error) => {
+                        emit(
+                            &events,
+                            Event::Notice {
+                                text: format!("registry: {error}"),
+                            },
+                        );
+                        None
+                    }
+                },
+                Err(text) => {
+                    emit(&events, Event::Notice { text });
+                    None
                 }
-                Some(registry)
             }
-            Err(error) => {
-                emit(
-                    &events,
-                    Event::Notice {
-                        text: format!("registry: {error}"),
-                    },
-                );
-                None
-            }
-        },
+        }
         None => None,
     };
-    // The registry is up before the swarm, because the swarm is how a peer learns
-    // this ticket and how this node learns everybody else's.
-    let registry_bridge = registry.as_ref().map(|registry| RegistryBridge {
-        peers: registry.peers(),
-        ticket: registry.ticket().to_string(),
-    });
     if auto_swarm {
         // Zero-config: join the default topic before the first command, so the
         // LAN beacon and any seed in the environment are already running when a
         // player starts `host` or looks for a session.
-        match join_swarm(None, Vec::new(), registry_bridge.as_ref(), &events).await {
+        match join_swarm(&mut node, None, Vec::new(), &events).await {
             Ok((commands, task)) => {
                 swarm = Some(commands);
                 swarm_task = Some(task);
@@ -613,7 +620,7 @@ async fn run(
                 // offline, and a host can publish while playing.
                 Command::SwarmJoin { topic, peers } => {
                     stop_swarm(&mut swarm, &mut swarm_task);
-                    match join_swarm(topic, peers, registry_bridge.as_ref(), &events).await {
+                    match join_swarm(&mut node, topic, peers, &events).await {
                         Ok((commands, task)) => {
                             if let Some(Live::Host(host)) = &live {
                                 advertise_host(host, Some(&commands)).await;
@@ -737,6 +744,11 @@ async fn run(
     if let Some(registry) = registry {
         registry.shutdown().await;
     }
+    // The catalogue left the node alone; closing it is the client's, and it has
+    // to happen on this thread while the runtime is still up.
+    if let Some(node) = node {
+        node.shutdown().await;
+    }
 }
 
 /// Ends a session, withdrawing its swarm advert first: a host that stops hosting
@@ -776,14 +788,28 @@ async fn advertise_host(host: &session::Host, swarm: Option<&SwarmCommands>) {
     });
 }
 
+/// Binds the client's one node the first time something needs it, or hands back
+/// the one already bound. The configuration is the first caller's: a node is
+/// bound once, and the router cannot gain an ALPN afterwards.
+async fn bind_node(node: &mut Option<Arc<Node>>, config: NodeConfig) -> Result<Arc<Node>, String> {
+    if let Some(node) = node {
+        return Ok(node.clone());
+    }
+    let bound = Node::bind(config)
+        .await
+        .map_err(|error| error.to_string())?;
+    *node = Some(bound.clone());
+    Ok(bound)
+}
+
 /// Joins a swarm and starts the task that turns its events into scene lines.
 /// `topic` absent means the default; `peers` are the seed nodes, from the console
-/// or a ticket. `registry` is the catalogue this node runs, if any: its ticket is
-/// published with the advert, and peers' tickets are handed to its peer set.
+/// or a ticket. The swarm subscribes on the client's node, so the ticket it
+/// announces is the catalogue's too.
 async fn join_swarm(
+    node: &mut Option<Arc<Node>>,
     topic: Option<String>,
     peers: Vec<String>,
-    registry: Option<&RegistryBridge>,
     events: &mpsc::UnboundedSender<String>,
 ) -> Result<(SwarmCommands, tokio::task::JoinHandle<()>), String> {
     let topic = match topic
@@ -798,7 +824,7 @@ async fn join_swarm(
     for peer in peers {
         seeds.push(swarm::parse_peer(&peer)?);
     }
-    let config = SwarmConfig {
+    let mut config = SwarmConfig {
         secret: swarm::secret_from_env()?,
         peers: seeds,
         lan: std::env::var("GOATS_SWARM_LAN")
@@ -806,13 +832,19 @@ async fn join_swarm(
             .unwrap_or(true),
         ..SwarmConfig::new(topic)
     };
-    let mut joined = session::swarm::Swarm::join(config)
+    let bound = bind_node(
+        node,
+        NodeConfig {
+            secret: config.secret.take(),
+            reach: config.reach,
+            blobs: None,
+        },
+    )
+    .await?;
+    let mut joined = session::swarm::Swarm::join_on(bound, config)
         .await
         .map_err(|error| format!("swarm: {error}"))?;
     let commands = joined.commands();
-    if let Some(registry) = registry {
-        commands.registry(registry.ticket.clone());
-    }
     let announced = Event::Swarm {
         joined: true,
         topic: joined.topic().to_string(),
@@ -822,7 +854,6 @@ async fn join_swarm(
     };
     let task = {
         let events = events.clone();
-        let registry = registry.cloned();
         tokio::spawn(async move {
             while let Some(event) = joined.next_event().await {
                 match event {
@@ -836,14 +867,6 @@ async fn join_swarm(
                             text: format!("swarm: {text}"),
                         },
                     ),
-                    // A peer's catalogue is a separate endpoint; this is the
-                    // introduction, and a bad or unreachable ticket is gossip's
-                    // problem rather than a line for the console.
-                    SwarmEvent::Registry(ticket) => {
-                        if let Some(registry) = &registry {
-                            let _ = registry.peers.join(&ticket);
-                        }
-                    }
                 }
             }
         })

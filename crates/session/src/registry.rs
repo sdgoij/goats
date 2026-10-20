@@ -18,10 +18,11 @@
 //!   join's identity check (`pull`), and no automatic path enables a fetched
 //!   client-side mod.
 //!
-//! The endpoint is this module's own, as it is for the swarm: the session's
-//! accept loop owns the session ALPNs, and the blobs protocol needs a router
-//! built with its ALPN at spawn time. Sharing the swarm endpoint is a follow-up
-//! that would mean one router for both.
+//! The endpoint is not this module's own. A [`Node`] owns the router, and it
+//! accepts the blobs protocol beside gossip, so a client that runs both a swarm
+//! and a catalogue has one socket, one identity and one ticket. The registry
+//! only subscribes to its topic on that node; [`Registry::shutdown`] leaves it
+//! running for the swarm, because whoever bound it decides when it closes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -32,19 +33,14 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use iroh::address_lookup::memory::MemoryLookup;
-use iroh::endpoint::presets;
-use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+use iroh::{EndpointAddr, EndpointId, SecretKey};
 use iroh_blobs::api::downloader::{ContentDiscovery, DownloadRequest, Downloader, SplitStrategy};
 use iroh_blobs::api::{Store, TempTag};
 use iroh_blobs::format::collection::Collection;
 use iroh_blobs::protocol::GetRequest;
-use iroh_blobs::store::fs::FsStore;
-use iroh_blobs::{BlobFormat, BlobsProtocol, Hash, HashAndFormat};
+use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
+use iroh_gossip::TopicId;
 use iroh_gossip::api::{Event as GossipEvent, GossipReceiver, GossipSender};
-use iroh_gossip::{Gossip, TopicId};
-use iroh_tickets::Ticket;
-use iroh_tickets::endpoint::EndpointTicket;
 use n0_future::StreamExt;
 use proto::{
     MAX_PACKAGE_BYTES, MAX_REGISTRY_MESSAGE_BYTES, MAX_REGISTRY_RECORDS, ModHave, ModRecord, ModRef,
@@ -53,7 +49,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::Error;
-use crate::swarm::{Reach, parse_peer, parse_secret, parse_topic};
+use crate::node::{Node, NodeConfig};
+use crate::swarm::{Reach, parse_peer, parse_topic};
 
 /// `SHA-256("goats/mods/v1")`, in the hex form a [`TopicId`] parses. A separate
 /// topic from the host list on purpose: a record flood must not evict portals,
@@ -78,8 +75,12 @@ pub const DEFAULT_MIRROR_BYTES: u64 = 1 << 30;
 /// rare; this only has to absorb a burst of shares.
 const COMMAND_BACKLOG: usize = 16;
 
-/// How a registry endpoint reaches the rest of the world. The same choice the
-/// swarm offers, and for the same reason.
+/// How a catalogue is reached and what it keeps.
+///
+/// `topic`, `peers`, `every` and `ttl` are the catalogue's own. `secret` and
+/// `reach` only matter to [`Registry::start`], which binds a node of its own;
+/// [`Registry::start_on`] takes both from the node it was handed, because a node
+/// is bound once and has one identity.
 pub struct RegistryConfig {
     pub topic: TopicId,
     /// Peers already in the topic. Empty subscribes without dialing anybody.
@@ -116,10 +117,11 @@ impl RegistryConfig {
     /// The registry's configuration from the environment, or `None` when
     /// `GOATS_MODS_REGISTRY=0`.
     ///
-    /// The registry has its own endpoint for now, so its seeds are endpoint
-    /// tickets in `GOATS_REGISTRY_PEERS`, not the swarm's peer ids; a persistent
-    /// identity is `GOATS_REGISTRY_KEY`, and `GOATS_REGISTRY_TOPIC` selects
-    /// another catalogue.
+    /// `GOATS_REGISTRY_PEERS` seeds the catalogue with nodes already on its topic.
+    /// A client sharing the swarm's node hears the introduction there instead, so
+    /// this is the standing form for a node with no swarm (`--nojoin`, a test, a
+    /// catalogue-only process). The identity is the node's -- `GOATS_SWARM_KEY`
+    /// for a client -- and `GOATS_REGISTRY_TOPIC` selects another catalogue.
     pub fn from_env(store: PathBuf) -> Result<Option<RegistryConfig>, String> {
         if std::env::var("GOATS_MODS_REGISTRY").is_ok_and(|value| value.trim() == "0") {
             return Ok(None);
@@ -142,16 +144,12 @@ impl RegistryConfig {
                 );
             }
         }
-        let secret = match std::env::var("GOATS_REGISTRY_KEY") {
-            Ok(text) if !text.trim().is_empty() => {
-                Some(parse_secret(&text).map_err(|error| format!("GOATS_REGISTRY_KEY: {error}"))?)
-            }
-            _ => None,
-        };
         Ok(Some(RegistryConfig {
             topic,
             peers,
-            secret,
+            // No catalogue-owned identity: whoever binds the endpoint owns it, and
+            // that node's secret is the identity.
+            secret: None,
             reach: Reach::Wan,
             store,
             every: RECORD_EVERY,
@@ -173,10 +171,10 @@ pub enum RegistryEvent {
 /// A joined registry, with the blob store it serves from.
 pub struct Registry {
     topic: TopicId,
-    addr: EndpointAddr,
-    ticket: String,
+    /// The node this catalogue subscribes on, shared with the swarm when there is
+    /// one. It owns the endpoint, the router and the store.
+    node: Arc<Node>,
     store: Store,
-    endpoint: Endpoint,
     downloader: Downloader,
     catalogue: Arc<Mutex<Catalogue>>,
     commands: mpsc::Sender<Command>,
@@ -184,9 +182,6 @@ pub struct Registry {
     /// What this node keeps on other people's behalf: a tag per root, with the
     /// size and age that decide what goes when the budget is reached.
     mirror: Mutex<Mirror>,
-    /// Kept so a ticket learned elsewhere can be added to the lookup before the
-    /// task dials it.
-    lookup: MemoryLookup,
     /// The tags that keep what this node shares alive against garbage
     /// collection. They live for as long as the handle does; a restart
     /// re-imports the same trees, which is why the records expire anyway.
@@ -194,55 +189,53 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// Binds an endpoint, opens the blob store, joins the topic and starts the
-    /// task that keeps the catalogue and restates this node's records.
-    pub async fn start(config: RegistryConfig) -> Result<Registry, Error> {
+    /// Binds a node of its own, opens the blob store and joins the topic. This is
+    /// the standalone form, for a test or a process that runs only a catalogue; a
+    /// client that also runs a swarm calls [`Registry::start_on`] with the node
+    /// the swarm joined, so both share one endpoint and one ticket.
+    pub async fn start(mut config: RegistryConfig) -> Result<Registry, Error> {
+        let node = Node::bind(NodeConfig {
+            secret: config.secret.take(),
+            reach: config.reach,
+            blobs: Some(config.store.clone()),
+        })
+        .await?;
+        Self::start_on(node, config).await
+    }
+
+    /// Joins the topic on `node` and starts the task that keeps the catalogue and
+    /// restates this node's records.
+    ///
+    /// The node must have been bound with a blob store (`NodeConfig::blobs`): the
+    /// store is where a package's bytes live and what the transfer protocol
+    /// serves, and a router cannot gain that protocol after it has spawned.
+    /// `config.secret` and `config.reach` are the node's and are not read here.
+    pub async fn start_on(node: Arc<Node>, config: RegistryConfig) -> Result<Registry, Error> {
         let RegistryConfig {
             topic,
             peers,
-            secret,
-            reach,
-            store,
             every,
             ttl,
+            ..
         } = config;
 
-        let store = FsStore::load(&store)
-            .await
-            .map_err(|error| Error::Registry(format!("store {}: {error}", store.display())))?;
-        let store = Store::from(store);
-
-        let mut builder = match reach {
-            Reach::Wan => Endpoint::builder(presets::N0),
-            Reach::Direct => Endpoint::builder(presets::Minimal),
+        let Some(store) = node.store().cloned() else {
+            return Err(Error::Registry(
+                "the node has no blob store; bind it with NodeConfig::blobs".to_string(),
+            ));
         };
-        let lookup = MemoryLookup::new();
-        for peer in &peers {
-            lookup.add_endpoint_info(peer.clone());
-        }
-        builder = builder.address_lookup(lookup.clone());
-        if let Some(secret) = secret {
-            builder = builder.secret_key(secret);
-        }
-        let endpoint = builder
-            .bind()
-            .await
-            .map_err(|error| Error::Registry(format!("bind: {error}")))?;
 
-        let gossip = Gossip::builder().spawn(endpoint.clone());
-        let router = Router::builder(endpoint.clone())
-            .accept(iroh_gossip::ALPN, gossip.clone())
-            .accept(iroh_blobs::ALPN, BlobsProtocol::new(&store, None))
-            .spawn();
+        for peer in &peers {
+            node.add_peer(peer.clone());
+        }
         let peer_ids: Vec<EndpointId> = peers.iter().map(|peer| peer.id).collect();
-        let (sender, receiver) = gossip
+        let (sender, receiver) = node
+            .gossip()
             .subscribe(topic, peer_ids)
             .await
             .map_err(|error| Error::Registry(format!("subscribe: {error}")))?
             .split();
 
-        let ticket = EndpointTicket::new(endpoint.addr()).encode_string();
-        let addr = endpoint.addr();
         let catalogue = Arc::new(Mutex::new(Catalogue::default()));
         let (commands, command_rx) = mpsc::channel(COMMAND_BACKLOG);
         let (event_tx, events) = mpsc::channel(COMMAND_BACKLOG);
@@ -252,24 +245,20 @@ impl Registry {
             commands: command_rx,
             events: event_tx,
             catalogue: catalogue.clone(),
-            own_id: addr.id,
-            router,
+            own_id: node.id(),
             every,
             ttl,
         }));
 
-        let downloader = Downloader::new(&store, &endpoint);
+        let downloader = Downloader::new(&store, node.endpoint());
         Ok(Registry {
             topic,
-            addr,
-            ticket,
+            node,
             store,
-            endpoint,
             downloader,
             catalogue,
             commands,
             events,
-            lookup,
             mirror: Mutex::new(Mirror::default()),
             tags: Arc::new(Mutex::new(Vec::new())),
         })
@@ -288,7 +277,7 @@ impl Registry {
 
         record.root = *root.as_bytes();
         record.size = size;
-        record.author = *self.addr.id.as_bytes();
+        record.author = *self.node.id().as_bytes();
         let record = record
             .clean()
             .ok_or_else(|| "the record is not usable".to_string())?;
@@ -301,7 +290,7 @@ impl Registry {
         self.catalogue
             .lock()
             .expect("catalogue")
-            .have(record.root, self.addr.id, Instant::now());
+            .have(record.root, self.node.id(), Instant::now());
         // Not `try_send`: a share that the task never hears is a share that is
         // never restated, which is worse than waiting for the queue.
         self.commands
@@ -317,7 +306,7 @@ impl Registry {
         self.catalogue
             .lock()
             .expect("catalogue")
-            .have(root, self.addr.id, Instant::now());
+            .have(root, self.node.id(), Instant::now());
         let _ = self.commands.try_send(Command::Have(vec![root]));
     }
 
@@ -329,7 +318,7 @@ impl Registry {
         let record = record
             .clean()
             .ok_or_else(|| "the record is not usable".to_string())?;
-        if !self.providers(&record.root).contains(&self.addr.id) {
+        if !self.providers(&record.root).contains(&self.node.id()) {
             return Err("this node does not have the bytes".to_string());
         }
         self.catalogue
@@ -348,35 +337,36 @@ impl Registry {
         self.catalogue
             .lock()
             .expect("catalogue")
-            .withdraw(root, self.addr.id);
+            .withdraw(root, self.node.id());
         // Stop serving it in this process too: the pin is what kept it alive.
         self.mirror.lock().expect("mirror").pins.remove(&root);
         let _ = self.commands.try_send(Command::Withdraw(root));
     }
 
-    /// This registry's endpoint id, which is what a provider list contains.
+    /// This node's endpoint id, which is what a provider list contains.
     pub fn id(&self) -> EndpointId {
-        self.addr.id
+        self.node.id()
     }
 
     /// This node's endpoint address, addresses included.
     pub fn addr(&self) -> &EndpointAddr {
-        &self.addr
+        self.node.addr()
     }
 
-    /// A ticket another node can seed from.
+    /// A ticket another node can seed from. It is the same ticket the session
+    /// uses: one endpoint, one ticket.
     pub fn ticket(&self) -> &str {
-        &self.ticket
+        self.node.ticket()
     }
 
-    /// A cloneable handle for another task to seed this registry with tickets it
-    /// hears. The swarm's registry announcement is the caller: it lives in the
-    /// event task, while the registry handle lives here.
+    /// A cloneable handle for another task to seed this catalogue with tickets it
+    /// heard. `mod peer` on the console is the caller: it lives on the frame or
+    /// event side, while the registry handle lives here.
     pub fn peers(&self) -> RegistryPeers {
         RegistryPeers {
-            lookup: self.lookup.clone(),
+            lookup: self.node.lookup().clone(),
             commands: self.commands.clone(),
-            id: self.addr.id,
+            id: self.node.id(),
         }
     }
 
@@ -582,18 +572,17 @@ impl Registry {
         out
     }
 
-    /// Leave the topic, stop the router and the store. Best effort: a process
-    /// that is already going away loses only the withdrawal.
+    /// Leave the topic and stop the catalogue's task. The node is not closed: the
+    /// swarm subscribes on it too, and whoever bound it owns its lifetime. Best
+    /// effort: a process that is already going away loses only the withdrawal.
     pub async fn shutdown(mut self) {
         let _ = self.commands.send(Command::Leave).await;
         while self.events.recv().await.is_some() {}
-        self.endpoint.close().await;
-        let _ = self.store.shutdown().await;
     }
 }
 
-/// A cloneable handle that only seeds the catalogue. It carries the endpoint
-/// lookup and the task's command queue, not the store or the events.
+/// A cloneable handle that only seeds the catalogue. It carries the node's
+/// endpoint lookup and the task's command queue, not the store or the events.
 #[derive(Clone)]
 pub struct RegistryPeers {
     lookup: MemoryLookup,
@@ -602,7 +591,7 @@ pub struct RegistryPeers {
 }
 
 impl RegistryPeers {
-    /// Seed the registry with a peer ticket learned elsewhere. The ticket is an
+    /// Seed the catalogue with a peer ticket learned elsewhere. The ticket is an
     /// introduction; whether the peer is in the catalogue's topic is gossip's
     /// answer, not this function's.
     pub fn join(&self, ticket: &str) -> Result<(), String> {
@@ -839,7 +828,6 @@ struct Task {
     events: mpsc::Sender<RegistryEvent>,
     catalogue: Arc<Mutex<Catalogue>>,
     own_id: EndpointId,
-    router: Router,
     every: Duration,
     ttl: Duration,
 }
@@ -852,7 +840,6 @@ async fn run(task: Task) {
         events,
         catalogue,
         own_id,
-        router,
         every,
         ttl,
     } = task;
@@ -998,11 +985,11 @@ async fn run(task: Task) {
     }
 
     // Leaving is not silent: a node that closes the window takes its records
-    // with it rather than waiting out the TTL.
+    // with it rather than waiting out the TTL. The node itself stays open -- the
+    // swarm is a second subscription on it.
     for root in own.keys() {
         let _ = broadcast_gone(&sender, *root).await;
     }
-    let _ = router.shutdown().await;
 }
 
 async fn broadcast_record(sender: &GossipSender, record: &ModRecord) -> Option<()> {
@@ -1185,6 +1172,9 @@ fn safe_relative(name: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::swarm::{Swarm, SwarmConfig};
+    use iroh_tickets::Ticket;
+    use iroh_tickets::endpoint::EndpointTicket;
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::time::timeout;
 
@@ -1449,6 +1439,40 @@ mod tests {
         assert!(registry.mirror(&first, first.size - 1).await.is_err());
 
         registry.shutdown().await;
+    }
+
+    /// One node serves both: the swarm is a subscription and the catalogue is a
+    /// second one, so the ticket a portal hands out introduces the catalogue too
+    /// and no second socket exists to seed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_swarm_and_a_registry_share_one_ticket() {
+        let node = Node::bind(NodeConfig {
+            secret: None,
+            reach: Reach::Direct,
+            blobs: Some(workspace("shared-node").join("store")),
+        })
+        .await
+        .expect("node");
+        let swarm = Swarm::join_on(
+            node.clone(),
+            SwarmConfig {
+                peers: Vec::new(),
+                lan: false,
+                ..SwarmConfig::new(TopicId::from_bytes([12u8; 32]))
+            },
+        )
+        .await
+        .expect("swarm");
+        let registry = Registry::start_on(node.clone(), config("shared-registry"))
+            .await
+            .expect("registry");
+
+        assert_eq!(swarm.id(), registry.id());
+        assert_eq!(swarm.ticket(), registry.ticket());
+        assert_eq!(registry.id(), node.id());
+
+        registry.shutdown().await;
+        node.shutdown().await;
     }
 
     #[test]
