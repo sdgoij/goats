@@ -396,9 +396,12 @@ function waterBuildRects(rects) {
 //                   pass at all: deterministic, and it reflects the ground and the sky
 //                   with nothing else in the frame's way. It does not reflect the goat.
 //   REFLECT_MIRROR  the world, rendered from the camera the table mirrors the player's
-//                   into and read back at each fragment's own screen position. Reflects
-//                   everything -- the goat, the herd, the clouds -- and is the one tier
-//                   that costs a second scene submission.
+//                   into and read back a row *above* each fragment's own screen position
+//                   (the target holds the upright scene, so the reflected row is the one
+//                   equally far above the waterline). Reflects everything -- the goat, the
+//                   herd, the clouds -- and is the one tier that costs a second scene
+//                   submission; it is the default, because that submission measures
+//                   0.03-0.05 ms and the bake never shows the herd.
 //
 // The tier is `TUNING.water.reflection`; `waterReflectTier` is what the frame actually
 // gets, and a tier the build cannot support degrades to the one below it rather than
@@ -618,8 +621,9 @@ function renderWaterMirror(ex, ey, ez, tx, ty, tz) {
     const level = waterLevel;
     // A horizontal plane mirrors y and leaves xz alone, so the eye and what it looks at
     // both flip through `2*level - y`. What comes out is the view a level sheet of water at
-    // `level` would show from this camera, which is what lets a fragment read it at its own
-    // screen position instead of through a projection of its own.
+    // `level` would show from this camera, rendered upright (the target keeps the world's
+    // own up), which is why the shader reads the row equally far above the waterline rather
+    // than the fragment's own.
     rl.beginTextureMode(waterMirrorRT);
     rl.clearBackground(rl.color(0, 0, 0, 0));
     rl.beginMode3D(ex, 2 * level - ey, ez, tx, 2 * level - ty, tz, 55);

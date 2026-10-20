@@ -3581,7 +3581,9 @@ rain is one level everywhere and the same world point cannot be under water from
 and dry from the next (see *The table is the world's*, below). **M20e** gives the surface the
 mirror it has been faking since M20b, in three tiers -- the sky alone, the ground baked into
 a texture the shader marches, and the scene rendered mirrored about the table -- with the
-middle one the default because it costs no pass (see *The reflection, as landed*, below).
+mirror the default now that it is measured (the `mirror` phase is 0.03-0.05 ms in `PERF.md`
+Appendix D), the bake kept for a build that cannot render to a texture (see *The reflection,
+as landed*, below).
 **M20f** is the audit and the guards: the no-new-field proof and the two-peers
 measurement the design promised, the seam a mod reads, the pool list and the `J`
 bisect (see *The audit and the guards, as landed*, below).
@@ -3823,19 +3825,19 @@ Medium / High; shadows map / planar / off), and this is what landed in M20e:
 - **Tier 0 -- sky and ambient only.** No scene reflection, no sample at all. Reads as
   "shiny", and it is what M20b-M20d shipped and the fallback a build without the
   reflection's own bindings degrades to.
-- **Tier 1 -- the baked-ground raymarch (the default).** The terrain grid is baked into a
+- **Tier 1 -- the baked-ground raymarch.** The terrain grid is baked into a
   texture -- the ground's own vertex colour in rgb and its height in the alpha -- and the
   fragment shader marches the reflected view ray against it, shading the hit in that
   colour and the sun. Real reflections of the ground and the sky, **no extra scene pass**,
-  deterministic, and rebuilt only when the ground is. It does not reflect the goat.
-- **Tier 2 -- the planar mirror.** The world is rendered from the camera the table mirrors
-  the player's into, and the shader reads it back at each fragment's own screen position.
-  This reflects *everything* -- the goat, the herd, the clouds -- and is the true "real
-  pool". It is also the expensive one, and the only item in M20 that can move the frame's
-  budget: it is a **second scene submission**, and the frame is CPU-bound in the scene,
-  not GPU-bound (`PERF.md` section 0). What mitigates it is what shipped: a *reduced*
-  reflection scene (terrain + goat + herd, no grass, no shadow pass, half-res target),
-  drawn only when the tier asks and there is water to reflect.
+  deterministic, and rebuilt only when the ground is. It does not reflect the goat, and it
+  is the fallback for a build whose engine has no render texture.
+- **Tier 2 -- the planar mirror (the default).** The world is rendered from the camera the
+  table mirrors the player's into, and the shader reads it back a row above each fragment's
+  own screen position. This reflects *everything* -- the goat, the herd, the clouds -- and
+  is the true "real pool". What mitigates its cost is what shipped: a *reduced* reflection
+  scene (terrain + goat + herd, no grass, no shadow pass, half-res target), drawn only when
+  the tier asks and there is water to reflect -- and the `mirror` phase measures 0.03-0.05
+  ms (`PERF.md` Appendix D), so it is the default here and in the Godot port.
 
 **Two engine-surface risks, both learned the hard way in M5b:**
 
@@ -4003,10 +4005,10 @@ tiers, and it is why a build with no render texture still has a real reflection.
 **Tier 2, and the one thing that constrained it.** The pass renders the world from the
 camera the table mirrors the player's into -- a horizontal plane mirrors y and leaves xz
 alone, so both the eye and what it looks at flip through `2 * level - y` -- and the shader
-reads it back at the fragment's own screen position (`gl_FragCoord.xy / waterScreen`). Both
-`gl_FragCoord` and a render texture's texel space start at the bottom-left, so the row needs
-**no flip**; the usual negative source height a raylib *draw* needs is about raylib's
-top-left 2D origin, which sampling never touches.
+reads the row equally far *above* the fragment's own (`gl_FragCoord.xy / waterScreen`, with
+y flipped). The target holds the upright scene seen from below, so sampling the fragment's
+own row would put an upright copy under every object; the Godot port reads
+`1.0 - SCREEN_UV.y` for the same reason (`godot/src/water.gdshader`).
 
 - **It runs before the frame's `beginMode3D`, beside `renderShadowMap`.** raylib's
 `beginTextureMode` sets an orthographic projection and `endTextureMode` restores the

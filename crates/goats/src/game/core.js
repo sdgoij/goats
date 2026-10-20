@@ -389,12 +389,13 @@ const TUNING = {
         // The reflection the surface samples (M20e), and the one knob here that is a quality
         // level rather than a feel number: 0 is the sky and the ambient grade alone, which is
         // what M20b-M20d shipped and the fallback if a mirror ever reads wrong; 1 bakes the
-        // ground into a texture the surface raymarches, which is the default because it costs
-        // no pass and no state; 2 renders the scene mirrored about the table into a texture,
-        // which reflects everything -- the goat included -- and is the second scene
-        // submission the setting exists to gate. `setting reflect <sky|map|mirror>` and the
-        // menu's combo box write this leaf, the way they write `herd.count`.
-        reflection: 1,
+        // ground into a texture the surface raymarches; 2 renders the scene mirrored about the
+        // table into a texture, which reflects everything -- the goat included -- and is the
+        // second scene submission the setting exists to gate. 2 is the default, as it is in
+        // the Godot port: the `mirror` phase measures 0.03-0.05 ms (`PERF.md` Appendix D),
+        // and the bake never reflects the herd. `setting reflect <sky|ground|mirror>` and
+        // the menu's combo box write this leaf, the way they write `herd.count`.
+        reflection: 2,
         // The chop (M20c): the wave height field's own numbers, a 3 cm crest every 60 cm. It
         // is never *displaced* -- the water mesh is the terrain's 2 m grid and a wave is
         // centimetres across -- so the surface is shaded by the normal taken from this field

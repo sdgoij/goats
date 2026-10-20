@@ -1346,14 +1346,15 @@ fn the_reflection_is_a_setting() {
     harness.run(FRAMES).expect("run the scene");
 
     // A quality level rather than a feel number: 0 is the sky the surface has always faked,
-    // 1 the ground it bakes and marches, 2 the scene it renders mirrored. The middle one is
-    // the default because it costs no pass and no state.
+    // 1 the ground it bakes and marches, 2 the scene it renders mirrored. The mirror is the
+    // default, as it is in the Godot port; the bake stays for a build that cannot render to
+    // a texture.
     let leaf = harness
         .eval("tuningGet('water.reflection')")
         .expect("water.reflection");
     checks.check(
-        "the surface reflects the ground by default",
-        leaf.as_f64() == Some(1.0),
+        "the surface reflects the scene by default",
+        leaf.as_f64() == Some(2.0),
         &leaf,
     );
     let wide = harness
@@ -1402,6 +1403,11 @@ fn the_reflection_is_a_setting() {
 fn the_ground_is_baked_for_the_surface() {
     let mut checks = Checks::new();
     let mut harness = Harness::start().expect("evaluate the scene");
+    // This case is the middle tier's, and the default is the mirror now: pin it before the
+    // first frame so the mirror never allocates its target and these are the bake's numbers.
+    harness
+        .eval("tuningSet('water.reflection', 1)")
+        .expect("pin the ground tier");
     harness.run(FRAMES).expect("run the scene");
 
     // The middle tier's whole cost is one texture, baked from the grid the terrain already
@@ -1453,8 +1459,8 @@ fn the_ground_is_baked_for_the_surface() {
         source.len(),
     );
     checks.check(
-        "...and reads the mirror at the fragment's own screen position",
-        source.contains("gl_FragCoord.xy / waterScreen"),
+        "...and reads the mirror a row above the fragment",
+        source.contains("mirrorUV.x, 1.0 - mirrorUV.y"),
         source.len(),
     );
 
