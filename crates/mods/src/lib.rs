@@ -163,6 +163,195 @@ impl ModSource {
             }
         }
     }
+
+    /// Write this source as a directory tree at `dest`, returning every
+    /// manifest-relative name written, in sorted order.
+    ///
+    /// This is the canonical form the registry names: a directory rooted at
+    /// `mod.json`, so a zip and its unpacked twin have the same package root.
+    /// `dest` may exist, but it must be empty -- materialising twice into one
+    /// directory would mix two trees. Symlinks are refused rather than followed:
+    /// the package is bytes, and the bytes a link points at are not part of it.
+    pub fn materialize(&self, dest: &Path) -> Result<Vec<String>, String> {
+        if dest.exists() {
+            let mut entries =
+                std::fs::read_dir(dest).map_err(|error| format!("{}: {error}", dest.display()))?;
+            if entries.next().is_some() {
+                return Err(format!("{}: is not empty", dest.display()));
+            }
+        }
+        std::fs::create_dir_all(dest).map_err(|error| format!("{}: {error}", dest.display()))?;
+        match self {
+            ModSource::Dir(dir) => materialize_dir(dir, dest),
+            ModSource::Zip(zip) => materialize_zip(zip, dest),
+            ModSource::Memory { files, .. } => materialize_memory(files, dest),
+        }
+    }
+}
+
+/// Copy a directory mod's files, depth first and in name order so the result is
+/// the same tree on every machine. Hidden files are copied too: a package is
+/// whatever the author ships, and silently dropping one would make two copies
+/// of "the same" mod disagree.
+fn materialize_dir(source: &Path, dest: &Path) -> Result<Vec<String>, String> {
+    fn walk(from: &Path, to: &Path, base: &Path, out: &mut Vec<String>) -> Result<(), String> {
+        let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(from)
+            .map_err(|error| format!("{}: {error}", from.display()))?
+            .collect::<Result<_, _>>()
+            .map_err(|error| format!("{}: {error}", from.display()))?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .ok_or_else(|| format!("{}: {name:?} is not UTF-8", from.display()))?;
+            let relative = match base.as_os_str().is_empty() {
+                true => name.to_string(),
+                false => format!("{}/{name}", base.display()),
+            };
+            let kind = entry
+                .file_type()
+                .map_err(|error| format!("{}: {error}", entry.path().display()))?;
+            if kind.is_symlink() {
+                return Err(format!(
+                    "{}: symlinks are not part of a package",
+                    entry.path().display()
+                ));
+            }
+            let target = to.join(name);
+            if kind.is_dir() {
+                std::fs::create_dir_all(&target)
+                    .map_err(|error| format!("{}: {error}", target.display()))?;
+                walk(&entry.path(), &target, Path::new(&relative), out)?;
+            } else if kind.is_file() {
+                std::fs::copy(entry.path(), &target)
+                    .map_err(|error| format!("{}: {error}", target.display()))?;
+                out.push(relative);
+            } else {
+                return Err(format!(
+                    "{}: not a regular file or directory",
+                    entry.path().display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(source, dest, Path::new(""), &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+/// Unpack a zip, stripping a single wrapper directory if there is one. The
+/// loader already accepts `outer/mod.json`; doing the strip here means the name
+/// in the collection is `mod.json`, which is what the tree's identity should be.
+fn materialize_zip(zip: &Path, dest: &Path) -> Result<Vec<String>, String> {
+    let file = std::fs::File::open(zip).map_err(|error| format!("{}: {error}", zip.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("'{}' is not a readable zip: {error}", zip.display()))?;
+
+    let mut entries = Vec::new();
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("{}: {error}", zip.display()))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let raw = entry.name().replace('\\', "/");
+        valid_relative(&raw)?;
+        entries.push((index, raw));
+    }
+    let wrapper = common_wrapper(
+        &entries
+            .iter()
+            .map(|(_, raw)| raw.as_str())
+            .collect::<Vec<_>>(),
+    );
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut files = Vec::new();
+    for (index, raw) in entries {
+        let relative = match &wrapper {
+            Some(prefix) => raw
+                .strip_prefix(prefix.as_str())
+                .and_then(|rest| rest.strip_prefix('/'))
+                .map(str::to_string)
+                .unwrap_or(raw),
+            None => raw,
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        valid_relative(&relative)?;
+        if files.contains(&relative) {
+            return Err(format!("'{relative}' appears twice in '{}'", zip.display()));
+        }
+        let target = dest.join(Path::new(&relative));
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("{}: {error}", zip.display()))?;
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170_000 == 0o120_000)
+        {
+            return Err(format!("'{relative}' in '{}' is a symlink", zip.display()));
+        }
+        let mut out = std::fs::File::create(&target)
+            .map_err(|error| format!("{}: {error}", target.display()))?;
+        std::io::copy(&mut entry, &mut out)
+            .map_err(|error| format!("{}: {error}", target.display()))?;
+        files.push(relative);
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn materialize_memory(
+    files: &BTreeMap<String, Vec<u8>>,
+    dest: &Path,
+) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    for (relative, bytes) in files {
+        valid_relative(relative)?;
+        let target = dest.join(Path::new(relative));
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+        std::fs::write(&target, bytes).map_err(|error| format!("{}: {error}", target.display()))?;
+        names.push(relative.clone());
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// The single top-level directory every entry shares, as `prefix` in
+/// `prefix/rest`, or `None` when there is no common one. `mod.json` at the root
+/// is also `None`, so a well-formed archive is never rewritten.
+/// The single top-level directory the archive's `mod.json` sits under, if it is
+/// not already at the root. A stray root file (a `.DS_Store`, a README) does not
+/// defeat the strip; two candidate wrappers do, because neither is authoritative.
+fn common_wrapper(entries: &[&str]) -> Option<String> {
+    let mut root = false;
+    let mut wrapped: Option<String> = None;
+    for entry in entries {
+        if *entry == "mod.json" {
+            root = true;
+        } else if let Some(prefix) = entry.strip_suffix("/mod.json") {
+            match &wrapped {
+                None => wrapped = Some(prefix.to_string()),
+                Some(current) if current == prefix => {}
+                Some(_) => return None,
+            }
+        }
+    }
+    if root { None } else { wrapped }
 }
 
 /// A validated manifest with everything the host needs to load it.
@@ -1198,6 +1387,13 @@ pub fn archive_source(source: &ModSource) -> Result<Vec<u8>, String> {
 /// is an install, not a digest pass.
 pub fn load_zip(path: &Path) -> Result<Manifest, LoadError> {
     load_source(&ModSource::Zip(path.to_path_buf()), AssetMode::Keep)
+}
+
+/// Load one directory as a mod, without walking a parent directory -- the
+/// inverse of [`ModSource::materialize`], for a tree a caller has just written
+/// (a fetched collection) and must check against the identity it was promised.
+pub fn load_dir(path: &Path) -> Result<Manifest, LoadError> {
+    load_source(&ModSource::Dir(path.to_path_buf()), AssetMode::Keep)
 }
 
 #[cfg(test)]
@@ -2337,6 +2533,157 @@ mod tests {
         let from_zip = load_zip(&path).expect("the zipped mod");
         assert_eq!(from_memory.id, from_zip.id);
         assert_eq!(from_memory.hash, from_zip.hash);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    const MATERIALIZE_MANIFEST: &str = r#"{ "id": "com.example.tree", "name": "Tree",
+        "version": "2", "api": 1, "entry": "mod.js",
+        "assets": { "model.tree": "assets/tree.bin" } }"#;
+
+    fn write_tree_mod(dir: &Path) {
+        write(&dir.join("mod.json"), MATERIALIZE_MANIFEST);
+        write(&dir.join("mod.js"), "1;\n");
+        write(&dir.join("assets/tree.bin"), "bytes");
+        write(&dir.join("README.txt"), "not part of the manifest");
+    }
+
+    #[test]
+    fn a_directory_materializes_to_the_same_tree() {
+        let root = workspace("materialize-dir");
+        let source = root.join("source");
+        write_tree_mod(&source);
+        let before = load_dir(&source).expect("the source mod");
+
+        let dest = root.join("tree");
+        let files = ModSource::Dir(source)
+            .materialize(&dest)
+            .expect("materialized");
+        assert_eq!(
+            files,
+            vec!["README.txt", "assets/tree.bin", "mod.js", "mod.json"]
+        );
+
+        let after = load_dir(&dest).expect("the materialized mod");
+        assert_eq!(after.hash, before.hash);
+        assert_eq!(after.entry_source, before.entry_source);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_wrapped_zip_materializes_with_mod_json_at_the_root() {
+        let root = workspace("materialize-zip");
+        let path = write_zip(
+            &root,
+            "wrapped.zip",
+            &[
+                ("outer/mod.json", MATERIALIZE_MANIFEST),
+                ("outer/mod.js", "1;\n"),
+                ("outer/assets/tree.bin", "bytes"),
+            ],
+        );
+        let from_zip = load_zip(&path).expect("the zipped mod");
+
+        let dest = root.join("tree");
+        let files = ModSource::Zip(path)
+            .materialize(&dest)
+            .expect("materialized");
+        assert_eq!(files, vec!["assets/tree.bin", "mod.js", "mod.json"]);
+        assert!(dest.join("mod.json").is_file());
+
+        let from_tree = load_dir(&dest).expect("the materialized mod");
+        assert_eq!(from_tree.hash, from_zip.hash);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_wrapper_survives_a_stray_root_file() {
+        let root = workspace("materialize-stray");
+        let path = write_zip(
+            &root,
+            "stray.zip",
+            &[
+                ("outer/mod.json", MATERIALIZE_MANIFEST),
+                ("outer/mod.js", "1;\n"),
+                ("outer/assets/tree.bin", "bytes"),
+                ("README.txt", "junk at the root"),
+            ],
+        );
+        let from_zip = load_zip(&path).expect("the zipped mod");
+
+        let dest = root.join("tree");
+        let files = ModSource::Zip(path)
+            .materialize(&dest)
+            .expect("materialized");
+        assert_eq!(
+            files,
+            vec!["README.txt", "assets/tree.bin", "mod.js", "mod.json"]
+        );
+        assert_eq!(load_dir(&dest).expect("the tree").hash, from_zip.hash);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_memory_mod_materializes_and_keeps_its_digest() {
+        let manifest = r#"{ "id": "com.example.memory", "name": "M", "version": "1",
+            "api": 1, "entry": "mod.js" }"#;
+        let files = memory_files(&[
+            ("mod.json", manifest.as_bytes()),
+            ("mod.js", "1;\n".as_bytes()),
+        ]);
+        let from_memory = Manifest::from_files("memory", files, AssetMode::Keep).expect("the mod");
+
+        let root = workspace("materialize-memory");
+        let dest = root.join("tree");
+        from_memory.source.materialize(&dest).expect("materialized");
+        let from_tree = load_dir(&dest).expect("the materialized mod");
+        assert_eq!(from_tree.hash, from_memory.hash);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn materialize_needs_an_empty_destination() {
+        let root = workspace("materialize-busy");
+        let source = root.join("source");
+        write_tree_mod(&source);
+        let dest = root.join("tree");
+        write(&dest.join("stale"), "x");
+        let error = ModSource::Dir(source)
+            .materialize(&dest)
+            .expect_err("must refuse");
+        assert!(error.contains("not empty"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_memory_file_cannot_escape_materialize() {
+        let root = workspace("materialize-escape");
+        let mut files = BTreeMap::new();
+        files.insert(
+            "mod.json".to_string(),
+            MATERIALIZE_MANIFEST.as_bytes().to_vec(),
+        );
+        files.insert("../escape".to_string(), b"x".to_vec());
+        let error = ModSource::Memory {
+            name: "escape".to_string(),
+            files,
+        }
+        .materialize(&root.join("tree"))
+        .expect_err("must refuse");
+        assert!(error.contains("must not contain '..'"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_not_part_of_a_package() {
+        let root = workspace("materialize-symlink");
+        let source = root.join("source");
+        write_tree_mod(&source);
+        std::os::unix::fs::symlink(source.join("mod.js"), source.join("link.js")).unwrap();
+        let error = ModSource::Dir(source)
+            .materialize(&root.join("tree"))
+            .expect_err("must refuse");
+        assert!(error.contains("symlink"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -16,6 +16,10 @@ iroh = { workspace = true }
 # The swarm: topic broadcast for host discovery. It rides its own endpoint (the
 # session's accept loop owns the session ALPNs), and this crate owns both.
 iroh-gossip = { workspace = true }
+# The registry's transfer layer: BLAKE3 verified blobs, and the store a provider
+# serves from. The same endpoint carries its ALPN, and `ContentDiscovery` is the
+# seam the gossip catalogue plugs into.
+iroh-blobs = { workspace = true }
 # The LAN beacon: a multicast socket with `SO_REUSEADDR`/`SO_REUSEPORT`, so two
 # clients on one machine both receive the group.
 socket2 = { workspace = true }

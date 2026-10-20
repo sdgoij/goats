@@ -47,14 +47,19 @@ pub mod bridge;
 // `proto` directly. `ModMismatch` and `compare_world_mods` ride along because a
 // refused join hands one back.
 pub use proto::{
-    BlastKind, BotState, Crater, Datagram, EatenCell, Gait, ModMismatch, ModRef, ModsOutcome,
-    ModsState, PeerFrame, PeerState, Spent, Streams, VoiceFrame, WeatherKind, WeatherState,
-    WorldHead, WorldOutcome, WorldPart, WorldState, compare_world_mods, describe_mods,
+    BlastKind, BotState, Crater, Datagram, EatenCell, Gait, ModHave, ModMismatch, ModRecord,
+    ModRef, ModSide, ModsOutcome, ModsState, PeerFrame, PeerState, Spent, Streams, VoiceFrame,
+    WeatherKind, WeatherState, WorldHead, WorldOutcome, WorldPart, WorldState, compare_world_mods,
+    describe_mods,
 };
 
 /// Finding hosts without a registry: iroh-gossip topic membership and the
 /// advert a host restates on it.
 pub mod swarm;
+
+/// The mod registry: a gossip catalogue of packages, and `iroh-blobs` for the
+/// bytes. See `SWARM.md`, "A mod registry".
+pub mod registry;
 
 // The ALPN, carrying the major wire version so a peer built against a
 // different protocol fails the QUIC handshake instead of misreading messages.
@@ -160,6 +165,8 @@ pub enum Error {
     Message(String),
     /// The swarm could not be joined, or its endpoint could not be bound.
     Swarm(String),
+    /// The mod registry could not be opened, joined or served.
+    Registry(String),
 }
 
 impl std::fmt::Display for Error {
@@ -173,6 +180,7 @@ impl std::fmt::Display for Error {
             Error::Refused(message) => write!(formatter, "refused: {message}"),
             Error::Message(message) => write!(formatter, "message: {message}"),
             Error::Swarm(message) => write!(formatter, "swarm: {message}"),
+            Error::Registry(message) => write!(formatter, "registry: {message}"),
         }
     }
 }

@@ -156,6 +156,108 @@ pub struct ModRef {
     pub hash: u64,
 }
 
+//
+// The mod registry: a gossip topic that names packages and who can serve them,
+// and `iroh-blobs` for the bytes. See `SWARM.md`.
+//
+// A package is a directory tree rooted at `mod.json`, named by a BLAKE3
+// collection hash (`root`). The record also carries the join's FNV digest
+// (`hash`), because that is still what a session compares; the two are not the
+// same hash and neither replaces the other yet.
+
+/// Which side a record's package runs on. Mirrors `mods::Side` without making
+/// this crate depend on the loader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModSide {
+    Client,
+    World,
+}
+
+/// The largest id a record may carry, matching the loader's own limit.
+pub const MAX_RECORD_ID_CHARS: usize = 128;
+/// A version is a label, not prose.
+pub const MAX_RECORD_VERSION_CHARS: usize = 64;
+/// The largest package the registry will advertise, and therefore fetch. The
+/// loader caps one asset at 64 MiB; this is a whole tree.
+pub const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
+/// The most records a catalogue keeps. A topic is not a directory.
+pub const MAX_REGISTRY_RECORDS: usize = 1024;
+/// The largest registry message accepted from a peer. A record is a few hundred
+/// bytes; this bounds a hostile one before it reaches the decoder.
+pub const MAX_REGISTRY_MESSAGE_BYTES: usize = 4096;
+
+/// One package on the registry: what a `.torrent` would say, minus the file
+/// list. The list is the collection's own index, fetched as a blob and verified
+/// by `root`, so a ten-thousand-file mod does not grow this message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModRecord {
+    pub id: String,
+    pub version: String,
+    /// The mod API major the package declares.
+    pub api: u32,
+    pub side: ModSide,
+    /// The FNV-1a digest a join compares (`mods::Manifest::hash`). Carried so a
+    /// client can tell whether this is the copy a session would accept.
+    pub hash: u64,
+    /// The BLAKE3 collection hash: the address the bytes are fetched by.
+    pub root: [u8; 32],
+    /// The package's total size in bytes, for a budget before fetching.
+    pub size: u64,
+    /// The endpoint that first announced it. Attribution, not proof.
+    pub author: [u8; 32],
+}
+
+impl ModRecord {
+    /// The identity a join compares. The root is deliberately not part of it:
+    /// the handshake has no field for an address yet.
+    pub fn reference(&self) -> ModRef {
+        ModRef {
+            id: self.id.clone(),
+            version: self.version.clone(),
+            hash: self.hash,
+        }
+    }
+
+    /// Trim and bound what a peer sent, or refuse it. Every string in a record
+    /// is displayed and used as a filename, so the check is the same shape as
+    /// the loader's: an id of the allowed characters, a sane version, and a root
+    /// that is not the zero hash.
+    pub fn clean(mut self) -> Option<ModRecord> {
+        self.id = self.id.trim().to_string();
+        self.version = self.version.trim().to_string();
+        let id_ok = !self.id.is_empty()
+            && self.id.chars().count() <= MAX_RECORD_ID_CHARS
+            && self
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+        let version_ok = !self.version.is_empty()
+            && self.version.chars().count() <= MAX_RECORD_VERSION_CHARS
+            && !self.version.chars().any(char::is_control);
+        let sane = self.size <= MAX_PACKAGE_BYTES
+            && self.root != [0u8; 32]
+            && self.author != [0u8; 32]
+            && self.api != 0;
+        (id_ok && version_ok && sane).then_some(self)
+    }
+}
+
+/// "I can serve this root." A have is the peer half of a record: the record
+/// says what a mod is, the have says who has the bytes. The sender is the
+/// provider, so there is nothing else to carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModHave {
+    pub root: [u8; 32],
+}
+
+impl ModHave {
+    /// A have for the zero hash means nothing and is dropped.
+    pub fn clean(self) -> Option<ModHave> {
+        (self.root != [0u8; 32]).then_some(self)
+    }
+}
+
 /// The first words of [`ModMismatch::describe`], and the only thing that marks a
 /// refusal as being about mods.
 ///
@@ -2417,5 +2519,94 @@ mod tests {
         assert!(unique.len() <= MAX_NAME_BYTES, "{unique}");
         assert!(unique.ends_with(" #2"), "{unique}");
         assert_ne!(unique, long);
+    }
+
+    fn record() -> ModRecord {
+        ModRecord {
+            id: "com.example.birds".to_string(),
+            version: "1.2.0".to_string(),
+            api: 1,
+            side: ModSide::World,
+            hash: 0xabc,
+            root: [7u8; 32],
+            size: 1024,
+            author: [9u8; 32],
+        }
+    }
+
+    #[test]
+    fn a_record_names_the_join_identity() {
+        let record = record();
+        assert_eq!(
+            record.reference(),
+            ModRef {
+                id: "com.example.birds".to_string(),
+                version: "1.2.0".to_string(),
+                hash: 0xabc,
+            }
+        );
+    }
+
+    #[test]
+    fn a_record_round_trips_and_is_cleaned() {
+        let payload = postcard::to_allocvec(&record()).expect("encode");
+        let decoded: ModRecord = postcard::from_bytes(&payload).expect("decode");
+        assert_eq!(decoded, record());
+
+        let padded = ModRecord {
+            id: "  com.example.birds ".to_string(),
+            version: " 1.2.0 ".to_string(),
+            ..record()
+        };
+        assert_eq!(padded.clean(), Some(record()));
+    }
+
+    #[test]
+    fn a_hostile_record_is_refused() {
+        // Every cap has to hold, because a record is displayed and becomes a
+        // directory name once it is installed.
+        for broken in [
+            ModRecord {
+                id: String::new(),
+                ..record()
+            },
+            ModRecord {
+                id: "../../escape".to_string(),
+                ..record()
+            },
+            ModRecord {
+                id: "x".repeat(MAX_RECORD_ID_CHARS + 1),
+                ..record()
+            },
+            ModRecord {
+                version: String::new(),
+                ..record()
+            },
+            ModRecord {
+                version: "1\n2".to_string(),
+                ..record()
+            },
+            ModRecord {
+                version: "v".repeat(MAX_RECORD_VERSION_CHARS + 1),
+                ..record()
+            },
+            ModRecord { api: 0, ..record() },
+            ModRecord {
+                root: [0u8; 32],
+                ..record()
+            },
+            ModRecord {
+                author: [0u8; 32],
+                ..record()
+            },
+            ModRecord {
+                size: MAX_PACKAGE_BYTES + 1,
+                ..record()
+            },
+        ] {
+            assert!(broken.clone().clean().is_none(), "accepted {broken:?}");
+        }
+        assert!(ModHave { root: [0u8; 32] }.clean().is_none());
+        assert!(ModHave { root: [1u8; 32] }.clean().is_some());
     }
 }

@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use session::registry::Registry;
 use session::{Fetched, ModRef};
 
 /// The prefix an installed archive gets, so a pulled mod is recognisable and
@@ -85,23 +86,8 @@ pub async fn pull(
 
     // Refuse-on-conflict, before asking: there is no point fetching a mod that
     // could not be installed, and a pull must never touch what the player has.
-    let mut wanted = Vec::new();
-    for reference in want {
-        match loader.get(&reference.id) {
-            None => wanted.push(reference),
-            Some(existing) => report.refused.push((
-                reference.id.clone(),
-                if existing.version == reference.version && existing.hash == reference.hash {
-                    "you already have it".to_string()
-                } else {
-                    format!(
-                        "you have {}#{:016x}, the host has {}#{:016x}",
-                        existing.version, existing.hash, reference.version, reference.hash
-                    )
-                },
-            )),
-        }
-    }
+    let (wanted, refused) = unowned(loader, want);
+    report.refused = refused;
     if wanted.is_empty() {
         return Ok(report);
     }
@@ -122,6 +108,211 @@ pub async fn pull(
         record(mods_dir, ticket, &report.installed)?;
     }
     Ok(report)
+}
+
+/// Split `want` into what can be fetched and what the player already has. A mod
+/// whose id is loaded is refused rather than replaced: only the player knows
+/// whether their copy or the network's is the one they want.
+fn unowned(loader: &mods::Loader, want: Vec<ModRef>) -> (Vec<ModRef>, Vec<(String, String)>) {
+    let mut wanted = Vec::new();
+    let mut refused = Vec::new();
+    for reference in want {
+        match loader.get(&reference.id) {
+            None => wanted.push(reference),
+            Some(existing) => refused.push((
+                reference.id.clone(),
+                if existing.version == reference.version && existing.hash == reference.hash {
+                    "you already have it".to_string()
+                } else {
+                    format!(
+                        "you have {}#{:016x}, the host has {}#{:016x}",
+                        existing.version, existing.hash, reference.version, reference.hash
+                    )
+                },
+            )),
+        }
+    }
+    (wanted, refused)
+}
+
+/// Fetch `want` from the registry rather than from a host (M18f). The same
+/// verify-then-install policy as [`pull`], with a collection as the transport:
+/// `Registry::fetch` writes a tree into a staging directory, the loader re-reads
+/// it, and only then is it renamed into the mods directory.
+///
+/// Staging lives in `mods/.staging/`, which discovery ignores because it has no
+/// `mod.json` of its own -- the same trick the zip pull plays with a `.part`
+/// suffix, adapted to a directory the walker would otherwise see.
+pub async fn pull_registry(
+    registry: &Registry,
+    loader: &mods::Loader,
+    mods_dir: &Path,
+    want: Vec<ModRef>,
+) -> Result<Report, String> {
+    let (wanted, refused) = unowned(loader, want);
+    let mut report = Report {
+        refused,
+        ..Default::default()
+    };
+    if wanted.is_empty() {
+        return Ok(report);
+    }
+
+    let staging = mods_dir.join(STAGING);
+    std::fs::create_dir_all(&staging).map_err(|error| format!("{}: {error}", staging.display()))?;
+
+    for reference in wanted {
+        let Some(record) = registry.find(&reference) else {
+            report
+                .unavailable
+                .push((reference.id, "the registry has no record".to_string()));
+            continue;
+        };
+        if registry.providers(&record.root).is_empty() {
+            report
+                .unavailable
+                .push((reference.id, "no provider has it".to_string()));
+            continue;
+        }
+
+        let staged = staging.join(dir_name(&reference.id));
+        let _ = std::fs::remove_dir_all(&staged);
+        if let Err(reason) = registry.fetch(&record, &staged).await {
+            let _ = std::fs::remove_dir_all(&staged);
+            report.refused.push((reference.id, reason));
+            continue;
+        }
+        if let Err(reason) = install_tree(mods_dir, &reference, &staged) {
+            let _ = std::fs::remove_dir_all(&staged);
+            report.refused.push((reference.id, reason));
+            continue;
+        }
+        report.installed.push(reference);
+    }
+
+    // Leave no empty staging directory behind. A non-empty one means a failed
+    // step above kept its evidence, which is deliberate.
+    let _ = std::fs::remove_dir(&staging);
+    if !report.installed.is_empty() {
+        record(mods_dir, "registry", &report.installed)?;
+    }
+    Ok(report)
+}
+
+/// The staging directory inside the mods directory. It has no `mod.json` of its
+/// own, so [`mods::Loader::discover`] skips it; a half-written tree is therefore
+/// invisible even if the process dies mid-export.
+const STAGING: &str = ".staging";
+
+/// Verify a fetched tree and move it into place. The loader is the authority:
+/// the tree must carry `mod.json`, and the id, version and digest must be the
+/// ones the record promised. A destination that already exists is refused, never
+/// overwritten.
+fn install_tree(mods_dir: &Path, reference: &ModRef, staged: &Path) -> Result<(), String> {
+    let name = dir_name(&reference.id);
+    let checked = mods::load_dir(staged);
+    let verified = matches!(
+        &checked,
+        Ok(manifest)
+            if manifest.id == reference.id
+                && manifest.version == reference.version
+                && manifest.hash == reference.hash
+    );
+    if !verified {
+        return Err(match checked {
+            Ok(manifest) => format!(
+                "it is {}@{}#{:016x}, not the {}@{}#{:016x} asked for",
+                manifest.id,
+                manifest.version,
+                manifest.hash,
+                reference.id,
+                reference.version,
+                reference.hash
+            ),
+            Err(error) => format!("it does not load: {}", error.message),
+        });
+    }
+
+    let path = mods_dir.join(name);
+    if path.exists() {
+        return Err("you already have it".to_string());
+    }
+    std::fs::rename(staged, &path).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Where a fetched tree lands: the archive name without the suffix, since the
+/// package is a directory now.
+fn dir_name(id: &str) -> String {
+    let filtered: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .take(96)
+        .collect();
+    let stem = if filtered.is_empty() {
+        "mod".to_string()
+    } else {
+        filtered
+    };
+    format!("{PREFIX}{stem}")
+}
+
+/// The client half of a recovery that prefers the host and falls back to the
+/// registry only for what the host could not serve. The host is authoritative
+/// and is usually a direct connection; the registry is what makes a world set
+/// fetchable when it is not.
+pub async fn recover_with(
+    ticket: &str,
+    loader: &mods::Loader,
+    mods_dir: &Path,
+    registry: Option<&Registry>,
+) -> Result<Recovery, String> {
+    let host = match session::fetch_catalogue(ticket).await {
+        Ok(host) => host,
+        Err(error) => return Ok(Recovery::Unreachable(error.to_string())),
+    };
+    let ours = world_mods(loader);
+    let mismatch = session::compare_world_mods(&host, &ours);
+    if !mismatch.extra.is_empty() || !mismatch.differing.is_empty() {
+        return Ok(Recovery::Unfixable(mismatch));
+    }
+    let want: Vec<ModRef> = host
+        .iter()
+        .filter(|reference| !ours.iter().any(|ours| ours.id == reference.id))
+        .cloned()
+        .collect();
+    if want.is_empty() {
+        return Ok(Recovery::Matched);
+    }
+
+    let report = pull(ticket, loader, mods_dir, want.clone()).await?;
+    let Some(registry) = registry else {
+        return Ok(Recovery::Pulled(report));
+    };
+    let missing: Vec<ModRef> = report
+        .unavailable
+        .iter()
+        .filter_map(|(id, _)| want.iter().find(|reference| &reference.id == id).cloned())
+        .collect();
+    if missing.is_empty() {
+        return Ok(Recovery::Pulled(report));
+    }
+    let fallback = pull_registry(registry, loader, mods_dir, missing).await?;
+    Ok(Recovery::Pulled(merge(report, fallback)))
+}
+
+/// Fold a fallback's report into the host's, dropping an "unavailable" line the
+/// fallback then satisfied.
+fn merge(mut report: Report, fallback: Report) -> Report {
+    report.unavailable.retain(|(id, _)| {
+        !fallback
+            .installed
+            .iter()
+            .any(|reference| &reference.id == id)
+    });
+    report.installed.extend(fallback.installed);
+    report.unavailable.extend(fallback.unavailable);
+    report.refused.extend(fallback.refused);
+    report
 }
 
 /// What a recovery attempt found, for the caller to act on.
@@ -154,27 +345,7 @@ pub async fn recover(
     loader: &mods::Loader,
     mods_dir: &Path,
 ) -> Result<Recovery, String> {
-    let host = match session::fetch_catalogue(ticket).await {
-        Ok(host) => host,
-        Err(error) => return Ok(Recovery::Unreachable(error.to_string())),
-    };
-    let ours = world_mods(loader);
-    let mismatch = session::compare_world_mods(&host, &ours);
-    if !mismatch.extra.is_empty() || !mismatch.differing.is_empty() {
-        // Pulling can neither drop what this client has nor choose between two
-        // copies of one id, so there is nothing to try.
-        return Ok(Recovery::Unfixable(mismatch));
-    }
-    let want: Vec<ModRef> = host
-        .iter()
-        .filter(|reference| !ours.iter().any(|ours| ours.id == reference.id))
-        .cloned()
-        .collect();
-    if want.is_empty() {
-        return Ok(Recovery::Matched);
-    }
-    let report = pull(ticket, loader, mods_dir, want).await?;
-    Ok(Recovery::Pulled(report))
+    recover_with(ticket, loader, mods_dir, None).await
 }
 
 /// The world-mod set a loader presents, in the shape the handshake compares and
@@ -344,6 +515,149 @@ mod tests {
     /// What an installed archive is called, and why (M18d). The name is the one
     /// thing a player has to be able to find, so it is neither hidden nor able to
     /// climb out of the mods directory: the id arrives from a host.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_registry_installs_a_world_mod_the_host_cannot_serve() {
+        use session::registry::{Registry, RegistryConfig};
+        use session::swarm::{Reach, parse_peer};
+
+        let dir = temp_dir("registry");
+        let host_mods = dir.join("host-mods");
+        write(
+            &host_mods.join("mod").join("mod.json"),
+            r#"{ "id": "com.example.birds", "name": "Birds", "version": "1.0.0",
+                 "api": 1, "side": "world", "entry": "mod.js" }"#,
+        );
+        write(&host_mods.join("mod").join("mod.js"), "return 1;\n");
+        let digest = mods::Loader::discover(&host_mods)
+            .get("com.example.birds")
+            .expect("the fixture mod")
+            .hash;
+        let reference = ModRef {
+            id: "com.example.birds".to_string(),
+            version: "1.0.0".to_string(),
+            hash: digest,
+        };
+
+        let topic = session::registry::RegistryConfig::default_topic();
+        let config = |name: &str| RegistryConfig {
+            topic,
+            peers: Vec::new(),
+            secret: None,
+            reach: Reach::Direct,
+            store: dir.join(name),
+            every: Duration::from_millis(50),
+            ttl: Duration::from_secs(2),
+        };
+        let host = Registry::start(config("host-store"))
+            .await
+            .expect("host registry");
+        let record = session::ModRecord {
+            id: reference.id.clone(),
+            version: reference.version.clone(),
+            api: 1,
+            side: session::ModSide::World,
+            hash: reference.hash,
+            root: [0u8; 32],
+            size: 0,
+            author: [0u8; 32],
+        };
+        host.share(record, &host_mods.join("mod"))
+            .await
+            .expect("shared the tree");
+
+        let client = Registry::start(RegistryConfig {
+            peers: vec![parse_peer(host.ticket()).expect("the host ticket")],
+            ..config("client-store")
+        })
+        .await
+        .expect("client registry");
+        let mut listed = false;
+        for _ in 0..200 {
+            if let Some(record) = client.find(&reference)
+                && !client.providers(&record.root).is_empty()
+            {
+                listed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(listed, "the registry never listed the mod with a provider");
+
+        let mods_dir = dir.join("client-mods");
+        std::fs::create_dir_all(&mods_dir).unwrap();
+        let report = within(pull_registry(
+            &client,
+            &mods::Loader::empty(),
+            &mods_dir,
+            vec![reference.clone()],
+        ))
+        .await
+        .expect("the registry pull");
+        assert_eq!(report.installed, vec![reference.clone()]);
+        assert!(report.unavailable.is_empty(), "{:?}", report.unavailable);
+
+        let loader = mods::Loader::discover(&mods_dir);
+        assert!(loader.errors().is_empty(), "{:?}", loader.errors());
+        assert_eq!(
+            loader
+                .get("com.example.birds")
+                .map(|manifest| manifest.hash),
+            Some(reference.hash)
+        );
+        assert!(
+            mods_dir.join(RECORD).is_file(),
+            "the provenance record names the registry"
+        );
+
+        // The same request a second time is refused rather than overwritten.
+        let again = pull_registry(&client, &loader, &mods_dir, vec![reference.clone()])
+            .await
+            .expect("the second pull");
+        assert!(again.installed.is_empty());
+        assert_eq!(again.refused.len(), 1);
+        assert_eq!(again.refused[0].0, reference.id);
+
+        client.shutdown().await;
+        host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_registry_with_no_record_reports_the_mod_unavailable() {
+        use session::registry::{Registry, RegistryConfig};
+        use session::swarm::Reach;
+
+        let dir = temp_dir("registry-empty");
+        let registry = Registry::start(RegistryConfig {
+            topic: RegistryConfig::default_topic(),
+            peers: Vec::new(),
+            secret: None,
+            reach: Reach::Direct,
+            store: dir.join("store"),
+            every: Duration::from_millis(50),
+            ttl: Duration::from_secs(2),
+        })
+        .await
+        .expect("registry");
+
+        let report = pull_registry(
+            &registry,
+            &mods::Loader::empty(),
+            &dir.join("mods"),
+            vec![ModRef {
+                id: "com.example.missing".to_string(),
+                version: "1".to_string(),
+                hash: 1,
+            }],
+        )
+        .await
+        .expect("the pull");
+        assert!(report.installed.is_empty());
+        assert_eq!(report.unavailable.len(), 1);
+        assert!(report.unavailable[0].1.contains("no record"));
+
+        registry.shutdown().await;
+    }
+
     #[test]
     fn an_installed_archive_is_visible_and_contained() {
         let name = archive_name("com.example.birds");

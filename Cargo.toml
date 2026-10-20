@@ -63,6 +63,11 @@ iroh = "1.2.0"
 # hosts without a registry. It tracks iroh's 1.x line (its `iroh` requirement is
 # `^1`), so it shares the endpoint stack above.
 iroh-gossip = "0.101"
+# The registry's bytes: BLAKE3 verified streaming for a blob or a tree of blobs,
+# with range requests, over the same endpoint. The `fs-store` feature is the
+# on-disk store a client keeps its mods in; `rpc` (the default) is for a
+# cross-process service and is deliberately off.
+iroh-blobs = { version = "0.103.1", default-features = false, features = ["fs-store"] }
 # The swarm message is compact binary, and the browser's mod editor speaks base64
 # (the same representation `APIv1` uses for bytes on the wire).
 base64 = "0.22"
