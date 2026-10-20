@@ -545,13 +545,16 @@ const WATER_FS = [
     "            if (hit.r >= 0.0) sky = hit;",
     "        }",
     "    } else if (waterReflect >= 1.5) {",
-    // The mirror is read at the fragment's own screen position: the pass renders the world
-    // from the camera the table mirrors this one into, so the reflected view ray leaves the
-    // same pixel it entered. Both `gl_FragCoord` and a render texture's texel space start at
-    // the bottom-left, so the row needs no flip here -- which is why this is a sample and
-    // not a `drawTexture`, where raylib's top-left origin would need the usual negative
-    // source height.
-    "        vec4 mirrored = texture(texture2, gl_FragCoord.xy / waterScreen);",
+    // The mirror is read a row *above* the fragment. The pass mirrors the eye and what
+    // it looks at through the table, but the world still has its own up in the target,
+    // so what it renders is the upright scene seen from under the water rather than a
+    // reflected image. Reading the fragment's own row would therefore put an upright
+    // copy under every object; the row equally far above the waterline is the
+    // reflected one. The column needs no flip, which is why the camera is mirrored
+    // rather than a ray projected. (The Godot port reads `1.0 - SCREEN_UV.y` for the
+    // same reason -- `godot/src/water.gdshader`, commit 5cc0c71.)
+    "        vec2 mirrorUV = gl_FragCoord.xy / waterScreen;",
+    "        vec4 mirrored = texture(texture2, vec2(mirrorUV.x, 1.0 - mirrorUV.y));",
     "        sky = mix(sky, mirrored.rgb, mirrored.a);",
     "    }",
     "    color = mix(color, sky, fres);",
