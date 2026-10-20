@@ -3,8 +3,9 @@
 //! The mechanics live in `crates/flight` and reach the scene through the
 //! `__flight` global (`crates/flight-js`). What this file is for is the
 //! *integration*: that a running jump with the capability takes off, that the
-//! ground controls mean the flight controls in the air, that a release is a
-//! fall carrying the crate's damage, and that the scene's own numbers agree with
+//! ground controls mean the flight controls in the air, that a release is a fall
+//! carrying the crate's damage, that a bot's zoomies hop is the same take-off, and
+//! that the scene's own numbers agree with the crate's.
 //! the crate's.
 //!
 //! The harness's scripted keyboard is a fixed timeline (walk at frame 10, run at
@@ -36,14 +37,30 @@ struct World {
 
 impl World {
     fn new() -> World {
+        World::with_herd(0)
+    }
+
+    /// A loaded world with `herd` bots. `loadTotal` is nine steps plus one per bot,
+    /// so `LOAD` still covers a herd of one.
+    fn with_herd(herd: u32) -> World {
         let mut harness = Harness::start().expect("evaluate the scene");
         // An empty touch timeline: `touch.js` is inert and the stub's scripted
         // keyboard stands down, so only the console's held keys move the goat.
         harness.touch(&json!([])).expect("the touch surface");
-        // No bots: the flight is the player's, and the herd is the expensive half
-        // of a frame. This also shortens the load to its nine steps.
-        harness.eval("goats.bots.setCount(0)").expect("the herd");
+        // The player's cases want no herd -- it is the expensive half of a frame --
+        // and the herd's own want exactly one.
+        harness
+            .eval(&format!("goats.bots.setCount({herd})"))
+            .expect("the herd");
         harness.run(LOAD).expect("load the scene");
+        // `run()` ends with `sceneShutdown`, which unloads the herd along with the
+        // player's model. The tuning leaf is still set, and `loaded` is still true, so
+        // naming the count again rebuilds it -- the same call the load step makes.
+        if herd > 0 {
+            harness
+                .eval(&format!("goats.bots.setCount({herd})"))
+                .expect("the herd");
+        }
         // `run()` stopped at `LOAD`; the hand-driven frames need headroom above
         // it. The clock is reset so a case's own frame indices start at zero.
         harness
@@ -107,12 +124,136 @@ impl World {
 }
 
 #[test]
-fn the_captured_bird_flies() {
+fn the_flight_works() {
     let mut checks = Checks::new();
     take_off_cases(&mut checks);
     control_cases(&mut checks);
     release_cases(&mut checks);
+    herd_air_cases(&mut checks);
+    herd_landing_cases(&mut checks);
     checks.finish();
+}
+
+/// Put the only bot into a run with its zoomies clock running and no hop cooldown,
+/// which is the state `updateBots` takes off from. Its target is ten metres away, so
+/// the speed the take-off gets is the run's own.
+fn herd_hop(world: &mut World) {
+    world.eval(
+        "BOTS[0].mode = 'run'; BOTS[0].zoom = 5; BOTS[0].jumpCool = 0; \
+         BOTS[0].timer = 10; BOTS[0].tx = BOTS[0].x + 10; BOTS[0].tz = BOTS[0].z;",
+    );
+    world.step(2);
+}
+
+/// A bot's take-off, its ring autopilot, its airborne guard and its death in the air.
+fn herd_air_cases(checks: &mut Checks) {
+    let mut world = World::with_herd(1);
+    checks.check(
+        "the herd has one bot",
+        world.number("goats.bots.count()") == 1.0,
+        world.number("goats.bots.count()"),
+    );
+
+    // ---- no captured bird: the zoomies hop stays a hop --------------------
+    herd_hop(&mut world);
+    checks.check(
+        "a hop with no bird is a jump",
+        world.text("BOTS[0].mode") == "jump",
+        world.text("BOTS[0].mode"),
+    );
+
+    // ---- the grant: the next hop takes off --------------------------------
+    world.eval(
+        "BOTS[0].mode = 'idle'; BOTS[0].jumpTime = 0; BOTS[0].zoom = 0; \
+         BOTS[0].flightCapable = true; BOTS[0].flightCooldown = 0;",
+    );
+    herd_hop(&mut world);
+    checks.check(
+        "a hop with a captured bird takes off",
+        world.text("BOTS[0].mode") == "fly",
+        world.text("BOTS[0].mode"),
+    );
+    world.step(30);
+    let height = world.number("BOTS[0].py");
+    checks.check("...and climbs into the ring", height > 0.3, height);
+    checks.check(
+        "...and the scene calls it airborne",
+        world.flag("botAirborne(BOTS[0])"),
+        world.flag("botAirborne(BOTS[0])"),
+    );
+
+    // ---- a flying bot is not shoved along the ground ----------------------
+    world.eval("BOTS[0].x = goat.px; BOTS[0].z = goat.pz;");
+    let x = world.number("BOTS[0].x");
+    let z = world.number("BOTS[0].z");
+    world
+        .harness
+        .call("resolveGoatCollisions", &[])
+        .expect("resolveGoatCollisions");
+    let moved = (world.number("BOTS[0].x") - x).abs() + (world.number("BOTS[0].z") - z).abs();
+    checks.check("a flyer does not push the herd apart", moved < 1e-6, moved);
+
+    // ---- a death in the air drops the bird and keeps the height ----------
+    let height = world.number("BOTS[0].py");
+    world.eval("botDie(BOTS[0])");
+    checks.check(
+        "a bot killed in flight drops the captured bird",
+        !world.flag("BOTS[0].flightCapable"),
+        world.flag("BOTS[0].flightCapable"),
+    );
+    world.step(1);
+    checks.check(
+        "...and the corpse keeps its height",
+        height > 0.3
+            && world.text("BOTS[0].mode") == "dead"
+            && world.number("BOTS[0].py") > height - 0.5,
+        (
+            world.text("BOTS[0].mode"),
+            height,
+            world.number("BOTS[0].py"),
+        ),
+    );
+    world.step(120);
+    checks.check(
+        "...until it meets the ground",
+        world.number("BOTS[0].py") <= 0.01,
+        world.number("BOTS[0].py"),
+    );
+}
+
+/// The ring's time is up: the bot noses down, lands, and waits on the ground.
+fn herd_landing_cases(checks: &mut Checks) {
+    let mut world = World::with_herd(1);
+    // A short flight clock, so the case does not wait eighteen seconds.
+    world.eval("tuningSet('flight.botTime', 1.5)");
+    world.eval("BOTS[0].flightCapable = true;");
+    herd_hop(&mut world);
+    checks.check(
+        "the herd takes off",
+        world.text("BOTS[0].mode") == "fly",
+        world.text("BOTS[0].mode"),
+    );
+    world.step(420);
+    checks.check(
+        "the bot's flight ends on its clock",
+        world.text("BOTS[0].mode") != "fly",
+        world.text("BOTS[0].mode"),
+    );
+    checks.check(
+        "...it is on the ground",
+        world.number("BOTS[0].py") <= 0.01,
+        world.number("BOTS[0].py"),
+    );
+    checks.check(
+        "...and waits out the cooldown",
+        world.number("BOTS[0].flightCooldown") > 0.0,
+        world.number("BOTS[0].flightCooldown"),
+    );
+    checks.check(
+        "...with the bird still aboard",
+        world.flag("BOTS[0].flightCapable"),
+        world.flag("BOTS[0].flightCapable"),
+    );
 }
 
 /// The capability is necessary, and only a *running* jump spends it.

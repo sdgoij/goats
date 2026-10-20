@@ -873,11 +873,19 @@ itself), and `verify_pose.gd`'s flight basis and rider seat.
 
 ### R3 — the herd
 
-Both clients add the bot flight branch and call `bot_input`/`step`, plus the
-zoomies take-off hook, `botRole`, death-in-air and the airborne guards. The
-reference publishes the batched `pitch`/`roll`/`py`; Godot mirrors them.
+**✅ Landed.** Both clients add the bot branch: the reference's `bots.js` and the port's
+`bots.gd` take the grant from `flightCapable`, intercept the zoomies hop as the take-off,
+and call `botInput`/`step` every frame with an unlimited-energy input. `botRole`/`bot_role`
+gain the `fly`/`fall` fallback, `botAirborne`/`airborne` include them, a death in the air
+keeps its height (and its momentum, as the corpse's arc), and the push-apart skips a body
+with `py > 1` so a flyer does not shove the goats below it. Landing keeps the bird and
+starts `flight.botCooldown`.
 
-**Gate:** `verify_bots.gd`, harness bot cases, the world-budget test.
+The wire fields (batched `pitch`/`roll`/`py`, and the mirrored herd's basis) are R4's, with
+the protocol bump. The autopilot itself is the crate's `bot_input` in both clients.
+
+**Gate:** `verify_bots.gd` (the hop rule, the ring, the landing cooldown, the airborne
+guard and the death in the air) and the herd section of `crates/harness/tests/flight.rs`.
 
 ### R4 — the API, wire, mod and polish
 

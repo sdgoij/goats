@@ -532,6 +532,7 @@ func _ready() -> void:
 	flight = Flight.new()
 	flight.configure(PlayerGoat.flight_config())
 	goat.flight = flight
+	bots.flight = flight
 	_tuning_version = Tuning.version
 	# The camera's boot pose is the *tree's* (`TUNING.camera`), read here rather than at declaration
 	# so a mod's declared `tuning.json` -- merged in the runtime's own `_ready`, just above -- aims it,

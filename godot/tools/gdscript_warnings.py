@@ -154,7 +154,7 @@ for uri in sorted(found):
     diags = found[uri]
     if not diags:
         continue
-    print("\n" + os.path.relpath(found[uri], PROJECT))
+        print("\n" + os.path.relpath(wanted[uri], PROJECT))
     for d in diags:
         severity = {1: "error", 2: "warning", 3: "info", 4: "hint"}.get(
             d.get("severity"), "?")

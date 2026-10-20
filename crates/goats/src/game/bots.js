@@ -20,6 +20,13 @@ const GRAZE_SEEK_RANGE = 12;
 const BOTS = [];
 const BOT_TEX = [];
 
+// The flight controller's scratch arrays, the player's shape (`goat.js`): a flight
+// frame packs the same twelve numbers and one input array, and allocates nothing.
+// `BOT_FLIGHT_CTX` is `botInput`'s own: the player, the orbit and the ring.
+const BOT_FLIGHT_STATE = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const BOT_FLIGHT_INPUT = [0, 0, 0, 0, 0];
+const BOT_FLIGHT_CTX = [0, 0, 0, 0, 0];
+
 // A private PRNG. The bots must not touch `rnd()` (weather.js): that stream is
 // seeded and the harness asserts on the exact weather it produces, so drawing
 // from it here would shift every later value.
@@ -131,6 +138,20 @@ function botAdd(i) {
         flyVX: 0,
         flyVY: 0,
         flyVZ: 0,
+        // Captured-bird flight (`crates/flight`), the player's fields in a bot's.
+        // `flightCapable` is the grant; `flyY`/`flyVY` are the absolute height and
+        // vertical speed, shared with the flung arc -- the two modes cannot be live at
+        // once -- and the rest is the attitude, the orbit and the ground cooldown.
+        flightCapable: false,
+        flightSpeed: 0,
+        flightPitch: 0,
+        flightRoll: 0,
+        flightTime: 0,
+        flightFlaps: 0,
+        flightFlapCool: 0,
+        flightAngle: a,
+        orbitDir: i % 2 === 0 ? 1 : -1,
+        flightCooldown: 0,
         // Which clip variant this bot plays per role; -1 so the first cycle
         // lands on index 0, and walk/trot/run have only one clip each.
         var: { idle: -1, sleep: -1, jump: -1, eat: -1, walk: 0, trot: 0, run: 0, flung: -1, death: -1 },
@@ -181,6 +202,10 @@ function botRole(b) {
     // when it does not -- the same fallback as `clipRole` and `peerRole`, since a
     // flung bot is posed from its arc's fraction rather than from a gait.
     if (b.mode === "flung") return CLIP.flung ? "flung" : "jump";
+    // A `GoatFly`/`GoatFall` when the model has one, the jump when it does not -- the
+    // same fallback the player's `clipRole` makes.
+    if (b.mode === "fly") return CLIP.fly ? "fly" : "jump";
+    if (b.mode === "fall") return CLIP.fall ? "fall" : "jump";
     if (b.mode === "jump" && CLIP.jump) return "jump";
     if (b.mode === "eat" && CLIP.eat) return "eat";
     if (b.mode === "sleep" && CLIP.sleep) return "sleep";
@@ -205,6 +230,10 @@ function startBotFling(b, vx, vz, vy) {
     b.flyVX += vx;
     b.flyVZ += vz;
     b.flyVY += vy;
+    // A blast owns the arc: a flying bot's flight is over, and the mod clears the
+    // capability when it sees the mode change.
+    b.flightCapable = false;
+    botFlightReset(b);
     const g = TUNING.explosions.fling.gravity;
     const air = b.flyVY > 0 && g < 0 ? (-2 * b.flyVY) / g : 0.4;
     b.flyFlight = Math.max(0.3, Math.min(TUNING.explosions.fling.maxFlight, b.flyTime + air));
@@ -218,12 +247,131 @@ function botFlingProgress(b) {
     return Math.min(b.flyTime / b.flyFlight, 1);
 }
 
+// ---- bot flight ----------------------------------------------------------
+//
+// The mechanics are the player's, because they are `crates/flight`'s: the autopilot
+// generates the input (`__flight.botInput`) and the same `step` moves the bot, so a
+// bot and the player cannot disagree about the model. A client never runs this --
+// `netWorldLocal()` gates `updateBots` -- it mirrors the host's rows.
+
+// Pack a bot's flight numbers for the binding. `phase` is 1 fly, 2 fall.
+function botFlightState(b, phase) {
+    BOT_FLIGHT_STATE[0] = b.x;
+    BOT_FLIGHT_STATE[1] = b.z;
+    BOT_FLIGHT_STATE[2] = terrainHeight(b.x, b.z) + b.py;
+    BOT_FLIGHT_STATE[3] = b.yaw;
+    BOT_FLIGHT_STATE[4] = b.flightPitch;
+    BOT_FLIGHT_STATE[5] = b.flightRoll;
+    BOT_FLIGHT_STATE[6] = b.flightSpeed;
+    BOT_FLIGHT_STATE[7] = b.flyVY;
+    BOT_FLIGHT_STATE[8] = b.flightFlapCool;
+    BOT_FLIGHT_STATE[9] = b.flightFlaps;
+    BOT_FLIGHT_STATE[10] = b.flightTime;
+    BOT_FLIGHT_STATE[11] = phase;
+}
+
+// Write the crate's answer back. `py` is derived from the absolute height the crate
+// stepped, so a slope the bot crosses mid-air cannot drag it.
+function botFlightApply(b, out) {
+    b.x = out[0];
+    b.z = out[1];
+    b.flyY = out[2];
+    b.py = out[2] - terrainHeight(b.x, b.z);
+    b.yaw = out[3];
+    b.flightPitch = out[4];
+    b.flightRoll = out[5];
+    b.flightSpeed = out[6];
+    b.flyVY = out[7];
+    b.flightFlapCool = out[8];
+    b.flightFlaps = out[9];
+    b.flightTime = out[10];
+}
+
+// The flight's own numbers back to rest. `flyVY` is deliberately not here: the flung arc
+// owns the same field, and this reset is exactly what runs as one takes over.
+function botFlightReset(b) {
+    b.flightSpeed = 0;
+    b.flightPitch = 0;
+    b.flightRoll = 0;
+    b.flightTime = 0;
+    b.flightFlaps = 0;
+    b.flightFlapCool = 0;
+}
+
+// Begin powered flight. The gameplay path is the zoomies hop (`updateBots`); the
+// scripted one (the API's `bot.fly()`) is the same call. `speed` is the hop's or the
+// gait's horizontal speed, which the crate clamps to its own minimum.
+function startBotFlight(b, speed) {
+    if (FLIGHT === null || !b.flightCapable || b.flightCooldown > 0) return false;
+    if (b.mode === "dead" || b.mode === "sleep" || b.mode === "eat" ||
+        b.mode === "flung" || b.mode === "fall") return false;
+    botFlightState(b, 1);
+    const out = FLIGHT.start(BOT_FLIGHT_STATE, speed);
+    if (!Array.isArray(out)) return false;
+    botFlightApply(b, out);
+    b.mode = "fly";
+    b.graze = false;
+    b.zoom = 0;
+    b.timer = 0;
+    return true;
+}
+
+// One frame of a flying bot: the ring autopilot's input, then the same step the
+// player gets. `botInput` also advances the orbit angle, which is the bot's own.
+function updateBotFlight(b, dt) {
+    if (FLIGHT === null) { b.mode = "idle"; return; }
+    botFlightState(b, 1);
+    BOT_FLIGHT_CTX[0] = goat.px;
+    BOT_FLIGHT_CTX[1] = goat.pz;
+    BOT_FLIGHT_CTX[2] = b.flightAngle;
+    BOT_FLIGHT_CTX[3] = b.orbitDir;
+    BOT_FLIGHT_CTX[4] = 0;             // the ring's own time is the crate's `botTime`
+    const ctl = FLIGHT.botInput(BOT_FLIGHT_STATE, BOT_FLIGHT_CTX, dt, terrainHeight);
+    if (!Array.isArray(ctl)) return;
+    b.flightAngle = ctl[4];
+    BOT_FLIGHT_INPUT[0] = ctl[0];
+    BOT_FLIGHT_INPUT[1] = ctl[1];
+    BOT_FLIGHT_INPUT[2] = ctl[2];
+    BOT_FLIGHT_INPUT[3] = 0;
+    // Bots have no energy stat; the crate's `Input::default` is an unlimited flyer.
+    BOT_FLIGHT_INPUT[4] = Infinity;
+    const out = FLIGHT.step(BOT_FLIGHT_STATE, BOT_FLIGHT_INPUT, dt, terrainHeight);
+    if (!Array.isArray(out)) return;
+    botFlightApply(b, out);
+    const flyInfo = clipAt("fly", 0);
+    if (CLIP.fly && flyInfo !== null && flyInfo !== undefined && flyInfo.duration > 0) {
+        b.phase = mod1(b.phase + dt / flyInfo.duration);
+    }
+    if (out[17]) {
+        // Landed. The bird stays aboard, so the bot may go again -- after the
+        // ground cooldown, which is what keeps a captured bird from an endless
+        // take-off loop.
+        b.mode = "idle";
+        b.timer = 1.5 + botRnd() * 3;
+        b.flightCooldown = TUNING.flight.botCooldown;
+        botFlightReset(b);
+        b.py = 0;
+    }
+}
+
+// The flying pose: the crate's axis-angle and its back point with `perch = 0`, which
+// is the corrected origin the body rotates about -- the player's `flightDraw`.
+function botFlightDraw(b, tint) {
+    const s = b.spec.scale;
+    botFlightState(b, b.mode === "fall" ? 2 : 1);
+    const aa = FLIGHT.axisAngle(BOT_FLIGHT_STATE);
+    const origin = FLIGHT.backPoint(BOT_FLIGHT_STATE, 0,
+        TUNING.explosions.fling.pivot * s);
+    rl.drawModelEx(b.model, origin[0], origin[1] + groundOffset * s, origin[2],
+        aa[0], aa[1], aa[2], aa[3] * 180 / Math.PI, s, s, s, tint);
+}
+
 // Whether a bot is over the ground rather than on it. A jump is airborne by mode
-// (the clip's root motion does the hop, so there is no height to read) and a flung
-// bot owns its own height. A landing is when this stops being true, which is what
-// sets off a mine the bot comes down on.
+// (the clip's root motion does the hop, so there is no height to read), a flung
+// bot owns its own height, and so do flight and its fall. A landing is when this
+// stops being true, which is what sets off a mine the bot comes down on.
 function botAirborne(b) {
-    return b.mode === "jump" || b.mode === "flung";
+    return b.mode === "jump" || b.mode === "flung" || b.mode === "fly" || b.mode === "fall";
 }
 
 // A lethal bang (M19a). The blast that kills a bot does not also throw it -- that is
@@ -232,11 +380,21 @@ function botAirborne(b) {
 // on a flung bot drops a corpse rather than teleporting one to the ground. The
 // timing, the clip and the pose are the player's `die()` and `clipRole` exactly.
 function botDie(b) {
+    // A bot killed in flight keeps its momentum: the corpse's arc is the flight's
+    // heading and speed, and the existing dead-bot fall (the blast's gravity) carries
+    // it down. `py` is already the height it was flying at.
+    if (b.mode === "fly" || b.mode === "fall") {
+        b.flyVX = Math.cos(b.yaw) * b.flightSpeed;
+        b.flyVZ = -Math.sin(b.yaw) * b.flightSpeed;
+        b.py = b.flyY - terrainHeight(b.x, b.z);
+    }
     b.health = 0;
     b.mode = "dead";
     b.deathTime = 0;
     b.graze = false;
     b.zoom = 0;
+    b.flightCapable = false;
+    botFlightReset(b);
     const n = clipCount("death");
     if (n > 1) b.var.death = (b.var.death + 1) % n;
     const info = clipAt("death", b.var.death);
@@ -273,6 +431,10 @@ function botRespawn(b) {
     b.flyVX = 0;
     b.flyVY = 0;
     b.flyVZ = 0;
+    b.flightCapable = false;
+    b.flightCooldown = 0;
+    b.flightAngle = b.yaw;
+    botFlightReset(b);
     b.satiety = 0;
     b.graze = false;
     b.zoom = 0;
@@ -412,6 +574,7 @@ function updateBots(dt) {
         }
         if (b.jumpCool > 0) b.jumpCool -= dt;
         if (b.eatCool > 0) b.eatCool -= dt;
+        if (b.flightCooldown > 0) b.flightCooldown -= dt;
         if (b.satiety > 0) b.satiety = Math.max(0, b.satiety - TUNING.food.satietyDecay * dt);
         if (b.satiety > botBellyMax) botBellyMax = b.satiety;
 
@@ -435,6 +598,10 @@ function updateBots(dt) {
                 b.mode = "idle";
                 b.timer = 1.5 + botRnd() * 3;
             }
+        } else if (b.mode === "fly") {
+            // Powered flight (R3): the autopilot's ring around the player, stepped by
+            // the same crate the player's flight is.
+            updateBotFlight(b, dt);
         } else if (b.mode === "jump") {
             // Airborne: the jump clip's root motion does the hop, so this only
             // carries the bot forward along its heading.
@@ -518,23 +685,30 @@ function updateBots(dt) {
                 botNewAction(b);
             }
 
-            // Zoomies: while a run lasts, hop every second or so.
+            // Zoomies: while a run lasts, hop every second or so. A hop with a captured
+            // bird is the take-off (`FLIGHT.md` §3.3) -- the same rule as the player's
+            // running jump, reached through the one jump path a bot has.
             if (b.mode === "run") {
                 b.zoom -= dt;
                 if (b.zoom > 0 && b.jumpCool <= 0 && spd > 0) {
-                    b.mode = "jump";
-                    const nj = clipCount("jump");
-                    if (nj > 1) b.var.jump = (b.var.jump + 1) % nj;
-                    const jinfo = clipAt("jump", b.var.jump);
-                    b.jumpDur = jinfo !== null && jinfo !== undefined ? jinfo.duration : TUNING.jump.fallbackTime;
-                    b.jumpTime = 0;
-                    b.jumpSpeed = spd * 1.15;
-                    b.jumpCool = 0.5 + botRnd() * 1.3;
+                    if (startBotFlight(b, spd)) {
+                        b.jumpCool = 0.5 + botRnd() * 1.3;
+                    } else {
+                        b.mode = "jump";
+                        const nj = clipCount("jump");
+                        if (nj > 1) b.var.jump = (b.var.jump + 1) % nj;
+                        const jinfo = clipAt("jump", b.var.jump);
+                        b.jumpDur = jinfo !== null && jinfo !== undefined ? jinfo.duration : TUNING.jump.fallbackTime;
+                        b.jumpTime = 0;
+                        b.jumpSpeed = spd * 1.15;
+                        b.jumpCool = 0.5 + botRnd() * 1.3;
+                    }
                 }
             }
 
-            // Advance the looping clip (jumps pose themselves from jumpTime).
-            if (b.mode !== "jump") {
+            // Advance the looping clip (jumps pose themselves from jumpTime, and a
+            // flight's phase is the flight's own clock).
+            if (b.mode !== "jump" && b.mode !== "fly") {
                 const cur = clipAt(role, b.var[role]);
                 const dur = cur !== null && cur !== undefined && cur.duration > 0 ? cur.duration : V_CYCLE;
                 b.phase = mod1(b.phase + dt / dur);
@@ -571,6 +745,9 @@ function collidePlayerPass(bots, count, gx, gz, rad, pr) {
     let moved = false;
     for (let i = 0; i < count; i++) {
         const b = bots[i];
+        // A bot in the air is not walking through the herd: the push-apart is 2D, so
+        // without this a goat flying overhead would shove the goats below it.
+        if (b.py > 1.0) continue;
         const rr = pr + rad * b.spec.scale;
         const dx = b.x - gx;
         const dz = b.z - gz;
@@ -597,9 +774,11 @@ function collideBotPass(bots, count, rad) {
     let moved = false;
     for (let i = 0; i < count; i++) {
         const a = bots[i];
+        if (a.py > 1.0) continue;
         const ar = rad * a.spec.scale;
         for (let j = i + 1; j < count; j++) {
             const b = bots[j];
+            if (b.py > 1.0) continue;
             const rr = ar + rad * b.spec.scale;
             const dx = b.x - a.x;
             const dz = b.z - a.z;
@@ -684,16 +863,29 @@ function drawBots(tint) {
     for (let i = 0; i < BOTS.length; i++) {
         const b = BOTS[i];
         const role = botRole(b);
-        // One-shot roles (jump, eat, death, flung) pose from their own clock; the rest
-        // loop. The death clip is the model's, so the fraction is real there; with no
-        // such clip `botRole` has nothing to pose and the loop phase stands in.
-        const pose = b.mode === "jump" ? Math.min(b.jumpTime / b.jumpDur, 1)
-            : b.mode === "eat" ? Math.min(b.eatTime / b.eatDur, 1)
-                : b.mode === "dead" && CLIP.death ? Math.min(b.deathTime / b.deathDur, 1)
-                    : b.mode === "flung" ? botFlingProgress(b) : b.phase;
+        // One-shot roles (jump, eat, death, flung, fall) pose from their own clock; the
+        // rest loop. The death clip is the model's, so the fraction is real there; with
+        // no such clip `botRole` has nothing to pose and the loop phase stands in. A
+        // flight with no `GoatFly` holds the jump at 0.35, which reads as a leap rather
+        // than a looping hop while the whole-body rotation carries the flight.
+        let pose;
+        if (b.mode === "jump") pose = Math.min(b.jumpTime / b.jumpDur, 1);
+        else if (b.mode === "eat") pose = Math.min(b.eatTime / b.eatDur, 1);
+        else if (b.mode === "dead" && CLIP.death) pose = Math.min(b.deathTime / b.deathDur, 1);
+        else if (b.mode === "flung") pose = botFlingProgress(b);
+        else if (b.mode === "fly") pose = CLIP.fly ? b.phase : 0.35;
+        else if (b.mode === "fall") {
+            const info = CLIP.fall ? clipAt("fall", 0) : null;
+            pose = info !== null && info !== undefined && info.duration > 0
+                ? Math.min(b.flightTime / info.duration, 1) : 0.35;
+        } else pose = b.phase;
         poseModelOn(b.model, clipAt(role, b.var[role]), pose);
         // Draw directly (no `drawModelAt` wrapper) to keep the JS call depth
         // shallow -- the debug stack guard is tight.
+        if (b.mode === "fly" || b.mode === "fall") {
+            botFlightDraw(b, tint);
+            continue;
+        }
         const y = botGroundY(b) + groundOffset * b.spec.scale + b.py;
         if (b.mode === "flung") {
             // The roll is the placeholder's, on the same rule as the player's: with
@@ -730,7 +922,11 @@ function drawBotsShadow() {
         // the depth pass too (the roll comes from the fraction the pose already
         // reflects, so a client's mirrored bot rolls the same way).
         const y = botGroundY(b) + groundOffset * b.spec.scale + b.py;
-        if (b.mode === "flung") {
+        if (b.mode === "fly" || b.mode === "fall") {
+            // The flight pose is a whole-body rotation about the pivot, the lit pass's
+            // own `botFlightDraw`.
+            botFlightDraw(b, rl.WHITE);
+        } else if (b.mode === "flung") {
             const d = flingDraw(b.x, y, b.z, b.yaw, flingTumble(botFlingProgress(b)),
                 TUNING.explosions.fling.pivot * b.spec.scale);
             rl.drawModelEx(b.model, d.x, d.y, d.z, d.ax, d.ay, d.az, d.deg,

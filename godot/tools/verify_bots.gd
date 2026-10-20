@@ -534,6 +534,9 @@ function collidePairs(bots, count, gx, gz, rad, pr) {
         moved = false;
         for (let i = 0; i < count; i++) {
             const b = bots[i];
+            // A bot in the air is not walking through the herd: the push-apart is 2D
+            // (`bots.js` `collidePlayerPass`).
+            if (b.py > 1.0) continue;
             const rr = pr + rad * b.spec.scale;
             const dx = b.x - gx;
             const dz = b.z - gz;
@@ -552,9 +555,11 @@ function collidePairs(bots, count, gx, gz, rad, pr) {
         }
         for (let i = 0; i < count; i++) {
             const a = bots[i];
+            if (a.py > 1.0) continue;
             const ar = rad * a.spec.scale;
             for (let j = i + 1; j < count; j++) {
                 const b = bots[j];
+                if (b.py > 1.0) continue;
                 const rr = ar + rad * b.spec.scale;
                 const dx = b.x - a.x;
                 const dz = b.z - a.z;
@@ -1150,6 +1155,9 @@ func _initialize() -> void:
 	if pushed == 0:
 		failures.append("the push-apart never had two goats to separate")
 
+	# 5. Flight (R3): the hop rule, the ring and the landing, through the crate.
+	_check_flight(bots, failures)
+
 	host.free()
 
 	if failures.is_empty():
@@ -1160,6 +1168,134 @@ func _initialize() -> void:
 		for f in failures:
 			print("FAIL: ", f)
 		quit(1)
+
+## Captured-bird flight (R3): the herd's hop rule, its ring autopilot and its landing,
+## through the same `Flight` class the player uses. The frame-by-frame maths is the
+## crate's own gate (`verify_flight.gd`); this holds the *herd's* half -- the takeover
+## from the zoomies hop, the airborne guard, the cooldown and the death in the air.
+func _check_flight(bots: Bots, failures: Array[String]) -> void:
+	var flight: Flight = ClassDB.instantiate("Flight")
+	if flight == null:
+		failures.append("the flight case could not build a Flight")
+		return
+	flight.configure(PlayerGoat.flight_config())
+	bots.flight = flight
+	bots.set_herd_size(1)
+	if bots.count() != 1:
+		failures.append("the flight case could not shrink the herd to one")
+		return
+	var bot: Bots.Bot = (bots.get("_bots") as Array)[0]
+
+	# ---- no grant: the zoomies hop stays a hop ----------------------------
+	_reset_bot(bot)
+	_hop(bot)
+	bots.update(DT, {})
+	bots.update(DT, {})
+	if bot.mode == "fly":
+		failures.append("a bot without a captured bird took off")
+
+	# ---- the grant: the next hop takes off --------------------------------
+	_reset_bot(bot)
+	bot.flight_capable = true
+	_hop(bot)
+	bots.update(DT, {})
+	bots.update(DT, {})
+	if bot.mode != "fly":
+		failures.append("a granted hop stayed %s, not fly" % bot.mode)
+		return
+	for i in 30:
+		bots.update(DT, {})
+	print("bot flight: py %.2f, yaw %.2f, angle %.2f, speed %.2f"
+		% [bot.py, bot.yaw, bot.flight_angle, bot.flight_speed])
+	if bot.py <= 0.3:
+		failures.append("a flying bot did not climb: py %.3f" % bot.py)
+	if not bots.airborne(bot):
+		failures.append("a flying bot does not report airborne")
+
+	# The airborne guard: a flyer over the player is not pushed apart.
+	bot.x = _goat.px
+	bot.z = _goat.pz
+	var x: float = bot.x
+	var z: float = bot.z
+	bots.resolve_collisions()
+	if absf(bot.x - x) > 1e-6 or absf(bot.z - z) > 1e-6:
+		failures.append("a flying bot was pushed apart by the herd")
+
+	# Its clock ends the flight; it lands, keeps the bird and waits.
+	var wrote: Dictionary = Tuning.write("flight.botTime", 1.5)
+	if wrote.has("err"):
+		failures.append("the flight tuning write was refused: %s" % wrote["err"])
+		return
+	flight.configure(PlayerGoat.flight_config())
+	for i in 420:
+		bots.update(DT, {})
+	print("bot landing: %s at py %.2f, cooldown %.1f"
+		% [bot.mode, bot.py, bot.flight_cooldown])
+	if bot.mode == "fly":
+		failures.append("the bot's flight did not end")
+	if bot.py > 0.01:
+		failures.append("the bot is not on the ground: py %.3f" % bot.py)
+	if bot.flight_cooldown <= 0.0:
+		failures.append("a landing did not start the cooldown")
+	if not bot.flight_capable:
+		failures.append("a landing took the captured bird")
+
+	# ---- a death in the air drops the bird and keeps the height -----------
+	_reset_bot(bot)
+	bot.flight_capable = true
+	bot.flight_cooldown = 0.0
+	_hop(bot)
+	bots.update(DT, {})
+	bots.update(DT, {})
+	if bot.mode != "fly":
+		failures.append("the death case never took off")
+		return
+	for i in 30:
+		bots.update(DT, {})
+	var height: float = bot.py
+	bots.kill_at(0)
+	if bot.flight_capable:
+		failures.append("a bot killed in flight kept the captured bird")
+	bots.update(DT, {})
+	if height <= 0.3 or bot.py <= 0.3:
+		failures.append("a bot killed in flight lost its height")
+	for i in 120:
+		bots.update(DT, {})
+	if bot.py > 0.01:
+		failures.append("a bot killed in flight never landed")
+
+## A bot in a known frame, for the flight cases: on the ground, whole, no bird.
+func _reset_bot(bot: Bots.Bot) -> void:
+	bot.mode = "idle"
+	bot.py = 0.0
+	bot.fly_time = 0.0
+	bot.fly_y = 0.0
+	bot.fly_vx = 0.0
+	bot.fly_vy = 0.0
+	bot.fly_vz = 0.0
+	bot.health = PlayerGoat.STATS_MAX
+	bot.death_time = 0.0
+	bot.flight_capable = false
+	bot.flight_cooldown = 0.0
+	bot.flight_speed = 0.0
+	bot.flight_pitch = 0.0
+	bot.flight_roll = 0.0
+	bot.flight_time = 0.0
+	bot.flight_flaps = 0
+	bot.flight_flap_cool = 0.0
+	bot.graze = false
+	bot.zoom = 0.0
+	bot.timer = 10.0
+
+## Put a bot into the state `_gait` takes off from: a run with its zoomies clock running
+## and no hop cooldown, aimed ten metres ahead so its speed is the run's own.
+func _hop(bot: Bots.Bot) -> void:
+	bot.mode = "run"
+	bot.zoom = 5.0
+	bot.jump_cool = 0.0
+	bot.timer = 10.0
+	bot.tx = bot.x + 10.0
+	bot.tz = bot.z
 
 ## The tape's total frame count, which the oracle is held to.
 func _total_frames() -> int:

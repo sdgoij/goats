@@ -101,6 +101,20 @@ class Bot:
 	var fly_vx := 0.0
 	var fly_vy := 0.0
 	var fly_vz := 0.0
+	## Captured-bird flight (`crates/flight`), the player's fields in a bot's:
+	## `flight_capable` is the grant, `fly_y`/`fly_vy` the absolute height and vertical
+	## speed (shared with the flung arc, which cannot be live at once), and the rest is
+	## the attitude, the orbit and the ground cooldown.
+	var flight_capable := false
+	var flight_speed := 0.0
+	var flight_pitch := 0.0
+	var flight_roll := 0.0
+	var flight_time := 0.0
+	var flight_flaps := 0
+	var flight_flap_cool := 0.0
+	var flight_angle := 0.0
+	var orbit_dir := 1.0
+	var flight_cooldown := 0.0
 	## Which clip variant this bot plays per role, `-1` so the first cycle lands on index
 	## 0 for the roles that cycle -- and, because `clipAt` wraps, on the *last* variant
 	## until the first `new_action` bumps it, which is what the scene does too.
@@ -151,7 +165,7 @@ const RNG_SEED := 0x2545f491
 const TURN := 1.5
 ## `bots.js` `botRole`'s roles, the same list `player_goat.gd` indexes -- every one is
 ## also a clip prefix in the model (`GoatIdle`, `GoatDeath`, ...).
-const ROLES := ["walk", "trot", "run", "jump", "sleep", "eat", "death", "flung", "idle"]
+const ROLES := ["walk", "trot", "run", "jump", "sleep", "eat", "death", "flung", "fly", "fall", "idle"]
 ## `makeBotTextures`' tile, in pixels.
 const COAT_SIZE := 64
 
@@ -179,6 +193,11 @@ var armed: Callable = Callable()
 ## the one the scene's sleep rule uses.
 var in_water: Callable = Callable()
 
+## The flight controller (`crates/flight` through the `Flight` class), the same instance the
+## player's goat holds. Null in a gate that made none: the herd then simply never flies,
+## which is the reference's own guard for a missing `__flight`.
+var flight: Flight = null
+
 ## The herd, oldest first. A bot that dies is replaced by itself rather than by nothing,
 ## so the index is stable and the length is the setting's.
 var _bots: Array[Bot] = []
@@ -199,6 +218,11 @@ var _durations := {}
 ## its origin. Measured once, off the first rig.
 var _ground_offset := 0.0
 var _measured := false
+## One reusable flight-state array for the whole herd: it is packed, stepped and read back
+## inside one bot's frame, so a herd of a hundred allocates once rather than per bot.
+var _flight_array: PackedFloat32Array = PackedFloat32Array()
+## `Terrain.height_at` as the crate's ground callback, built lazily.
+var _flight_ground_call: Callable = Callable()
 ## One material per coat: `makeBotTextures`' mottle, shared by every bot wearing it.
 var _coats: Array[StandardMaterial3D] = []
 ## Whether the coats are built lit (M25's `L` and the settings screen). A field for `TerrainMesh`'s
@@ -432,6 +456,12 @@ func bot_role(bot: Bot) -> String:
 		return "death"
 	if bot.mode == "flung":
 		return "flung" if has_role("flung") else "jump"
+	# A `GoatFly`/`GoatFall` when the model has one, the jump when it does not -- the
+	# same fallback the player's `clip_role` makes.
+	if bot.mode == "fly":
+		return "fly" if has_role("fly") else "jump"
+	if bot.mode == "fall":
+		return "fall" if has_role("fall") else "jump"
 	if bot.mode == "jump" and has_role("jump"):
 		return "jump"
 	if bot.mode == "eat" and has_role("eat"):
@@ -450,22 +480,142 @@ func bot_role(bot: Bot) -> String:
 func fling_progress(bot: Bot) -> float:
 	return minf(bot.fly_time / bot.fly_flight, 1.0)
 
+# ---- bot flight ----------------------------------------------------------
+#
+# The mechanics are the player's because they are `crates/flight`'s: the autopilot
+# generates the input (`bot_input`) and the same `step` moves the bot. A client never
+# runs this -- `main.gd` only updates the herd when it is the host -- it mirrors the
+# host's rows.
+
+## Pack a bot's flight numbers for the binding. `phase` is 1 fly, 2 fall.
+func _flight_state(bot: Bot, phase: int) -> PackedFloat32Array:
+	_flight_array.resize(12)
+	_flight_array[0] = bot.x
+	_flight_array[1] = bot.z
+	_flight_array[2] = Terrain.height_at(bot.x, bot.z) + bot.py
+	_flight_array[3] = bot.yaw
+	_flight_array[4] = bot.flight_pitch
+	_flight_array[5] = bot.flight_roll
+	_flight_array[6] = bot.flight_speed
+	_flight_array[7] = bot.fly_vy
+	_flight_array[8] = bot.flight_flap_cool
+	_flight_array[9] = float(bot.flight_flaps)
+	_flight_array[10] = bot.flight_time
+	_flight_array[11] = float(phase)
+	return _flight_array
+
+## Write the crate's answer back. `py` is derived from the absolute height the crate
+## stepped, so a slope the bot crosses mid-air cannot drag it.
+func _flight_apply(bot: Bot, out: PackedFloat32Array) -> void:
+	bot.x = out[0]
+	bot.z = out[1]
+	bot.fly_y = out[2]
+	bot.py = out[2] - Terrain.height_at(bot.x, bot.z)
+	bot.yaw = out[3]
+	bot.flight_pitch = out[4]
+	bot.flight_roll = out[5]
+	bot.flight_speed = out[6]
+	bot.fly_vy = out[7]
+	bot.flight_flap_cool = out[8]
+	bot.flight_flaps = int(out[9])
+	bot.flight_time = out[10]
+
+## The flight's own numbers back to rest. `fly_vy` is deliberately **not** here: the
+## flung arc owns the same field, and a reset is exactly what runs as one takes over.
+func _flight_reset(bot: Bot) -> void:
+	bot.flight_speed = 0.0
+	bot.flight_pitch = 0.0
+	bot.flight_roll = 0.0
+	bot.flight_time = 0.0
+	bot.flight_flaps = 0
+	bot.flight_flap_cool = 0.0
+
+## Begin powered flight. The gameplay path is the zoomies hop (`_gait`); `speed` is the
+## hop's (or the gait's) horizontal speed, which the crate clamps to its minimum.
+func start_flight(bot: Bot, speed: float) -> bool:
+	if flight == null or not bot.flight_capable or bot.flight_cooldown > 0.0:
+		return false
+	if (bot.mode == "dead" or bot.mode == "sleep" or bot.mode == "eat"
+			or bot.mode == "flung" or bot.mode == "fall"):
+		return false
+	var started: PackedFloat32Array = flight.start(_flight_state(bot, 1), speed)
+	if started.size() < 13:
+		return false
+	_flight_apply(bot, started)
+	bot.mode = "fly"
+	bot.graze = false
+	bot.zoom = 0.0
+	bot.timer = 0.0
+	return true
+
+## One frame of a flying bot: the ring autopilot's input, then the same step the player
+## gets. `bot_input` also advances the orbit angle, which is the bot's own state.
+func _update_flight(bot: Bot, delta: float) -> void:
+	if flight == null:
+		bot.mode = "idle"
+		return
+	var context := PackedFloat32Array([
+		goat.px, goat.pz, bot.flight_angle, bot.orbit_dir, 0.0])
+	var control: PackedFloat32Array = flight.bot_input(
+		_flight_state(bot, 1), context, delta, _flight_ground())
+	if control.size() < 5:
+		return
+	bot.flight_angle = control[4]
+	# Bots have no energy stat; the crate's own default is an unlimited flyer.
+	var input := PackedFloat32Array([control[0], control[1], control[2], 0.0, INF])
+	var out: PackedFloat32Array = flight.step(
+		_flight_state(bot, 1), input, delta, _flight_ground())
+	if out.size() < 20:
+		return
+	_flight_apply(bot, out)
+	if has_role("fly"):
+		var length: float = clip_length("fly", 0)
+		if length > 0.0:
+			bot.phase = _mod1(bot.phase + delta / length)
+	if out[17] != 0.0:
+		# Landed. The bird stays aboard, so the bot may go again -- after the ground
+		# cooldown, which keeps a captured bird from an endless take-off loop.
+		bot.mode = "idle"
+		bot.timer = 1.5 + bot_rnd() * 3.0
+		bot.flight_cooldown = float(PlayerGoat.FLIGHT["botCooldown"])
+		_flight_reset(bot)
+		bot.fly_vy = 0.0
+		bot.py = 0.0
+
+## `Terrain.height_at` as the crate's ground callback, built lazily.
+func _flight_ground() -> Callable:
+	if not _flight_ground_call.is_valid():
+		_flight_ground_call = Callable(self, "_ground_at")
+	return _flight_ground_call
+
+func _ground_at(x: float, z: float) -> float:
+	return Terrain.height_at(x, z)
+
 ## Whether a bot is over the ground rather than on it. A jump is airborne by mode (the
-## clip's root motion does the hop, so there is no height to read) and a flung bot owns its
-## own height.
+## clip's root motion does the hop, so there is no height to read), a flung bot owns its
+## own height, and so do flight and its fall.
 func airborne(bot: Bot) -> bool:
-	return bot.mode == "jump" or bot.mode == "flung"
+	return (bot.mode == "jump" or bot.mode == "flung" or bot.mode == "fly"
+		or bot.mode == "fall")
 
 ## A lethal bang (M19a). The blast that kills a bot does not also throw it -- that is the
 ## one place this differs from the player, whose arc and damage land together -- but a bot
 ## killed *in the air* keeps the arc it already had, so a chain on a flung bot drops a
 ## corpse rather than teleporting one to the ground.
 func die(bot: Bot) -> void:
+	# A bot killed in flight keeps its momentum: the corpse's arc is the flight's heading
+	# and speed, and the existing dead-bot fall (the blast's gravity) carries it down.
+	if bot.mode == "fly" or bot.mode == "fall":
+		bot.fly_vx = cos(bot.yaw) * bot.flight_speed
+		bot.fly_vz = -sin(bot.yaw) * bot.flight_speed
+		bot.py = bot.fly_y - Terrain.height_at(bot.x, bot.z)
 	bot.health = 0.0
 	bot.mode = "dead"
 	bot.death_time = 0.0
 	bot.graze = false
 	bot.zoom = 0.0
+	bot.flight_capable = false
+	_flight_reset(bot)
 	var variants: int = clip_count("death")
 	if variants > 1:
 		bot.variants["death"] = (int(bot.variants["death"]) + 1) % variants
@@ -490,6 +640,10 @@ func start_fling(bot: Bot, vx: float, vz: float, vy: float) -> void:
 	bot.fly_vx += vx
 	bot.fly_vz += vz
 	bot.fly_vy += vy
+	# A blast owns the arc. A flying bot's flight is over, and the mod clears the
+	# capability when it sees the mode change.
+	bot.flight_capable = false
+	_flight_reset(bot)
 	var air: float = 0.4
 	if bot.fly_vy > 0.0 and PlayerGoat.FLING_GRAVITY < 0.0:
 		air = (-2.0 * bot.fly_vy) / PlayerGoat.FLING_GRAVITY
@@ -620,6 +774,8 @@ func update(delta: float, weather: Dictionary) -> void:
 			bot.jump_cool -= delta
 		if bot.eat_cool > 0.0:
 			bot.eat_cool -= delta
+		if bot.flight_cooldown > 0.0:
+			bot.flight_cooldown -= delta
 		if bot.satiety > 0.0:
 			bot.satiety = maxf(0.0, bot.satiety - Meadow.SATIETY_DECAY * delta)
 		if bot.satiety > belly_max:
@@ -642,6 +798,10 @@ func update(delta: float, weather: Dictionary) -> void:
 				bot.fly_vz = 0.0
 				bot.mode = "idle"
 				bot.timer = 1.5 + bot_rnd() * 3.0
+		elif bot.mode == "fly":
+			# Powered flight (R3): the autopilot's ring around the player, stepped by the
+			# same crate the player's flight is.
+			_update_flight(bot, delta)
 		elif bot.mode == "jump":
 			# Airborne: the jump clip's root motion does the hop, so this only carries the
 			# bot forward along its heading.
@@ -874,21 +1034,25 @@ func _gait(bot: Bot, delta: float, rain: float, sway: float) -> void:
 	elif bot.timer <= 0.0:
 		new_action(bot)
 
-	# Zoomies: while a run lasts, hop every second or so.
+	# Zoomies: while a run lasts, hop every second or so. A hop with a captured bird is
+	# the take-off, the same rule as the player's running jump.
 	if bot.mode == "run":
 		bot.zoom -= delta
 		if bot.zoom > 0.0 and bot.jump_cool <= 0.0 and speed > 0.0:
-			bot.mode = "jump"
-			var jumps: int = clip_count("jump")
-			if jumps > 1:
-				bot.variants["jump"] = (int(bot.variants["jump"]) + 1) % jumps
-			var jump_index: int = int(bot.variants["jump"])
-			bot.jump_dur = (clip_length("jump", jump_index)
-				if not clip_at("jump", jump_index).is_empty()
-				else PlayerGoat.JUMP_FALLBACK_TIME)
-			bot.jump_time = 0.0
-			bot.jump_speed = speed * 1.15
-			bot.jump_cool = 0.5 + bot_rnd() * 1.3
+			if start_flight(bot, speed):
+				bot.jump_cool = 0.5 + bot_rnd() * 1.3
+			else:
+				bot.mode = "jump"
+				var jumps: int = clip_count("jump")
+				if jumps > 1:
+					bot.variants["jump"] = (int(bot.variants["jump"]) + 1) % jumps
+				var jump_index: int = int(bot.variants["jump"])
+				bot.jump_dur = (clip_length("jump", jump_index)
+					if not clip_at("jump", jump_index).is_empty()
+					else PlayerGoat.JUMP_FALLBACK_TIME)
+				bot.jump_time = 0.0
+				bot.jump_speed = speed * 1.15
+				bot.jump_cool = 0.5 + bot_rnd() * 1.3
 
 	# Advance the looping clip (jumps pose themselves from `jump_time`). Two things about
 	# this line are the scene's, and both are deliberate. The **role** is the one read at the
@@ -898,7 +1062,7 @@ func _gait(bot: Bot, delta: float, rain: float, sway: float) -> void:
 	# that re-chose `idle` moves to the next idle clip and advances *that* one's phase from
 	# its first frame. Reusing the speed's index instead is worth 4e-4 of phase -- one
 	# frame's advance -- which is small, invisible, and a divergence that never comes back.
-	if bot.mode != "jump":
+	if bot.mode != "jump" and bot.mode != "fly":
 		var current: int = int(bot.variants.get(role, 0))
 		var duration: float = clip_length(role, current)
 		if duration <= 0.0:
@@ -930,6 +1094,10 @@ func _respawn(bot: Bot) -> void:
 	bot.fly_vx = 0.0
 	bot.fly_vy = 0.0
 	bot.fly_vz = 0.0
+	bot.flight_capable = false
+	bot.flight_cooldown = 0.0
+	bot.flight_angle = bot.yaw
+	_flight_reset(bot)
 	bot.satiety = 0.0
 	bot.graze = false
 	bot.zoom = 0.0
@@ -947,6 +1115,10 @@ func _collide_pairs(px: float, pz: float, radius: float, player_radius: float) -
 		pass_number += 1
 		moved = false
 		for bot: Bot in _bots:
+			# A bot in the air is not walking through the herd: the push-apart is 2D, so
+			# without this a goat flying overhead would shove the goats below it.
+			if bot.py > 1.0:
+				continue
 			var apart: float = player_radius + radius * float(bot.spec["scale"])
 			var dx: float = bot.x - px
 			var dz: float = bot.z - pz
@@ -964,9 +1136,13 @@ func _collide_pairs(px: float, pz: float, radius: float, player_radius: float) -
 				moved = true
 		for i in _bots.size():
 			var a: Bot = _bots[i]
+			if a.py > 1.0:
+				continue
 			var a_radius: float = radius * float(a.spec["scale"])
 			for j in range(i + 1, _bots.size()):
 				var b: Bot = _bots[j]
+				if b.py > 1.0:
+					continue
 				var gap: float = a_radius + radius * float(b.spec["scale"])
 				var bx: float = b.x - a.x
 				var bz: float = b.z - a.z
@@ -988,9 +1164,19 @@ func _place(bot: Bot) -> void:
 	if bot.node == null:
 		return
 	var body_scale: float = float(bot.spec["scale"])
-	var y: float = Terrain.height_at(bot.x, bot.z) + _ground_offset * body_scale + bot.py
-	bot.node.position = Vector3(bot.x, y, bot.z)
-	bot.node.rotation = Vector3(0.0, bot.yaw, 0.0)
+	if (bot.mode == "fly" or bot.mode == "fall") and flight != null:
+		# The flight pose is a whole-body rotation about the pivot: the node sits at the
+		# crate's corrected origin (`back_point` with a zero perch) and the quaternion is
+		# the crate's, exactly what the reference's `drawModelEx` is handed.
+		var flight_state: PackedFloat32Array = _flight_state(bot, 2 if bot.mode == "fall" else 1)
+		var origin: Vector3 = flight.back_point(flight_state, 0.0,
+			PlayerGoat.FLIGHT_PIVOT * body_scale)
+		bot.node.position = origin + Vector3(0.0, _ground_offset * body_scale, 0.0)
+		bot.node.quaternion = flight.pose(flight_state)
+	else:
+		var y: float = Terrain.height_at(bot.x, bot.z) + _ground_offset * body_scale + bot.py
+		bot.node.position = Vector3(bot.x, y, bot.z)
+		bot.node.rotation = Vector3(0.0, bot.yaw, 0.0)
 	bot.node.scale = Vector3(body_scale, body_scale, body_scale)
 	var role: String = bot_role(bot)
 	var pose: float = bot.phase
@@ -1002,6 +1188,14 @@ func _place(bot: Bot) -> void:
 		pose = minf(bot.death_time / bot.death_dur, 1.0)
 	elif bot.mode == "flung":
 		pose = fling_progress(bot)
+	elif bot.mode == "fly":
+		# A real `GoatFly` loops; without one the jump is held at 0.35, which reads as
+		# a leap rather than a looping hop while the rotation carries the flight.
+		pose = bot.phase if has_role("fly") else 0.35
+	elif bot.mode == "fall":
+		var fall_length: float = clip_length("fall", 0)
+		pose = minf(bot.flight_time / fall_length, 1.0) \
+			if (has_role("fall") and fall_length > 0.0) else 0.35
 	if bot.anim == null:
 		return
 	var clip: String = clip_at(role, int(bot.variants.get(role, 0)))
