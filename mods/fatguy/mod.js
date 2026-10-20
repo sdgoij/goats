@@ -293,41 +293,58 @@ function bump(ox, oz, weight, reach) {
 // The two reads are handed in from `update` rather than asked for here: a frame asks
 // the API once for the player and once for the herd, and the herd is a fresh array of
 // fresh handles every time it is asked (APIv1 §4.5, §4.8).
-function contact(p, bots) {
-    let best = -1;
-    let bx = 0;
-    let bz = 0;
-    if (bump(p.x, p.z, 1, BUMP_DIST)) {
-        best = hitOverlap;
-        bx = hitX;
-        bz = hitZ;
-    }
+// The current best hit, carried between the halves of `contact`. Module state
+// rather than a returned object: `contact` runs every frame, and a fresh object per
+// ask is the cost this mod's own API note is about (APIv1 §4.5). The split is the
+// engine's compile gate -- a body with two sequential loops is interpreted
+// (`jitprobe`'s `s two loops`), and this one runs every frame.
+let contactBest = -1;
+let contactBX = 0;
+let contactBZ = 0;
+
+function contactBots(bots) {
     for (let i = 0; i < bots.length; i++) {
-        if (bump(bots[i].x, bots[i].z, 1, BUMP_DIST) && hitOverlap > best) {
-            best = hitOverlap;
-            bx = hitX;
-            bz = hitZ;
+        if (bump(bots[i].x, bots[i].z, 1, BUMP_DIST) && hitOverlap > contactBest) {
+            contactBest = hitOverlap;
+            contactBX = hitX;
+            contactBZ = hitZ;
         }
     }
+}
+
+function contactEntities() {
     const near = goats.entities.near(x, z, BUMP_DIST + ENTITY_MARGIN);
     for (let i = 0; i < near.length; i++) {
         const e = near[i];
         // A bird in the air is not a bird he can walk into; `y` against the ground is
         // the whole of telling them apart, since nothing here knows what a bird is.
         if (e.y - goats.world.terrainHeight(e.x, e.z) > BIRD_AIRBORNE) continue;
-        if (bump(e.x, e.z, BIRD_BUMP, BUMP_DIST + e.r) && hitOverlap > best) {
-            best = hitOverlap;
-            bx = hitX;
-            bz = hitZ;
+        if (bump(e.x, e.z, BIRD_BUMP, BUMP_DIST + e.r) && hitOverlap > contactBest) {
+            contactBest = hitOverlap;
+            contactBX = hitX;
+            contactBZ = hitZ;
         }
     }
-    if (best < 0) {
+}
+
+function contact(p, bots) {
+    contactBest = -1;
+    contactBX = 0;
+    contactBZ = 0;
+    if (bump(p.x, p.z, 1, BUMP_DIST)) {
+        contactBest = hitOverlap;
+        contactBX = hitX;
+        contactBZ = hitZ;
+    }
+    contactBots(bots);
+    contactEntities();
+    if (contactBest < 0) {
         held = false;
         return;
     }
-    knockX = bx;
-    knockZ = bz;
-    knock = Math.min(1, knock + best * 0.5);
+    knockX = contactBX;
+    knockZ = contactBZ;
+    knock = Math.min(1, knock + contactBest * 0.5);
     held = true;
 }
 
@@ -550,8 +567,11 @@ goats.on("update", function (dt) {
     if (dirLen > 1e-6) {
         const want = Math.atan2(dirX / dirLen, dirZ / dirLen);
         let turn = want - heading;
-        while (turn > Math.PI) turn -= Math.PI * 2;
-        while (turn < -Math.PI) turn += Math.PI * 2;
+        // Arithmetic rather than two `while`s: the engine interprets a body with two
+        // sequential loop regions (PERF.md, jitprobe `s two loops`), and this callback
+        // is the mod's per-frame update.
+        const turn2Pi = Math.PI * 2;
+        turn -= turn2Pi * Math.floor((turn + Math.PI) / turn2Pi);
         heading += clamp(turn, -TURN_RATE * dt, TURN_RATE * dt);
     }
 

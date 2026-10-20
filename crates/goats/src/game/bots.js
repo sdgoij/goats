@@ -502,11 +502,14 @@ function updateBots(dt) {
                     }
                 } else {
                     // Steer toward the target (the goat faces local +X, so heading
-                    // `yaw` moves along (cos, -sin) in the XZ plane).
+                    // `yaw` moves along (cos, -sin) in the XZ plane). Normalised with
+                    // arithmetic rather than the two `while`s this used to have: a body
+                    // with two sequential loops is interpreted (`jitprobe`'s
+                    // `s two loops`), and this is the herd's per-bot path.
                     const want = Math.atan2(-dz, dx);
                     let diff = want - b.yaw;
-                    while (diff > Math.PI) diff -= Math.PI * 2;
-                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    const turn2Pi = Math.PI * 2;
+                    diff -= turn2Pi * Math.floor((diff + Math.PI) / turn2Pi);
                     b.yaw += Math.max(-TURN * dt, Math.min(TURN * dt, diff));
                     b.x += Math.cos(b.yaw) * spd * dt;
                     b.z += -Math.sin(b.yaw) * spd * dt;

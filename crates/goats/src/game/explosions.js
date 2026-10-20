@@ -1338,9 +1338,20 @@ function flashAt(x, z, seed) {
 // The decay is squared, so the flash reads as a hit and not as a lamp being turned
 // down; the last frame of the last flash is what writes zero, and once the last one
 // is out the shader is left alone entirely.
-function updateFlashes(dt) {
-    let best = 0;
-    let bx = 0, by = 0, bz = 0;
+// The scan and the trim are separate bodies: two sequential loops in one body are
+// interpreted (`jitprobe`'s `s two loops`), and the scan is on the frame path while
+// a bang's flash lives. The best-of-the-flashes result is carried in module state so
+// the split does not allocate.
+let flashBest = 0;
+let flashBestX = 0;
+let flashBestY = 0;
+let flashBestZ = 0;
+
+function ageFlashes(dt) {
+    flashBest = 0;
+    flashBestX = 0;
+    flashBestY = 0;
+    flashBestZ = 0;
     for (let i = 0; i < flashTop; i++) {
         const f = FLASH[i];
         if (!f.live) continue;
@@ -1351,17 +1362,25 @@ function updateFlashes(dt) {
         }
         const fade = 1 - f.age / f.dur;
         const energy = f.peak * fade * fade;
-        if (energy > best) {
-            best = energy;
-            bx = f.x;
-            by = f.y;
-            bz = f.z;
+        if (energy > flashBest) {
+            flashBest = energy;
+            flashBestX = f.x;
+            flashBestY = f.y;
+            flashBestZ = f.z;
         }
     }
+}
+
+function trimFlashes() {
     while (flashTop > 0 && !FLASH[flashTop - 1].live) flashTop -= 1;
-    if (best > 0 || flashEnergy > 0) {
-        flashEnergy = best;
-        setBlastLight(bx, by, bz, best);
+}
+
+function updateFlashes(dt) {
+    ageFlashes(dt);
+    trimFlashes();
+    if (flashBest > 0 || flashEnergy > 0) {
+        flashEnergy = flashBest;
+        setBlastLight(flashBestX, flashBestY, flashBestZ, flashBest);
     }
 }
 
@@ -1421,6 +1440,47 @@ function checkTriggers(unit, x, z, airborne) {
     if (t !== null) tripDevice("trap", t.cx, t.cz, t.x, t.z, 0);
 }
 
+// Fuses first, so a bang that lands this frame can still chain. Each of the loops
+// below is its own function because the engine interprets a body with two
+// sequential loop regions (`jitprobe`'s `s two loops`), and this update runs every
+// frame: `updateExplosions` itself now has none and is compiled.
+function updateFuses(dt) {
+    for (let i = PENDING.length - 1; i >= 0; i--) {
+        const pending = PENDING[i];
+        pending.left -= dt;
+        if (pending.left > 0) continue;
+        PENDING.splice(i, 1);
+        blast(pending.kind, pending.x, pending.z, pending.seed, pending.depth, pending.key);
+    }
+}
+
+function ageFx(dt) {
+    for (let i = 0; i < fxTop; i++) {
+        const slot = FX[i];
+        if (!slot.live) continue;
+        slot.age += dt;
+        if (slot.age >= slot.dur) slot.live = false;
+    }
+}
+
+function trimFxTail() {
+    while (fxTop > 0 && !FX[fxTop - 1].live) fxTop -= 1;
+}
+
+function tripHerd() {
+    // The herd is ours only when the world is, which is offline and on the host.
+    if (!netWorldLocal()) return;
+    for (let i = 0; i < BOTS.length; i++) {
+        const b = BOTS[i];
+        // Neither a sleeping bot nor a dead one is walking anywhere. Sleeping is the
+        // rule that was already here; a corpse is the same argument and one more: a
+        // body lying on a mine is inert until something moves it, and letting one
+        // trip a device would only ever be a bot blowing itself up again.
+        if (b.mode === "sleep" || b.mode === "dead") continue;
+        checkTriggers(b, b.x, b.z, botAirborne(b));
+    }
+}
+
 function updateExplosions(dt) {
     // The ground heals whether or not the system is on: a crater is not an effect, and
     // `enabled 0` is a frame-cost bisect, not a way to leave a hole in the world. The
@@ -1443,42 +1503,18 @@ function updateExplosions(dt) {
     // frame-cost bisect needs: one command, no rebuild, and the engine, the world
     // and every other system stay exactly as they were.
     if (TUNING.explosions.enabled <= 0) return;
-    const e = TUNING.explosions;
 
-    // Fuses first, so a bang that lands this frame can still chain.
-    for (let i = PENDING.length - 1; i >= 0; i--) {
-        const pending = PENDING[i];
-        pending.left -= dt;
-        if (pending.left > 0) continue;
-        PENDING.splice(i, 1);
-        blast(pending.kind, pending.x, pending.z, pending.seed, pending.depth, pending.key);
-    }
-
-    for (let i = 0; i < fxTop; i++) {
-        const slot = FX[i];
-        if (!slot.live) continue;
-        slot.age += dt;
-        if (slot.age >= slot.dur) slot.live = false;
-    }
-    while (fxTop > 0 && !FX[fxTop - 1].live) fxTop -= 1;
+    updateFuses(dt);
+    ageFx(dt);
+    trimFxTail();
 
     // A sleeping goat is not moving, and a dead one is not a goat the world has
     // to be fair about: neither trips anything. The player's goat is simulated
-    // here whatever the session looks like (M12b); the herd is ours only when the
-    // world is, which is offline and on the host.
+    // here whatever the session looks like (M12b).
     if (mode !== "sleep" && mode !== "dead") {
         checkTriggers(goat, goat.px, goat.pz, goatAirborne());
     }
-    if (!netWorldLocal()) return;
-    for (let i = 0; i < BOTS.length; i++) {
-        const b = BOTS[i];
-        // Neither a sleeping bot nor a dead one is walking anywhere. Sleeping is the
-        // rule that was already here; a corpse is the same argument and one more: a
-        // body lying on a mine is inert until something moves it, and letting one
-        // trip a device would only ever be a bot blowing itself up again.
-        if (b.mode === "sleep" || b.mode === "dead") continue;
-        checkTriggers(b, b.x, b.z, botAirborne(b));
-    }
+    tripHerd();
 }
 
 // The look of a bang (M19f): the flipbook billboards, the hot core and the grit,
@@ -1490,44 +1526,41 @@ function updateExplosions(dt) {
 // falls back to the weather's own puff, and no texture at all to an untextured
 // primitive. Each rung is forced by the harness, and each is a picture rather than
 // an error.
-function drawExplosions() {
-    if (TUNING.explosions.enabled <= 0) return;
-    const e = TUNING.explosions;
-    const tell = e.mine.tell;
-    if (tell > 0 && cloudTex >= 0) drawMineTells(tell);
-    // The scorch: a decal per crater, yawed by its own seed and tinted as it heals.
-    // The range is what keeps a field of them from being fill rate nobody can read --
-    // and `crater.scorch 0` is the bisect, which is what M19d shipped for exactly
-    // that. Without the decal texture the interim puff is still there: it is a
-    // billboard, so it costs more, and it is a picture of the same thing.
-    if (e.crater.scorch > 0) {
-        const range = e.crater.scorchRange;
-        const range2 = range * range;
-        for (let i = 0; i < CRATERS.length; i++) {
-            const c = CRATERS[i];
-            const dx = c.x - goat.px;
-            const dz = c.z - goat.pz;
-            if (dx * dx + dz * dz > range2) continue;
-            const fade = 1 - c.age / c.heal;
-            const alpha = Math.round(170 * fade * fade);
-            if (alpha <= 0) continue;
-            const y = terrainHeight(c.x, c.z) + 0.03;
-            if (craterTex >= 0 && craterTexW > 0 && craterTexH > 0) {
-                const b = craterBasis(c.seed);
-                rl.drawQuad3D(craterTex, 0, 0, craterTexW, craterTexH, c.x, y, c.z,
-                    b.right[0], b.right[1], b.right[2],
-                    b.up[0], b.up[1], b.up[2],
-                    c.r * 2.4, c.r * 2.4, rl.color(255, 250, 240, alpha));
-            } else if (cloudTex >= 0) {
-                rl.drawBillboard(cloudTex, c.x, y, c.z, c.r * 2.2,
-                    rl.color(44, 36, 28, alpha));
-            }
+// The scorch: a decal per crater, yawed by its own seed and tinted as it heals.
+// The range is what keeps a field of them from being fill rate nobody can read --
+// and `crater.scorch 0` is the bisect, which is what M19d shipped for exactly
+// that. Without the decal texture the interim puff is still there: it is a
+// billboard, so it costs more, and it is a picture of the same thing.
+function drawCraterScorch(e) {
+    if (e.crater.scorch <= 0) return;
+    const range = e.crater.scorchRange;
+    const range2 = range * range;
+    for (let i = 0; i < CRATERS.length; i++) {
+        const c = CRATERS[i];
+        const dx = c.x - goat.px;
+        const dz = c.z - goat.pz;
+        if (dx * dx + dz * dz > range2) continue;
+        const fade = 1 - c.age / c.heal;
+        const alpha = Math.round(170 * fade * fade);
+        if (alpha <= 0) continue;
+        const y = terrainHeight(c.x, c.z) + 0.03;
+        if (craterTex >= 0 && craterTexW > 0 && craterTexH > 0) {
+            const b = craterBasis(c.seed);
+            rl.drawQuad3D(craterTex, 0, 0, craterTexW, craterTexH, c.x, y, c.z,
+                b.right[0], b.right[1], b.right[2],
+                b.up[0], b.up[1], b.up[2],
+                c.r * 2.4, c.r * 2.4, rl.color(255, 250, 240, alpha));
+        } else if (cloudTex >= 0) {
+            rl.drawBillboard(cloudTex, c.x, y, c.z, c.r * 2.2,
+                rl.color(44, 36, 28, alpha));
         }
     }
-    if (fxTop === 0) return;
-    // Smoke and grit first, the fire over them: the fire is what lights the smoke, so
-    // that is also the order that reads. The blend change is once for the whole pool
-    // rather than once per instance.
+}
+
+// Smoke and grit first, the fire over them: the fire is what lights the smoke, so
+// that is also the order that reads. The blend change is once for the whole pool
+// rather than once per instance. Returns how many fire instances are live.
+function drawFxPool() {
     let fire = 0;
     for (let i = 0; i < fxTop; i++) {
         const slot = FX[i];
@@ -1540,13 +1573,29 @@ function drawExplosions() {
             drawFxDebris(slot);
         }
     }
-    if (fire > 0 && typeof rl.beginBlendMode === "function") {
-        rl.beginBlendMode(rl.BLEND_ADDITIVE);
-        for (let i = 0; i < fxTop; i++) {
-            if (FX[i].live && FX[i].kind === FX_FIRE) drawFxFire(FX[i]);
-        }
-        rl.endBlendMode();
+    return fire;
+}
+
+function drawFxFirePass() {
+    rl.beginBlendMode(rl.BLEND_ADDITIVE);
+    for (let i = 0; i < fxTop; i++) {
+        if (FX[i].live && FX[i].kind === FX_FIRE) drawFxFire(FX[i]);
     }
+    rl.endBlendMode();
+}
+
+// The dispatcher holds no loop of its own: the engine interprets a body with two
+// sequential loop regions (`jitprobe`'s `s two loops`), and the pool loops below it
+// are compiled per function.
+function drawExplosions() {
+    if (TUNING.explosions.enabled <= 0) return;
+    const e = TUNING.explosions;
+    const tell = e.mine.tell;
+    if (tell > 0 && cloudTex >= 0) drawMineTells(tell);
+    drawCraterScorch(e);
+    if (fxTop === 0) return;
+    const fire = drawFxPool();
+    if (fire > 0 && typeof rl.beginBlendMode === "function") drawFxFirePass();
 }
 
 // The fireball: one flipbook frame, additive, rising as it burns out, with a small

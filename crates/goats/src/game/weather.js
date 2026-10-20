@@ -486,6 +486,15 @@ function tuftField(out, cellH, eaten, imul, sin, groundY,
     return n;
 }
 
+// Grow the tuft scratch pool. Its own function because the engine interprets a
+// body with two sequential loop regions (`s two loops` in the `jitprobe`
+// fixture), and this `while` sits in front of the frame's draw loop.
+function tuftPoolEnsure(cells) {
+    while (TUFT_POOL.length < cells) {
+        TUFT_POOL.push({ ax: 0, ay: 0, az: 0, bx: 0, by: 0, bz: 0, d: 0 });
+    }
+}
+
 function drawTufts(g, tuftCol, cull2, detail2, marks) {
     // `marks` splits the phase for `perf on` only; the shadow pass leaves it off so
     // its identical work is not counted twice. `perfMark` is a no-op when off.
@@ -496,9 +505,7 @@ function drawTufts(g, tuftCol, cull2, detail2, marks) {
     const cz0 = Math.floor((g.pz - r) * 0.5);
     const cz1 = Math.ceil((g.pz + r) * 0.5);
     const cells = (cx1 - cx0 + 1) * (cz1 - cz0 + 1);
-    while (TUFT_POOL.length < cells) {
-        TUFT_POOL.push({ ax: 0, ay: 0, az: 0, bx: 0, by: 0, bz: 0, d: 0 });
-    }
+    tuftPoolEnsure(cells);
     const n = tuftField(TUFT_POOL, TERRAIN_CELL_H, EATEN, Math.imul, Math.sin, terrainHeight,
         cx0, cz0, cx1, cz1, g.px, g.pz, cull2, detail2, swayTime, windSway);
     if (marks) perfMark("tuft_field");

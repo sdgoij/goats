@@ -1709,7 +1709,42 @@ fix uses.)
 and a pair loop. Splitting each loop into its own function (`collidePlayerPass`,
 `collideBotPass`, driven by `collidePairs`) takes `collide` from **0.14 to 0.04
 ms** — the `perfMark` floor — and leaves the harness's 193 checks unchanged. The
-update group falls from 3.94 to ~3.84 ms.
+update group falls from 3.94 to ~3.84 ms; the sweep below takes it to 3.66.
+
+### The sweep, and where the gate does not pay
+
+`tools/loop_scan.py` walks the scene and the mods for blocks holding two sibling loop
+headers. Twenty-four do once the `jitprobe` fixtures (two-loop on purpose) are
+excluded, and most of those cannot be on the frame: load time (`makeSkyTextures`,
+`buildBodyModel`, the terrain and water bakes), console-only (`consoleWrap`,
+`drawConsole`), or event-time (`applyCraters`, `craterIndexRebuild`).
+
+The gate is about *sequential* regions, not headers as such: two loops in mutually
+exclusive branches compile (`s branches`, 9.4 ns), while a loop followed by a
+conditional loop does not (`s loop+branch`, 690.6 ns). So the hot targets were the
+bodies whose second loop sits on the frame's path:
+
+| body | split into | phase, before → after |
+| --- | --- | ---: |
+| `updateExplosions` (4 loops) | `updateFuses`, `ageFx`, `trimFxTail`, `tripHerd` | `fx_upd` 0.32 → **0.22** |
+| `updateFlashes` (scan + trim) | `ageFlashes`, `trimFlashes` | (inside `fx_upd`) |
+| `drawExplosions` (3 loops) | `drawCraterScorch`, `drawFxPool`, `drawFxFirePass` | `fx` 0.72 → **0.50** |
+| `updateBots` (two `while`s wrapping `diff`) | arithmetic normalisation | `bots_ai` 0.19 → 0.19 |
+| `drawTufts` (pool `while` + draw loop) | `tuftPoolEnsure` | `tuft_draw` 0.25 → 0.25 |
+| birds `angleDelta` (two `while`s) | arithmetic | `mods_upd` 1.03 → 0.97 |
+| fatguy `contact` + its update callback | `contactBots`/`contactEntities`, arithmetic | (inside `mods_upd`) |
+
+Only the effect pool moved. Both halves shrank: aging 0.10 ms, drawing 0.22. The
+others did not, because their iterations are dominated by the engine calls inside
+them — `drawCube` in the grass, the API reads in fatguy — so removing the
+interpreter's per-step tax does not remove their cost. `tuft_draw` is ~290 cube
+submissions either way.
+
+The update group fell 3.94 → 3.66 ms and the draw group 2.79 → 2.58; the total is
+unchanged at the vsync cap, so the win is headroom. The lesson is narrower than
+“split every body”: a body only pays the interpreter for the steps that are not
+engine calls, so it is worth splitting when that remainder is the bulk of the
+phase.
 
 ### What is left
 

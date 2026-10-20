@@ -129,11 +129,12 @@ function groundAt(x, z) { return goats.world.terrainHeight(x, z); }
 // on the ground asks this first, and a bird that is already down takes off when the water
 // finds it (which is what a rising table does under a standing bird).
 function dryAt(x, z) { return goats.water.depthAt(x, z) <= LEG; }
+// Arithmetic rather than two `while`s: a body with two sequential loops is
+// interpreted (`jitprobe`'s `s two loops`), and this runs per bird per frame.
 function angleDelta(a, b) {
-    let d = a - b;
-    while (d > PI) d -= PI * 2;
-    while (d < -PI) d += PI * 2;
-    return d;
+    const d = a - b;
+    const twoPi = PI * 2;
+    return d - twoPi * FLOOR((d + PI) / twoPi);
 }
 // A small 2D value noise, for the feather texture. Deterministic and local.
 function hash1(n) { const s = SIN(n) * 43758.5453; return s - FLOOR(s); }
