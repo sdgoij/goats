@@ -82,6 +82,85 @@ function sLoopThenBranch(n, b) {
     return s;
 }
 
+// Size without a second loop region: a straight-line body and a single loop with a
+// big body. If these are slow, the gate is size, not loop count -- which is the
+// shape a mod's per-frame callback has.
+function bigFlat(n) {
+    let s = n;
+    s += 1; s *= 1.001; s -= 0.5; s /= 1.0001;
+    s += 2; s *= 1.002; s -= 0.6; s /= 1.0002;
+    s += 3; s *= 1.003; s -= 0.7; s /= 1.0003;
+    s += 4; s *= 1.004; s -= 0.8; s /= 1.0004;
+    s += 5; s *= 1.005; s -= 0.9; s /= 1.0005;
+    s += 6; s *= 1.006; s -= 1.0; s /= 1.0006;
+    s += 7; s *= 1.007; s -= 1.1; s /= 1.0007;
+    s += 8; s *= 1.008; s -= 1.2; s /= 1.0008;
+    s += 9; s *= 1.009; s -= 1.3; s /= 1.0009;
+    s += 10; s *= 1.010; s -= 1.4; s /= 1.0010;
+    s += 11; s *= 1.011; s -= 1.5; s /= 1.0011;
+    s += 12; s *= 1.012; s -= 1.6; s /= 1.0012;
+    s += 13; s *= 1.013; s -= 1.7; s /= 1.0013;
+    s += 14; s *= 1.014; s -= 1.8; s /= 1.0014;
+    s += 15; s *= 1.015; s -= 1.9; s /= 1.0015;
+    s += 16; s *= 1.016; s -= 2.0; s /= 1.0016;
+    s += 17; s *= 1.017; s -= 2.1; s /= 1.0017;
+    s += 18; s *= 1.018; s -= 2.2; s /= 1.0018;
+    s += 19; s *= 1.019; s -= 2.3; s /= 1.0019;
+    s += 20; s *= 1.020; s -= 2.4; s /= 1.0020;
+    return s;
+}
+
+function bigLoop(n) {
+    let s = 0;
+    for (let i = 0; i < n; i++) {
+        let a = i + 1;
+        a = a * 1.5; a = a - 2; a = a / 1.25; a = a + 3;
+        a = a * 1.6; a = a - 3; a = a / 1.35; a = a + 4;
+        a = a * 1.7; a = a - 4; a = a / 1.45; a = a + 5;
+        a = a * 1.8; a = a - 5; a = a / 1.55; a = a + 6;
+        a = a * 1.9; a = a - 6; a = a / 1.65; a = a + 7;
+        a = a * 2.0; a = a - 7; a = a / 1.75; a = a + 8;
+        s += a;
+    }
+    return s;
+}
+
+// The same body as a function *expression* and as an arrow: a mod's per-frame work
+// is handed to `goats.on` as an expression, and if the engine only compiles
+// declarations that is the whole explanation for a callback that will not speed up.
+const exprBody = function (n) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += i * 3;
+    return s;
+};
+
+const arrowBody = (n) => {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += i * 3;
+    return s;
+};
+
+// The API calls a mod makes once per frame, priced in a burst. If a burst call is
+// cheap while the same call once per frame is ~0.4 ms, the cost is the calling
+// pattern, not the work -- the question §4c left open.
+function callWaterDepth(n, x, z) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += goats.water.depthAt(x, z);
+    return s;
+}
+
+function callPlayerState(n) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += goats.player.state().x;
+    return s;
+}
+
+function callTerrainHeight(n, x, z) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += goats.world.terrainHeight(x, z);
+    return s;
+}
+
 function vOuterRead(n) {                // one outer (wrapper-scope) read
     let s = 0;
     for (let i = 0; i < n; i++) s += i * 3 + SCALAR;
@@ -794,6 +873,15 @@ function probeAll() {
     lines.push(row("s two loops", timeIt(sTwoLoops, [N], 1, N * 2)));
     lines.push(row("s branches", timeIt(sBranches, [N, 1], 1, N)));
     lines.push(row("s loop+branch", timeIt(sLoopThenBranch, [N, 1], 1, N * 2)));
+    lines.push(row("big flat 80", timeIt(bigFlat, [1], 2000, 80)));
+    lines.push(row("big loop body 24", timeIt(bigLoop, [2000], 1, 2000 * 24)));
+    lines.push(row("expr body", timeIt(exprBody, [N], 1, N)));
+    lines.push(row("arrow body", timeIt(arrowBody, [N], 1, N)));
+    lines.push("-- API calls in a burst --");
+    lines.push(row("water.depthAt", timeIt(callWaterDepth, [2000, 0, 0], 1, 2000)));
+    lines.push(row("player.state", timeIt(callPlayerState, [2000], 1, 2000)));
+    lines.push(row("terrainHeight 0,0", timeIt(callTerrainHeight, [2000, 0, 0], 1, 2000)));
+    lines.push(row("terrainHeight 100", timeIt(callTerrainHeight, [2000, 100, 100], 1, 2000)));
     // 7 bots: 2 passes x (7 player pairs + 21 bot pairs) = 56 pair steps.
     lines.push(row("collide-current", timeIt(collideCurrent, [bots, 0, 0], 2000, 56)));
     lines.push(row("collide-leaf", timeIt(collideLeaf, [bots, 7, 0, 0, 1.5, 1.5], 2000, 56)));

@@ -661,6 +661,19 @@ function goatMinGap() {
     return best;
 }
 
+// The ground under a bot, at most once a frame. The lit pass asks twice (the contact
+// blob and the model's own y) and the depth pass once, and `terrainHeight` is one of
+// the scene's expensive reads -- 18 us in `jitprobe`'s burst, three octaves of noise
+// with four hashes each. Cached per frame rather than per position, so a crater dug
+// under a standing bot still moves it.
+function botGroundY(b) {
+    if (b.gyFrame !== sceneFrames) {
+        b.gy = terrainHeight(b.x, b.z);
+        b.gyFrame = sceneFrames;
+    }
+    return b.gy;
+}
+
 // Draw the herd. Bots outside the shadow map's box get a small contact blob so
 // they stay grounded; inside the box the map shadow covers them instead.
 function drawBots(tint) {
@@ -669,7 +682,7 @@ function drawBots(tint) {
         const dx = b.x - goat.px;
         const dz = b.z - goat.pz;
         if (dx * dx + dz * dz > shadowGrassCull2()) {
-            rl.drawCube(b.x, terrainHeight(b.x, b.z) + 0.06, b.z,
+            rl.drawCube(b.x, botGroundY(b) + 0.06, b.z,
                 1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
         }
         const role = botRole(b);
@@ -683,7 +696,7 @@ function drawBots(tint) {
         poseModelOn(b.model, clipAt(role, b.var[role]), pose);
         // Draw directly (no `drawModelAt` wrapper) to keep the JS call depth
         // shallow -- the debug stack guard is tight.
-        const y = terrainHeight(b.x, b.z) + groundOffset * b.spec.scale + b.py;
+        const y = botGroundY(b) + groundOffset * b.spec.scale + b.py;
         if (b.mode === "flung") {
             // The roll is the placeholder's, on the same rule as the player's: with
             // no clip tumbling the bot, the scene turns it (`flingDraw`, model.js).
@@ -718,7 +731,7 @@ function drawBotsShadow() {
         // No pose here, but the transform is free: a thrown bot is in the air in
         // the depth pass too (the roll comes from the fraction the pose already
         // reflects, so a client's mirrored bot rolls the same way).
-        const y = terrainHeight(b.x, b.z) + groundOffset * b.spec.scale + b.py;
+        const y = botGroundY(b) + groundOffset * b.spec.scale + b.py;
         if (b.mode === "flung") {
             const d = flingDraw(b.x, y, b.z, b.yaw, flingTumble(botFlingProgress(b)),
                 TUNING.explosions.fling.pivot * b.spec.scale);

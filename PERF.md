@@ -1746,6 +1746,42 @@ unchanged at the vsync cap, so the win is headroom. The lesson is narrower than
 engine calls, so it is worth splitting when that remainder is the bulk of the
 phase.
 
+### What an API call costs
+
+`jitprobe` priced the calls a mod makes once a frame, in a burst:
+
+| call | ns/call |
+| --- | ---: |
+| `goats.water.depthAt` | 1064.7 |
+| `goats.player.state()` | 848.7 |
+| `goats.world.terrainHeight` | **18436.9** |
+| `goats.world.terrainHeight` at (100, 100) | 18415.1 |
+
+`terrainHeight` is the outlier, and it is not the craters — a query far from any
+device prices the same. It is three octaves of noise, four `hash` calls each, roughly
+sixteen JS calls deep, and each call is expensive in this engine even when the body
+is compiled (§4c's per-call question, still open).
+
+That price is paid by the scene too. `drawBots` asked `terrainHeight` twice per bot
+(the contact blob and the model's `y`) and `drawBotsShadow` once, so up to 21 calls a
+frame. `botGroundY` now caches it once per bot per frame, keyed on `sceneFrames` so a
+crater dug under a standing bot still moves it. Pricing the calls by replacing the
+value with a constant measured `bots` 0.36 → 0.25 and `shadow_bots` 0.22 → 0.12; the
+herd's own positions move those two rows by ±0.1 between runs, so read the pair as
+~0.2 ms of terrain under the herd, halved by the cache.
+
+`fatguy`'s own traffic is smaller than it looked. By ablation, with everything else
+in place: `contact` 0.13 ms (it includes `entities.near`), the two per-frame reads
+(`player.state()` + `bots.list()`) 0.04, `trip` 0.04, and `nearestGoat` below the
+noise. What remains is the body itself. Its water read is now sampled at 10 Hz
+(`waterClock`) instead of 60, which cuts that crossing sixfold for a timer that needs
+thirty seconds of standing water.
+
+**A warning from this round.** The first `depthAt` ablation replaced the line with
+`wetFor = 0` and left the `else` dangling: the mod failed to load, `mods_upd` looked
+0.4 ms cheaper, and the log was the only thing that said why. A mod that does not
+load is indistinguishable from one that got fast.
+
 ### What is left
 
 By measured cost, and all of it either mod-side or a crossing count:

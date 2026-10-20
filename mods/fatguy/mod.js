@@ -106,6 +106,7 @@ const GROUNDED = 0.5;       // metres above the ground he still counts as standi
 // whole of the joke. `WET_DEPTH` is what counts as water under him rather than a damp film.
 const WATER_DROWN = 30.0;   // seconds in the water before the first bang
 const WET_DEPTH = 0.02;     // metres of water that count
+const WATER_SAMPLE = 0.1;   // seconds between water reads (see `update`)
 const FLUNG_GRAVITY = -72;  // m/s², the goat's own arc, so his throw looks like one
 const FLUNG_MAX = 4.0;      // seconds; a ceiling on the arc, as the birds keep one
 const FLUNG_SPIN = 1.6;     // forward somersaults a second, over the arc
@@ -157,6 +158,7 @@ let resting = CHAIN_RESET;
 let aimed = false;
 let warned = false;
 let wetFor = 0;             // seconds he has been standing in water (0 the moment he is dry)
+let waterClock = 0;         // seconds since the water was last sampled (see `update`)
 // His own luck, and his own voices. The scene's seeded streams belong to `side:
 // "world"` mods (a client mod may not register one) and `Math.random` would make a
 // run unreproducible for the harness, so the ladder rolls on a private xorshift32
@@ -600,8 +602,18 @@ goats.on("update", function (dt) {
     // bang and not while he flies, so a landing that is still in the water goes off again
     // on the frame he lands. That is the whole rule -- he explodes until he lands back on
     // dry land, and the arc is the only thing between one bang and the next.
-    if (goats.water.depthAt(x, z) > WET_DEPTH) wetFor += dt;
-    else wetFor = 0;
+    //
+    // Sampled ten times a second rather than every frame: `goats.water.depthAt` crosses
+    // into the scene, and a once-a-frame call to a scene body measured ~0.4 ms while the
+    // same call in a burst is ~1 us (`jitprobe`, `water.depthAt`) -- the engine's per-call
+    // cost, not this read. Ten times a second is finer than the 30 s the timer needs, and
+    // it is the difference between a 0.4 ms phase and a 0.07 ms one.
+    waterClock += dt;
+    if (waterClock >= WATER_SAMPLE) {
+        if (goats.water.depthAt(x, z) > WET_DEPTH) wetFor += waterClock;
+        else wetFor = 0;
+        waterClock = 0;
+    }
     if (!flung && wetFor >= WATER_DROWN) {
         goats.explosions.blast(x, z, "mine");
         return;
