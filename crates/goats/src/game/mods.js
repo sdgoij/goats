@@ -1401,7 +1401,11 @@ function modShadowBegin() { modShadowPass = true; }
 function modShadowEnd() { modShadowPass = false; }
 
 function modDrawShadow(handle, x, y, z, ax, ay, az, deg, s, tint) {
-    rl.setModelShader(handle, modelShaderFor(handle, depthShader));
+    // Always the plain depth program: a mod's mesh is not skinned (`goats.gfx.model`
+    // draws at the bind pose), and routing it through `modelShaderFor` would pick the
+    // skinned twin on a `gpu-skinning` build, whose `skinMatrix()` has no bones and
+    // collapses the mesh to the origin.
+    rl.setModelShader(handle, depthShader);
     rl.drawModelEx(handle, x, y, z, ax, ay, az, deg, s, s, s,
         tint === undefined ? goatsDraw.WHITE : tint);
     rl.setModelShader(handle, -1);
