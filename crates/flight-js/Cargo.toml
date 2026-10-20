@@ -1,0 +1,13 @@
+[package]
+name = "flight-js"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# The `__flight` global: a thin Slag binding over `flight`. It exists as its own
+# crate because the client, the headless server and the harness all evaluate the
+# same JavaScript scene and all need the global, but only the client links
+# raylib. This crate depends on `slag` and `flight`, nothing else.
+[dependencies]
+flight = { workspace = true }
+slag = { workspace = true }

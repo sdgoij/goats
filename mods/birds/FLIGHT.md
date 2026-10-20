@@ -815,7 +815,7 @@ integration.
 
 | `crates/flight` (Rust) | Reference integration | Godot integration |
 | --- | --- | --- |
-| `Config`, `State`, `Input`, `Outcome` | `crates/goats/src/flight_js.rs` installs a `__flight` global; `goat.js`/`bots.js` call it in the `fly`/`fall` branches | `crates/godot/src/flight.rs` exposes a `Flight` class; `player_goat.gd`/`bots.gd` call it |
+| `Config`, `State`, `Input`, `Outcome` | `crates/flight-js` installs a `__flight` global; `goat.js`/`bots.js` call it in the `fly`/`fall` branches | `crates/godot/src/flight.rs` exposes a `Flight` class; `player_goat.gd`/`bots.gd` call it |
 | `can_take_off`, `start`, `step`, `release`, `fall_damage` | mode/stats/input integration around it | mode/stats/input integration around it |
 | `bot_input`, `pose`, `axis_angle`, `back_point` | `model.js` draws from the returned pose | `pose.gd`/`_place` build the basis from it |
 | defaults and clamps | `core.js`/`tuning.gd` map their leaves into `Config` | same |
@@ -837,20 +837,23 @@ it.
 
 ### R1 — the reference binding and the player flight branch
 
-- `crates/goats/src/flight_js.rs`: install `__flight` with the same
-  `create_object`/`create_function`/`set_global` pattern as `android.rs` and
-  `web.rs`; add `flight = { workspace = true }` to `crates/goats/Cargo.toml`.
-- Install it before `context.eval(SCENE)` in `crates/goats/src/lib.rs` `run()`,
-  `crates/server/src/headless.rs` `Sim::start`, and
-  `crates/harness/src/lib.rs` `Harness::start`.
-- `goat.js`: the `fly`/`fall` branches call `__flight.step` and write the
-  numbers back; mode/stats/input/HUD stay in the scene.
-- `model.js`: the draw pose comes from `__flight.pose`/`axis_angle`.
-- `core.js`: the `flight` tuning subtree and `stats.energyDrain.fly`, mapped
-  into the crate's `Config`.
+**✅ Landed.** `crates/flight-js` is the Slag binding (`create_object`,
+`create_function`, `set_global`) over `flight`, and it is a crate of its own
+because all three hosts evaluate the same JavaScript but only the client links
+raylib. It is installed before `context.eval(SCENE)` in `crates/goats/src/lib.rs`
+`run()`, `crates/server/src/headless.rs` `Sim::start` and
+`crates/harness/src/lib.rs` `Harness::start`.
 
-**Gate:** the harness flight cases (`scene_logic.rs` or `flight.rs`) and
-`birds.rs` as in §9.
+`goat.js` has the player's `fly`/`fall` branches: the state is packed into the
+binding's positional arrays, the crate steps it, and the returned numbers and
+consequences (take-off cost, flap cost, drain, release, landing damage) are
+written back. `model.js` draws from `pose`/`axis_angle`/`backPoint`, `core.js`
+carries the `flight` tuning subtree and `stats.energyDrain.fly`, and `ctl.js`
+exposes `fly`, `release` and `flight on|off`.
+
+**Gate:** `crates/harness/tests/flight.rs` (40 cases: take-off rules, W/S/A/D,
+flap/cooldown/energy, drain, release, fall damage and the lethal contact), plus
+`scene_logic.rs` and `birds.rs` unchanged.
 
 ### R2 — the Godot binding and the player flight branch
 
@@ -938,7 +941,7 @@ the single-player/host feature is not blocked on it.
 ### Reference harness (`cargo test`)
 
 These are now **integration** tests: the scene evaluates and calls the `__flight`
-global installed by `crates/goats/src/flight_js.rs`.
+global installed by `crates/flight-js`.
 
 - `scene_logic.rs` (or a new `flight.rs`):
   - `flight on` + run + jump enters `fly`; a walk/standing jump does not.
@@ -1045,12 +1048,14 @@ the clamps; a play-through asserts that it feels right.
   `back_point`, and the unit/property tests.
 - `Cargo.toml` (workspace) — add the member and the `flight = { path = ... }`
   workspace dependency.
+- `crates/flight-js/` (new) — the `__flight` Slag global over `flight`: install
+  it in the client, the server and the harness. Depends on `slag` (without its
+  raylib feature) and `flight`.
 
 **Reference**
 
-- `crates/goats/Cargo.toml` — depend on `flight`.
-- `crates/goats/src/flight_js.rs` (new) — install the `__flight` global with
-  `create_object`/`create_function`/`set_global`.
+- `crates/goats/Cargo.toml`, `crates/server/Cargo.toml`,
+  `crates/harness/Cargo.toml` — depend on `flight-js`.
 - `crates/goats/src/lib.rs`, `crates/server/src/headless.rs`,
   `crates/harness/src/lib.rs` — install the global before the scene is
   evaluated.
@@ -1075,7 +1080,8 @@ the clamps; a play-through asserts that it feels right.
   `Command::Pose` gains `pitch`/`roll` (defaulted for the JSON bridge).
 - `crates/proto/src/lib.rs` — gaits, fields, version.
 - `crates/harness/tests/` and `crates/session/src/lib.rs` tests — new/modified
-  cases and every `PeerState`/`BotState` initializer.
+  cases and every `PeerState`/`BotState` initializer. `crates/harness/tests/flight.rs`
+  (new) is R1's gate.
 
 **Godot**
 

@@ -1398,6 +1398,8 @@ function goatAirborne() {
     // A flung goat owns its own height (the arc in `goat.js`), so it is airborne by
     // construction; a jump is airborne by mode, since the clip's root motion does
     // the hop and `goat.py` stays 0; and the cube fallback really does lift `py`.
+    // Flight and its fall own their height too.
+    if (mode === "fly" || mode === "fall") return true;
     if (mode === "flung") return true;
     return haveModel ? mode === "jump" : goat.py > TUNING.explosions.mine.clearance;
 }

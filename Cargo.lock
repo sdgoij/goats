@@ -986,6 +986,14 @@ name = "flight"
 version = "0.1.0"
 
 [[package]]
+name = "flight-js"
+version = "0.1.0"
+dependencies = [
+ "flight",
+ "slag",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1252,6 +1260,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "cpal",
+ "flight-js",
  "jni 0.21.1",
  "mods",
  "ndk-context",
@@ -1401,6 +1410,7 @@ dependencies = [
 name = "harness"
 version = "0.1.0"
 dependencies = [
+ "flight-js",
  "scene",
  "serde",
  "serde_json",
@@ -3673,6 +3683,7 @@ dependencies = [
 name = "server"
 version = "0.1.0"
 dependencies = [
+ "flight-js",
  "futures-util",
  "mods",
  "plugin",

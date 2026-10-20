@@ -4,7 +4,7 @@
 //! take-off rule, the powered step, the release and free fall, fall damage, the
 //! herd's flight autopilot and the pose maths. It is pure: no engine, no wire, no
 //! tuning tree. The raylib client reaches it through a `__flight` native global
-//! (`crates/goats/src/flight_js.rs`), the Godot client through the GDExtension
+//! (`crates/flight-js`), the Godot client through the GDExtension
 //! (`crates/godot/src/flight.rs`), and the tests call it directly.
 //!
 //! # The client owns the world

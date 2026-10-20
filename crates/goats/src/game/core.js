@@ -146,7 +146,7 @@ function assetList(slot) {
 const TUNING = {
     stats: {
         max: 100,
-        energyDrain: { idle: 0.4, walk: 1.0, trot: 2.0, run: 4.0 },  // per second
+        energyDrain: { idle: 0.4, walk: 1.0, trot: 2.0, run: 4.0, fly: 2.5 },  // per second
         jumpEnergyCost: 2.0,
         sleepEnergyRecover: 12,    // per second
         sleepHealthRecover: 2,
@@ -171,6 +171,45 @@ const TUNING = {
         fallbackHeight: 0.55,      // metres of the cube goat's hop
         fallbackTrotMult: 1.3,     // how much faster the cube goat "trots"
         fallbackRunMult: 1.6,      // how much faster the cube goat "runs"
+    },
+    // The captured-bird flight model. The crate `crates/flight` owns the maths
+    // and these are its defaults; `flightConfigure` (goat.js) maps this object
+    // into the native `__flight.configure` once, and after a tuning write.
+    flight: {
+        takeoffLift: 5.0,          // m/s upward impulse at take-off
+        takeoffPitch: 0.25,        // rad, nose-up at take-off
+        takeoffEnergy: 2.0,        // energy a take-off costs
+        speed: 9.0,                // cruise airspeed, m/s
+        minSpeed: 5.0,
+        maxSpeed: 14.0,
+        speedResponse: 1.2,        // per second toward cruise
+        pitchMax: 0.55,            // rad
+        pitchRate: 1.6,            // rad/s
+        bankMax: 0.75,             // rad
+        bankRate: 2.2,             // rad/s
+        turnRate: 1.4,             // rad/s at full bank and cruise
+        sink: 1.2,                 // m/s at level pitch
+        climbGain: 1.0,            // vy share of speed * sin(pitch)
+        vyResponse: 3.0,           // per second toward the target vy
+        flapLift: 5.0,             // m/s impulse
+        flapSpeed: 1.5,            // m/s airspeed gain
+        flapCooldown: 0.45,        // s
+        flapEnergy: 1.2,           // energy per flap
+        ceiling: 60,               // metres above the ground below
+        gravity: -32,              // m/s² for `fall`
+        safeFall: 12,              // m/s impact that does no damage
+        fallDamage: 2.2,           // health per m/s over safeFall
+        fallHealthFloor: 0,        // a fall may kill
+        fallPitchGain: 0.04,       // nose-down radians per m/s of fall
+        botAltitude: 8,            // metres a bot holds
+        botRadius: 18,             // metres of the orbit ring
+        botTime: 18,               // seconds a bot stays up
+        botCooldown: 8,            // seconds between bot flights
+        botTurn: 0.9,              // rad/s around the ring
+        botYawGain: 1.5,           // turn axis per radian of yaw error
+        botPitchGain: 0.12,        // move axis per metre of altitude error
+        botFlapBelow: 1.0,         // metres below the target that triggers a flap
+        botTerrainGuard: 2.0,      // metres above its own ground a bot noses up
     },
     food: {
         eatRange: 1.1,             // metres: a tuft closer than this is in reach
@@ -487,6 +526,24 @@ const TUNING_CLAMP = {
     "food.fullBellyHeal": [0, 100],
     "camera.minDist": [0.1, 1000],
     "camera.maxDist": [0.1, 1000],
+    // The flight model's own bounds. The crate validates again when the scene
+    // configures it, so these are the console/mods' view rather than the only
+    // guard; ordering `minSpeed`/`maxSpeed` is the crate's job.
+    "flight.takeoffLift": [0, 50],
+    "flight.takeoffPitch": [-1.4, 1.4],
+    "flight.takeoffEnergy": [0, 100],
+    "flight.speed": [0, 100],
+    "flight.minSpeed": [0, 100],
+    "flight.maxSpeed": [0, 100],
+    "flight.pitchMax": [0, 1.4],
+    "flight.bankMax": [0, 1.4],
+    "flight.flapCooldown": [0, 10],
+    "flight.flapEnergy": [0, 100],
+    "flight.ceiling": [1, 1000],
+    "flight.gravity": [-200, -0.1],
+    "flight.safeFall": [0, 200],
+    "flight.fallDamage": [0, 100],
+    "flight.fallHealthFloor": [0, 100],
     "lighting.shadow.size": [16, 8192],
     // Explosions: the clamps a mistake could make unplayable. Density sets how
     // much of the field is a minefield, the radius and the damage decide whether
@@ -723,6 +780,13 @@ function tuningNotify(path, value) {
     }
     // Mods observe tuning changes through the same notification (mods.js).
     modEmit("tuning", path, value);
+    // The flight controller caches the tuning it was configured with. A write to
+    // the flight subtree or the flight energy leaf re-pushes it; a scene that has
+    // no `__flight` (or is still loading) simply has nothing to configure.
+    if (typeof flightConfigure === "function" &&
+        (path === "stats.energyDrain.fly" || path.indexOf("flight.") === 0)) {
+        flightConfigure();
+    }
 }
 
 // ---- the browser panel's half --------------------------------------------

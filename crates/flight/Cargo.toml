@@ -5,8 +5,7 @@ edition = "2024"
 license = "MIT"
 
 # Deliberately no dependencies: this crate is the flight mechanics and nothing
-# else. The raylib scene reaches it through a Slag global
-# (`crates/goats/src/flight_js.rs`), the Godot client through the GDExtension
-# (`crates/godot/src/flight.rs`), and the tests call it directly. It knows no
-# engine, no wire and no tuning tree.
+# else. The raylib scene reaches it through a Slag global (`crates/flight-js`),
+# the Godot client through the GDExtension (`crates/godot/src/flight.rs`), and
+# the tests call it directly. It knows no engine, no wire and no tuning tree.
 [dependencies]

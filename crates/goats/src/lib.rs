@@ -854,6 +854,10 @@ pub fn run() {
             context.register_raylib_asset(name, data);
         }
     }
+    // The flight controller, a native global the scene's `fly`/`fall` branches
+    // call. Installed before the eval, like `android`/`web`: the scene looks for
+    // it as it loads.
+    flight_js::install(&mut context);
     // The scene only defines its frame functions here; the loop below drives it.
     context.eval(SCENE).unwrap();
 

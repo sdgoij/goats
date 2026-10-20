@@ -68,6 +68,9 @@ impl Sim {
         };
         context.set_host_callbacks(callbacks);
         slag::install_jit(&mut context)?;
+        // The flight controller the scene's `fly`/`fall` branches call, exactly
+        // as the client installs it before evaluating the same scene.
+        flight_js::install(&mut context);
 
         let source = format!("{}\n{}\n{GLUE}", scene::NULL_RL, scene::SCENE);
         context.eval(&source).map_err(|error| error.to_string())?;

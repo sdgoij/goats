@@ -184,16 +184,19 @@ Notes:
 
 ## 4. The raylib / server / harness binding
 
-Add one module, `crates/goats/src/flight_js.rs`, and install it in the three
-hosts:
+Add one crate, `crates/flight-js`, and install its `__flight` global in the
+three hosts. It is a crate rather than a module in `crates/goats` because the
+server and the harness evaluate the same scene but must not link raylib, and
+`slag`'s `raylib` feature is additive per crate:
 
 ```rust
 // the same shape as android::install / web::install
 pub fn install(context: &mut Context) {
     let surface = context.create_object().expect("the flight object");
-    // step(state[], input, dtProcessed) -> [state..., events...]
-    surface.set("step", context.create_function("step", 2, Box::new(|call| { ... })));
-    // start / release / fallDamage / botInput / pose / backPoint
+    // step(state[], input[], dt, ground) -> [state..., events...]
+    surface.set("step", context.create_function("step", 4, Box::new(|call| { ... })));
+    // configure / start / release / fallDamage / applyFallDamage / botInput /
+    // pose / axisAngle / backPoint
     context.set_global("__flight", surface.as_value()).expect("the flight global");
 }
 ```
@@ -205,11 +208,17 @@ pub fn install(context: &mut Context) {
 Then `goat.js` and `bots.js` change only at the flight branches:
 
 ```js
-const out = __flight.step([x, z, y, yaw, pitch, roll, speed, vy, cool, flaps],
-                          [move, turn, flap, release],
-                          dt, terrainHeight);
-// write the numbers back; apply the events (bleat, energy, damage, HUD)
+// state: x, z, y, yaw, pitch, roll, speed, vy, flapCool, flaps, flightTime, phase
+// input: move, turn, flap, release, energy
+const out = __flight.step(stateArray, inputArray, dt, terrainHeight);
+// out[0..12] is the new state; 12 flapped, 13 flap cost, 14 drain,
+// 15 released, 16 ceiling, 17 landed, 18 impact, 19 damage
 ```
+
+`start(state, groundSpeed)` returns the 12 state numbers plus the take-off's
+energy cost at index 12; `release(state)` returns the state alone. The numbers
+cross positionally rather than as objects, so a frame is one crossing per goat
+and allocates nothing.
 
 The existing `goat`/`bot` objects keep owning `x/y/z/...`; the crate is a pure
 function. The `__flight` global is **internal**, not part of the `goats` mod API.
@@ -355,7 +364,7 @@ The gameplay slices in `FLIGHT.md` §7 become:
 | Slice | Work | Test |
 | --- | --- | --- |
 | **R0** ✅ | `crates/flight`: config, state, step, fall, damage, pose, bot input, tests | `cargo test -p flight` — landed, 35 + doctest |
-| **R1** | `crates/goats/src/flight_js.rs` + install in client/server/harness; `goat.js` flight branch | harness flight cases |
+| **R1** ✅ | `crates/flight-js` + install in client/server/harness; `goat.js` flight branch; `model.js` pose; `core.js` tuning | `crates/harness/tests/flight.rs` — landed, 40 cases |
 | **R2** | `crates/godot/src/flight.rs` class + `main.gd` wiring; `player_goat.gd` flight branch | `verify_flight.gd`, `verify_goat.gd` |
 | **R3** | bot flight branch and autopilot in both clients | `verify_bots.gd`, harness bots |
 | **R4** | the API surface, tuning tree, wire, mod, HUD, touch | as `FLIGHT.md` §9 |

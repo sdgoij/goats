@@ -24,7 +24,7 @@ const ctlHeld = {};
 const HELP_GROUPS = [
     ["basics", "help ping"],
     ["state", "state stats time weather bots camera pos phase features fps"],
-    ["move", "jump sleep wake walk trot run back stop turn yaw"],
+    ["move", "jump sleep wake walk trot run back stop turn yaw fly release flight"],
     ["vitals", "health energy heal eat grass traps craters water pools restart kill"],
     ["view", "lighting shadows sky flood mute settings setting tune perf ui console screenshot"],
     ["session", "host connect leave who net copy say msg"],
@@ -383,8 +383,35 @@ function sceneCommand(line) {
         case "jump":
             if (mode === "dead") return "error cannot jump while dead";
             if (mode === "sleep") return "error cannot jump while asleep";
+            if (mode === "fall") return "error cannot jump while falling";
+            if (mode === "fly") {
+                // The touch overlay's jump button is this verb; in the air it is
+                // the flap, consumed by the next flight frame.
+                flightFlapQueued = true;
+                return "ok flap";
+            }
             startJump(ctlHeldMove(), ctlHeldGait());
             return "ok jump";
+        case "fly":
+            if (FLIGHT === null) return "error flight unavailable";
+            return startFlight() ? "ok fly" : "error cannot fly (no captured bird)";
+        case "release":
+            return releaseFlight() ? "ok release" : "error not flying";
+        case "flight": {
+            if (FLIGHT === null) return "error flight unavailable";
+            const sub = parts[1];
+            if (sub === undefined) return "ok " + (flightCapable ? "on" : "off");
+            if (sub === "on") {
+                flightCapable = true;
+                return "ok flight on";
+            }
+            if (sub === "off") {
+                if (mode === "fly") releaseFlight();
+                flightCapable = false;
+                return "ok flight off";
+            }
+            return "error flight expects on|off";
+        }
         case "sleep":
             if (mode === "dead") return "error cannot sleep while dead";
             if (mode === "sleep") return "error already asleep";

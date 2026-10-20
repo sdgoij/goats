@@ -16,6 +16,8 @@ gpu-skinning = ["slag/gpu-skinning"]
 [dependencies]
 # The mod loader (discovery, manifests, asset bytes). Pure Rust, no engine.
 mods = { workspace = true }
+# The `__flight` global the scene steps the player and the herd through.
+flight-js = { workspace = true }
 # The scene bundle: the ordered parts, the joined script and the `rl` stubs. One
 # source, shared with the headless server and the test harness, so they cannot
 # disagree about the running order.

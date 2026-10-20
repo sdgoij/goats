@@ -10,6 +10,8 @@ license = "MIT"
 # does not build raylib.
 [dependencies]
 scene = { workspace = true }
+# The `__flight` global the scene runs its flight branch against.
+flight-js = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 # The observations cross the Rust/JS boundary as one JSON string, the shape
 # `sceneWorldJson` already uses.

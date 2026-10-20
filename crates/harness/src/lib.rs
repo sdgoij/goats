@@ -386,6 +386,9 @@ impl Harness {
             ..HostCallbacks::default()
         });
         slag::install_jit(&mut context)?;
+        // The scene's flight controller, the same global the client and the
+        // server install before evaluating the same scene.
+        flight_js::install(&mut context);
 
         let source = format!(
             "{}\n{}\n{}\n{GLUE}",

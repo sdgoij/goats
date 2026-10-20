@@ -19,6 +19,23 @@ let flingVZ = 0;
 let flingVY = 0;
 let flingY = 0;
 let flingFlight = 0;
+// Captured-bird flight (`crates/flight` through the `__flight` global). The
+// numbers are the client's; the crate is a pure step over them. `flightCapable`
+// is the captured bird's grant, set by the mod's `setFlight` and by the `flight`
+// console verb.
+const FLIGHT = typeof __flight !== "undefined" ? __flight : null;
+let flightCapable = false;
+let flightSpeed = 0;
+let flightVY = 0;
+let flightPitch = 0;
+let flightRoll = 0;
+let flightTime = 0;
+let flightFlaps = 0;
+let flightFlapCool = 0;
+let flightFlapQueued = false;
+// One reusable state/input pair, so a flight frame allocates nothing.
+const FLIGHT_STATE = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const FLIGHT_INPUT = [0, 0, 0, 0, 0];
 let sleepTime = 0;       // seconds slept since last awake
 let deathTime = 0;       // seconds since the death started
 let idleTimer = 0;       // seconds spent idle while exhausted
@@ -59,6 +76,8 @@ function clipRole() {
     // not -- which is the placeholder the clip contract was written around, and the
     // pose below stretches whichever it got over the flight.
     if (mode === "flung") return CLIP.flung ? "flung" : "jump";
+    if (mode === "fly") return CLIP.fly ? "fly" : "jump";
+    if (mode === "fall") return CLIP.fall ? "fall" : "jump";
     if (mode === "jump" && CLIP.jump) return "jump";
     if (mode === "run" && CLIP.run) return "run";
     if (mode === "trot" && CLIP.trot) return "trot";
@@ -101,6 +120,14 @@ function groundSpeed() {
 }
 
 function startJump(move, gait) {
+    // A running jump with a captured bird is a take-off. The capability is set
+    // by the mod (`setFlight`) or the `flight` console verb; the crate owns the
+    // rest.
+    if (flightCapable && FLIGHT !== null && gait === "run" && move > 0 &&
+        mode !== "dead" && mode !== "sleep" && mode !== "eat" &&
+        mode !== "flung" && mode !== "fall") {
+        if (startFlight()) return;
+    }
     mode = "jump";
     cyclePlayerVariant("jump");
     jumpTime = 0;
@@ -136,6 +163,13 @@ function startFling(vx, vz, vy) {
     flingVX += vx;
     flingVZ += vz;
     flingVY += vy;
+    // A blast owns the arc. If the goat was flying, the flight is over; the mod
+    // clears the capability when it sees the mode change.
+    flightSpeed = 0;
+    flightVY = 0;
+    flightPitch = 0;
+    flightRoll = 0;
+    flightCapable = false;
     // The pose is stretched over the ballistic time the remaining upward impulse
     // implies, counted from the start of the arc, so the phase keeps rising towards
     // 1 instead of jumping back.
@@ -149,6 +183,192 @@ function startFling(vx, vz, vy) {
 // it is read from three places and written once.
 function flingProgress() {
     return Math.min(flingTime / flingFlight, 1);
+}
+
+// ---- captured-bird flight -------------------------------------------------
+//
+// The mechanics live in `crates/flight`; this is the client half. The state is
+// the scene's own numbers, packed into the flat array the `__flight` global
+// takes. The crate returns the new numbers and the consequences -- a flap's
+// energy, the frame's drain, a release, a landing's damage -- which are applied
+// here and nowhere else.
+
+function flightConfig() {
+    const f = TUNING.flight;
+    return {
+        maxDt: 0.05,
+        restHeight: haveModel ? 0 : V_DROP,
+        bodyPivot: TUNING.explosions.fling.pivot,
+        takeoffLift: f.takeoffLift,
+        takeoffPitch: f.takeoffPitch,
+        takeoffEnergy: f.takeoffEnergy,
+        speed: f.speed,
+        minSpeed: f.minSpeed,
+        maxSpeed: f.maxSpeed,
+        speedResponse: f.speedResponse,
+        pitchMax: f.pitchMax,
+        pitchRate: f.pitchRate,
+        bankMax: f.bankMax,
+        bankRate: f.bankRate,
+        turnRate: f.turnRate,
+        sink: f.sink,
+        climbGain: f.climbGain,
+        vyResponse: f.vyResponse,
+        flapLift: f.flapLift,
+        flapSpeed: f.flapSpeed,
+        flapCooldown: f.flapCooldown,
+        flapEnergy: f.flapEnergy,
+        drainFly: TUNING.stats.energyDrain.fly,
+        ceiling: f.ceiling,
+        gravity: f.gravity,
+        safeFall: f.safeFall,
+        fallDamage: f.fallDamage,
+        fallHealthFloor: f.fallHealthFloor,
+        fallPitchGain: f.fallPitchGain,
+        botAltitude: f.botAltitude,
+        botRadius: f.botRadius,
+        botTime: f.botTime,
+        botCooldown: f.botCooldown,
+        botTurn: f.botTurn,
+        botYawGain: f.botYawGain,
+        botPitchGain: f.botPitchGain,
+        botFlapBelow: f.botFlapBelow,
+        botTerrainGuard: f.botTerrainGuard,
+    };
+}
+
+function flightConfigure() {
+    if (FLIGHT !== null) FLIGHT.configure(flightConfig());
+}
+
+// Pack the player's flight numbers into the binding's positional state.
+function flightPack(phase) {
+    FLIGHT_STATE[0] = goat.px;
+    FLIGHT_STATE[1] = goat.pz;
+    FLIGHT_STATE[2] = terrainHeight(goat.px, goat.pz) + goat.py;
+    FLIGHT_STATE[3] = goat.yaw;
+    FLIGHT_STATE[4] = flightPitch;
+    FLIGHT_STATE[5] = flightRoll;
+    FLIGHT_STATE[6] = flightSpeed;
+    FLIGHT_STATE[7] = flightVY;
+    FLIGHT_STATE[8] = flightFlapCool;
+    FLIGHT_STATE[9] = flightFlaps;
+    FLIGHT_STATE[10] = flightTime;
+    FLIGHT_STATE[11] = phase;
+}
+
+// Write the crate's answer back into the scene's state. `py` is derived from the
+// absolute height and the ground under the new position, exactly as the flung
+// arc derives it.
+function flightApply(out) {
+    goat.px = out[0];
+    goat.pz = out[1];
+    goat.py = out[2] - terrainHeight(goat.px, goat.pz);
+    goat.yaw = out[3];
+    flightPitch = out[4];
+    flightRoll = out[5];
+    flightSpeed = out[6];
+    flightVY = out[7];
+    flightFlapCool = out[8];
+    flightFlaps = out[9];
+    flightTime = out[10];
+}
+
+// The state a draw asks for: the player's current flight numbers.
+function playerFlightState() {
+    flightPack(mode === "fall" ? 2 : 1);
+    return FLIGHT_STATE;
+}
+
+// Enter powered flight. The gameplay path is a running jump (`startJump`); the
+// `fly` console verb calls this directly for a test.
+function startFlight() {
+    if (FLIGHT === null || !flightCapable) return false;
+    if (mode !== "idle" && mode !== "walk" && mode !== "trot" &&
+        mode !== "run" && mode !== "jump") return false;
+    if (mode === "fly") return true;
+    flightPack(1);
+    const out = FLIGHT.start(FLIGHT_STATE, mode === "jump" ? jumpSpeed : groundSpeed());
+    if (!Array.isArray(out)) return false;
+    flightApply(out);
+    if (isFinite(out[12])) stats.energy = Math.max(0, stats.energy - out[12]);
+    mode = "fly";
+    flightFlapQueued = false;
+    playBleat(0.9);
+    return true;
+}
+
+// Leave the flight into a free fall (`E`, the `release` verb, or a mod's
+// `setFlight(false)` in R4). The bird is no longer aboard.
+function releaseFlight() {
+    if (FLIGHT === null || mode !== "fly") return false;
+    flightPack(1);
+    const out = FLIGHT.release(FLIGHT_STATE);
+    if (!Array.isArray(out)) return false;
+    flightApply(out);
+    mode = "fall";
+    flightCapable = false;
+    playBleat(1.0);
+    return true;
+}
+
+function stepFlight(dt, move, turn) {
+    if (FLIGHT === null) { mode = "idle"; return; }
+    const flap = press(rl.KEY_SPACE) || flightFlapQueued;
+    const release = press(rl.KEY_E);
+    flightFlapQueued = false;
+    flightPack(1);
+    FLIGHT_INPUT[0] = move;
+    FLIGHT_INPUT[1] = turn;
+    FLIGHT_INPUT[2] = flap ? 1 : 0;
+    FLIGHT_INPUT[3] = release ? 1 : 0;
+    FLIGHT_INPUT[4] = stats.energy;
+    const out = FLIGHT.step(FLIGHT_STATE, FLIGHT_INPUT, dt, terrainHeight);
+    if (!Array.isArray(out)) return;
+    flightApply(out);
+    stats.energy = Math.max(0, stats.energy - (out[13] || 0) - (out[14] || 0));
+    if (out[15]) {                 // released
+        mode = "fall";
+        flightCapable = false;
+        playBleat(1.0);
+        return;
+    }
+    if (out[17]) {                 // landed
+        landFromFlight(out[18], out[19], move);
+        return;
+    }
+    if (CLIP.fly) goat.phase = mod1(goat.phase + dt / loopDuration());
+}
+
+function stepFall(dt, move) {
+    if (FLIGHT === null) { mode = "idle"; return; }
+    flightPack(2);
+    FLIGHT_INPUT[0] = 0;
+    FLIGHT_INPUT[1] = 0;
+    FLIGHT_INPUT[2] = 0;
+    FLIGHT_INPUT[3] = 0;
+    FLIGHT_INPUT[4] = stats.energy;
+    const out = FLIGHT.step(FLIGHT_STATE, FLIGHT_INPUT, dt, terrainHeight);
+    if (!Array.isArray(out)) return;
+    flightApply(out);
+    if (out[17]) landFromFlight(out[18], out[19], move);
+}
+
+// The flight or fall touched the ground. The crate has already put the base at
+// the rest height; this applies the damage and picks the walking mode back up.
+function landFromFlight(impact, damage, move) {
+    if (damage > 0) {
+        stats.health = Math.max(TUNING.flight.fallHealthFloor, stats.health - damage);
+    }
+    flightSpeed = 0;
+    flightVY = 0;
+    flightPitch = 0;
+    flightRoll = 0;
+    flightTime = 0;
+    flightFlaps = 0;
+    flightFlapCool = 0;
+    if (stats.health <= 0) { die(); return; }
+    mode = move !== 0 ? "walk" : "idle";
 }
 
 // A goat does not sleep in the water (M20f's follow-on): the mode is refused where the goat
@@ -199,6 +419,16 @@ function restart() {
     flingVY = 0;
     flingY = 0;
     flingFlight = 0;
+    // A new life has no bird: the flight and fall state go back to rest too.
+    flightCapable = false;
+    flightSpeed = 0;
+    flightVY = 0;
+    flightPitch = 0;
+    flightRoll = 0;
+    flightTime = 0;
+    flightFlaps = 0;
+    flightFlapCool = 0;
+    flightFlapQueued = false;
     goat.py = haveModel ? 0 : V_DROP;
 }
 
@@ -215,10 +445,15 @@ function updateStats(dt) {
         stats.health = Math.min(TUNING.stats.max, stats.health + TUNING.stats.sleepHealthRecover * dt);
         return "sleep";
     }
+    // A fall's damage is the landing's, not a per-frame drain, and a lethal fall
+    // is carried in `fall` until the feet touch. Returning here keeps `health <= 0`
+    // from becoming a death halfway down.
+    if (mode === "fall") return "awake";
     let drain = TUNING.stats.energyDrain.idle;
     if (mode === "run") drain = TUNING.stats.energyDrain.run;
     else if (mode === "trot") drain = TUNING.stats.energyDrain.trot;
     else if (mode === "walk") drain = TUNING.stats.energyDrain.walk;
+    else if (mode === "fly") drain = 0;   // the flight step applied its own drain
     if (skyLight < 0.25) drain *= TUNING.world.nightDrainMult;   // cold nights burn energy faster
     drain *= weatherDrain;                            // ...and so does being soaked
     drain *= waterDrainFactor();                      // ...and so does wading (M20d)
@@ -342,6 +577,8 @@ function drawHud(move) {
     else if (paused) state = "paused (P to resume)";
     else if (mode === "sleep") state = "sleeping (Z to wake)";
     else if (mode === "jump") state = "jumping";
+    else if (mode === "fly") state = "flying";
+    else if (mode === "fall") state = "falling";
     else if (mode === "eat") state = "eating";
     else if (move > 0 && mode === "run") state = "running";
     else if (move > 0 && mode === "trot") state = "trotting";
@@ -381,8 +618,9 @@ function drawHud(move) {
     }
     if (mode === "sleep") rl.drawText("Z z z", bx, sleepY, 20, rl.RAYWHITE);
 
-    // Action menu: a grass tuft is within reach, so offer the Eat action.
-    if (foodReady) {
+    // Action menu: a grass tuft is within reach, so offer the Eat action. In the
+    // air `E` is the bird release, not a meal, so the prompt is not offered.
+    if (foodReady && mode !== "fly" && mode !== "fall") {
         const mw = 132;
         const mh = 34;
         const mx = rl.getScreenWidth() - mw - 12;
@@ -394,6 +632,10 @@ function drawHud(move) {
     }
 
     rl.drawText(weatherText, 10, h - 44, 14, rl.RAYWHITE);
+    if (mode === "fly") {
+        rl.drawText("W/S pitch   A/D bank   SPACE flap   E release", 10, h - 64, 14,
+            rl.color(232, 201, 116, 255));
+    }
     rl.drawText(status + "   " + state, 10, h - 24, 14, rl.RAYWHITE);
 }
 
@@ -530,6 +772,9 @@ function sceneFrame() {
         if (loadStep < loadTotal) sceneLoadStep();
         if (loadStep >= loadTotal) {
             loaded = true;
+            // The model is known now, so `restHeight` (0 for the model, `V_DROP`
+            // for the cube) is the right one. Tuning writes re-configure again.
+            flightConfigure();
             applyStartupSettings();
             if (BOTS.length > 0) console.log("goat: " + BOTS.length + " bot goats");
             modEmit("ready");
@@ -686,7 +931,8 @@ function sceneFrame() {
     const trotting = ctlKeyDown(rl.KEY_LEFT_CONTROL) || ctlKeyDown(rl.KEY_RIGHT_CONTROL);
     let gait = running ? "run" : trotting ? "trot" : "walk";
     if (exhausted) gait = "walk";   // an exhausted goat cannot run or trot
-    if (mode !== "sleep" && mode !== "dead" && mode !== "eat") goat.yaw += turn * TUNING.movement.turnRate * dt;
+    if (mode !== "sleep" && mode !== "dead" && mode !== "eat" &&
+        mode !== "fly" && mode !== "fall") goat.yaw += turn * TUNING.movement.turnRate * dt;
 
     // state machine: jump, sleep, eat and death lock the mode; everything else
     // follows the requested gait. A menu freezes the machine entirely.
@@ -711,6 +957,12 @@ function sceneFrame() {
         // Not in charge until the feet touch (M19c): no steering, no jumping out of
         // it, no eating. For about a second the goat is the blast's, which is the
         // whole feeling of the feature. The arc itself is advanced below.
+    } else if (mode === "fly") {
+        // W/S pitch, A/D bank, Space flap, E release -- the crate applies the
+        // mode-specific meaning of the same held axes the ground uses.
+        stepFlight(dt, move, turn);
+    } else if (mode === "fall") {
+        stepFall(dt, move);
     } else if (mode === "eat") {
         eatTime += dt;
         if (eatTime >= eatDuration()) {
@@ -745,12 +997,15 @@ function sceneFrame() {
     }
 
     curRole = clipRole();
-    curSpeed = groundSpeed();
+    curSpeed = (mode === "fly" || mode === "fall") ? flightSpeed : groundSpeed();
 
     // `step <n>` (ctl.js) unsticks this gate for a fixed number of frames even
     // while paused, so a script can advance the world deterministically.
     if (!paused || ctlStep > 0) {
-        if (mode === "flung") {
+        if (mode === "fly" || mode === "fall") {
+            // The flight step in the state machine already moved the goat; the
+            // ground modes below must not integrate it a second time.
+        } else if (mode === "flung") {
             // The arc (M19c), integrated in absolute height with `goat.py` (a height
             // above the ground directly below) derived from it, so a slope the goat
             // crosses mid-air cannot drag it along.
@@ -817,7 +1072,16 @@ function sceneFrame() {
     perfMark("goat_sim");
 
     if (haveModel) {
-        if (mode === "flung") {
+        if (mode === "fly") {
+            // A real `GoatFly` loops; until then the jump is held at a leap's
+            // fraction, with the root rotation carrying the flight.
+            poseModel(CLIP.fly ? "fly" : "jump", CLIP.fly ? goat.phase : 0.35);
+        } else if (mode === "fall") {
+            poseModel(CLIP.fall ? "fall" : "jump",
+                CLIP.fall && CLIP.fall.duration > 0
+                    ? Math.min(flightTime / CLIP.fall.duration, 1)
+                    : 0.35);
+        } else if (mode === "flung") {
             // One action, phase 0 at the blast and phase 1 at contact, stretched
             // over the arc's own length: `CLIP.flung` when the model has it, and the
             // jump posed the same way until Blender lands (M19c's placeholder). The

@@ -635,6 +635,10 @@ function collidePairs(bots, count, gx, gz, rad, pr) {
 }
 
 function resolveGoatCollisions() {
+    // A goat over the herd is not walking through it. The full height-aware pass
+    // is the herd's R3 slice; the player's flight only needs the player out of
+    // the 2D push.
+    if (mode === "fly" || mode === "fall" || goat.py > 1.0) return;
     const movement = TUNING.movement;
     const rad = movement.goatRadius;
     collidePairs(BOTS, BOTS.length, goat.px, goat.pz, rad, rad * movement.modelScale);

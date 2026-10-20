@@ -8,7 +8,7 @@ let groundOffset = 0;
 // { index, frames, duration } or null when that clip is absent. `CLIP[role]` is
 // the default; `VARIANTS[role]` holds every clip for roles that have more than
 // one (idle/sleep/jump), so different goats can play different versions.
-const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null, eat: null, flung: null };
+const CLIP = { idle: null, walk: null, trot: null, run: null, jump: null, sleep: null, death: null, eat: null, flung: null, fly: null, fall: null };
 const VARIANTS = { idle: [], sleep: [], jump: [], eat: [] };
 const playerVariant = { idle: 0, sleep: -1, jump: -1, eat: -1 };
 
@@ -105,6 +105,11 @@ function loadGoat() {
     // and `peerRole` (net.js) fall back to the jump, which is the shape every other
     // role already has.
     const flung = findClip(names, "flung");
+    // The flight roles are optional: until a `GoatFly`/`GoatFall` action exists,
+    // `clipRole` and the draw fall back to the jump, exactly as `flung` did
+    // before its clip landed.
+    const fly = findClip(names, "fly");
+    const fall = findClip(names, "fall");
     CLIP.idle = idle.length > 0 ? clipInfo(idle[0]) : null;
     CLIP.jump = jump.length > 0 ? clipInfo(jump[0]) : null;
     CLIP.sleep = sleep.length > 0 ? clipInfo(sleep[0]) : null;
@@ -118,6 +123,8 @@ function loadGoat() {
     CLIP.walk = walk >= 0 ? clipInfo(walk) : null;
     CLIP.death = death >= 0 ? clipInfo(death) : null;
     CLIP.flung = flung >= 0 ? clipInfo(flung) : null;
+    CLIP.fly = fly >= 0 ? clipInfo(fly) : null;
+    CLIP.fall = fall >= 0 ? clipInfo(fall) : null;
 
     console.log("goat: model handle " + model + ", live=" + rl.isModelValid(model) +
         ", bones=" + rl.modelBoneCount(model) + ", walk " + walkSpeed().toFixed(2) +
@@ -184,6 +191,12 @@ function poseModel(role, phase) {
 function drawModelGoat(g, tint) {
     const scale = TUNING.movement.modelScale;
     const y = goatBaseY(g) + groundOffset;
+    if (mode === "fly" || mode === "fall") {
+        if (FLIGHT !== null) {
+            flightDraw(tint);
+            return;
+        }
+    }
     if (mode === "flung") {
         const d = flingDraw(g.px, y, g.pz, g.yaw, flingTumble(flingProgress()),
             TUNING.explosions.fling.pivot * scale);
@@ -193,6 +206,19 @@ function drawModelGoat(g, tint) {
     }
     rl.drawModelEx(model, g.px, y, g.pz, 0, 1, 0, (g.yaw * 180) / Math.PI,
         scale, scale, scale, tint);
+}
+
+// The flight pose: the crate's quaternion reduced to the one axis-angle the raylib
+// binding takes, and its back point with `perch = 0`, which is the corrected
+// origin the body rotates about. `pivot` is in model units, so it scales with the
+// drawn goat.
+function flightDraw(tint) {
+    const scale = TUNING.movement.modelScale;
+    const state = playerFlightState();
+    const aa = FLIGHT.axisAngle(state);
+    const origin = FLIGHT.backPoint(state, 0, TUNING.explosions.fling.pivot * scale);
+    rl.drawModelEx(model, origin[0], origin[1] + groundOffset, origin[2],
+        aa[0], aa[1], aa[2], aa[3] * 180 / Math.PI, scale, scale, scale, tint);
 }
 
 // ---- the flung goat's roll (M19c) ----------------------------------------

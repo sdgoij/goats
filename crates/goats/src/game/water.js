@@ -751,6 +751,8 @@ function waterSubmergedAt(x, z) {
 // neutral and the harness's gait speeds exact -- M6's own rule, and the reason the drag is
 // gated on the depth rather than on the weather.
 function waterDragFraction() {
+    // A flying goat is not wading, whatever is under it.
+    if (mode === "fly" || mode === "fall") return 0;
     const depth = waterDepthAt(goat.px, goat.pz);
     if (depth <= 0) return 0;
     const cap = TUNING.water.maxDepth;

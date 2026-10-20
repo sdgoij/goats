@@ -981,7 +981,7 @@ const PORTALS = (function () {
     // the exit uses the same rule, so joining while standing in it does not
     // leave instantly.
     function step() {
-        if (uiIsOpen() || mode === "dead" || netJoining) return;
+        if (uiIsOpen() || mode === "dead" || netJoining || goat.py > 0.5) return;
         if (netMode === "client") {
             const dx = EXIT_X - goat.px;
             const dz = EXIT_Z - goat.pz;
