@@ -185,7 +185,15 @@ function drawSettings(sw, sh) {
         tuningSet("water.reflection", reflect.value);
     }
     cy += 30;
-    const full = rl.guiToggle(lx + 10, cy, lw - 20, 24, "Fullscreen", SETTINGS.fullscreen);
+    // The last row is two half-width toggles: it keeps the AA control in the panel
+    // without making it taller than the 480-high embedded stage.
+    const half = Math.floor((lw - 30) / 2);
+    const aa = rl.guiToggle(lx + 10, cy, half, 24, "Anti-aliasing", SETTINGS.aa);
+    if (aa.value !== SETTINGS.aa) {
+        SETTINGS.aa = aa.value;
+        applySettings();
+    }
+    const full = rl.guiToggle(lx + 20 + half, cy, half, 24, "Fullscreen", SETTINGS.fullscreen);
     if (full.value !== SETTINGS.fullscreen) {
         SETTINGS.fullscreen = full.value;
         applySettings();
