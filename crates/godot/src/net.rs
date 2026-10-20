@@ -219,6 +219,11 @@ enum Command {
         id: String,
         version: Option<String>,
     },
+    /// Seed the catalogue with a peer ticket learned out of band. The gate uses
+    /// this; the game normally gets the ticket from the swarm.
+    ModsPeer {
+        ticket: String,
+    },
     Close,
 }
 
@@ -498,6 +503,16 @@ impl NetBridge {
         self.queue_command(Command::ModsMirror {
             id: id.to_string(),
             version: (!version.is_empty()).then_some(version),
+        })
+    }
+
+    /// Seed the catalogue with a peer ticket. The game learns these from the swarm;
+    /// this is the console-less form, and it is what `tools/verify_registry.gd`
+    /// uses to join one catalogue to another without a swarm at all.
+    #[func]
+    fn mods_peer(&mut self, ticket: GString) -> GString {
+        self.queue_command(Command::ModsPeer {
+            ticket: ticket.to_string(),
         })
     }
 
@@ -1116,6 +1131,16 @@ async fn run(
                     ),
                 }
             }
+            Outcome::Command(Some(Command::ModsPeer { ticket })) => match registry.as_ref() {
+                Some(registry) => match registry.peers().join(&ticket) {
+                    Ok(()) => push(&queue, notice("registry: peer added".to_string())),
+                    Err(error) => push(&queue, notice(format!("registry: peer: {error}"))),
+                },
+                None => push(
+                    &queue,
+                    notice("registry: off (GOATS_MODS_REGISTRY=0)".to_string()),
+                ),
+            },
             Outcome::Command(Some(command)) => {
                 if let Some(session) = live.take() {
                     stop(session, swarm.as_ref()).await;
@@ -1440,6 +1465,7 @@ async fn start(
         | Command::ModsShare
         | Command::ModsFetch { .. }
         | Command::ModsMirror { .. }
+        | Command::ModsPeer { .. }
         | Command::Close => None,
     }
 }

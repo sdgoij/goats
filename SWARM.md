@@ -399,4 +399,7 @@ client needs.
   already has, and reports a record it cannot find; a fetched root can be pinned
   and unpinned, and a mirror evicts the oldest pin when its budget is reached;
 - `mods_fetch`/`mods_mirror` parse from the scene's own spelling, and the verbs
-  take an `id` or `id@version`.
+  take an `id` or `id@version`;
+- `godot/tools/verify_registry.gd`: two bridges share a fixture, seed the second
+  catalogue with the first's ticket, fetch it, and mirror it -- the catalogue's
+  notice is the assertion, and every gate in `gates.sh` picks it up.
