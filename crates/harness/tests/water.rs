@@ -1596,6 +1596,65 @@ fn the_mirror_pass_draws_the_world() {
 }
 
 #[test]
+fn a_rebuilt_water_mesh_keeps_its_reflection_map() {
+    let mut checks = Checks::new();
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(FRAMES).expect("run the scene");
+    harness.command("lighting on").expect("lighting on");
+
+    // The mirror is a material map on the water model, so it lives only as long as that
+    // model does. A terrain rebuild replaces the model; this is the case that pins the
+    // rebind, because the replacement starts on raylib's white default texture.
+    rain(&mut harness, 1.0);
+    harness
+        .command("setting reflect mirror")
+        .expect("setting reflect");
+    harness.reset_frame().expect("a frame to drive");
+    harness
+        .call("sceneFrame", &[])
+        .expect("one frame with the mirror");
+    let mirror_color = harness
+        .eval("waterMirrorColor")
+        .expect("waterMirrorColor")
+        .as_i64()
+        .unwrap_or(-1);
+    let before_mesh = water(&mut harness)["mesh"].as_i64().unwrap_or(-1);
+    let before_calls = harness
+        .observe()
+        .expect("observe")
+        .model_texture_calls
+        .len();
+
+    harness
+        .call(
+            "addCrater",
+            &[json!(CRATER_X), json!(CRATER_Z), json!(20241)],
+        )
+        .expect("addCrater");
+    harness
+        .eval("terrainEnsure(goat.px, goat.pz)")
+        .expect("terrainEnsure");
+
+    let observed = harness.observe().expect("observe");
+    let after_mesh = water(&mut harness)["mesh"].as_i64().unwrap_or(-1);
+    let rebound = observed.model_texture_calls[before_calls..]
+        .iter()
+        .any(|call| call.len() == 2 && call[0] == 2 && call[1] == mirror_color);
+    checks.check(
+        "a rebuilt water mesh gets the mirror map back",
+        mirror_color >= 0 && after_mesh != before_mesh && rebound,
+        (
+            &before_mesh,
+            &after_mesh,
+            mirror_color,
+            &observed.model_texture_calls[before_calls..],
+        ),
+    );
+
+    checks.finish();
+}
+
+#[test]
 fn the_pools_are_regions() {
     let mut checks = Checks::new();
     let mut harness = Harness::start().expect("evaluate the scene");

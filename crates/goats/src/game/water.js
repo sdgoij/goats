@@ -368,9 +368,14 @@ function waterBuildRects(rects) {
     waterMesh = rl.makeModel(W_VERTS, W_IDX, W_NORM, W_COL);
     // A fresh model starts on raylib's default shader, and the water needs its own (it
     // is where the surface height comes from), plus the shadow map. Exactly what
-    // `terrainUpload` re-applies for the ground.
+    // `terrainUpload` re-applies for the ground. The reflection's map goes with them:
+    // the new material starts on raylib's white default texture, so without this the
+    // surface samples white instead of the bake/mirror after the first rebuild. The
+    // invalidation matters because `waterBindReflection` skips an unchanged texture.
     if (waterShader >= 0) rl.setModelShader(waterMesh, waterShader);
     if (shadowColor >= 0) rl.setModelTexture(waterMesh, SHADOW_MAP_INDEX, shadowColor);
+    waterBoundTex = -2;
+    waterBindReflection();
     perfMark("rb_mesh");
     if (terrainAnchorX !== waterLogX || terrainAnchorZ !== waterLogZ) {
         waterLogX = terrainAnchorX;
