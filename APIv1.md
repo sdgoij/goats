@@ -464,6 +464,7 @@ handlers.
 | `"ready"` | The world is live (loading finished) | *(none)* |
 | `"update"` | Each frame after the world updates, before render | `(dt)` |
 | `"draw3d"` | Each frame inside `beginMode3D`, after the world is drawn | `(camera)` |
+| `"shadow"` | Each frame inside the scene's depth pass, before the lit pass | *(none)* — draws made here cast into the shadow map |
 | `"hud"` | Each frame in 2D, after the built-in HUD | `(screen)` |
 | `"draw"` | Each frame, after everything, before `endDrawing` | *(none)* |
 | `"command"` | A console/stdin line was not a built-in command | `(line, parts)` → see §4.3 |
@@ -483,6 +484,12 @@ terrain ensure in `sceneFrame`; `"draw3d"` before `endMode3D`; `"hud"` after
 `drawHud`; `"ready"` when `loaded` flips true; `"weather"` where `weatherKind`
 is assigned; `"mode"` where `lastMode` is updated; `"session"`/`"world"` in
 `sceneNetEvent`/`netApplyWorld`.
+
+`"shadow"` is the one event whose draws are not on screen. It fires inside the
+depth pass, and a `goats.gfx.draw.model` / `draw.mesh` call made there is rendered
+through the depth program into the shadow map — the same call, casting instead of
+appearing. A client whose renderer casts its meshes automatically (the Godot port)
+does not fire it, so a handler registered for it is simply never called there.
 
 ### 4.3 Commands
 
@@ -998,6 +1005,12 @@ goats.on("draw3d", function (cam) {
 | `goats.gfx.draw.model(handle, x, y, z, yaw, scale, tint)` | The model at `(x, y, z)`, turned `yaw` **radians** about +Y, scaled by `scale` (a number, or 1), tinted by `tint` (or white). |
 | `goats.gfx.draw.mesh(handle, x, y, z, ax, ay, az, angle, scale, tint)` | The same placement with the axis free: `angle` **radians** about `(ax, ay, az)`. `draw.model` is this with the axis fixed at +Y. |
 | `goats.gfx.draw.cube(x, y, z, w, h, d, color)` | A box `w` x `h` x `d` centred on `(x, y, z)`. |
+
+A draw made inside the `"shadow"` event (§4.2) casts into the shadow map instead
+of appearing in the frame: it is the same `draw.model`/`draw.mesh` call, rendered
+through the depth program. That is how a mod's meshes get real shadows on a client
+whose lighting the mod does not own; a client whose renderer casts meshes
+automatically never fires the event.
 
 **A mod's own geometry, without the engine.** `mesh()`/`texture()`/`bind()` are the
 API's answer to building shapes in JavaScript: a mod that generates them reads

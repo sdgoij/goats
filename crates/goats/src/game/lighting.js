@@ -1037,8 +1037,19 @@ const SHADOW_MAP_INDEX = 1;   // MATERIAL_MAP_METALNESS -> sampler `texture1`
 // exactly the grass shadow the lit shader can sample (anything outside would
 // project to out-of-range uv and be ignored). The small margin catches tufts
 // just outside whose short shadow leans into the box.
+// The grass that casts a shadow is the near field only: every blade is an
+// immediate-mode cube, so this is a cost lever of its own and it stays fixed when
+// `shadow.half` grows to hold the herd and the flock. Nine metres is what the box
+// used to be.
+const SHADOW_GRASS_HALF = 9;
 function shadowGrassCull2() {
-    const half = TUNING.lighting.shadow.half + 2.0;
+    return SHADOW_GRASS_HALF * SHADOW_GRASS_HALF;
+}
+
+// Everything else that casts -- the herd, peers, a mod's flock -- is culled by the
+// light's own box, which is what the map can actually show.
+function shadowBoxCull2() {
+    const half = TUNING.lighting.shadow.half;
     return half * half;
 }
 
@@ -1249,6 +1260,14 @@ function renderShadowMap() {
     drawBotsShadow();
     drawPeersShadow();
     perfMark("shadow_bots");
+    // A mod's own geometry casts too. The hook runs inside the depth pass, and
+    // `modShadowPass` routes `goats.gfx.draw.model`/`mesh` through the depth program
+    // while it is set (mods.js) -- the birds draw their flock here and no longer
+    // paint cube blobs in the lit pass.
+    modShadowBegin();
+    modEmit("shadow");
+    modShadowEnd();
+    perfMark("shadow_mods");
     rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
     rl.setModelShader(model, modelShaderFor(model, litShader));
     rl.endMode3D();

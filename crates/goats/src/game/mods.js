@@ -1391,6 +1391,66 @@ const goatsDraw = {
 //
 // A **handle** is opaque. `model()` answers one or `null` when the name does not
 // resolve, and a mod compares against `null` and never against a number again.
+// During the scene's shadow pass a mod's model draws go through the depth program
+// instead of the default one. The pass sets this around the `shadow` event it emits
+// (`renderShadowMap`, lighting.js), so `draw.model`/`draw.mesh` need no shadow-only
+// variant: the same call draws lit, or casts, depending on who is asking.
+let modShadowPass = false;
+
+function modShadowBegin() { modShadowPass = true; }
+function modShadowEnd() { modShadowPass = false; }
+
+function modDrawShadow(handle, x, y, z, ax, ay, az, deg, s, tint) {
+    rl.setModelShader(handle, modelShaderFor(handle, depthShader));
+    rl.drawModelEx(handle, x, y, z, ax, ay, az, deg, s, s, s,
+        tint === undefined ? goatsDraw.WHITE : tint);
+    rl.setModelShader(handle, -1);
+}
+
+/** World-space drawing. Valid inside the `"draw3d"` hook and nowhere else. */
+const modGfxDraw = {
+    /**
+     * A model at `(x, y, z)`, turned `yaw` **radians** about +Y, scaled by
+     * `scale` (a number, or 1), tinted by `tint` (or white).
+     */
+    model: function (handle, x, y, z, yaw, scale, tint) {
+        if (handle === undefined || handle === null) return;
+        const s = scale === undefined ? 1 : scale;
+        const deg = (yaw === undefined ? 0 : yaw) * 180 / Math.PI;
+        if (modShadowPass) {
+            modDrawShadow(handle, x, y, z, 0, 1, 0, deg, s, tint);
+            return;
+        }
+        rl.drawModelEx(handle, x, y, z, 0, 1, 0, deg, s, s, s,
+            tint === undefined ? goatsDraw.WHITE : tint);
+    },
+
+    /**
+     * Any handle at `(x, y, z)`, turned `angle` **radians** about the axis
+     * `(ax, ay, az)`. `draw.model` is this with the axis fixed at +Y, and the
+     * free axis is what a tumbling thing needs.
+     */
+    mesh: function (handle, x, y, z, ax, ay, az, angle, scale, tint) {
+        if (handle === undefined || handle === null) return;
+        const s = scale === undefined ? 1 : scale;
+        const vx = ax === undefined ? 0 : ax;
+        const vy = ay === undefined ? 1 : ay;
+        const vz = az === undefined ? 0 : az;
+        const deg = (angle === undefined ? 0 : angle) * 180 / Math.PI;
+        if (modShadowPass) {
+            modDrawShadow(handle, x, y, z, vx, vy, vz, deg, s, tint);
+            return;
+        }
+        rl.drawModelEx(handle, x, y, z, vx, vy, vz, deg, s, s, s,
+            tint === undefined ? goatsDraw.WHITE : tint);
+    },
+
+    /** A box `w` x `h` x `d` centred on `(x, y, z)`. */
+    cube: function (x, y, z, w, h, d, color) {
+        rl.drawCube(x, y, z, w, h, d, color);
+    },
+};
+
 const goatsGfx = {
     /**
      * A model from an asset (`goats.assets.get("model.thing")`), or `null` when
@@ -1461,36 +1521,7 @@ const goatsGfx = {
     },
 
     /** World-space drawing. Valid inside the `"draw3d"` hook and nowhere else. */
-    draw: {
-        /**
-         * A model at `(x, y, z)`, turned `yaw` **radians** about +Y, scaled by
-         * `scale` (a number, or 1), tinted by `tint` (or white).
-         */
-        model: function (handle, x, y, z, yaw, scale, tint) {
-            if (handle === undefined || handle === null) return;
-            const s = scale === undefined ? 1 : scale;
-            rl.drawModelEx(handle, x, y, z, 0, 1, 0, yaw * 180 / Math.PI, s, s, s,
-                tint === undefined ? goatsDraw.WHITE : tint);
-        },
-
-        /**
-         * Any handle at `(x, y, z)`, turned `angle` **radians** about the axis
-         * `(ax, ay, az)`. `draw.model` is this with the axis fixed at +Y, and the
-         * free axis is what a tumbling thing needs.
-         */
-        mesh: function (handle, x, y, z, ax, ay, az, angle, scale, tint) {
-            if (handle === undefined || handle === null) return;
-            const s = scale === undefined ? 1 : scale;
-            rl.drawModelEx(handle, x, y, z, ax === undefined ? 0 : ax, ay === undefined ? 1 : ay,
-                az === undefined ? 0 : az, (angle === undefined ? 0 : angle) * 180 / Math.PI,
-                s, s, s, tint === undefined ? goatsDraw.WHITE : tint);
-        },
-
-        /** A box `w` x `h` x `d` centred on `(x, y, z)`. */
-        cube: function (x, y, z, w, h, d, color) {
-            rl.drawCube(x, y, z, w, h, d, color);
-        },
-    },
+    draw: modGfxDraw,
 };
 
 // A mod's own sound (`APIv1.md` section 4.20): the API's answer to the engine's `loadSound`,

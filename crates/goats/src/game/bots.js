@@ -681,7 +681,7 @@ function drawBots(tint) {
         const b = BOTS[i];
         const dx = b.x - goat.px;
         const dz = b.z - goat.pz;
-        if (dx * dx + dz * dz > shadowGrassCull2()) {
+        if (dx * dx + dz * dz > shadowBoxCull2()) {
             rl.drawCube(b.x, botGroundY(b) + 0.06, b.z,
                 1.3 * b.spec.scale, 0.012, 1.75 * b.spec.scale, ambShadow);
         }
@@ -725,7 +725,7 @@ function drawBotsShadow() {
         const b = BOTS[i];
         const dx = b.x - goat.px;
         const dz = b.z - goat.pz;
-        if (dx * dx + dz * dz > shadowGrassCull2()) continue;
+        if (dx * dx + dz * dz > shadowBoxCull2()) continue;
         rl.setModelShader(b.model, modelShaderFor(b.model, depthShader));
         rl.setModelTexture(b.model, SHADOW_MAP_INDEX, -1);
         // No pose here, but the transform is free: a thrown bot is in the air in

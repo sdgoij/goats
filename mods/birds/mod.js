@@ -78,7 +78,6 @@ const WING_EDGE = [104, 82, 56];
 const BEAK_COL = [232, 156, 58];
 // Colours come from `goats.draw.color`, which is also where the named constants are:
 // a client packs one into whatever its engine wants, and a mod never sees that.
-const SHADOW = goats.draw.color(0, 0, 0, 60);
 
 const SHOULDER = { x: 0.06, y: 0.055, z: 0.05 };
 
@@ -1055,32 +1054,46 @@ goats.world.extend(MOD_ID, {
 
 // ---- render ---------------------------------------------------------------
 
+// One bird's parts, shared by the lit pass and the shadow pass. The draw calls are
+// the same either way: the scene routes `goats.gfx.draw.mesh` through its depth
+// program while the `shadow` hook runs (mods.js), so this casts without a second
+// code path -- and the Godot port, whose meshes cast by default, simply never
+// emits the hook.
+function drawBird(b, i) {
+    const s = SCALE * b.size;
+    const q = bodyQuatInto(Q_BODY, b);
+    const ba = qAxisAngleInto(AA_BODY, q);
+    const tint = goats.draw.color(200 + ((i * 17) % 56), 200 + ((i * 29) % 56), 200 + ((i * 11) % 56), 255);
+    goats.gfx.draw.mesh(bodyModel, b.x, b.y, b.z, ba.x, ba.y, ba.z, ba.rad, s, tint);
+    const f = flapFor(b);
+    for (let side = -1; side <= 1; side += 2) {
+        const wq = qMulInto(Q_TMP1, q, qAxisInto(Q_TMP2, 1, 0, 0, side > 0 ? -f : f));
+        const wa = qAxisAngleInto(AA_WING, wq);
+        const pv = qRotInto(V_WING, q, SHOULDER.x * s, SHOULDER.y * s, side * SHOULDER.z * s);
+        goats.gfx.draw.mesh(side > 0 ? wingR : wingL,
+            b.x + pv.x, b.y + pv.y, b.z + pv.z, wa.x, wa.y, wa.z, wa.rad, s, tint);
+    }
+}
+
 function drawFlock(cam) {
     for (let i = 0; i < BIRDS.length; i++) {
         const b = BIRDS[i];
         const dx = b.x - cam.x, dz = b.z - cam.z;
         if (dx * dx + dz * dz > CULL * CULL) continue;
-        const gy = groundAt(b.x, b.z);
-        const s = SCALE * b.size;
-        const lift = b.y - gy;
-        if (lift < 7) {
-            const sh = clamp(1 - lift / 7, 0, 1) * 0.9 * s;
-            goats.gfx.draw.cube(b.x, gy + 0.03, b.z, sh, 0.012, sh * 0.7, SHADOW);
-        }
-        const q = bodyQuatInto(Q_BODY, b);
-        const ba = qAxisAngleInto(AA_BODY, q);
-        const tint = goats.draw.color(200 + ((i * 17) % 56), 200 + ((i * 29) % 56), 200 + ((i * 11) % 56), 255);
-        goats.gfx.draw.mesh(bodyModel, b.x, b.y, b.z, ba.x, ba.y, ba.z, ba.rad, s, tint);
-        const f = flapFor(b);
-        for (let side = -1; side <= 1; side += 2) {
-            const wq = qMulInto(Q_TMP1, q, qAxisInto(Q_TMP2, 1, 0, 0, side > 0 ? -f : f));
-            const wa = qAxisAngleInto(AA_WING, wq);
-            const pv = qRotInto(V_WING, q, SHOULDER.x * s, SHOULDER.y * s, side * SHOULDER.z * s);
-            goats.gfx.draw.mesh(side > 0 ? wingR : wingL,
-                b.x + pv.x, b.y + pv.y, b.z + pv.z, wa.x, wa.y, wa.z, wa.rad, s, tint);
-        }
+        drawBird(b, i);
     }
 }
+
+// The flock casts into the scene's shadow map, the way it does in the Godot port
+// where a `MeshInstance3D` casts by default. What this replaces is the pair of
+// translucent cubes the lit pass used to drop under each bird -- flat squares that
+// ignored the sun, the wings and the crest. No cull here: six birds, and the map
+// clips what is outside its box.
+goats.on("shadow", function () {
+    if (bodyModel === null) return;
+    ensureBuilt();
+    for (let i = 0; i < BIRDS.length; i++) drawBird(BIRDS[i], i);
+});
 
 // ---- lifecycle and surface ------------------------------------------------
 

@@ -447,8 +447,8 @@ const TUNING = {
     },
     lighting: {
         shadow: {
-            size: 1024,
-            half: 7.0,             // half-width of the light's box, in world units
+            size: 2048,
+            half: 20.0,            // half-width of the light's box, in world units
             dist: 22.0,            // how far the light sits from its centre
             near: 1.0,
             far: 48.0,
