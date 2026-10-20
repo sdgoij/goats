@@ -28,7 +28,7 @@ pull = { path = "crates/pull" }
 voice = { path = "crates/voice" }
 
 # The engine. Flip between the published revision and a local checkout here.
-slag = { git = "https://github.com/sdgoij/slag", rev = "178f92f3f2f8aa625fd227dd0550db7d00ec9c18" }
+slag = { git = "https://github.com/sdgoij/slag", rev = "7d975c8371c28dc8d20eb56d98c831fefa5061c9" }
 # slag = { path = "slag/crates/slag" }
 
 # Serialisation / framing.
