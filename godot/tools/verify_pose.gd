@@ -76,6 +76,7 @@ func _process(_delta: float) -> bool:
 	_check_peers()
 	_check_bots()
 	_check_player()
+	_check_flight()
 	_finish()
 	return true
 
@@ -203,6 +204,43 @@ func _expect_pose(anim: AnimationPlayer, what: String, want: float, clip: String
 		anim.current_animation_position, length])
 	if absf(got - want) > TOLERANCE:
 		_failures.append("%s posed the fraction %.4f, not %.4f" % [what, got, want])
+
+## The flight pose: `crates/flight`'s quaternion, and the rider's seat it implies.
+##
+## A flyer is not posed by an `AnimationPlayer` -- the body is rotated as a whole -- so the
+## rule this gate holds for the other four modules is here a *basis*: yaw about +Y, pitch
+## about +Z and roll about +X, in that order, against the composition the crate documents.
+## And the seat, because a rotation about the hooves and a rotation about the shoulders
+## agree at zero attitude and nowhere else: the drawn body sits at `feet + pivot`, and the
+## rider is the same rotation applied to `(0, perch - pivot, 0)`.
+func _check_flight() -> void:
+	if not ClassDB.class_exists("Flight"):
+		_failures.append("Flight is not registered - the GDExtension did not load")
+		return
+	var plane: Object = ClassDB.instantiate("Flight")
+	plane.call("configure", PlayerGoat.flight_config())
+	var state := PackedFloat32Array([
+		2.0, 3.0, 7.0, PI / 2.0, PI / 4.0, PI / 6.0, 9.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+	var got: Quaternion = plane.call("pose", state)
+	var want := Quaternion(Vector3.UP, PI / 2.0) * Quaternion(Vector3.BACK, PI / 4.0) \
+		* Quaternion(Vector3.RIGHT, PI / 6.0)
+	print("flight pose: %s (want %s)" % [got, want])
+	var got_parts := {"x": got.x, "y": got.y, "z": got.z, "w": got.w}
+	var want_parts := {"x": want.x, "y": want.y, "z": want.z, "w": want.w}
+	for axis: String in ["x", "y", "z", "w"]:
+		if absf(float(got_parts[axis]) - float(want_parts[axis])) > TOLERANCE:
+			_failures.append("the flight pose's %s is %f, not %f"
+				% [axis, got_parts[axis], want_parts[axis]])
+			break
+
+	# The seat: the crate's back point, and the drawn body's own transform applied to the
+	# same local offset. `state` is `[x, z, y, ...]`, so the feet are (2, 7, 3).
+	var seat: Vector3 = plane.call("back_point", state, 1.15, PlayerGoat.FLIGHT_PIVOT)
+	var body := Transform3D(Basis(got), Vector3(2.0, 7.0 + PlayerGoat.FLIGHT_PIVOT, 3.0))
+	var drawn: Vector3 = body * Vector3(0.0, 1.15 - PlayerGoat.FLIGHT_PIVOT, 0.0)
+	print("rider seat: %s (the crate says %s)" % [drawn, seat])
+	if drawn.distance_to(seat) > 1e-3:
+		_failures.append("the drawn seat %s is not the crate's back point %s" % [drawn, seat])
 
 func _finish() -> void:
 	if _failures.is_empty():

@@ -365,7 +365,7 @@ The gameplay slices in `FLIGHT.md` §7 become:
 | --- | --- | --- |
 | **R0** ✅ | `crates/flight`: config, state, step, fall, damage, pose, bot input, tests | `cargo test -p flight` — landed, 35 + doctest |
 | **R1** ✅ | `crates/flight-js` + install in client/server/harness; `goat.js` flight branch; `model.js` pose; `core.js` tuning | `crates/harness/tests/flight.rs` — landed, 40 cases |
-| **R2** | `crates/godot/src/flight.rs` class + `main.gd` wiring; `player_goat.gd` flight branch | `verify_flight.gd`, `verify_goat.gd` |
+| **R2** ✅ | `crates/godot/src/flight.rs` class + `main.gd` wiring; `player_goat.gd` flight branch; `tuning.gd` leaves | `verify_flight.gd`, the `verify_goat.gd` flight tape, `verify_pose.gd` |
 | **R3** | bot flight branch and autopilot in both clients | `verify_bots.gd`, harness bots |
 | **R4** | the API surface, tuning tree, wire, mod, HUD, touch | as `FLIGHT.md` §9 |
 

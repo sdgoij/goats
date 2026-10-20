@@ -8,6 +8,8 @@
 //!   `godot/PORT.md` section 7).
 //! * [`ModHost`] — the mod runtime: Slag, plus the `goats` facade a mod sees,
 //!   including the API's own drawing surface (`godot/PORT.md` section 6).
+//! * [`flight::Flight`] — the captured-bird flight controller (`crates/flight`),
+//!   the same one the reference client reaches through `__flight`.
 //!
 //! Voice chat is the third, and it is not a node of its own: the codec half
 //! ([`voice::Voice`]) hangs its `#[func]`s on [`net::NetBridge`], because voice's
@@ -36,6 +38,8 @@ use slag::{Context, HostCallbacks, JsObject, JsValue};
 
 // The browser has no transport to put behind `NetBridge` (`godot/WEB.md`), so
 // the class is a stub there; the scene that calls it is unchanged.
+/// The flight controller. Pure Rust, so the browser build has it too.
+mod flight;
 #[cfg(not(target_arch = "wasm32"))]
 mod net;
 #[cfg(target_arch = "wasm32")]

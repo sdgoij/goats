@@ -45,6 +45,10 @@ godot = { workspace = true, features = ["api-4-7"] }
 # JavaScript facade (`godot/PORT.md` section 6).
 mods = { workspace = true }
 
+# The flight mechanics, shared with the raylib client (`FLIGHT-RUST.md`). Pure
+# Rust, so both the desktop and the browser build link it.
+flight = { workspace = true }
+
 # `serde`, for the one intent that is a *shape* rather than a scalar: the world a host
 # publishes. It is the same derive `crates/goats/src/net.rs` uses to parse the same JSON,
 # which is what keeps the two engines' world one object.

@@ -1289,6 +1289,7 @@ dependencies = [
 name = "goats-godot"
 version = "0.1.0"
 dependencies = [
+ "flight",
  "godot",
  "mods",
  "plugin",

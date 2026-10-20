@@ -218,6 +218,32 @@ const TAPE := [
 	[240, 0, 0, "walk", false, false],
 ]
 
+## The flight tape, as segments: frames, move, turn, flap, release. It starts with the
+## running jump that takes off and walks the whole air journey -- W, S, A, D, a flap and
+## its refused repeat, the drain, E and the fall to the ground.
+##
+## The oracle is the `Flight` class itself rather than a second transcription: the crate is
+## the one implementation of the maths, so what a second copy here would test is the copy.
+## What it *does* check is the port's integration -- the packing, the order, the events --
+## frame for frame against the same crate driven directly.
+const FLIGHT_TAPE := [
+	[1, 1, 0, false, false],     # the running jump: take-off
+	[90, -1, 0, false, false],   # S: climb out, the way the controls actually gain height
+	[40, 1, 0, false, false],    # W noses down (still well above the ground)
+	[60, -1, 0, false, false],   # S noses up
+	[30, 0, 1, false, false],    # A banks left
+	[40, 0, -1, false, false],   # D banks right
+	[5, 0, 0, false, false],     # level out
+	[1, 0, 0, true, false],      # a flap
+	[2, 0, 0, false, false],
+	[1, 0, 0, true, false],      # refused: the cooldown
+	[30, 0, 0, false, false],
+	[1, 0, 0, true, false],      # the next flap counts
+	[40, 0, 0, false, false],    # the drain
+	[1, 0, 0, false, true],      # E: release
+	[180, 0, 0, false, false],   # the fall, and the landing
+]
+
 ## The frame step the tape is run at, matching `DT` in the oracle.
 const DT := 1.0 / 60.0
 
@@ -226,6 +252,13 @@ const DT := 1.0 / 60.0
 ## is that the same script produces the same goat. A nanometre after two thousand
 ## frames is four orders above one ULP and eleven below a millimetre.
 const TOLERANCE := 1e-9
+
+## The flight tape's tolerance, looser than the ground tape's on purpose: the port
+## round-trips `y` through `py` every frame (the crate steps an absolute height and the
+## scene keeps a height above the ground), and `float` has 24 bits of mantissa. The two
+## sides are doing the same arithmetic in a different order, which is 1e-5 by the end of
+## the tape and not a disagreement.
+const FLIGHT_TOLERANCE := 1e-3
 
 func _initialize() -> void:
 	var failures: Array[String] = []
@@ -391,6 +424,7 @@ func _initialize() -> void:
 		% [goat.mode, goat.px, goat.pz, goat.energy, goat.health])
 
 	host.free()
+	failures.append_array(_flight_tape(goat))
 	goat.free()
 
 	failures.append_array(speed_failures)
@@ -420,3 +454,120 @@ func _initialize() -> void:
 		for f in failures:
 			print("FAIL: ", f)
 		quit(1)
+
+## The flight tape: the same goat, a second run, and `crates/flight` itself as the oracle.
+##
+## The oracle is the `Flight` class driven directly -- take-off, a step per frame, the energy
+## the events name -- so this compares the port's *integration* (the packing, the order, the
+## events) against the same maths, not a second transcription of the maths. It ends when the
+## fall lands: the ground tape's own rules take over from there.
+func _flight_tape(goat: PlayerGoat) -> Array[String]:
+	var out: Array[String] = []
+	var plane: Object = ClassDB.instantiate("Flight")
+	if plane == null:
+		out.append("Flight is not registered - the GDExtension did not load")
+		return out
+	plane.call("configure", PlayerGoat.flight_config())
+	goat.flight = plane
+	goat.restart()
+	goat.set_flight(true)
+
+	var state := PackedFloat32Array()
+	var mode := "idle"
+	var energy: float = goat.energy
+	var health: float = goat.health
+	var frames := 0
+	var compared := 0
+	var worst := 0.0
+	var worst_at := ""
+	var released_any := false
+
+	for segment: Array in FLIGHT_TAPE:
+		for i in int(segment[0]):
+			var move: int = int(segment[1])
+			var turn: int = int(segment[2])
+			var flap: bool = bool(segment[3])
+			var released: bool = bool(segment[4])
+			released_any = released_any or released
+			var takeoff: bool = frames == 0
+			var controls := {
+				"move": move, "turn": turn, "gait": "run" if takeoff else "walk",
+				"jump": flap or takeoff, "eat": released, "sleep": false, "restart": false,
+			}
+			# The speed the take-off gets is read before the port's step changes the mode.
+			var launch: float = goat.ground_speed()
+			goat.step(DT, controls, 1.0, {}, null)
+			frames += 1
+
+			if takeoff:
+				var initial := PackedFloat32Array([
+					goat.px, goat.pz, Terrain.height_at(goat.px, goat.pz) + goat.py, goat.yaw,
+					0.0, 0.0, launch, 0.0, 0.0, 0.0, 0.0, 0.0])
+				var started: PackedFloat32Array = plane.call("start", initial, launch)
+				state = started.slice(0, 12)
+				energy = maxf(0.0, energy - started[12])
+				mode = "fly"
+			else:
+				var input := PackedFloat32Array([float(move), float(turn),
+					1.0 if flap else 0.0, 1.0 if released else 0.0, energy])
+				var answer: PackedFloat32Array = plane.call("step", state, input, DT,
+					func(x: float, z: float) -> float: return Terrain.height_at(x, z))
+				state = answer.slice(0, 12)
+				energy = maxf(0.0, energy - answer[13] - answer[14])
+				if answer[15] != 0.0:
+					mode = "fall"
+				if answer[17] != 0.0:
+					health = float(plane.call("apply_fall_damage", health, answer[18]))
+					mode = "walk" if move != 0 else "idle"
+					# The landing frame is already the new mode, and the scene's `updateStats`
+					# runs after it: an idle goat above `restedEnergy` gets a beat of health
+					# back on the very frame it lands. The tape lands with no key held, so it
+					# is the idle half that applies.
+					if mode == "idle" and energy > PlayerGoat.RESTED_ENERGY:
+						health = minf(PlayerGoat.STATS_MAX,
+							health + PlayerGoat.IDLE_HEALTH_RECOVER * DT)
+
+			if goat.mode != "fly" and goat.mode != "fall":
+				# Landed. The port is back on the ground and the crate agrees about how.
+				if goat.mode != mode:
+					out.append("frame %d: the port landed as %s, the crate as %s"
+						% [frames, goat.mode, mode])
+				# A release takes the bird; a landing on a bird does not.
+				if released_any and goat.flight_capable:
+					out.append("a release kept the captured bird")
+				if not released_any and not goat.flight_capable:
+					out.append("a landing took the captured bird")
+				if absf(goat.health - health) > FLIGHT_TOLERANCE:
+					out.append("the landing's damage disagreed: %.4f vs %.4f"
+						% [goat.health, health])
+				print("flight tape: %d frame(s), %d value(s), landed as %s after %.2f s"
+					% [frames, compared, goat.mode, frames * DT])
+				print("flight tape: largest disagreement %.9f (limit %.9f)"
+					% [worst, FLIGHT_TOLERANCE])
+				if worst_at != "":
+					print("  worst at ", worst_at)
+				if worst > FLIGHT_TOLERANCE:
+					out.append("the flight tape disagrees by %.9f at %s" % [worst, worst_at])
+				return out
+
+			if goat.mode != mode:
+				out.append("frame %d: the port is %s, the crate %s" % [frames, goat.mode, mode])
+				return out
+			var got: Array[float] = [
+				goat.px, goat.pz, goat.py, goat.yaw, goat.flight_pitch, goat.flight_roll,
+				goat.speed, goat.energy, goat.health, float(goat.flight_flaps),
+			]
+			var wanted: Array[float] = [
+				state[0], state[1], state[2] - Terrain.height_at(state[0], state[1]),
+				state[3], state[4], state[5], state[6], energy, health, state[9],
+			]
+			for k in got.size():
+				var difference: float = absf(got[k] - wanted[k])
+				compared += 1
+				if difference > worst:
+					worst = difference
+					worst_at = "frame %d field %d (%s): port %.9f, crate %.9f" % [
+						frames, k, goat.mode, got[k], wanted[k]]
+
+	out.append("the flight tape never landed")
+	return out

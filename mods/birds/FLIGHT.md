@@ -857,17 +857,19 @@ flap/cooldown/energy, drain, release, fall damage and the lethal contact), plus
 
 ### R2 — the Godot binding and the player flight branch
 
-- `crates/godot/src/flight.rs`: a `Flight` GDExtension class with `step`,
-  `start`, `release`, `fall_damage`, `bot_input`, `pose`, `back_point`; register
-  it beside `ModHost`/`NetBridge`; add the dependency.
-- `main.gd` creates one and hands it to `PlayerGoat`/`Bots` the way `meadow`,
-  `water` and `explosions` are handed over.
-- `player_goat.gd`: the `step`/`_integrate` `fly`/`fall` branches call the
-  class; `_place`/`pose.gd` use the returned pose. `tuning.gd` builds the
-  `Config`.
+**✅ Landed.** `crates/godot/src/flight.rs` is a `Flight` class (`RefCounted`) over
+`flight`, with the same positional arrays the `__flight` global takes. `main.gd`
+creates one after the mods' `tuning.json` merges, configures it from
+`PlayerGoat.flight_config()`, hands it to the goat, and re-configures when
+`Tuning.version` moves. `player_goat.gd` has the `fly`/`fall` branches: the
+take-off rule in `start_jump`, the crate's step and events, the stats, the clip
+role and the pose (the model rotates about `FLIGHT_PIVOT`). `tuning.gd` carries
+`stats.energyDrain.fly` and the `flight` subtree, with the reference's clamps.
 
-**Gate:** `verify_flight.gd`, the `verify_goat.gd` flight tape, and
-`verify_pose.gd`.
+**Gate:** `verify_flight.gd` (the binding's arrays, ground callback, pose and
+back point, then take-off/controls/flap/release/landing/restart through
+`PlayerGoat`), the flight tape in `verify_goat.gd` (379 frames against the crate
+itself), and `verify_pose.gd`'s flight basis and rider seat.
 
 ### R3 — the herd
 
@@ -974,9 +976,10 @@ These are the *binding* tests: the GDScript integration of the same crate.
   the pose, then walks take-off/landing/fall-damage through `PlayerGoat`.
 - `verify_goat.gd`: extend the tape with a flight run (capability on, run, jump,
   pitch/bank/flap, release, fall, land), comparing position, `py`, mode, pitch,
-  roll, health, energy, speed and the wire phase every frame. The oracle can use
-  the same `Flight` class, so the gate checks the GDScript integration rather
-  than a second transcription of the maths.
+  roll, health, energy, speed and flaps every frame. The oracle is the same
+  `Flight` class, so the gate checks the GDScript integration rather than a
+  second transcription of the maths. The wire phase waits for R4's
+  `GoatFly`/`GoatFall` clips; without them the model holds its take-off pose.
 - `verify_pose.gd`: the yaw/pitch/roll basis and the rider's back point at a
   known attitude.
 - `verify_bots.gd`: bot take-off, orbit, landing and cooldown.
@@ -1089,9 +1092,12 @@ the clamps; a play-through asserts that it feels right.
 - `crates/godot/src/flight.rs` (new) — the `Flight` GDExtension class.
 - `crates/godot/src/lib.rs` — register the class.
 - `godot/src/main.gd` — create one `Flight` and inject it into `PlayerGoat` and
-  `Bots`.
+  `Bots`, re-configuring it when the tuning tree moves.
 - `godot/src/tuning.gd`, `player_goat.gd`, `pose.gd`, `bots.gd`, `herd.gd`,
   `commands.gd`, `hud.gd`, `explosions.gd`, `water.gd`, `portals.gd`.
+- `godot/tools/verify_flight.gd` (new) — R2's binding and player gate; the
+  flight tape in `verify_goat.gd` and `verify_pose.gd`'s flight basis are its
+  other halves.
 - `crates/godot/src/prelude.js` — player/bot facades.
 - `crates/godot/src/net.rs` — pose parse/publish.
 - `godot/tools/verify_goat.gd`, `verify_flight.gd` (new), `verify_pose.gd`,

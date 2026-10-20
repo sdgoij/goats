@@ -71,6 +71,11 @@ const SKY3D_AMBIENT_ENERGY := 0.25
 ## empty in a session -- the host owns the bots' AI there, and `Herd` places what it sends.
 @onready var bots: Bots = $Bots
 @onready var goat: PlayerGoat = $Goat
+## The shared flight controller (`crates/flight` through the extension). One instance for the
+## whole scene: the state is each goat's, so there is nothing per-goat to keep in it. Built in
+## `_ready`, after the mods' `tuning.json` has merged, and re-configured when a write moves a
+## `flight.*` leaf.
+var flight: Flight
 @onready var terrain: TerrainMesh = $Terrain
 @onready var water_surface: WaterMesh = $Water
 ## The splashes the water throws, drawn as their own node (`water_splash.gd`, M20d).
@@ -143,6 +148,10 @@ var _dragging := false
 ## Whether the world is frozen (`goat.js`'s `paused`). `P` toggles it, the HUD says so, and the
 ## *view* keeps running -- see `_process`.
 var _paused := false
+## The tuning tree's version the flight controller was last configured from. A write bumps
+## `Tuning.version`, so one integer compare a frame is the whole "re-push on a flight leaf"
+## rule (`tuningNotify`'s own in the scene, which watches the path instead).
+var _tuning_version := 0
 ## The one-shot presses since the last frame, filled by `_unhandled_input` and
 ## consumed by `_process`. The scene's `press()` reads the same four keys once per
 ## frame; Godot delivers the press as an event, so it is held here until then.
@@ -517,6 +526,13 @@ func _ready() -> void:
 	Tuning.register_live("water.reflection",
 		Callable(self, "_tuning_water_reflection"), Callable(self, "_tuning_set_water_reflection"))
 	add_child(mods)
+	# The flight controller, after the merge above so a mod's declared `flight.*` leaves are in it.
+	# `PlayerGoat.flight_config` is the reference's `flightConfig`: the tuning subtree plus the two
+	# values that are the scene's, handed to `crates/flight` through the `Flight` class.
+	flight = Flight.new()
+	flight.configure(PlayerGoat.flight_config())
+	goat.flight = flight
+	_tuning_version = Tuning.version
 	# The camera's boot pose is the *tree's* (`TUNING.camera`), read here rather than at declaration
 	# so a mod's declared `tuning.json` -- merged in the runtime's own `_ready`, just above -- aims it,
 	# which is what the reference client does. `GOATS_CAM` is applied after it, for the reason it is a
@@ -663,6 +679,12 @@ func _process(delta: float) -> void:
 	# The frame's controls, taken once: `_controls` consumes the one-shot presses, and both the
 	# goat and the HUD want what it read.
 	var controls: Dictionary = _controls()
+	# A tuning write can move a `flight.*` leaf, and the controller caches the numbers it was
+	# configured with. The tree bumps its version on every accepted write, so this is one integer
+	# compare a frame rather than a dictionary per frame.
+	if Tuning.version != _tuning_version:
+		_tuning_version = Tuning.version
+		flight.configure(PlayerGoat.flight_config())
 	_orbit(delta)
 	var here := Vector3(goat.px, 0.0, goat.pz)
 	var camera := $Camera3D as Camera3D
@@ -809,7 +831,8 @@ func _hud_world(controls: Dictionary) -> Dictionary:
 	# `foodReady`: a tuft in reach, and a goat free to take it.
 	var food_ready: bool = not meadow.nearest(goat.px, goat.pz).is_empty() \
 		and goat.mode != "dead" and goat.mode != "sleep" \
-		and goat.mode != "jump" and goat.mode != "eat"
+		and goat.mode != "jump" and goat.mode != "eat" \
+		and goat.mode != "fly" and goat.mode != "fall"
 	return {
 		"move": int(controls.get("move", 0)),
 		"paused": _paused,

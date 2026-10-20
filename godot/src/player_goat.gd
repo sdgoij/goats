@@ -23,6 +23,12 @@
 #     is `sceneFrame`'s three lines, and it is *here* rather than in `main.gd`
 #     because the height it orbits is `goatBaseY` plus the 0.85 the scene aims at.
 #
+# Captured-bird flight is the one mechanic whose maths is *not* in this file: it lives in
+# `crates/flight`, shared with the raylib client, and reaches the scene as the `Flight`
+# class (`crates/godot/src/flight.rs`). What is ported here is the integration -- the
+# take-off rule, the `fly`/`fall` branches of the state machine, the stats, the clip role
+# and the pose -- exactly as `goat.js` is the reference's half.
+#
 # Not ported, and each is a deliberate hole rather than an oversight: the collision
 # between goats (`resolveGoatCollisions`) and the death's X-eye sprite (the model's own
 # death clip carries it).
@@ -39,7 +45,7 @@ const MODEL := preload("res://assets/goat_animated.glb")
 ## can write it (`APIv1.md` section 4.10): the module still *owns* the number and every read
 ## site below is unchanged, so a write is the one thing that moves.
 static var STATS_MAX: float = 100.0
-static var ENERGY_DRAIN: Dictionary = {"idle": 0.4, "walk": 1.0, "trot": 2.0, "run": 4.0}
+static var ENERGY_DRAIN: Dictionary = {"idle": 0.4, "walk": 1.0, "trot": 2.0, "run": 4.0, "fly": 2.5}
 static var JUMP_ENERGY_COST: float = 2.0
 static var SLEEP_ENERGY_RECOVER: float = 12.0
 static var SLEEP_HEALTH_RECOVER: float = 2.0
@@ -79,6 +85,52 @@ const EAT_FALLBACK_TIME := 2.4
 const V_STRIDE := 0.20
 const V_CYCLE := 0.70
 
+## `TUNING.flight`: the captured-bird flight model. The maths is `crates/flight`; these
+## are the numbers `Flight.configure` is handed, in the reference's own camelCase keys so
+## the two tuning trees are one shape. `drainFly` is the `stats.energyDrain.fly` leaf, read
+## in `flight_config`.
+static var FLIGHT: Dictionary = {
+	"takeoffLift": 5.0,            # m/s upward impulse at take-off
+	"takeoffPitch": 0.25,          # rad, nose-up at take-off
+	"takeoffEnergy": 2.0,          # energy a take-off costs
+	"speed": 9.0,                  # cruise airspeed, m/s
+	"minSpeed": 5.0,
+	"maxSpeed": 14.0,
+	"speedResponse": 1.2,          # per second toward cruise
+	"pitchMax": 0.55,              # rad
+	"pitchRate": 1.6,              # rad/s
+	"bankMax": 0.75,               # rad
+	"bankRate": 2.2,               # rad/s
+	"turnRate": 1.4,               # rad/s at full bank and cruise
+	"sink": 1.2,                   # m/s at level pitch
+	"climbGain": 1.0,              # vy share of speed * sin(pitch)
+	"vyResponse": 3.0,             # per second toward the target vy
+	"flapLift": 5.0,               # m/s impulse
+	"flapSpeed": 1.5,              # m/s airspeed gain
+	"flapCooldown": 0.45,          # s
+	"flapEnergy": 1.2,             # energy per flap
+	"ceiling": 60.0,               # metres above the ground below
+	"gravity": -32.0,              # m/s² for `fall`
+	"safeFall": 12.0,              # m/s impact that does no damage
+	"fallDamage": 2.2,             # health per m/s over safeFall
+	"fallHealthFloor": 0.0,        # a fall may kill
+	"fallPitchGain": 0.04,         # nose-down radians per m/s of fall
+	"botAltitude": 8.0,            # metres a bot holds
+	"botRadius": 18.0,             # metres of the orbit ring
+	"botTime": 18.0,               # seconds a bot stays up
+	"botCooldown": 8.0,            # seconds on the ground between bot flights
+	"botTurn": 0.9,                # rad/s around the ring
+	"botYawGain": 1.5,             # turn axis per radian of yaw error
+	"botPitchGain": 0.12,          # move axis per metre of altitude error
+	"botFlapBelow": 1.0,           # metres below the target that triggers a flap
+	"botTerrainGuard": 2.0,        # metres above its own ground a bot noses up
+}
+
+## `TUNING.explosions.fling.pivot`: the height above the feet the body rotates about.
+## The flight pose swings the model around this point, so a pitched goat's hooves move
+## rather than its head; `_place` puts the node here and offsets the model below it.
+const FLIGHT_PIVOT := 0.7
+
 ## `TUNING.weather` / `TUNING.food.rainShelter`, for the two things the weather does
 ## to a goat that is ported: how fast it moves and how fast it tires. `windNorm` is the
 ## *sky's* leaf (`SkyModel.WIND_NORM`) rather than a second copy here, because `TUNING` has one
@@ -91,7 +143,7 @@ static var WIND_DRAIN: float = 0.20
 
 ## The order the roles are tried in, which is `clipRole()`'s order: the modes that
 ## lock the pose first, then the gaits, then idle.
-const ROLES := ["walk", "trot", "run", "jump", "sleep", "eat", "death", "flung", "idle"]
+const ROLES := ["walk", "trot", "run", "jump", "sleep", "eat", "death", "flung", "fly", "fall", "idle"]
 
 var px := 0.0
 var pz := 0.0
@@ -109,6 +161,10 @@ var satiety := 0.0
 var speed := 0.0
 
 var _anim: AnimationPlayer
+## The instantiated model, so the flight pose can rotate it about the body's pivot.
+var _model: Node3D
+## The model's own rest transform, captured at load; `_place` adds the pivot offset to it.
+var _model_base := Vector3.ZERO
 ## The model's clips by role, in variant order (`GoatIdle`, `GoatIdle2`, ...).
 var _roles := {}
 ## Which variant each role is on. `cyclePlayerVariant` bumps one per settle.
@@ -128,6 +184,29 @@ var _fling_vz := 0.0
 var _fling_vy := 0.0
 var _fling_y := 0.0
 var _fling_flight := 0.0
+## The shared flight controller (`Flight`, the extension). Null in a gate that made no
+## controller: the goat then simply never flies, which is the same guard the reference
+## has for a missing `__flight`.
+var flight: Flight = null
+## The captured bird's grant (`goats.player.setFlight`). It is the *capability*, not a
+## mode: the next running jump spends it, and a release takes it away.
+var flight_capable := false
+## The attitude the crate is holding. `pitch` is about the model's +Z (+ raises the
+## nose), `roll` about +X (+ drops the right side), both radians and both 0 on the
+## ground; `flight_flaps` counts the flaps since take-off.
+var flight_pitch := 0.0
+var flight_roll := 0.0
+var flight_flaps := 0
+var _flight_speed := 0.0
+var _flight_vy := 0.0
+var _flight_time := 0.0
+var _flight_flap_cool := 0.0
+## One reusable state array: a flight frame packs it twice (the step, then the pose),
+## and the crate is a pure function over it rather than a world of its own.
+var _flight_array: PackedFloat32Array = PackedFloat32Array()
+## `Terrain.height_at` as a `Callable` for the crate's own landing rule. Built lazily
+## because `self` is not a valid callable target until the node exists.
+var _flight_ground_call: Callable = Callable()
 ## The device trigger stamp (`explosions.gd` `check_triggers`): a half-metre bucket
 ## with the airborne bit packed beside it, so a goat standing still is one compare.
 var trip_stamp := 0
@@ -157,6 +236,8 @@ func ready_up() -> void:
 		return
 	var node: Node3D = MODEL.instantiate()
 	add_child(node)
+	_model = node
+	_model_base = node.position
 	_anim = _find_animation(node)
 	_index_clips()
 	_measure_ground_offset(node)
@@ -233,11 +314,13 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 	if exhausted:
 		gait = "walk"
 
-	# The yaw comes first, and every mode but the three that lock it steers. A sleeping,
+	# The yaw comes first, and every mode but the ones that lock it steers. A sleeping,
 	# dead or eating goat does not turn -- a *flung* one does, which reads as "no
 	# steering" because the arc's velocity is world-space: the model spins and the
-	# flight does not change.
-	if mode != "sleep" and mode != "dead" and mode != "eat":
+	# flight does not change. A flying goat does not either: the crate's bank turns it
+	# (A/D are the bank, not a yaw), exactly as `goat.js` does it.
+	if mode != "sleep" and mode != "dead" and mode != "eat" and mode != "fly" \
+			and mode != "fall":
 		yaw += turn * TURN_RATE * delta
 
 	# The state machine: jump, sleep, eat, fling and death lock the mode; everything
@@ -258,6 +341,13 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 		# Not in charge until the feet touch: no jumping out of it, no eating. The
 		# arc is advanced in `_integrate`.
 		pass
+	elif mode == "fly":
+		# W/S pitch, A/D bank, Space flaps, E releases -- the crate applies the
+		# mode-specific meaning of the same held axes the ground uses.
+		_step_flight(delta, move, turn, bool(controls.get("jump", false)),
+			bool(controls.get("eat", false)))
+	elif mode == "fall":
+		_step_fall(delta, move)
 	elif mode == "eat":
 		_eat_time += delta
 		if _eat_time >= eat_duration():
@@ -302,7 +392,7 @@ func step(delta: float, controls: Dictionary, sky_light: float, weather: Diction
 			cycle_variant("idle")
 		_last_mode = mode
 
-	speed = ground_speed()
+	speed = _flight_speed if (mode == "fly" or mode == "fall") else ground_speed()
 	_integrate(delta, move, gait)
 	_place()
 	_pose_role()
@@ -316,10 +406,10 @@ func base_y() -> float:
 ## Whether the goat is over the ground rather than on it. The model's hop is the
 ## clip's root motion, so `py` stays 0 through a jump and the *mode* is what says
 ## airborne there; a flung goat owns its own height, so it is airborne by
-## construction. `explosions.js` `goatAirborne`, minus the cube fallback -- the port
-## always has the model.
+## construction, and flight and its fall do too. `explosions.js` `goatAirborne`,
+## minus the cube fallback -- the port always has the model.
 func airborne() -> bool:
-	return mode == "flung" or mode == "jump"
+	return mode == "flung" or mode == "jump" or mode == "fly" or mode == "fall"
 
 ## Where the camera looks, and what `orbit_eye` orbits: the scene's `ty`. The 0.85
 ## is `sceneFrame`'s -- the goat's shoulders, not its feet.
@@ -431,6 +521,12 @@ func clip_role() -> String:
 	# `start_fling`.
 	if mode == "flung":
 		return "flung" if has_role("flung") else "jump"
+	# A `GoatFly`/`GoatFall` action when the model has one; until then both fall back to
+	# the jump, exactly as `flung` did before its clip landed.
+	if mode == "fly":
+		return "fly" if has_role("fly") else "jump"
+	if mode == "fall":
+		return "fall" if has_role("fall") else "jump"
 	if mode == "jump" and has_role("jump"):
 		return "jump"
 	if mode == "run" and has_role("run"):
@@ -509,8 +605,14 @@ func cycle_variant(role: String) -> void:
 	_variant[role] = (int(_variant.get(role, 0)) + 1) % names.size()
 
 ## Start a jump, freezing the horizontal speed for its duration and taking the
-## energy up front. `goat.js` `startJump`.
+## energy up front. `goat.js` `startJump`, including its first rule: a *running* jump
+## with a captured bird is a take-off, and it returns before any jump state is entered.
 func start_jump(move: int, gait: String) -> void:
+	if flight_capable and flight != null and gait == "run" and move > 0 \
+			and mode != "dead" and mode != "sleep" and mode != "eat" \
+			and mode != "flung" and mode != "fall":
+		if _start_flight():
+			return
 	mode = "jump"
 	cycle_variant("jump")
 	_jump_time = 0.0
@@ -600,6 +702,9 @@ func restart() -> void:
 	_fling_y = 0.0
 	_fling_flight = 0.0
 	trip_stamp = 0
+	# A new life has no bird: the flight and fall state go back to rest too.
+	flight_capable = false
+	_flight_reset()
 
 ## `goats.player.teleport(x, z)` (`APIv1.md` section 4.5). A *position*, not a move: the next
 ## `step` places the goat from here, so the simulation's own rules -- the ground under it, the
@@ -635,6 +740,10 @@ func start_fling(vx: float, vz: float, vy: float) -> void:
 	_fling_vx += vx
 	_fling_vz += vz
 	_fling_vy += vy
+	# A blast owns the arc. If the goat was flying, the flight is over; the mod clears
+	# the capability when it sees the mode change.
+	flight_capable = false
+	_flight_reset()
 	# The pose is stretched over the ballistic time the remaining upward impulse
 	# implies, counted from the start of the arc, so the phase keeps rising towards 1
 	# instead of jumping back.
@@ -648,11 +757,189 @@ func start_fling(vx: float, vz: float, vy: float) -> void:
 func fling_progress() -> float:
 	return minf(_fling_time / _fling_flight, 1.0)
 
+# ---- captured-bird flight -------------------------------------------------
+#
+# The mechanics live in `crates/flight`; this is the integration. The state is this
+# goat's own numbers, packed into the positional array the `Flight` class takes. The
+# crate returns the new numbers and the consequences -- a flap's energy, the frame's
+# drain, a release, a landing's impact -- which are applied here.
+
+## The dictionary `Flight.configure` takes. The reference's `flightConfig`: the
+## tuning subtree, with the two values that are the *scene's* rather than a tuning
+## leaf (`restHeight` is 0 for the model, `maxDt` the frame's own clamp) and the
+## `stats.energyDrain.fly` leaf, which is the drain the crate applies itself.
+static func flight_config() -> Dictionary:
+	var config: Dictionary = FLIGHT.duplicate()
+	config["maxDt"] = 0.05
+	config["restHeight"] = 0.0
+	config["bodyPivot"] = FLIGHT_PIVOT
+	config["drainFly"] = float(ENERGY_DRAIN.get("fly", 2.5))
+	return config
+
+## `goats.player.setFlight`: arm the goat, or disarm it (which releases a flight in
+## the air into its fall). The capability is not a mode -- the next running jump
+## spends it.
+func set_flight(on: bool) -> void:
+	if not on and mode == "fly":
+		release()
+	flight_capable = on
+
+## `goats.player.fly`: a scripted take-off, which is run + jump without the keys.
+## Answers whether it started.
+func fly() -> bool:
+	return _start_flight()
+
+## `goats.player.release`: the `E` action. Answers whether it was flying.
+func release() -> bool:
+	if flight == null or mode != "fly":
+		return false
+	var out: PackedFloat32Array = flight.release(_flight_state(1))
+	if out.size() < 12:
+		return false
+	_flight_apply(out)
+	mode = "fall"
+	flight_capable = false
+	_sound(BLEAT_FLING)
+	return true
+
+## The gameplay path into the air: a running jump with the capability (`start_jump`'s
+## first rule). It requires a legal mode and returns whether the flight started.
+func _start_flight() -> bool:
+	if flight == null or not flight_capable:
+		return false
+	if mode != "idle" and mode != "walk" and mode != "trot" and mode != "run" \
+			and mode != "jump":
+		return false
+	if mode == "fly":
+		return true
+	var started: PackedFloat32Array = flight.start(_flight_state(1), ground_speed())
+	if started.size() < 13:
+		return false
+	_flight_apply(started)
+	energy = maxf(0.0, energy - started[12])
+	mode = "fly"
+	_sound(BLEAT_JUMP)
+	return true
+
+## One frame of powered flight. `flap` is Space and `released` is E; the crate
+## decides what each is allowed to do (a cool-down, an energy cost, the release).
+func _step_flight(delta: float, move: int, turn: int, flap: bool, released: bool) -> void:
+	if flight == null:
+		mode = "idle"
+		return
+	var input := PackedFloat32Array([float(move), float(turn), 1.0 if flap else 0.0,
+		1.0 if released else 0.0, energy])
+	var out: PackedFloat32Array = flight.step(_flight_state(1), input, delta,
+		_flight_ground())
+	if out.size() < 20:
+		return
+	_flight_apply(out)
+	energy = maxf(0.0, energy - out[13] - out[14])   # the flap's cost, then the drain
+	if has_role("fly"):
+		phase = fmod(phase + delta / maxf(clip_length("fly"), 0.001), 1.0)
+	if out[15] != 0.0:                                # released
+		mode = "fall"
+		flight_capable = false
+		_sound(BLEAT_FLING)
+		return
+	if out[17] != 0.0:                                # landed
+		_land_from_flight(out[18], move)
+
+## One frame of the free fall. The crate owns gravity, the horizontal momentum and the
+## contact; there is no input in the air beyond staying on the arc.
+func _step_fall(delta: float, move: int) -> void:
+	if flight == null:
+		mode = "idle"
+		return
+	var input := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, energy])
+	var out: PackedFloat32Array = flight.step(_flight_state(2), input, delta,
+		_flight_ground())
+	if out.size() < 20:
+		return
+	_flight_apply(out)
+	if out[17] != 0.0:
+		_land_from_flight(out[18], move)
+
+## The flight or fall touched the ground. The crate has already put the base at the
+## rest height and given the impact; the damage formula and its floor are the crate's
+## too, so a fall cannot disagree with `goat.js` about either.
+func _land_from_flight(impact: float, move: int) -> void:
+	if flight != null and impact > 0.0:
+		health = float(flight.apply_fall_damage(health, impact))
+	_flight_reset()
+	if health <= 0.0:
+		die()
+		return
+	mode = "walk" if move != 0 else "idle"
+
+## Pack this goat's flight numbers for the binding. `phase_number` is the crate's own
+## phase (1 fly, 2 fall); the crate only ever steps those two.
+func _flight_state(phase_number: int) -> PackedFloat32Array:
+	_flight_array.resize(12)
+	_flight_array[0] = px
+	_flight_array[1] = pz
+	_flight_array[2] = Terrain.height_at(px, pz) + py
+	_flight_array[3] = yaw
+	_flight_array[4] = flight_pitch
+	_flight_array[5] = flight_roll
+	_flight_array[6] = _flight_speed
+	_flight_array[7] = _flight_vy
+	_flight_array[8] = _flight_flap_cool
+	_flight_array[9] = float(flight_flaps)
+	_flight_array[10] = _flight_time
+	_flight_array[11] = float(phase_number)
+	return _flight_array
+
+## Write the crate's answer back. `py` is re-derived from the absolute height the
+## crate stepped, so a slope the goat crosses mid-air cannot drag it along.
+func _flight_apply(out: PackedFloat32Array) -> void:
+	px = out[0]
+	pz = out[1]
+	py = out[2] - Terrain.height_at(px, pz)
+	yaw = out[3]
+	flight_pitch = out[4]
+	flight_roll = out[5]
+	_flight_speed = out[6]
+	_flight_vy = out[7]
+	_flight_flap_cool = out[8]
+	flight_flaps = int(out[9])
+	_flight_time = out[10]
+
+## Every flight number back to rest, without touching the mode or the capability --
+## a landing keeps both, and `restart`/`start_fling` clear the capability themselves.
+func _flight_reset() -> void:
+	_flight_speed = 0.0
+	_flight_vy = 0.0
+	_flight_time = 0.0
+	_flight_flap_cool = 0.0
+	flight_pitch = 0.0
+	flight_roll = 0.0
+	flight_flaps = 0
+
+## `Terrain.height_at` as the crate's ground callback.
+func _flight_ground() -> Callable:
+	if not _flight_ground_call.is_valid():
+		_flight_ground_call = Callable(self, "_ground_at")
+	return _flight_ground_call
+
+func _ground_at(x: float, z: float) -> float:
+	return Terrain.height_at(x, z)
+
 ## The goat's world position: the ground under it, the arc's height above that, and
 ## the model's own offset so its feet are on the ground rather than at its origin.
+##
+## The body rotates about `FLIGHT_PIVOT` rather than about the hooves, so the node sits
+## at the pivot and the model is offset below it: at rest the offset cancels exactly,
+## and at a pitch the hooves swing while the shoulders stay put. `Flight.pose` is the
+## crate's own quaternion -- yaw about +Y, pitch about +Z, roll about +X.
 func _place() -> void:
-	position = Vector3(px, base_y() + _ground_offset, pz)
-	rotation.y = yaw
+	position = Vector3(px, base_y() + FLIGHT_PIVOT, pz)
+	if _model != null:
+		_model.position = _model_base + Vector3(0.0, _ground_offset - FLIGHT_PIVOT, 0.0)
+	if flight != null and (mode == "fly" or mode == "fall"):
+		quaternion = flight.pose(_flight_state(2 if mode == "fall" else 1))
+	else:
+		quaternion = Quaternion(Vector3.UP, yaw)
 
 ## `goat.js` `wakeUp`, and the console's `wake` verb: a sleeping goat stands up and
 ## bleats. It is public because the scene reaches it only through the input path, and a
@@ -683,6 +970,11 @@ func _update_stats(delta: float, sky_light: float, drain_factor: float) -> Strin
 		energy = minf(STATS_MAX, energy + SLEEP_ENERGY_RECOVER * delta)
 		health = minf(STATS_MAX, health + SLEEP_HEALTH_RECOVER * delta)
 		return "sleep"
+	# A fall's damage is the landing's, not a per-frame drain, and a lethal fall is
+	# carried in `fall` until the feet touch. Returning here keeps `health <= 0` from
+	# becoming a death halfway down.
+	if mode == "fall":
+		return "awake"
 	var drain: float = float(ENERGY_DRAIN["idle"])
 	if mode == "run":
 		drain = float(ENERGY_DRAIN["run"])
@@ -690,6 +982,8 @@ func _update_stats(delta: float, sky_light: float, drain_factor: float) -> Strin
 		drain = float(ENERGY_DRAIN["trot"])
 	elif mode == "walk":
 		drain = float(ENERGY_DRAIN["walk"])
+	elif mode == "fly":
+		drain = 0.0                    # the flight step applied its own drain
 	if sky_light < NIGHT_LIGHT:
 		drain *= NIGHT_DRAIN_MULT     # cold nights burn energy faster
 	drain *= drain_factor             # ...and so does being soaked
@@ -706,6 +1000,10 @@ func _update_stats(delta: float, sky_light: float, drain_factor: float) -> Strin
 ## One frame of movement, `sceneFrame`'s blocks in its order: the arc, the jump, the
 ## locked modes, then the gaits.
 func _integrate(delta: float, move: int, gait: String) -> void:
+	if mode == "fly" or mode == "fall":
+		# The flight step in the state machine already moved the goat; the ground modes
+		# below must not integrate it a second time.
+		return
 	if mode == "flung":
 		# The arc is integrated in *absolute* height with `py` derived from it, so a
 		# slope the goat crosses mid-air cannot drag it along. The clip's own hop
@@ -753,6 +1051,10 @@ func _integrate(delta: float, move: int, gait: String) -> void:
 func one_shot_fraction() -> float:
 	if mode == "flung":
 		return fling_progress()
+	if mode == "fall":
+		# The fall's clip runs once with the drop. A flyer's clip is a loop, so it is the
+		# phase itself, which `_step_flight` advances.
+		return minf(_flight_time / maxf(clip_length("fall"), 0.001), 1.0)
 	if mode == "jump":
 		return minf(_jump_time / jump_duration(), 1.0)
 	if mode == "dead":
@@ -765,6 +1067,14 @@ func one_shot_fraction() -> float:
 ## clamped fraction for a jump, a meal or a death -- the only thing that can pose a
 ## clip that is not a loop.
 func _pose_role() -> void:
+	# In the air a dedicated clip is posed -- a loop for the flight, the drop for the fall.
+	# With neither the model holds the pose it took off in, which is what the reference's
+	# `flightDraw` leaves on screen (it returns before posing anything at all).
+	if mode == "fly" or mode == "fall":
+		var role: String = clip_role()
+		if role == "fly" or role == "fall":
+			_pose(role, one_shot_fraction())
+		return
 	if mode == "flung":
 		_pose("flung" if has_role("flung") else "jump", one_shot_fraction())
 	elif mode == "dead":
