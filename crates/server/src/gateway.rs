@@ -268,6 +268,19 @@ async fn apply(
             )
             .await?;
         }
+        Command::ModsRegistry
+        | Command::ModsShare
+        | Command::ModsFetch { .. }
+        | Command::ModsMirror { .. } => {
+            send(
+                sink,
+                Event::Notice {
+                    text: "the mod registry is not available through the browser gateway yet"
+                        .to_string(),
+                },
+            )
+            .await?;
+        }
     }
     Ok(true)
 }

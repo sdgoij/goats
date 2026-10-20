@@ -23,7 +23,7 @@
 //! built with its ALPN at spawn time. Sharing the swarm endpoint is a follow-up
 //! that would mean one router for both.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,6 +69,10 @@ pub const RECORD_TTL: Duration = Duration::from_secs(90);
 
 /// The most providers kept for one root. A downloader tries them in order.
 pub const MAX_PROVIDERS: usize = 64;
+
+/// The default mirror budget: a gibibyte. A mirror is a disk commitment, so a
+/// caller that offers more passes its own number; `0` means no limit.
+pub const DEFAULT_MIRROR_BYTES: u64 = 1 << 30;
 
 /// How many commands may queue before a send starts failing. Publishing is
 /// rare; this only has to absorb a burst of shares.
@@ -177,6 +181,9 @@ pub struct Registry {
     catalogue: Arc<Mutex<Catalogue>>,
     commands: mpsc::Sender<Command>,
     events: mpsc::Receiver<RegistryEvent>,
+    /// What this node keeps on other people's behalf: a tag per root, with the
+    /// size and age that decide what goes when the budget is reached.
+    mirror: Mutex<Mirror>,
     /// Kept so a ticket learned elsewhere can be added to the lookup before the
     /// task dials it.
     lookup: MemoryLookup,
@@ -263,6 +270,7 @@ impl Registry {
             commands,
             events,
             lookup,
+            mirror: Mutex::new(Mirror::default()),
             tags: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -341,6 +349,8 @@ impl Registry {
             .lock()
             .expect("catalogue")
             .withdraw(root, self.addr.id);
+        // Stop serving it in this process too: the pin is what kept it alive.
+        self.mirror.lock().expect("mirror").pins.remove(&root);
         let _ = self.commands.try_send(Command::Withdraw(root));
     }
 
@@ -424,13 +434,9 @@ impl Registry {
         self.events.recv().await
     }
 
-    /// Download `record`'s package and export it into `dest`.
-    ///
-    /// Every chunk is verified by the transport against `root`, and the file
-    /// names come from the collection's own index -- which is itself part of
-    /// what `root` names. The caller still has to run the loader and compare
-    /// the join's identity; this function does not decide whether to install.
-    pub async fn fetch(&self, record: &ModRecord, dest: &Path) -> Result<(), String> {
+    /// Download `record`'s package into the store. This is the transfer half of
+    /// [`Registry::fetch`]; a mirror uses it without the export.
+    pub async fn download(&self, record: &ModRecord) -> Result<(), String> {
         let providers = self.providers(&record.root);
         if providers.is_empty() {
             return Err(format!("{}@{} has no provider", record.id, record.version));
@@ -444,8 +450,114 @@ impl Registry {
         self.downloader
             .download_with_opts(request)
             .await
-            .map_err(|error| format!("download {:?}: {error}", record.id))?;
-        export_collection(&self.store, root, dest).await
+            .map_err(|error| format!("download {:?}: {error}", record.id))
+    }
+
+    /// Download `record`'s package and export it into `dest`.
+    ///
+    /// Every chunk is verified by the transport against `root`, and the file
+    /// names come from the collection's own index -- which is itself part of
+    /// what `root` names. The caller still has to run the loader and compare
+    /// the join's identity; this function does not decide whether to install.
+    pub async fn fetch(&self, record: &ModRecord, dest: &Path) -> Result<(), String> {
+        self.download(record).await?;
+        export_collection(&self.store, Hash::from(record.root), dest).await
+    }
+
+    /// Keep serving `record` on other peers' behalf, within `budget` bytes.
+    ///
+    /// The package is downloaded if this node does not have it, pinned against
+    /// garbage collection, announced with a have and its record restated. The
+    /// oldest pins are dropped until the total fits, so a mirror has a ceiling
+    /// rather than a growing cache. `budget == 0` means no ceiling. A single
+    /// package larger than a non-zero budget is refused rather than evicting
+    /// everything else for it.
+    pub async fn mirror(&self, record: &ModRecord, budget: u64) -> Result<Mirrored, String> {
+        if budget > 0 && record.size > budget {
+            return Err(format!(
+                "{}@{} is {} bytes, over the {budget}-byte mirror budget",
+                record.id, record.version, record.size
+            ));
+        }
+        if !self
+            .store
+            .has(Hash::from(record.root))
+            .await
+            .map_err(|error| format!("store: {error}"))?
+        {
+            self.download(record).await?;
+        }
+        let value = HashAndFormat {
+            hash: Hash::from(record.root),
+            format: BlobFormat::HashSeq,
+        };
+        let tag = self
+            .store
+            .tags()
+            .temp_tag(value)
+            .await
+            .map_err(|error| format!("pin: {error}"))?;
+
+        let (used, evicted) = {
+            let mut mirror = self.mirror.lock().expect("mirror");
+            // Replace an older pin for the same root rather than counting it twice.
+            mirror.pins.remove(&record.root);
+            mirror.pins.insert(
+                record.root,
+                MirrorPin {
+                    tag,
+                    id: record.id.clone(),
+                    size: record.size,
+                    at: Instant::now(),
+                },
+            );
+            let mut evicted = Vec::new();
+            if budget > 0 {
+                loop {
+                    let used: u64 = mirror.pins.values().map(|pin| pin.size).sum();
+                    if used <= budget {
+                        break;
+                    }
+                    let oldest = mirror
+                        .pins
+                        .iter()
+                        .filter(|(root, _)| **root != record.root)
+                        .min_by_key(|(_, pin)| pin.at)
+                        .map(|(root, _)| *root);
+                    let Some(oldest) = oldest else {
+                        break;
+                    };
+                    if let Some(pin) = mirror.pins.remove(&oldest) {
+                        evicted.push(oldest);
+                        drop(pin.tag);
+                    }
+                }
+            }
+            let used = mirror.pins.values().map(|pin| pin.size).sum();
+            (used, evicted)
+        };
+
+        self.serve(record.root);
+        self.relay(record.clone()).await?;
+        Ok(Mirrored {
+            id: record.id.clone(),
+            root: record.root,
+            size: record.size,
+            used,
+            evicted,
+        })
+    }
+
+    /// What this node is mirroring, in id order.
+    pub fn mirrored(&self) -> Vec<(String, u64)> {
+        let mirror = self.mirror.lock().expect("mirror");
+        let mut out: Vec<(String, u64)> = mirror
+            .pins
+            .values()
+            .map(|pin| (pin.id.clone(), pin.size))
+            .collect();
+        out.sort();
+        out
     }
 
     /// Leave the topic, stop the router and the store. Best effort: a process
@@ -480,6 +592,34 @@ impl RegistryPeers {
         let _ = self.commands.try_send(Command::Peers(vec![addr.id]));
         Ok(())
     }
+}
+
+/// What one mirror call did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mirrored {
+    pub id: String,
+    pub root: [u8; 32],
+    /// The package's size, as the record claimed it.
+    pub size: u64,
+    /// The total the mirror now holds.
+    pub used: u64,
+    /// Roots dropped to make room, oldest first.
+    pub evicted: Vec<[u8; 32]>,
+}
+
+/// The mirror's bookkeeping. The tags are temporary, so what a mirror holds is
+/// protected for the process's lifetime and collectable after it: a mirror that
+/// is not running is not serving, and a restart re-fetches what it wants.
+#[derive(Default)]
+struct Mirror {
+    pins: BTreeMap<[u8; 32], MirrorPin>,
+}
+
+struct MirrorPin {
+    tag: TempTag,
+    id: String,
+    size: u64,
+    at: Instant,
 }
 
 /// A fixed provider set for one download. Unlike `Shuffled`, the order is the
@@ -1052,14 +1192,20 @@ mod tests {
     }
 
     fn write_mod(dir: &Path) {
+        write_mod_id(dir, "com.example.tree");
+    }
+
+    fn write_mod_id(dir: &Path, id: &str) {
         std::fs::create_dir_all(dir.join("assets")).unwrap();
         std::fs::write(
             dir.join("mod.json"),
-            r#"{ "id": "com.example.tree", "name": "Tree", "version": "1",
-                "api": 1, "side": "world", "entry": "mod.js" }"#,
+            format!(
+                r#"{{ "id": "{id}", "name": "Tree", "version": "1",
+                    "api": 1, "side": "world", "entry": "mod.js" }}"#
+            ),
         )
         .unwrap();
-        std::fs::write(dir.join("mod.js"), "1;\n").unwrap();
+        std::fs::write(dir.join("mod.js"), format!("// {id}\n")).unwrap();
         std::fs::write(dir.join("assets/tree.bin"), b"bytes").unwrap();
     }
 
@@ -1167,7 +1313,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(fetched.join("mod.js")).unwrap(),
-            "1;\n"
+            "// com.example.tree\n"
         );
         let tag = watcher.pin(shared.root).await.expect("pinned");
         watcher.unpin(&tag).await.expect("unpinned");
@@ -1250,6 +1396,37 @@ mod tests {
         assert_eq!(host.records(), vec![shared.clone()]);
         assert_eq!(host.providers(&shared.root), vec![host.id()]);
         host.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_mirror_evicts_the_oldest_pin_to_stay_within_budget() {
+        let registry = Registry::start(config("mirror-budget"))
+            .await
+            .expect("registry");
+        let a = workspace("mirror-a");
+        write_mod_id(&a, "com.example.a");
+        let b = workspace("mirror-b");
+        write_mod_id(&b, "com.example.b");
+        let mut first = record();
+        first.id = "com.example.a".to_string();
+        let mut second = record();
+        second.id = "com.example.b".to_string();
+        let first = registry.share(first, &a).await.expect("shared a");
+        let second = registry.share(second, &b).await.expect("shared b");
+
+        // Room for one of the two, so pinning the second evicts the first.
+        let budget = first.size.max(second.size);
+        assert!(registry.mirror(&first, budget).await.is_ok());
+        let mirrored = registry.mirror(&second, budget).await.expect("mirrored b");
+        assert_eq!(mirrored.evicted, vec![first.root]);
+        assert_eq!(mirrored.used, second.size);
+        assert_eq!(registry.mirrored(), vec![(second.id.clone(), second.size)]);
+
+        // A package that cannot fit at all is refused rather than emptying the
+        // mirror for it.
+        assert!(registry.mirror(&first, first.size - 1).await.is_err());
+
+        registry.shutdown().await;
     }
 
     #[test]

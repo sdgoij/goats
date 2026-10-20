@@ -116,6 +116,29 @@ pub enum Command {
     /// Leave the swarm. Discovery stops and, if this client is hosting, its
     /// advert is withdrawn.
     SwarmLeave,
+    /// Ask the registry for its catalogue. The reply is a console notice; the
+    /// catalogue is not a scene surface.
+    ModsRegistry,
+    /// Announce the mods this client loads on the registry (`GOATS_MODS_SHARE=1`
+    /// does the same at startup).
+    ModsShare,
+    /// Install a mod the registry names. The verb is the consent: this is the
+    /// explicit counterpart of `connect --pull`, and it still verifies before
+    /// installing.
+    ModsFetch {
+        id: String,
+        /// `id@version` in the console is split here; absent means the version
+        /// the catalogue prefers (a live provider, then the greatest label).
+        #[serde(default)]
+        version: Option<String>,
+    },
+    /// Keep serving a package the registry names, within the mirror budget
+    /// (`GOATS_MODS_MIRROR_BYTES`, default one gibibyte).
+    ModsMirror {
+        id: String,
+        #[serde(default)]
+        version: Option<String>,
+    },
 }
 
 /// The wire spelling of a mod reference. The scene prints a digest as hex
@@ -394,6 +417,39 @@ mod tests {
             }
             other => panic!("wrong command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_registry_verbs_parse() {
+        let fetch = serde_json::from_str::<Command>(
+            r#"{"type":"mods_fetch","id":"birds","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        match fetch {
+            Command::ModsFetch { id, version } => {
+                assert_eq!(id, "birds");
+                assert_eq!(version.as_deref(), Some("1.0.0"));
+            }
+            other => panic!("wrong command: {other:?}"),
+        }
+        let bare =
+            serde_json::from_str::<Command>(r#"{"type":"mods_fetch","id":"birds"}"#).unwrap();
+        match bare {
+            Command::ModsFetch { version, .. } => assert_eq!(version, None),
+            other => panic!("wrong command: {other:?}"),
+        }
+        assert!(matches!(
+            serde_json::from_str::<Command>(r#"{"type":"mods_registry"}"#).unwrap(),
+            Command::ModsRegistry
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Command>(r#"{"type":"mods_share"}"#).unwrap(),
+            Command::ModsShare
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Command>(r#"{"type":"mods_mirror","id":"birds"}"#).unwrap(),
+            Command::ModsMirror { .. }
+        ));
     }
 
     #[test]

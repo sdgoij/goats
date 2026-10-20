@@ -652,6 +652,68 @@ async fn run(
                         );
                     }
                 }
+                // The registry's console surface (M18f). A fetch is the player
+                // saying yes, exactly like `--pull`; the verbs are the explicit
+                // counterpart of the startup switches.
+                Command::ModsRegistry => match registry.as_ref() {
+                    Some(registry) => emit(
+                        &events,
+                        Event::Notice {
+                            text: registry_status(registry),
+                        },
+                    ),
+                    None => emit(
+                        &events,
+                        Event::Notice {
+                            text: "registry: off (GOATS_MODS_REGISTRY=0)".to_string(),
+                        },
+                    ),
+                },
+                Command::ModsShare => match (registry.as_ref(), pull.mods_dir.as_deref()) {
+                    (Some(registry), Some(dir)) => share_mods(registry, dir, &events).await,
+                    (None, _) => emit(
+                        &events,
+                        Event::Notice {
+                            text: "registry: off (GOATS_MODS_REGISTRY=0)".to_string(),
+                        },
+                    ),
+                    (_, None) => emit(
+                        &events,
+                        Event::Notice {
+                            text: "registry: no mods directory".to_string(),
+                        },
+                    ),
+                },
+                Command::ModsFetch { id, version } => match registry.as_ref() {
+                    Some(registry) => {
+                        registry_fetch(
+                            registry,
+                            &pull,
+                            &id,
+                            version.as_deref(),
+                            &mut world_mods,
+                            &events,
+                        )
+                        .await
+                    }
+                    None => emit(
+                        &events,
+                        Event::Notice {
+                            text: "registry: off (GOATS_MODS_REGISTRY=0)".to_string(),
+                        },
+                    ),
+                },
+                Command::ModsMirror { id, version } => match registry.as_ref() {
+                    Some(registry) => {
+                        registry_mirror(registry, &id, version.as_deref(), &events).await
+                    }
+                    None => emit(
+                        &events,
+                        Event::Notice {
+                            text: "registry: off (GOATS_MODS_REGISTRY=0)".to_string(),
+                        },
+                    ),
+                },
                 other => {
                     live = start(
                         other,
@@ -821,6 +883,164 @@ async fn share_mods(registry: &Registry, mods_dir: &Path, events: &mpsc::Unbound
     );
 }
 
+/// The catalogue as one console line: what it knows, and what this node keeps.
+fn registry_status(registry: &Registry) -> String {
+    let records = registry.records();
+    let mirrored = registry.mirrored();
+    let mut parts = vec![format!("registry: {} record(s)", records.len())];
+    for record in records {
+        parts.push(format!(
+            "{}@{} {} {}B {} provider(s)",
+            record.id,
+            record.version,
+            match record.side {
+                session::ModSide::World => "world",
+                session::ModSide::Client => "client",
+            },
+            record.size,
+            registry.providers(&record.root).len()
+        ));
+    }
+    if !mirrored.is_empty() {
+        let used: u64 = mirrored.iter().map(|(_, size)| *size).sum();
+        parts.push(format!("mirroring {} ({used}B)", mirrored.len()));
+    }
+    parts.join("; ")
+}
+
+/// The record `id[@version]` names: a package with a live provider wins, then
+/// the greatest version label, so `mods fetch birds` picks the newest one the
+/// catalogue shows.
+fn find_record(registry: &Registry, id: &str, version: Option<&str>) -> Option<session::ModRecord> {
+    let mut matches: Vec<session::ModRecord> = registry
+        .records()
+        .into_iter()
+        .filter(|record| record.id == id && version.is_none_or(|wanted| record.version == wanted))
+        .collect();
+    matches.sort_by(|a, b| {
+        (registry.providers(&a.root).is_empty(), &a.version, a.root).cmp(&(
+            registry.providers(&b.root).is_empty(),
+            &b.version,
+            b.root,
+        ))
+    });
+    matches.pop()
+}
+
+/// `mods fetch <id>[@version]`: install from the catalogue. The verb is the
+/// consent; the same verify-then-install path a refused join takes does the rest.
+async fn registry_fetch(
+    registry: &Registry,
+    pull: &Pull,
+    id: &str,
+    version: Option<&str>,
+    world_mods: &mut Vec<session::ModRef>,
+    events: &mpsc::UnboundedSender<String>,
+) {
+    let Some(dir) = pull.mods_dir.as_deref() else {
+        emit(
+            events,
+            Event::Notice {
+                text: "registry: no mods directory".to_string(),
+            },
+        );
+        return;
+    };
+    let Some(record) = find_record(registry, id, version) else {
+        emit(
+            events,
+            Event::Notice {
+                text: format!("registry: no record for {id}"),
+            },
+        );
+        return;
+    };
+    let loader = Loader::discover_with(dir, AssetMode::HashOnly);
+    match pull::pull_registry(registry, &loader, dir, vec![record.reference()]).await {
+        Ok(report) if !report.installed.is_empty() => {
+            let ids: Vec<String> = report
+                .installed
+                .iter()
+                .map(|reference| reference.id.clone())
+                .collect();
+            emit(
+                events,
+                Event::Pulled {
+                    text: report.describe(),
+                    ids,
+                },
+            );
+            // The next host/join presents the set on disk, which now includes
+            // what this verb installed.
+            *world_mods = crate::world_mod_refs(&Loader::discover_with(dir, AssetMode::HashOnly));
+        }
+        Ok(report) => emit(
+            events,
+            Event::Notice {
+                text: format!("registry: {}", report.describe()),
+            },
+        ),
+        Err(error) => emit(
+            events,
+            Event::Notice {
+                text: format!("registry: fetch failed: {error}"),
+            },
+        ),
+    }
+}
+
+/// `mods mirror <id>[@version]`: download if needed, pin, announce and restate,
+/// within the byte budget. The record is what makes a mirror durable through the
+/// author going away; the pin is what keeps the bytes.
+async fn registry_mirror(
+    registry: &Registry,
+    id: &str,
+    version: Option<&str>,
+    events: &mpsc::UnboundedSender<String>,
+) {
+    let Some(record) = find_record(registry, id, version) else {
+        emit(
+            events,
+            Event::Notice {
+                text: format!("registry: no record for {id}"),
+            },
+        );
+        return;
+    };
+    match registry.mirror(&record, mirror_budget()).await {
+        Ok(mirrored) => {
+            let evicted = match mirrored.evicted.len() {
+                0 => String::new(),
+                count => format!(", evicted {count}"),
+            };
+            emit(
+                events,
+                Event::Notice {
+                    text: format!(
+                        "registry: mirroring {}@{} ({} bytes, {}B mirrored{evicted})",
+                        record.id, record.version, mirrored.size, mirrored.used
+                    ),
+                },
+            );
+        }
+        Err(error) => emit(
+            events,
+            Event::Notice {
+                text: format!("registry: could not mirror {}: {error}", record.id),
+            },
+        ),
+    }
+}
+
+/// `GOATS_MODS_MIRROR_BYTES`, or a gibibyte. `0` is no ceiling, which only makes
+/// sense for a machine that has the disk for it.
+fn mirror_budget() -> u64 {
+    std::env::var("GOATS_MODS_MIRROR_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(session::registry::DEFAULT_MIRROR_BYTES)
+}
+
 /// Runs one command, replacing whatever session was live.
 async fn start(
     command: Command,
@@ -845,7 +1065,11 @@ async fn start(
         | Command::Voice { .. }
         | Command::Blast { .. }
         | Command::SwarmJoin { .. }
-        | Command::SwarmLeave => None,
+        | Command::SwarmLeave
+        | Command::ModsRegistry
+        | Command::ModsShare
+        | Command::ModsFetch { .. }
+        | Command::ModsMirror { .. } => None,
         Command::Host { name } => {
             // A host serves what it runs, so a joiner missing a world mod can
             // fetch it here rather than from a status page (M18d). The packaging

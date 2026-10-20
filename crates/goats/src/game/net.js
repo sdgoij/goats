@@ -198,6 +198,34 @@ function netSwarmStatus() {
     return { topic: netSwarmTopic, peers: netSwarmPeers, hosts: netHosts.length, ticket: netSwarmTicket };
 }
 
+// ---- the mod registry ------------------------------------------------------
+
+// The verbs are `mod`'s (see `mods.js`), because a registry is where a mod comes
+// from rather than a separate console family. Each queues an intent; the answer
+// is a console line, because a catalogue is not a scene surface.
+function netModsRegistry() {
+    netQueue({ type: "mods_registry" });
+    return "ok mod registry";
+}
+
+function netModsShare() {
+    netQueue({ type: "mods_share" });
+    consoleSystem("registry: sharing this client's mods ...");
+    return "ok mod share";
+}
+
+function netModsFetch(id, version) {
+    netQueue({ type: "mods_fetch", id: id, version: version });
+    consoleSystem("registry: fetching " + id + (version === null ? "" : "@" + version) + " ...");
+    return "ok mod fetch " + id;
+}
+
+function netModsMirror(id, version) {
+    netQueue({ type: "mods_mirror", id: id, version: version });
+    consoleSystem("registry: mirroring " + id + (version === null ? "" : "@" + version) + " ...");
+    return "ok mod mirror " + id;
+}
+
 // ---- events ----------------------------------------------------------------
 
 // One event line from the host. Unknown types are reported rather than ignored,

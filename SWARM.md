@@ -311,12 +311,27 @@ Three separate switches, because they are three different promises.
   record on the topic says this node has this mod to everyone on it, not just to
   someone who was handed a ticket.
 - **mirror** (default off): keep serving a root you did not author. A mirror
-  restates the have for what it holds and pins it against GC; the byte budget and
-  eviction are the caller's policy, because only it knows how much disk it is
-  offering -- unbounded mirroring is a disk commitment.
+  restates the have for what it holds, pins it against GC, and drops the oldest
+  pin when a caller-supplied budget (`GOATS_MODS_MIRROR_BYTES`, default one
+  gibibyte) is reached. A package larger than the budget is refused rather than
+  emptying the mirror for it.
 - **fetch** (only when the player asked, or `--pull` is standing consent): install
   a mod the registry names. Never implied by joining the topic, and never applied
   to a `side: "client"` mod, which is the player's own choice.
+
+### From the console
+
+```
+mod registry                  the catalogue, and what this node mirrors
+mod share                     announce the mods this client loads
+mod fetch <id>[@version]      install one from the catalogue
+mod mirror <id>[@version]     keep serving one, within the mirror budget
+```
+
+`mod fetch` is the console's consent, exactly as `connect --pull` is a join's;
+`mod mirror` downloads first when this node does not have the bytes. Both take
+the version the catalogue prefers when none is named: a package with a live
+provider first, then the greatest version label.
 
 ### Security and limits
 
@@ -364,11 +379,12 @@ Three separate switches, because they are three different promises.
 The client now starts a registry at startup (unless `GOATS_MODS_REGISTRY=0`),
 announces its world mods when `GOATS_MODS_SHARE` is on, learns peers' registry
 tickets from the swarm, and hands the handle to `recover_with`, so a refused join
-falls back to the catalogue for what the host could not serve. What is left: the
-console verbs (`mods share`, `mods mirror <root>`, `mods fetch <id>`) and a
-mirror's byte budget and eviction, which is the caller's policy. The endpoint is
-the registry's own; sharing the swarm's would remove a second socket and make a
-portal's ticket the only one a client needs.
+falls back to the catalogue for what the host could not serve. The console has
+`mod registry`, `mod share`, `mod fetch` and `mod mirror`, and a mirror has a
+budget and evicts oldest-first. What is left: the Godot port has no registry yet
+(it ignores the swarm's registry tickets), and the endpoint is the registry's
+own -- sharing the swarm's would remove a second socket and make a portal's
+ticket the only one a client needs.
 
 ### The tests
 
@@ -380,5 +396,7 @@ portal's ticket the only one a client needs.
 - a real download crosses `iroh-blobs` from one local registry to another, and
   the exported tree reloads with the identity the record named;
 - `pull_registry` installs a world mod from a registry, refuses what the player
-  already has, and reports a record it cannot find; and a fetched root can be
-  pinned and unpinned.
+  already has, and reports a record it cannot find; a fetched root can be pinned
+  and unpinned, and a mirror evicts the oldest pin when its budget is reached;
+- `mods_fetch`/`mods_mirror` parse from the scene's own spelling, and the verbs
+  take an `id` or `id@version`.

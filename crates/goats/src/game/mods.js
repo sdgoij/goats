@@ -1758,7 +1758,24 @@ function modCommand(parts) {
         modQueue("reload", id);
         return "ok mod reload " + id;
     }
-    return "error mod expects list|info|key|enable|disable|reload";
+    // The registry verbs (M18f): `mod registry` asks for the catalogue, `mod
+    // share` publishes what is loaded, and `fetch`/`mirror` take an
+    // `id` or `id@version`. A fetch is the consent -- this is the console's
+    // counterpart of `connect --pull`.
+    if (verb === "registry") return netModsRegistry();
+    if (verb === "share") return netModsShare();
+    if (verb === "fetch" || verb === "mirror") {
+        const target = parts[2];
+        if (target === undefined) return "error mod " + verb + " expects an id[@version]";
+        const at = target.indexOf("@");
+        const id = at < 0 ? target : target.slice(0, at);
+        const version = at < 0 ? null : target.slice(at + 1);
+        if (id === "" || (at >= 0 && version === "")) {
+            return "error mod " + verb + " expects an id[@version]";
+        }
+        return verb === "fetch" ? netModsFetch(id, version) : netModsMirror(id, version);
+    }
+    return "error mod expects list|info|key|enable|disable|reload|registry|share|fetch|mirror";
 }
 
 function modCommandsOf(id) {
