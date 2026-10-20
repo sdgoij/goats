@@ -363,6 +363,15 @@ measured 4147 ns/iter early and 93 ns/iter later, which is the same
 pattern-dependence seen from the other side. Treat any single measurement of a
 newly-called body as provisional until it is repeated.)
 
+**Answered (Appendix D, `7d975c8`):** the body is interpreted because it has **two
+sibling loop regions** — a player loop and a pair loop in one function. Minimal
+bodies measure 9.2 ns/iter for one loop, 5.6 for a nested loop and **538 for two
+sequential loops**; nesting is fine, siblings are not. It was never an eviction or
+the inline-room check. Splitting the two loops into their own functions takes the
+scene’s `collide` from 0.14 ms to 0.04 (the `perfMark` floor). The `226 µs/call`
+above is 56 steps of such a body, i.e. the same interpretation, not a different
+cost model.
+
 ## 5. Where our usage spends the frame
 
 Top items, the slow git build of §3 beside the profile this repo now ships (§6):
@@ -1660,6 +1669,47 @@ the old pin -- measured `mods_upd` **1.03 → 0.95**, inside the 0.84–1.41 win
 reads it removes are ~100 × 12 ns, i.e. ~1 µs. It is not the cost, and the change was reverted.
 Whatever the 0.49 ms is, it is the work (`player.state()`, `bots.list()`, `water.depthAt()`, the
 steer and contact loops over seven bots), not the interpreter.
+
+### The compile gate: two sibling loops
+
+The last body above the floor that looked interpreted for no stated reason was the
+collision kernel (§4c). It is interpreted, and the reason is structural. Minimal
+bodies in `mods/jitprobe`, ns/iter:
+
+| body | ns/iter |
+| --- | ---: |
+| one loop (`s one loop`) | 9.2 |
+| one loop with a nested loop (`s nested`) | 5.6 |
+| **two sequential loops (`s two loops`)** | **538.4** |
+
+Two sibling loop regions in one body is the gate; nesting one inside the other is
+fine. The ladder that was built to find this had been passing its arguments wrong:
+`timeIt(fn, args, …)` calls `fn.apply(null, args)`, and the rungs were written
+`timeIt(rN, [L], …)` with `L = [bots, 7, 0, 0, 1.5, 1.5]` — so the body received the
+array as its `count` (`undefined`), ran no iterations, and every "fast" rung was
+timing an empty call. With the arguments fixed the ladder agrees with the minimal
+bodies:
+
+| body | ns/iter |
+| --- | ---: |
+| `r1 flat` (one loop) | 63.4 |
+| `cd nested-if` / `ce nested-if hoisted` (one loop) | 64.8 / 60.8 |
+| `r2 two flat` | 2345.9 |
+| `r3 pass+2 flat` | 1897.1 |
+| `r5 r4 inline pair` | 3246.3 |
+| `cb one-if` / `cc one-if+else-if` | 3504.6 / 3758.6 |
+| `collide-current` / `collide-leaf` | 3833.3 / 3492.0 |
+
+The two collide bodies land together, so the global reads and the `Math.sqrt` call
+were never the difference — the shape was. (`pad0`–`pad16` stay at 147–174 ns
+because `padN` keeps a single loop and calls the pair body, which is the shape the
+fix uses.)
+
+`bots.js`'s `collidePairs` had the same shape: one pass loop holding a player loop
+and a pair loop. Splitting each loop into its own function (`collidePlayerPass`,
+`collideBotPass`, driven by `collidePairs`) takes `collide` from **0.14 to 0.04
+ms** — the `perfMark` floor — and leaves the harness's 193 checks unchanged. The
+update group falls from 3.94 to ~3.84 ms.
 
 ### What is left
 

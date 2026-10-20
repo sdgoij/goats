@@ -34,6 +34,32 @@ function vArith(n) {                    // params only, no calls, no outer reads
     return s;
 }
 
+// ---- how many loop regions may a body have? -------------------------------
+//
+// The collide bodies have two sequential loops per pass (player, then pairs) and
+// measure ~3.4 us/step, while every body with a single loop region compiles. These
+// three isolate that: the same arithmetic, one loop / one nested loop / two loops.
+function sOneLoop(n) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += i * 3;
+    return s;
+}
+
+function sNested(n) {
+    let s = 0;
+    for (let i = 0; i < n; i++) {
+        for (let j = 0; j < 3; j++) s += j;
+    }
+    return s;
+}
+
+function sTwoLoops(n) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += i * 3;
+    for (let i = 0; i < n; i++) s += i * 5;
+    return s;
+}
+
 function vOuterRead(n) {                // one outer (wrapper-scope) read
     let s = 0;
     for (let i = 0; i < n; i++) s += i * 3 + SCALAR;
@@ -740,35 +766,41 @@ function probeAll() {
     lines.push(row("continue", timeIt(vContinue, [N], 1, N)));
     lines.push(row("if-else", timeIt(vIfElse, [N], 1, N)));
     lines.push(row("nested-7", timeIt(vNested, [N], 1, N * 7)));
+    lines.push("-- loop regions in one body --");
+    lines.push(row("s one loop", timeIt(sOneLoop, [N], 1, N)));
+    lines.push(row("s nested", timeIt(sNested, [N], 1, N * 3)));
+    lines.push(row("s two loops", timeIt(sTwoLoops, [N], 1, N * 2)));
     // 7 bots: 2 passes x (7 player pairs + 21 bot pairs) = 56 pair steps.
     lines.push(row("collide-current", timeIt(collideCurrent, [bots, 0, 0], 2000, 56)));
     lines.push(row("collide-leaf", timeIt(collideLeaf, [bots, 7, 0, 0, 1.5, 1.5], 2000, 56)));
     // The ladder: every rung executes the same 56 body steps, so these numbers
-    // are directly comparable with each other and with `nested-7`.
-    const L = [bots, 7, 0, 0, 1.5, 1.5];
+    // are directly comparable with each other and with `nested-7`. One fresh list
+    // per rung: `timeIt` mutates the bots, so a shared one would start a rung from
+    // wherever the previous row left off.
+    const ladder = function () { return [makeList(7), 7, 0, 0, 1.5, 1.5]; };
     lines.push("-- ladder (56 body steps per call, params only) --");
-    lines.push(row("r1 flat", timeIt(r1, [bots, 7, 0, 0, 1.5, 1.5], 2000, 7)));
-    lines.push(row("r2 two flat", timeIt(r2, [L], 2000, 13)));
-    lines.push(row("r3 pass+2 flat", timeIt(r3, [L], 2000, 26)));
-    lines.push(row("r4 pass+flat+call", timeIt(r4, [L], 2000, 98)));
-    lines.push(row("r5 r4 inline pair", timeIt(r5, [L], 2000, 98)));
-    lines.push(row("r6 no inner const", timeIt(r6, [L], 2000, 98)));
-    lines.push(row("r7 j from 0", timeIt(r7, [L], 2000, 112)));
-    lines.push(row("r8 unrolled", timeIt(r8, [L], 2000, 98)));
+    lines.push(row("r1 flat", timeIt(r1, ladder(), 2000, 7)));
+    lines.push(row("r2 two flat", timeIt(r2, ladder(), 2000, 13)));
+    lines.push(row("r3 pass+2 flat", timeIt(r3, ladder(), 2000, 26)));
+    lines.push(row("r4 pass+flat+call", timeIt(r4, ladder(), 2000, 56)));
+    lines.push(row("r5 r4 inline pair", timeIt(r5, ladder(), 2000, 56)));
+    lines.push(row("r6 no inner const", timeIt(r6, ladder(), 2000, 56)));
+    lines.push(row("r7 j from 0", timeIt(r7, ladder(), 2000, 56)));
+    lines.push(row("r8 unrolled", timeIt(r8, ladder(), 2000, 56)));
     lines.push("-- isolating collideLeaf's player block --");
-    lines.push(row("cd nested-if", timeIt(cd, [bots, 7, 0, 0, 1.5, 1.5], 2000, 7)));
-    lines.push(row("ce nested-if hoisted", timeIt(ce, [bots, 7, 0, 0, 1.5, 1.5], 2000, 7)));
-    lines.push(row("cb one-if", timeIt(cb, [L], 2000, 98)));
-    lines.push(row("cc one-if+else-if", timeIt(cc, [L], 2000, 98)));
+    lines.push(row("cd nested-if", timeIt(cd, ladder(), 2000, 7)));
+    lines.push(row("ce nested-if hoisted", timeIt(ce, ladder(), 2000, 7)));
+    lines.push(row("cb one-if", timeIt(cb, ladder(), 2000, 56)));
+    lines.push(row("cc one-if+else-if", timeIt(cc, ladder(), 2000, 56)));
     lines.push("-- the two deltas, one at a time --");
-    lines.push(row("x1 ar hoist", timeIt(x1, [L], 2000, 98)));
-    lines.push(row("x2 nested-if", timeIt(x2, [L], 2000, 98)));
-    lines.push(row("x3 collideLeaf", timeIt(collideLeaf, [L], 2000, 98)));
+    lines.push(row("x1 ar hoist", timeIt(x1, ladder(), 2000, 56)));
+    lines.push(row("x2 nested-if", timeIt(x2, ladder(), 2000, 56)));
+    lines.push(row("x3 collideLeaf", timeIt(collideLeaf, ladder(), 2000, 56)));
     lines.push("-- frame-padding ladder --");
-    lines.push(row("pad0", timeIt(pad0, [L], 2000, 98)));
-    lines.push(row("pad4", timeIt(pad4, [L], 2000, 98)));
-    lines.push(row("pad8", timeIt(pad8, [L], 2000, 98)));
-    lines.push(row("pad16", timeIt(pad16, [L], 2000, 98)));
+    lines.push(row("pad0", timeIt(pad0, ladder(), 2000, 56)));
+    lines.push(row("pad4", timeIt(pad4, ladder(), 2000, 56)));
+    lines.push(row("pad8", timeIt(pad8, ladder(), 2000, 56)));
+    lines.push(row("pad16", timeIt(pad16, ladder(), 2000, 56)));
     return lines.join("\n");
 }
 
@@ -779,15 +811,14 @@ goats.command("jitprobe-repeat", function () {
     // above are warm-up artifacts; if the copy is fast while the original is
     // slow, it is the body's identity (a sticky verdict), not its code.
     const bots = makeList(7);
-    const L = [bots, 7, 0, 0, 1.5, 1.5];
     const lines = ["jitprobe-repeat (three runs each)"];
     // [name, fn, args, perIter, iters]
     const bodies = [
         ["arith", vArith, [N], N, 1],
         ["global-read", vGlobalRead, [N], N, 1],
         ["global-read-copy", vGlobalReadCopy, [N], N, 1],
-        ["cc", cc, [L], 98, 500],
-        ["collideLeaf", collideLeaf, [L], 98, 500],
+        ["cc", cc, [makeList(7), 7, 0, 0, 1.5, 1.5], 56, 500],
+        ["collideLeaf", collideLeaf, [makeList(7), 7, 0, 0, 1.5, 1.5], 56, 500],
         ["collideCurrent", collideCurrent, [bots, 0, 0], 56, 500],
     ];
     for (let b = 0; b < bodies.length; b++) {

@@ -560,6 +560,61 @@ function updateBots(dt) {
 // used to take. See PERF.md §7 for the measurements; the caller below is the
 // hoisting half of that recipe and the `** 0.5` is the other half (`Math.sqrt`
 // is a global read of `Math`).
+// One pass of the player's shove. Its own function because the engine compiles a
+// body with one loop region and interprets a body with two (`PERF.md`, `jitprobe`'s
+// `s two loops`: 9 ns against 538 ns an iteration), and this used to hold the
+// player loop and the pair loop side by side. Returns whether it moved anyone.
+function collidePlayerPass(bots, count, gx, gz, rad, pr) {
+    let moved = false;
+    for (let i = 0; i < count; i++) {
+        const b = bots[i];
+        const rr = pr + rad * b.spec.scale;
+        const dx = b.x - gx;
+        const dz = b.z - gz;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < rr * rr) {
+            if (d2 <= 1e-4) {
+                b.x = gx + rr;    // dead centre: shove it out sideways
+            } else {
+                const d = d2 ** 0.5;
+                const push = (rr - d) / d;
+                b.x += dx * push;
+                b.z += dz * push;
+            }
+            if (b.timer > 0.6) b.timer = 0.6;   // re-think the plan soon
+            moved = true;
+        }
+    }
+    return moved;
+}
+
+// One pass of bot-against-bot relaxation. Same reason it lives alone: one loop
+// region (the pair loop nests inside it) so the body compiles.
+function collideBotPass(bots, count, rad) {
+    let moved = false;
+    for (let i = 0; i < count; i++) {
+        const a = bots[i];
+        const ar = rad * a.spec.scale;
+        for (let j = i + 1; j < count; j++) {
+            const b = bots[j];
+            const rr = ar + rad * b.spec.scale;
+            const dx = b.x - a.x;
+            const dz = b.z - a.z;
+            const d2 = dx * dx + dz * dz;
+            if (d2 < rr * rr && d2 > 1e-4) {
+                const d = d2 ** 0.5;
+                const push = (rr - d) / (2 * d);
+                a.x -= dx * push;
+                a.z -= dz * push;
+                b.x += dx * push;
+                b.z += dz * push;
+                moved = true;
+            }
+        }
+    }
+    return moved;
+}
+
 function collidePairs(bots, count, gx, gz, rad, pr) {
     // Two relaxation passes: shoving a bot off the player can push it into another bot,
     // so a second pass settles the chain -- but only a pass that moved something can
@@ -570,46 +625,9 @@ function collidePairs(bots, count, gx, gz, rad, pr) {
     // goat walks into the herd. A chain still settles inside the frame it was made in.
     let moved = true;                       // the first pass always runs
     for (let pass = 0; pass < 2 && moved; pass++) {
-        moved = false;
-        for (let i = 0; i < count; i++) {
-            const b = bots[i];
-            const rr = pr + rad * b.spec.scale;
-            const dx = b.x - gx;
-            const dz = b.z - gz;
-            const d2 = dx * dx + dz * dz;
-            if (d2 < rr * rr) {
-                if (d2 <= 1e-4) {
-                    b.x = gx + rr;    // dead centre: shove it out sideways
-                } else {
-                    const d = d2 ** 0.5;
-                    const push = (rr - d) / d;
-                    b.x += dx * push;
-                    b.z += dz * push;
-                }
-                if (b.timer > 0.6) b.timer = 0.6;   // re-think the plan soon
-                moved = true;
-            }
-        }
-        for (let i = 0; i < count; i++) {
-            const a = bots[i];
-            const ar = rad * a.spec.scale;
-            for (let j = i + 1; j < count; j++) {
-                const b = bots[j];
-                const rr = ar + rad * b.spec.scale;
-                const dx = b.x - a.x;
-                const dz = b.z - a.z;
-                const d2 = dx * dx + dz * dz;
-                if (d2 < rr * rr && d2 > 1e-4) {
-                    const d = d2 ** 0.5;
-                    const push = (rr - d) / (2 * d);
-                    a.x -= dx * push;
-                    a.z -= dz * push;
-                    b.x += dx * push;
-                    b.z += dz * push;
-                    moved = true;
-                }
-            }
-        }
+        const playerMoved = collidePlayerPass(bots, count, gx, gz, rad, pr);
+        const botsMoved = collideBotPass(bots, count, rad);
+        moved = playerMoved || botsMoved;
     }
 }
 
