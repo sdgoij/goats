@@ -204,6 +204,10 @@ function sceneCommand(line) {
             return "ok " + JSON.stringify({
                 lighting: useLighting,
                 shadows: shadowMode === SHADOW_MAP ? "map" : shadowMode === SHADOW_PLANAR ? "planar" : "off",
+                shadowStrength: ctlRound(shadowStrengthNow),
+                shadowReady: shadowMapReady,
+                lightY: ctlRound(LIGHT_DIR[1]),
+                skyLight: ctlRound(skyLight),
                 sky: useSkyShader,
                 cloud: CLOUD_LEVELS[cloudLevel()],
                 fullscreen: typeof rl.isWindowFullscreen === "function" ? rl.isWindowFullscreen() : false,

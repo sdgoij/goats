@@ -39,8 +39,10 @@ build rather than the revision, which is itself the most actionable finding here
   script-level `const`/`let`/function *name* inside a loop — 25× the same read from
   a local, and 25× a global *object* property like `Math` or `rl` (2.5–7 ns),
   because the engine’s global-value cell only warms for object records (§4c). Inside
-  a **mod** the cell is disabled entirely by an unclean env chain, so a global read
-  there costs ~2.9 µs — which is why `mods/birds` needed its `Math` members frozen.
+  a **mod** the cell was disabled entirely by an unclean env chain on the pin measured
+  here, so a global read there cost ~2.9 µs — which is why `mods/birds` needed its
+  `Math` members frozen. **On `7d975c8` that is no longer true**: the same fixture reads
+  12–13 ns, so mods compile their global reads too (Appendix D).
 - **Removing global reads from four hot bodies recovered 2.1–2.3 ms/frame dry and
   ~0.8 ms more in the rain**: the grass grid 2.88 → 1.76 ms (`shadow_grass` 0.53 →
   0.28–0.36), the goat collision resolve 0.49 → 0.22 ms, the birds mod (0.70 →
@@ -301,6 +303,8 @@ fixture that produced it could not have shown it: those bodies live inside a **m
 whose env chain is not clean, so the JIT disables its global fast cell for every
 global read there. That is a real effect of its own (a global read costs ~2.9 µs in
 a mod function where a script pays 7 ns for the same read), but it is a *mod* fact.
+*(On `7d975c8` it is no longer a mod fact either: the same fixture reads 12–13 ns —
+see “The mod compile gate has moved” in Appendix D.)*
 
 Re-measured with the engine’s own cross-engine corpus runner (`slag --corpus`, the
 same steady-state protocol as node), the picture is per-read rather than per-body:
@@ -334,7 +338,9 @@ compiled”. Two consequences to carry:
 - **`** 0.5` for `Math.sqrt` was not the win it looked like in §4b’s table.** `Math`
   is the *cheap* kind of global in a script (2.12 ms vs 1.06 for no read at all),
   and the corpus puts `Math.sqrt` at 30 ns/iter against `** 0.5`’s 20 ns. The
-  substitution still matters in a *mod*, where every global read is ~2.9 µs.
+  substitution still matters in a *mod*, where every global read is ~2.9 µs. *(On
+  `7d975c8` a mod's global read is ~13 ns and `Math.sqrt` is the cheaper of the two
+  — Appendix D.)*
 - **The magnitudes are not reconciled yet**, and this is now the most valuable open
   question in the profile: `collidePairs` still measures ~3.4 µs per pair-step, ~40×
   the corpus’s compiled kernel, and a single call to a compiled kernel measured
@@ -1500,3 +1506,174 @@ the global write cell, not allocation.
 
 After the change the grass path is ~1.3 ms visible plus ~0.4 ms shadow, and `boundary` grows to
 ~6.7 ms of a 16.7 ms budget -- the win is headroom, not fps, on this machine.
+
+## Appendix D — the `7d975c8` baseline, and the shadow `bench.sh` was switching off
+
+A fresh profile on engine pin `7d975c8`, the same binary flags and protocol as §1: `cargo
+build --release -p goats`, windowed, vsync, sound off, `perf on` after the client settled.
+Five mods are enabled now (`birds`, `example`, `fatguy`, `jitprobe`, `wasm`), so `mods_*`
+rows are not directly comparable with the four-mod tables above. Weather was clear for
+every window.
+
+### The frame
+
+Ten steady `n=240` windows, ms/frame:
+
+| phase | ms | | phase | ms |
+| --- | ---: | --- | --- | ---: |
+| `food` | 0.32 | | `sky2d` | 0.33 |
+| `weather` | 0.45 | | `shadow_grass` | 0.23 |
+| `clouds_upd` | 0.06 | | `shadow_goat` | 0.11 |
+| `rain_upd` | 0.07 | | `shadow_bots` | 0.15 |
+| `audio` | 0.18 | | `shadow_tail` | 0.13 |
+| `food_upd` | 0.05 | | `mirror` | 0.03 |
+| `fx_upd` | 0.32 | | `stars` | 0.12 |
+| `light` | 0.43 | | `sky_clouds` | 0.14 |
+| `input` | 0.11 | | `clouds` | 0.00 |
+| `goat_sim` | 0.42 | | `tuft_setup` | 0.06 |
+| `goat_pose` | 0.06 | | `tuft_field` | 0.17 |
+| `bots_ai` | 0.19 | | `tuft_draw` | 0.25 |
+| `peers_upd` | 0.02 | | `tufts` | 0.02 |
+| `collide` | 0.14 | | `terrain` | 0.01 |
+| `portals` | 0.07 | | `goat` | 0.09 |
+| `terrain_upd` | 0.02 | | `bots` | 0.40 |
+| **`mods_upd`** | **1.03** | | `peers` | 0.02 |
+| | | | `water` | 0.01 |
+| | | | **`fx`** | **0.72** |
+| | | | `mods_draw3d` | 0.39 |
+| | | | `endmode3d` | 0.08 |
+| | | | `rain2d` | 0.03 |
+| | | | `hud` | 0.26 |
+| | | | `mods_hud` | 0.04 |
+| | | | `mod2d` | 0.01 |
+
+| group | ms |
+| --- | ---: |
+| update | 3.94 |
+| shadow | 0.62 |
+| draw | 2.79 |
+| rebuild (`rb_mesh` + `rb_bake`) | 0.12 |
+| **phases** | **7.47** |
+| `boundary` (swap wait) | 8.72 |
+| total | 16.19 |
+| fps | 59–60 |
+
+**The scene is back to ~7.5 ms of a 16.7 ms budget**; `boundary` is where the rest waits, and
+fps is still at vsync. The grass is no longer the shape it was in Appendix C: `tuft_field` is
+0.17 against 0.64 and `tuft_draw` 0.25 against 0.50, so the whole grass path is ~0.5 ms visible
+plus 0.23 in the shadow pass.
+
+### The shadow `bench.sh` was switching off
+
+`bench.sh` opens every run with `setting fullscreen off`. As a piped command it can be consumed
+while the client is still loading, i.e. **before `makeLighting()` has built the shadow map**
+(load step 5). `applySettings` handled that with
+
+```js
+if (SETTINGS.shadow === 2 && !shadowMapReady) SETTINGS.shadow = 0;
+```
+
+which writes the downgrade back into the setting. The next `applyStartupSettings()` then applied
+`shadowMode = SETTINGS.shadow` and shadows stayed off for the whole session. Every `bench.sh`
+window (and every hand-run `perf` that copied its protocol) therefore had **no shadow pass at
+all** -- the `shadow_*` rows in the tables above simply did not exist, and the frame was ~0.62 ms
+cheaper than a real one.
+
+The fix keeps the user's choice and downgrades only the mode this build can honour right now
+(`shadowModeNow()`, `menu.js`): a later push, and startup after `makeLighting`, see the map ready
+and restore it. Verified by running the same protocol with the command at launch: 8 of 8 windows
+now carry `shadow_grass`, `shadow_goat`, `shadow_bots` and `shadow_tail`.
+
+### What the top phases are made of
+
+Ablations, same protocol, shadows on, ms/frame:
+
+| | baseline | `mod disable …fatguy` | `tune explosions.enabled 0` |
+| --- | ---: | ---: | ---: |
+| `mods_upd` | 1.03 | **0.54** | 1.09 |
+| `mods_draw3d` | 0.39 | 0.36 | — |
+| `fx` | 0.72 | 0.44 | **0.10** |
+| `fx_upd` | 0.32 | 0.38 | **0.07** |
+
+- **`mods_upd` is the largest phase and almost all of it is two mods.** Disabling `fatguy`
+  removes ~0.49 ms; the remaining 0.54 is `birds` (six birds) plus the dispatch. `fatguy` is a
+  single entity spending ~0.5 ms a frame, against ~0.08 ms per bird. The obvious explanation --
+  that its bodies read `Math.*` as true globals and pay §4b's ~2.9 µs an iteration -- does not
+  hold on this pin: see *The mod compile gate has moved* below. The cost is the work: two fresh
+  objects a frame, a handle array, a water crossing and the nearest-goat/contact loops.
+- **`fx` is scene state, not a steady cost.** It ran 0.22 → 0.98 over the 45 s window: `fatguy`
+  and the birds keep tripping devices, each bang adds a crater (one `drawQuad3D` per crater inside
+  the scorch range) and a handful of effect instances. With `explosions.enabled 0` the whole row
+  is 0.10 ms, and that 0.10 is `PORTALS.draw()` -- `drawExplosions` returns before it draws
+  anything. `fx_upd`'s 0.07 with the system off is mostly `updateCraters`, which keeps running on
+  purpose (`enabled 0` is a bisect, not a way to leave a hole in the world).
+- Everything else above the ~0.03 `perfMark` floor is a count of engine crossings or work inside
+  one: `weather` 0.45, `light` 0.43 (three uniform pushes plus the shadow matrix), `goat_sim`
+  0.42 (~10 key reads), `bots` 0.40 (seven model draws on the `gpu-skinning` build), `sky2d` 0.33,
+  `food` 0.32, `hud` 0.26, `shadow_grass` 0.23.
+
+### The probe on this pin
+
+`perf probe` ×3, nanoseconds per iteration as the probe reports them:
+
+| | run 1 | run 2 | run 3 |
+| --- | ---: | ---: | ---: |
+| `rl.getFPS()` (a call) | 4025 | 4079 | 3980 |
+| `rl.WHITE` (a property read) | 7295 | 7322 | 7428 |
+| `Math.sin(i)` | 4058 | 4229 | 4130 |
+| `sink += i * 3` (same function) | 586 | 551 | 667 |
+| `pureNs` (own function, no engine) | 52 | 9.6 | 9.5 |
+
+The four engine-touching rows are the interpreter, as §4 says, and the values sit inside the
+“new” column measured there; `pureNs` is unchanged at ~10 ns. **This pin did not move the
+crossing cost measurably** -- the frame-level gain since `178f92f` is in the scene's own work
+(above all the grass field), not in the interface.
+
+### The mod compile gate has moved
+
+`jitprobe` (the `mods/jitprobe` fixture; every body below is measured inside a mod), ns/iter:
+
+| body | run 1 | run 2 |
+| --- | ---: | ---: |
+| `arith` (parameters only) | 9.4 | 10.8 |
+| `outer-read` (wrapper-scope `const`) | 12.7 | 12.8 |
+| `outer-chain` | 17.0 | 17.1 |
+| **`global-read` (`Math.PI`)** | **12.4** | **13.5** |
+| `call-outer` | 31.5 | 31.7 |
+| `call-param` | 14.5 | 14.5 |
+| `sqrt-global` (`Math.sqrt`) | 13.0 | 13.1 |
+| `pow-half` (`** 0.5`) | 32.1 | 31.9 |
+| `collide-current` | 3766.6 | 3634.3 |
+| `collide-leaf` | 3438.0 | 3321.9 |
+
+§4b measured a true global read inside a mod at **2.8–3 µs**; here it is **12–13 ns** -- the same
+as a wrapper-scope read and one `arith` step. **The mod's env chain no longer disables the global
+cell, so “a mod body that names a global is interpreted” no longer holds**, and neither does the
+~2.9 µs that §4c still quotes for mods. `Math.sqrt` is now *cheaper* than `** 0.5` (13 vs 32 ns),
+the reverse of §4b's table.
+
+What has not moved is `collide-current`: 3.4–3.8 µs/iter, ~40× the corpus's compiled kernel and
+~300× the `global-read` row. That is §4c's unreconciled “per-call pattern” finding, still open.
+
+Applied to the table above: freezing `fatguy`'s `Math` members -- the fix that helped the birds on
+the old pin -- measured `mods_upd` **1.03 → 0.95**, inside the 0.84–1.41 window spread, and the
+reads it removes are ~100 × 12 ns, i.e. ~1 µs. It is not the cost, and the change was reverted.
+Whatever the 0.49 ms is, it is the work (`player.state()`, `bots.list()`, `water.depthAt()`, the
+steer and contact loops over seven bots), not the interpreter.
+
+### What is left
+
+By measured cost, and all of it either mod-side or a crossing count:
+
+| | ms | what it is |
+| --- | ---: | --- |
+| `mods_upd` | 1.03 | `fatguy` ~0.49 (its per-frame API reads and steer/contact loops), `birds` ~0.5 |
+| `fx` | 0.72 | one quad per live crater, one billboard per effect instance, portals 0.10 |
+| `tufts` + `shadow_grass` | 0.75 | ~290 cube draws across both passes |
+| `weather`, `light`, `goat_sim`, `sky2d`, `food` | 0.32–0.45 each | scalar work and a handful of crossings |
+
+The frame has ~9 ms of headroom at vsync, so none of this shows up as fps on this machine. The
+largest attributable numbers are `fatguy`'s 0.49 ms and the crater/effect draw inside `fx`, and
+both are scene-side work rather than a compile gate: the mod bodies are compiled on this pin
+(`jitprobe`), and the effects are a count of live craters and billboards. The next lever is
+reducing what is submitted or how often it is rebuilt, not hoisting global reads.

@@ -50,6 +50,17 @@ function press(code) {
     return uiScreen === "hud" && !consoleOpen && rl.isKeyPressed(code);
 }
 
+// The shadow mode this build can honour right now. The map only counts as ready
+// once it has been rendered, and a `setting` command is consumed as soon as the
+// console runs -- which, for a command piped in at launch, is before `makeLighting`
+// has built the map. Writing that downgrade back into SETTINGS made it outlive the
+// map: `setting fullscreen off` at startup left shadows off for the whole session.
+function shadowModeNow() {
+    if (SETTINGS.shadow === SHADOW_MAP && !shadowMapReady) return SHADOW_OFF;
+    if (SETTINGS.shadow === SHADOW_PLANAR && shadowShader < 0) return SHADOW_OFF;
+    return SETTINGS.shadow;
+}
+
 // Push SETTINGS into the systems that own the behaviour.
 function applySettings() {
     applyAudioSettings();
@@ -58,9 +69,7 @@ function applySettings() {
         if (haveModel) rl.setModelShader(model, modelShaderFor(model, useLighting ? litShader : -1));
         setBotsShader(useLighting ? litShader : -1);
     }
-    if (SETTINGS.shadow === 2 && !shadowMapReady) SETTINGS.shadow = 0;
-    if (SETTINGS.shadow === 1 && shadowShader < 0) SETTINGS.shadow = 0;
-    shadowMode = SETTINGS.shadow;
+    shadowMode = shadowModeNow();
     if (skyShader >= 0) useSkyShader = SETTINGS.sky;
     if (typeof rl.toggleFullscreen === "function" &&
         typeof rl.isWindowFullscreen === "function" &&
@@ -78,7 +87,7 @@ function applyStartupSettings() {
     if (litShader >= 0 && haveModel) rl.setModelShader(model, modelShaderFor(model, useLighting ? litShader : -1));
     setBotsShader(useLighting ? litShader : -1);
     if (skyShader >= 0) useSkyShader = SETTINGS.sky;
-    shadowMode = SETTINGS.shadow;
+    shadowMode = shadowModeNow();
 }
 
 function drawMainMenu(sw, sh) {
