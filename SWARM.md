@@ -97,14 +97,17 @@ same `NetBridge` the console's `swarm` verb reaches.
 ## `goatsd`
 
 `goatsd` joins the default swarm unless told not to. It is the natural seed for a
-WAN: it prints the three things a client needs.
+WAN: it prints the three things a client needs for the session, and the registry
+ticket when the catalogue is on.
 
 ```
-$ goatsd --swarm-key <64 hex>
+$ goatsd --swarm-key <64 hex> --registry-key <64 hex> --share-mods
 ...
 goatsd: swarm topic 32b19c7a81bb09d6147d1a2511bbd3668b0c81a68abb7cfbe2f65d97dd195a9e
 goatsd: swarm seed id 8f3c...   (64 hex characters)
 goatsd: swarm ticket endpoint...
+goatsd: registry topic 93a3969b8c2b4e679f4cfdd4704d58f8ccc4413cc6ee25d3bac16796647f783f
+goatsd: registry ticket endpoint...
 ```
 
 Flags:
@@ -115,9 +118,18 @@ Flags:
 | `--topicid ID` | the topic to join (default: the game's own) |
 | `--peer ID\|TICKET` | a node already in the topic to seed from; repeatable |
 | `--swarm-key HEX` | a persistent endpoint secret, so the seed keeps its id across restarts |
+| `--no-registry` | do not start the mod registry |
+| `--registry-store DIR` | where the registry's blob store lives |
+| `--registry-key HEX` | a persistent registry identity, so clients can keep pointing at it |
+| `--registry-topic ID` | the catalogue to join (default: the game's own) |
+| `--registry-peer ID\|TICKET` | a registry node to seed from; repeatable |
+| `--share-mods` | announce this server's mods on the registry |
 
 `--swarm-key` (or `$GOATS_SWARM_KEY`) matters for a seed: clients dial it by id,
-and a random key would make that id change every restart.
+and a random key would make that id change every restart. `--registry-key`
+(`$GOATS_REGISTRY_KEY`) is the same argument for the catalogue, which has its own
+endpoint for now -- so a client seeds it with `$GOATS_REGISTRY_PEERS` and the
+registry ticket, not the swarm ticket.
 
 ## The first peer
 

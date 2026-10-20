@@ -22,10 +22,11 @@ mod headless;
 mod web;
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use session::registry::{Registry, RegistryConfig};
 use session::swarm::{Advert, SwarmCommands, SwarmConfig, SwarmEvent};
 use session::{Event, Host, ModsOutcome, WorldOutcome, WorldState, describe_mods};
 
@@ -44,6 +45,7 @@ const DEFAULT_HERD: usize = 7;
 const USAGE: &str = "\
 goatsd [name] [--listen address:port] [--gateway address:port] [--download URL] [--mods DIRECTORY] [--no-mods] [--herd N]
         [--nojoin] [--topicid ID] [--peer ID|TICKET]... [--swarm-key HEX]
+        [--no-registry] [--registry-store DIR] [--registry-key HEX] [--registry-topic ID] [--registry-peer ID|TICKET]... [--share-mods]
 
   name                the name to host under (default: server)
   -l, --listen ADDR   serve a status page on ADDR; a bare port means 0.0.0.0:port.
@@ -68,6 +70,19 @@ goatsd [name] [--listen address:port] [--gateway address:port] [--download URL] 
                       also read from $GOATS_SWARM_PEERS (comma-separated)
       --swarm-key HEX a persistent swarm endpoint secret, so this host keeps its
                       id across restarts (also $GOATS_SWARM_KEY)
+      --no-registry   do not start the mod registry
+      --registry-store DIR
+                      where the registry's blob store lives (default: .registry
+                      under the mods directory, or the working directory)
+      --registry-key HEX
+                      a persistent registry endpoint secret (also
+                      $GOATS_REGISTRY_KEY)
+      --registry-topic ID
+                      the registry topic (default: the game's catalogue)
+      --registry-peer ID|TICKET
+                      a registry node to seed from; repeatable, and also read
+                      from $GOATS_REGISTRY_PEERS (comma-separated)
+      --share-mods    announce the mods this server runs on the registry
   -h, --help          this text";
 
 /// What the command line asked for.
@@ -83,6 +98,12 @@ struct Options {
     topic_id: Option<String>,
     peers: Vec<String>,
     swarm_key: Option<String>,
+    no_registry: bool,
+    registry_store: Option<PathBuf>,
+    registry_key: Option<String>,
+    registry_topic: Option<String>,
+    registry_peers: Vec<String>,
+    share_mods: bool,
 }
 
 /// Asking for help is not an error, but it ends the process the same way.
@@ -107,6 +128,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
         topic_id: None,
         peers: Vec::new(),
         swarm_key: None,
+        no_registry: false,
+        registry_store: None,
+        registry_key: None,
+        registry_topic: None,
+        registry_peers: Vec::new(),
+        share_mods: false,
     };
     let mut named = false;
     let mut args = args;
@@ -139,6 +166,28 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
             }
             "--swarm-key" => {
                 options.swarm_key = Some(args.next().ok_or("--swarm-key needs 64 hex characters")?);
+            }
+            "--no-registry" => options.no_registry = true,
+            "--share-mods" => options.share_mods = true,
+            "--registry-store" => {
+                options.registry_store = Some(PathBuf::from(
+                    args.next().ok_or("--registry-store needs a directory")?,
+                ));
+            }
+            "--registry-key" => {
+                options.registry_key = Some(
+                    args.next()
+                        .ok_or("--registry-key needs 64 hex characters")?,
+                );
+            }
+            "--registry-topic" => {
+                options.registry_topic = Some(args.next().ok_or("--registry-topic needs an id")?);
+            }
+            "--registry-peer" => {
+                options.registry_peers.push(
+                    args.next()
+                        .ok_or("--registry-peer needs an id or a ticket")?,
+                );
             }
             "--herd" => {
                 let value = args.next().ok_or("--herd needs a count")?;
@@ -387,6 +436,11 @@ async fn main() {
         }
     }
 
+    // The registry: a catalogue of what peers have, and, with `--share-mods`, a
+    // provider for the world set this server runs. It is the WAN seed the swarm
+    // is not: a catalogue outlives any one session.
+    let registry = start_registry(&options, mods_dir.as_deref(), &loader).await;
+
     // The status page, only when asked for. It reports the ticket, the client
     // count and where to get the client; the count is kept up to date from the
     // session's roster events below. The listener is bound here, before the loop
@@ -561,6 +615,9 @@ async fn main() {
     {
         eprintln!("goatsd: close timed out; exiting anyway");
     }
+    if let Some(registry) = registry {
+        registry.shutdown().await;
+    }
 }
 
 /// Joins the discovery swarm from the command line: the topic, the seed peers,
@@ -592,6 +649,80 @@ async fn start_swarm(options: &Options) -> Result<(SwarmCommands, session::swarm
         .map_err(|error| error.to_string())?;
     let commands = swarm.commands();
     Ok((commands, swarm))
+}
+
+/// The registry this server seeds. It is the catalogue a WAN deployment needs
+/// when no player happens to be hosting, and `--share-mods` makes it a provider
+/// for the world set it runs.
+async fn start_registry(
+    options: &Options,
+    mods_dir: Option<&Path>,
+    loader: &mods::Loader,
+) -> Option<Registry> {
+    if options.no_registry {
+        return None;
+    }
+    let store = options.registry_store.clone().unwrap_or_else(|| {
+        mods_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".registry")
+    });
+    let mut config = match RegistryConfig::from_env(store) {
+        Ok(Some(config)) => config,
+        Ok(None) => return None,
+        Err(error) => {
+            eprintln!("goatsd: registry: {error}");
+            return None;
+        }
+    };
+    if let Some(topic) = options.registry_topic.as_deref() {
+        match session::swarm::parse_topic(topic) {
+            Ok(topic) => config.topic = topic,
+            Err(error) => {
+                eprintln!("goatsd: --registry-topic: {error}");
+                return None;
+            }
+        }
+    }
+    if let Some(key) = options.registry_key.as_deref() {
+        match session::swarm::parse_secret(key) {
+            Ok(secret) => config.secret = Some(secret),
+            Err(error) => {
+                eprintln!("goatsd: --registry-key: {error}");
+                return None;
+            }
+        }
+    }
+    for peer in &options.registry_peers {
+        match session::swarm::parse_peer(peer) {
+            Ok(peer) => config.peers.push(peer),
+            Err(error) => {
+                eprintln!("goatsd: --registry-peer: {error}");
+                return None;
+            }
+        }
+    }
+
+    match Registry::start(config).await {
+        Ok(registry) => {
+            println!("goatsd: registry topic {}", registry.topic());
+            println!("goatsd: registry ticket {}", registry.ticket());
+            if options.share_mods {
+                let shared = pull::share(&registry, loader).await;
+                println!("goatsd: registry {}", shared.describe());
+                for (id, reason) in &shared.failed {
+                    eprintln!("goatsd: registry: {id} not shared: {reason}");
+                }
+            }
+            let _ = std::io::stdout().flush();
+            Some(registry)
+        }
+        Err(error) => {
+            eprintln!("goatsd: could not start the registry: {error}");
+            None
+        }
+    }
 }
 
 /// Restates this host's advert: its session ticket, name and player count.

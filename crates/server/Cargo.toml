@@ -22,6 +22,8 @@ flight-js = { workspace = true }
 mods = { workspace = true }
 # The compiled-mod host (M17b): the server drives world `.wasm` mods from Rust.
 plugin = { workspace = true }
+# Announcing the world mods a seed runs on the registry (M18f).
+pull = { workspace = true }
 # The wire protocol: the status page reports the version in use, and the birds
 # fixture test checks the whole world still fits one datagram (its cap).
 proto = { workspace = true }

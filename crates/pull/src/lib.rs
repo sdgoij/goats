@@ -199,6 +199,78 @@ pub async fn pull_registry(
     Ok(report)
 }
 
+/// What one share did, for the caller to report.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Shared {
+    /// The records that are now on the topic.
+    pub shared: Vec<session::ModRecord>,
+    /// A mod the registry could not import, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
+impl Shared {
+    /// One line for the console: how many went out, and what did not.
+    pub fn describe(&self) -> String {
+        let mut parts = vec![format!("shared {}", self.shared.len())];
+        for (id, reason) in &self.failed {
+            parts.push(format!("{id}: {reason}"));
+        }
+        parts.join("; ")
+    }
+}
+
+/// Announce every mod in `loader` on `registry` (M18f). The caller decides
+/// consent -- this is the mechanism, not the policy -- and a world mod is no
+/// different from a client mod here: both get a record, and the record says which
+/// side it is.
+///
+/// A zip or an in-memory source is materialised into a scratch tree first, because
+/// the registry names the tree and not the archive.
+pub async fn share(registry: &Registry, loader: &mods::Loader) -> Shared {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let scratch = std::env::temp_dir().join(format!(
+        "goats-share-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+
+    let mut report = Shared::default();
+    for (index, manifest) in loader.mods().iter().enumerate() {
+        let record = session::ModRecord {
+            id: manifest.id.clone(),
+            version: manifest.version.clone(),
+            api: manifest.api,
+            side: match manifest.side {
+                mods::Side::World => session::ModSide::World,
+                mods::Side::Client => session::ModSide::Client,
+            },
+            hash: manifest.hash,
+            root: [0u8; 32],
+            size: 0,
+            author: [0u8; 32],
+        };
+        let result = match &manifest.source {
+            mods::ModSource::Dir(dir) => registry.share(record, dir).await,
+            source => {
+                let dest = scratch.join(format!("mod-{index}"));
+                let result = match source.materialize(&dest) {
+                    Ok(_) => registry.share(record, &dest).await,
+                    Err(error) => Err(error),
+                };
+                let _ = std::fs::remove_dir_all(&dest);
+                result
+            }
+        };
+        match result {
+            Ok(record) => report.shared.push(record),
+            Err(reason) => report.failed.push((manifest.id.clone(), reason)),
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    report
+}
+
 /// The staging directory inside the mods directory. It has no `mod.json` of its
 /// own, so [`mods::Loader::discover`] skips it; a half-written tree is therefore
 /// invisible even if the process dies mid-export.
@@ -528,14 +600,14 @@ mod tests {
                  "api": 1, "side": "world", "entry": "mod.js" }"#,
         );
         write(&host_mods.join("mod").join("mod.js"), "return 1;\n");
-        let digest = mods::Loader::discover(&host_mods)
-            .get("com.example.birds")
-            .expect("the fixture mod")
-            .hash;
+        let loader = mods::Loader::discover(&host_mods);
         let reference = ModRef {
             id: "com.example.birds".to_string(),
             version: "1.0.0".to_string(),
-            hash: digest,
+            hash: loader
+                .get("com.example.birds")
+                .expect("the fixture mod")
+                .hash,
         };
 
         let topic = session::registry::RegistryConfig::default_topic();
@@ -551,19 +623,10 @@ mod tests {
         let host = Registry::start(config("host-store"))
             .await
             .expect("host registry");
-        let record = session::ModRecord {
-            id: reference.id.clone(),
-            version: reference.version.clone(),
-            api: 1,
-            side: session::ModSide::World,
-            hash: reference.hash,
-            root: [0u8; 32],
-            size: 0,
-            author: [0u8; 32],
-        };
-        host.share(record, &host_mods.join("mod"))
-            .await
-            .expect("shared the tree");
+        let shared = share(&host, &loader).await;
+        assert!(shared.failed.is_empty(), "{:?}", shared.failed);
+        assert_eq!(shared.shared.len(), 1);
+        assert_eq!(shared.shared[0].reference(), reference);
 
         let client = Registry::start(RegistryConfig {
             peers: vec![parse_peer(host.ticket()).expect("the host ticket")],

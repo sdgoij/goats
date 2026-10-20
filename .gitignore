@@ -28,3 +28,5 @@ mods/pulled.json
 # own working state under `mods/`, and neither is a mod.
 mods/.registry/
 mods/.staging/
+# `goatsd`'s default store when it is run without a mods directory.
+/.registry/

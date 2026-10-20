@@ -19,7 +19,7 @@
 use std::path::{Path, PathBuf};
 use std::thread;
 
-use mods::{AssetMode, Loader, ModSource};
+use mods::{AssetMode, Loader};
 use serde::Deserialize;
 use session::registry::{Registry, RegistryConfig};
 use session::swarm::{self, Advert, SwarmCommands, SwarmConfig, SwarmEvent};
@@ -775,52 +775,19 @@ async fn share_mods(registry: &Registry, mods_dir: &Path, events: &mpsc::Unbound
         );
     }
 
-    let scratch = std::env::temp_dir().join(format!("goats-share-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&scratch);
-    let mut shared = 0usize;
-    for (index, manifest) in loader.mods().iter().enumerate() {
-        let record = session::ModRecord {
-            id: manifest.id.clone(),
-            version: manifest.version.clone(),
-            api: manifest.api,
-            side: match manifest.side {
-                mods::Side::World => session::ModSide::World,
-                mods::Side::Client => session::ModSide::Client,
+    let shared = pull::share(registry, &loader).await;
+    for (id, reason) in &shared.failed {
+        emit(
+            events,
+            Event::Notice {
+                text: format!("registry: {id} not shared: {reason}"),
             },
-            hash: manifest.hash,
-            root: [0u8; 32],
-            size: 0,
-            author: [0u8; 32],
-        };
-        let result = match &manifest.source {
-            ModSource::Dir(dir) => registry.share(record, dir).await,
-            source => {
-                // A zip or an in-memory source has to become the canonical tree
-                // first; the tree, not the archive, is what the registry names.
-                let dest = scratch.join(format!("mod-{index}"));
-                let result = match source.materialize(&dest) {
-                    Ok(_) => registry.share(record, &dest).await,
-                    Err(error) => Err(error),
-                };
-                let _ = std::fs::remove_dir_all(&dest);
-                result
-            }
-        };
-        match result {
-            Ok(_) => shared += 1,
-            Err(error) => emit(
-                events,
-                Event::Notice {
-                    text: format!("registry: {} not shared: {error}", manifest.id),
-                },
-            ),
-        }
+        );
     }
-    let _ = std::fs::remove_dir_all(&scratch);
     emit(
         events,
         Event::Notice {
-            text: format!("registry: sharing {shared} mod(s)"),
+            text: format!("registry: {}", shared.describe()),
         },
     );
 }
