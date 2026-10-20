@@ -1170,7 +1170,11 @@ mod tests {
         .expect("encode");
         assert!(line.contains(r#""type":"peer""#), "{line}");
         assert!(line.contains(r#""name":"alice""#), "{line}");
-        assert!(line.contains(r#""gait":"idle""#), "{line}");
+        // A flight's gait is one of the pinned words (protocol 12), and the attitude travels
+        // beside it -- the assertion used to read "idle" from a test that already sent `Fly`.
+        assert!(line.contains(r#""gait":"fly""#), "{line}");
+        assert!(line.contains(r#""pitch":20"#), "{line}");
+        assert!(line.contains(r#""roll":-10"#), "{line}");
 
         let world_event = |eaten, craters, spent| session::Event::World {
             bots: vec![session::BotState {

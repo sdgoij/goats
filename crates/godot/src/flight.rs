@@ -281,23 +281,36 @@ fn read_input(values: &[f32]) -> Input {
     }
 }
 
+/// The state's twelve words, in the order both bindings pin (`FLIGHT-RUST.md` §3).
+///
+/// Pure, so the layout is testable without a Godot engine: constructing a
+/// `PackedFloat32Array` outside one panics in `godot-ffi`, which is why this is a plain
+/// array and `write_state` below is the only thing that touches the engine's type.
+fn state_words(state: &State) -> [f32; STATE_LEN] {
+    [
+        state.x,
+        state.z,
+        state.y,
+        state.yaw,
+        state.pitch,
+        state.roll,
+        state.speed,
+        state.vy,
+        state.flap_cool,
+        state.flaps as f32,
+        state.flight_time,
+        match state.phase {
+            Phase::Grounded => 0.0,
+            Phase::Fly => 1.0,
+            Phase::Fall => 2.0,
+        },
+    ]
+}
+
 fn write_state(out: &mut PackedFloat32Array, state: &State) {
-    out.push(state.x);
-    out.push(state.z);
-    out.push(state.y);
-    out.push(state.yaw);
-    out.push(state.pitch);
-    out.push(state.roll);
-    out.push(state.speed);
-    out.push(state.vy);
-    out.push(state.flap_cool);
-    out.push(state.flaps as f32);
-    out.push(state.flight_time);
-    out.push(match state.phase {
-        Phase::Grounded => 0.0,
-        Phase::Fly => 1.0,
-        Phase::Fall => 2.0,
-    });
+    for value in state_words(state) {
+        out.push(value);
+    }
     debug_assert_eq!(out.len(), STATE_LEN);
 }
 
@@ -316,6 +329,10 @@ mod tests {
     /// The array layout is the contract the two clients share, so it is checked
     /// here as well as in `flight-js`. A `State` that satisfies `is_finite` is
     /// enough: the maths itself is the crate's tests.
+    ///
+    /// It goes through `state_words`, not `write_state`: a `PackedFloat32Array` needs the
+    /// Godot engine, and a `cargo test` outside one panics in `godot-ffi`. The binding's use
+    /// of that type is `verify_flight.gd`'s, in the engine that owns it.
     #[test]
     fn the_state_array_round_trips() {
         let state = State {
@@ -332,10 +349,9 @@ mod tests {
             flight_time: 0.75,
             phase: Phase::Fall,
         };
-        let mut packed = PackedFloat32Array::new();
-        write_state(&mut packed, &state);
-        assert_eq!(packed.len(), STATE_LEN);
-        let back = read_state(packed.as_slice());
+        let words = state_words(&state);
+        assert_eq!(words.len(), STATE_LEN);
+        let back = read_state(&words);
         assert_eq!(back, state);
     }
 

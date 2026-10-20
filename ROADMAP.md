@@ -91,7 +91,7 @@ uses.
 | **M14d** | World mods + net compatibility: seed streams, world extension, join handshake | M14c, M12b | M–L | ✅ **Done (handshake)** — the digest and refusal; the snapshot extension is M14d2 |
 | **M14d2** | World-mod simulation: `goats.rng`, `world.extend`, snapshot merging, `goatsd` evaluates mods | M14d | M | ✅ **Done** — streams + extension state travel in the snapshot's `mods` field |
 | **M14e** | Mods menu, sample mod, smoke test, CI | M14c | S–M | ✅ **Done** — session-only Mods screen, `mods/example/` fixture, the mod smoke test, CI syntax-check, a world-mod determinism test |
-| **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, five animation states, boids, synced through `world.extend`; the birds fixture test |
+| **M14f** | Example: a full world mod, `birds` (own model, animations, flocking) | M14d2 | M | ✅ **Done** — procedural meshes + generated texture, eight animation states, boids, synced through `world.extend`; the birds fixture test |
 | **M14g** | Mod developer workflow: `--watch`, reload from disk, `.zip` mods | M14f | S–M | ✅ **Done** — a `notify` watcher, `Loader::reload`, and directory-or-zip mod sources |
 | **M14h** | Example: a second sample mod, `fatguy` (his own model, and his bad luck) | M14f, M19 | S–M | ✅ **Done** — a `side: "client"` mod whose model rides in a slot of its own; contact with goats *and* the birds' flock through the new `goats.entities`, device trips through `goats.explosions`, and an aimed chain that lands him on the next device |
 | **M15** | Rust harness: run the scene tests on Slag, drop Node | M12b, M14 | M–L | ✅ **Done** — 205 cases on the engine, and Node is gone from CI, `tools/` and the docs |
@@ -1217,8 +1217,8 @@ decisions behind it and the constraints that shape it.
   startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
   diagnosis one look rather than a guess. Opaque assets are still compared byte
   byte, since the loader cannot know what they are. `mods/birds` itself is
-  pinned at `77675b54122841b5` by a test, because a release ships it and an
-  older client refuses a server whose birds differs. That pin has moved seven
+  pinned at `2799fcffef72bd1d` by a test, because a release ships it and an
+  older client refuses a server whose birds differs. That pin has moved nine
   times: once when the mod's arithmetic was rewritten to stop naming `Math`
   (PERF.md §4b), again when the flock learned to set devices off, to sit on
   the goat and to squawk (M19's surface, below), then because it offers the
@@ -1240,9 +1240,14 @@ decisions behind it and the constraints that shape it.
   factor of ~57 and spun like a rotor instead of beating its wings. A mod
   states its angle in the unit the API declares, not the one the replaced
   engine happened to want -- the abstraction is only worth having if the
-  engine's quirk is not visible through it. Deliberate changes all seven,
-  and a compatibility boundary: a peer on the older birds cannot join a host
-  on the newer one. The test's failure
+  engine's quirk is not visible through it. The eighth is captured-bird flight
+  (`FLIGHT.md`): the flock gained a `RIDE` state, a bird that stays on a goat's
+  back in 3D and a seven-number row carrying the attitude -- 1.1.0. The ninth
+  is the multiplayer slice: the payload grew a `riders` map naming who is
+  aboard, so a joiner's own client can grant its goat the capability -- 1.2.0,
+  and a boundary by design like every move before it. Deliberate changes all
+  nine, and a compatibility boundary: a peer on the older birds cannot join a
+  host on the newer one. The test's failure
   message prints the new digest in the source's own form, so the next move is
   a paste rather than another decimal-to-hex conversion by hand. (A note in
   the fixture itself would be the surest place for the warning, and it is the

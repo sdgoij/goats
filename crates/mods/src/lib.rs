@@ -1873,14 +1873,14 @@ mod tests {
 
         assert_eq!(
             birds.hash,
-            0x7767_5b54_1228_41b5,
+            0x2799_fcff_ef72_bd1d,
             "the birds digest changed: {}@{} -- if that is intended, pin {} and write \
              the move up in the ROADMAP's M14d",
             birds.id,
             birds.version,
             pin(birds.hash)
         );
-        assert_eq!(pin(0x7767_5b54_1228_41b5), "0x7767_5b54_1228_41b5");
+        assert_eq!(pin(0x2799_fcff_ef72_bd1d), "0x2799_fcff_ef72_bd1d");
     }
 
     #[test]
