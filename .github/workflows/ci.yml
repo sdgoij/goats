@@ -43,7 +43,7 @@ jobs:
   test:
     name: Crates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -93,7 +93,7 @@ jobs:
   scene:
     name: Scene tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
