@@ -29,41 +29,96 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # The scene tests are Rust (M15): `crates/harness` evaluates the client's exact
-  # scene on Slag against a recording `rl` stub, so the suite needs no Node, no
-  # raylib and no display. Slag is slow unoptimized, so the harness's long cases
-  # are `#[ignore]`d for a local debug run and CI runs the whole crate in release
-  # with `--include-ignored` -- one pass over everything, in the profile the
-  # engine ships in, which is also what makes the engine's own speed a number.
+  # The crates that need no engine (M15). The scene's own suite is the next job:
+  # they are split because the two build the same dependency graph in different
+  # profiles, and a single job meant one step's timeout took the other one's cache
+  # with it -- the next run then compiled everything from cold and timed out again.
+  #
+  # The client crate is left out: it links raylib, and the build job below is the
+  # one that installs the build dependencies for it. `crates/android` is left out
+  # for the same reason -- it is the client's cdylib, so building it builds the
+  # client. The harness is left out too -- it is the scene job -- so this debug
+  # pass is the crates that are fast unoptimized, where debug's overflow and
+  # `debug_assert` checks are worth having and cost nothing.
   test:
-    name: Scene tests (${{ matrix.os }})
+    name: Crates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            rustflags: ""
+          # The MSVC linker is the slow half of a Windows build, and this suite
+          # links several dozen binaries. Rust ships LLD, which links the same
+          # COFF objects; `RUSTFLAGS` is part of Cargo's fingerprint, so the cache
+          # stays honest.
+          - os: windows-latest
+            rustflags: -C linker=rust-lld
+    env:
+      # Incremental data is worth nothing to a fresh runner and costs compile
+      # time and cache space on the way in.
+      CARGO_INCREMENTAL: 0
+      # `profile.dev` keeps line tables for a local backtrace. CI prints an
+      # assertion and its own message, and the DWARF is most of the link.
+      CARGO_PROFILE_DEV_DEBUG: 0
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # The client crate is left out: it links raylib, and the build job below is
-      # the one that installs the build dependencies for it. `crates/android` is
-      # left out for the same reason -- it is the client's cdylib, so building it
-      # builds the client. The harness is left out too -- it is the release step
-      # below -- so the debug pass is the crates that are fast unoptimized, where
-      # debug's overflow and `debug_assert` checks are worth having and cost
-      # nothing.
+        with:
+          # A job that hits the timeout used to throw its cache away with it, so
+          # the next run recompiled from cold and hit the timeout again. Keep a
+          # partial cache.
+          cache-on-failure: true
       - name: Test the crates that need no engine
         run: cargo test --workspace --exclude goats --exclude goats-android --exclude harness
-      # The scene's own suite: the 4050-frame scripted timeline, the mod cases (the
-      # synthetic tables, the checked-in example fixtures and the mod added after
-      # the freeze), the birds flock, the sky and the skinning. `--include-ignored`
-      # is the point: the long cases are ignored for a local debug run, and this
-      # runs them too, so nothing is covered only when someone remembers a second
-      # command.
+
+  # The scene tests: `crates/harness` evaluates the client's exact scene on Slag
+  # against a recording `rl` stub, so the suite needs no Node, no raylib and no
+  # display. Slag is slow unoptimized, so the long cases are `#[ignore]`d for a
+  # local debug run and CI runs the whole crate with `--include-ignored` -- one
+  # pass over everything.
+  #
+  # It runs in `fast`, not `release`, and that is the difference between a
+  # thirty-minute Windows link and a few minutes: `release` is `lto = "thin"`
+  # with one codegen unit, and every one of the harness's seventeen test
+  # binaries pays that bill at link. `fast` inherits `release` and only drops the
+  # LTO and the single unit, so the *semantics* are release's (same optimisation
+  # level, no overflow checks, same panic strategy) -- what it does not do is
+  # time the engine, which is PERF.md's job and not CI's. The shipping profile
+  # is still built, and its artifact tested, by the `build` and `godot` jobs.
+  scene:
+    name: Scene tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rustflags: ""
+          # See the crates job: seventeen test binaries, one linker.
+          - os: windows-latest
+            rustflags: -C linker=rust-lld
+    env:
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      # The 4050-frame scripted timeline, the mod cases (the synthetic tables, the
+      # checked-in example fixtures and the mod added after the freeze), the birds
+      # flock, the sky and the skinning. `--include-ignored` is the point: the long
+      # cases are ignored for a local debug run, and this runs them too, so nothing
+      # is covered only when someone remembers a second command.
       - name: Test the scene on the engine
-        run: cargo test --release -p harness -- --include-ignored --nocapture
+        run: cargo test --profile fast -p harness -- --include-ignored --nocapture
 
   # The Godot client, tested for the same three desktop targets the reference client ships for
   # (`build`'s matrix). None of this ran in CI before: the port was only ever checked by hand on the
@@ -74,8 +129,9 @@ jobs:
   # The reference's fourth target, Android, is deliberately absent: the port has no touch layer and no
   # Android preset, so there is nothing to build for it yet.
   #
-  # `needs: test`, so it starts only once the scene's own tests and the crates that need no engine
-  # are green: there is no point testing and building a client for a scene whose tests are failing.
+  # `needs: [test, scene]`, so it starts only once the scene's own tests and the crates that need
+  # no engine are green: there is no point testing and building a client for a scene whose tests
+  # are failing.
   #
   # The steps are `sh` on all three runners rather than `sh` on Linux and PowerShell on Windows: the
   # gates are POSIX scripts, and the Windows runner's Git Bash translates the paths Godot (a native
@@ -84,7 +140,7 @@ jobs:
   # `unzip`/`tar` fallbacks cover a runner that has only one of them.
   godot:
     name: Godot client (${{ matrix.name }})
-    needs: test
+    needs: [test, scene]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -184,7 +240,7 @@ jobs:
   # the nightly whose `rust-src`/`-Zbuild-std` the port was checked against.
   web:
     name: Web build
-    needs: [test, godot]
+    needs: [test, scene, godot]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -327,7 +383,7 @@ jobs:
   # The game embeds every asset it needs, so each release is a single binary.
   build:
     name: Build (${{ matrix.name }})
-    needs: test
+    needs: [test, scene]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -429,7 +485,7 @@ jobs:
   # because that is where the SDK and the NDK are cheapest to get.
   android:
     name: Android (arm64-v8a)
-    needs: test
+    needs: [test, scene]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -532,9 +588,9 @@ jobs:
   # It needs the export templates (a ~1.2 GB download covering every platform at once, cached per OS
   # so only the first run pays for it) and the GDExtension built for the target, so it does both.
   #
-  # `needs: godot` -- the test job above -- so nothing is packaged from a tree whose gates are red,
-  # and it is off the PR path because the template download is large and an export is the one step a
-  # PR cannot exercise cheaply.
+  # `needs: godot` -- the Godot client's gate, which itself waits on both Rust test jobs -- so nothing
+  # is packaged from a tree whose gates are red, and it is off the PR path because the template
+  # download is large and an export is the one step a PR cannot exercise cheaply.
   godot-build:
     name: Godot build (${{ matrix.name }})
     needs: godot
