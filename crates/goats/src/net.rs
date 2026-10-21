@@ -414,7 +414,12 @@ async fn run(
                     }
                 },
                 Err(text) => {
-                    emit(&events, Event::Notice { text });
+                    emit(
+                        &events,
+                        Event::Notice {
+                            text: format!("registry: {text}"),
+                        },
+                    );
                     None
                 }
             }
@@ -792,13 +797,18 @@ async fn advertise_host(host: &session::Host, swarm: Option<&SwarmCommands>) {
 /// Binds the client's one node the first time something needs it, or hands back
 /// the one already bound. The configuration is the first caller's: a node is
 /// bound once, and the router cannot gain an ALPN afterwards.
+///
+/// A bind failure's own message, without the `node:` the error type adds on its way
+/// out: the caller says what it was binding for (`registry: …`), and two prefixes
+/// for one failure reads worse than one.
 async fn bind_node(node: &mut Option<Arc<Node>>, config: NodeConfig) -> Result<Arc<Node>, String> {
     if let Some(node) = node {
         return Ok(node.clone());
     }
-    let bound = Node::bind(config)
-        .await
-        .map_err(|error| error.to_string())?;
+    let bound = Node::bind(config).await.map_err(|error| match error {
+        session::Error::Node(text) => text,
+        error => error.to_string(),
+    })?;
     *node = Some(bound.clone());
     Ok(bound)
 }

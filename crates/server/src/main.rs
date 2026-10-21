@@ -401,6 +401,12 @@ async fn main() {
         Ok(config) => match Node::bind(config).await {
             Ok(node) => Some(node),
             Err(error) => {
+                // `Error::Node`'s own message: this line already says what could not
+                // be bound, and "…: node: store …" reads as two faults.
+                let error = match error {
+                    session::Error::Node(text) => text,
+                    error => error.to_string(),
+                };
                 eprintln!("goatsd: could not bind the shared endpoint: {error}");
                 eprintln!(
                     "goatsd: discovery and the registry are off; the session still hosts on its own endpoint"

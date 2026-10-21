@@ -13,7 +13,8 @@
 //! ALPNs, so a `Host` can serve on the same endpoint. Both are fixed at bind
 //! time, because the router cannot gain an ALPN after it has spawned.
 
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use iroh::address_lookup::memory::MemoryLookup;
@@ -36,7 +37,9 @@ pub struct NodeConfig {
     pub secret: Option<SecretKey>,
     pub reach: Reach,
     /// The blob store to serve, if this node should accept the registry's transfer
-    /// protocol. The directory is created if missing.
+    /// protocol. The directory is created if missing, and it is locked before the
+    /// store is opened: a second process on the same directory is refused rather
+    /// than left waiting (`lock_store`).
     pub blobs: Option<PathBuf>,
     /// Accept the session's ALPNs too, so a `Host` can serve on this endpoint.
     /// The router is what accepts them, and it cannot gain an ALPN after spawn,
@@ -51,6 +54,12 @@ pub struct Node {
     router: Router,
     lookup: MemoryLookup,
     store: Option<Store>,
+    /// Held for as long as the store is open. Dropping the node is what lets the
+    /// next process in take the directory.
+    ///
+    /// Never read: the guard's whole job is its `Drop`.
+    #[allow(dead_code)]
+    store_lock: Option<File>,
     /// The session half, when this node accepts one.
     session: Option<SessionPort>,
     addr: EndpointAddr,
@@ -105,6 +114,38 @@ impl ProtocolHandler for SessionProtocol {
     }
 }
 
+/// Take the store's lock before `redb` does.
+///
+/// `redb::Database::create` *waits* on a directory another process holds rather
+/// than failing, and `FsStore::load` is called on the thread that also serves a
+/// client's commands -- so a second process on one mods directory would wait
+/// there forever, never getting as far as joining a session. Locking first turns
+/// that wait into an error the caller can report; the catalogue is then off for
+/// this process and everything else still works.
+fn lock_store(dir: &Path) -> Result<File, Error> {
+    std::fs::create_dir_all(dir)
+        .map_err(|error| Error::Node(format!("store {}: {error}", dir.display())))?;
+    let path = dir.join(".lock");
+    let file = File::options()
+        .create(true)
+        .write(true)
+        // A lock file is never rewritten, and truncating a path another process
+        // may be holding is the one thing this is here to avoid.
+        .truncate(false)
+        .open(&path)
+        .map_err(|error| Error::Node(format!("store {}: {error}", path.display())))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Error::Node(format!(
+            "store {}: in use by another process",
+            dir.display()
+        ))),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(Error::Node(format!("store {}: {error}", path.display())))
+        }
+    }
+}
+
 impl Node {
     /// Binds the endpoint, starts gossip and builds the one router this process
     /// will use. The store, when present, is opened before the router so the blobs
@@ -126,14 +167,15 @@ impl Node {
             .await
             .map_err(|error| Error::Node(format!("bind: {error}")))?;
 
-        let store = match &config.blobs {
+        let (store, store_lock) = match &config.blobs {
             Some(path) => {
+                let guard = lock_store(path)?;
                 let opened = FsStore::load(path)
                     .await
                     .map_err(|error| Error::Node(format!("store {}: {error}", path.display())))?;
-                Some(Store::from(opened))
+                (Some(Store::from(opened)), Some(guard))
             }
-            None => None,
+            None => (None, None),
         };
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -173,6 +215,7 @@ impl Node {
             router,
             lookup,
             store,
+            store_lock,
             session: session.map(|(port, _)| port),
             addr,
             ticket,
@@ -226,5 +269,68 @@ impl Node {
     /// shut down by the blobs protocol's own shutdown.
     pub async fn shutdown(&self) {
         let _ = self.router.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn workspace() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "goats-node-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// `Direct` and no secret: the test binds a loopback endpoint, not the WAN.
+    fn config(store: PathBuf) -> NodeConfig {
+        NodeConfig {
+            secret: None,
+            reach: Reach::Direct,
+            blobs: Some(store),
+            session: false,
+        }
+    }
+
+    /// A second node on a store the first one holds must be *refused*, not left
+    /// waiting: `redb` waits on the lock, and it waits on the thread that also
+    /// serves a client's commands -- a wait there is a client that never joins.
+    #[tokio::test]
+    async fn a_store_another_node_holds_is_refused() {
+        let store = workspace().join("store");
+        let first = Node::bind(config(store.clone()))
+            .await
+            .expect("the first node");
+        let started = Instant::now();
+        let error = match Node::bind(config(store.clone())).await {
+            Ok(_) => panic!(
+                "a second node on {} should have been refused",
+                store.display()
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("in use by another process"),
+            "the refusal should name the store: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the second bind waited {:.1}s instead of refusing",
+            started.elapsed().as_secs_f64()
+        );
+        // The first node's lock is what refused it, so letting go lets the next in.
+        drop(first);
+        Node::bind(config(store))
+            .await
+            .expect("the store is free again");
     }
 }

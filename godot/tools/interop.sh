@@ -65,13 +65,14 @@ root=$(cd "$here/../.." && pwd)
 godot_dir=$root/godot
 log=$root/target/interop-goatsd.log
 
-# Every process gets a registry store of its own. The store is a redb file and its
-# lock is exclusive, so a shared one is a *wait*, not a shared catalogue -- and a
-# client waits for it on the one networking thread that also runs `join`, so the
-# join never happens: these modes run two or three processes on one machine that
-# all present the same `mods/`. `goatsd` takes `--registry-store`, the scene reads
-# `GOATS_REGISTRY_STORE`, and the paths are relative because every process here
-# runs with `$root` as its working directory.
+# Every process gets a registry store of its own. These modes run two or three
+# processes on one machine that all present the same `mods/`, and the store is a
+# redb file with one writer: `crates/session` refuses the second opener rather
+# than waiting on it, so without this the second process would simply run with
+# its catalogue off -- and a gate that never opens a catalogue does not test one.
+# `goatsd` takes `--registry-store`, the scene reads `GOATS_REGISTRY_STORE`, and
+# the paths are relative because every process here runs with `$root` as its
+# working directory.
 registry_host=target/registry-host
 registry_scene=target/registry-scene
 registry_a=target/registry-a
