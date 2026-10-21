@@ -65,6 +65,19 @@ root=$(cd "$here/../.." && pwd)
 godot_dir=$root/godot
 log=$root/target/interop-goatsd.log
 
+# Every process gets a registry store of its own. The store is a redb file and its
+# lock is exclusive, so a shared one is a *wait*, not a shared catalogue -- and a
+# client waits for it on the one networking thread that also runs `join`, so the
+# join never happens: these modes run two or three processes on one machine that
+# all present the same `mods/`. `goatsd` takes `--registry-store`, the scene reads
+# `GOATS_REGISTRY_STORE`, and the paths are relative because every process here
+# runs with `$root` as its working directory.
+registry_host=target/registry-host
+registry_scene=target/registry-scene
+registry_a=target/registry-a
+registry_b=target/registry-b
+registry_ref=target/registry-reference
+
 # A release binary carries the platform's suffix -- `.exe` on Windows, nothing elsewhere -- so the
 # default path is derived from `uname` rather than hard-coded, the way `crates/godot/build.sh` picks
 # its platform. That is what lets the same script run the Linux CI job (`crates/godot/build.sh`'s
@@ -142,7 +155,8 @@ if [ "$mode" = "hostdeath" ]; then
     join_log=$root/target/join-herd.log
     : > "$host_log"
     : > "$join_log"
-    "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+    GOATS_REGISTRY_STORE="$registry_host" timeout -k 10 300 "$godot_bin" --headless \
+        --path "$(to_native "$godot_dir")" \
         --script res://tools/verify_herd_host.gd > "$host_log" 2>&1 &
     host_pid=$!
 
@@ -166,7 +180,8 @@ if [ "$mode" = "hostdeath" ]; then
     echo "interop.sh: this scene is hosting (${mode} mode)"
 
     set +e
-    GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+    GOATSD_TICKET="$ticket" GOATS_REGISTRY_STORE="$registry_scene" \
+        timeout -k 10 240 "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
         --script res://tools/verify_herd_death.gd > "$join_log" 2>&1
     join_status=$?
     wait "$host_pid"
@@ -207,7 +222,8 @@ if [ "$mode" = "jsjoin" ]; then
     # The scene resolves `mods/` from the working directory and the reference client must present
     # the same world-mod set, so both run at the root.
     cd "$root"
-    "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+    GOATS_REGISTRY_STORE="$registry_host" timeout -k 10 300 "$godot_bin" --headless \
+        --path "$(to_native "$godot_dir")" \
         --script res://tools/verify_host_reference.gd > "$host_log" 2>&1 &
     host_pid=$!
     cleanup_jsjoin() {
@@ -239,7 +255,8 @@ if [ "$mode" = "jsjoin" ]; then
     # <name>`, then a `net` read whose reply is the evidence it *joined* (`"mode":"client"`),
     # then a clean `quit`. The delay keeps the read inside the host's own hold window.
     ( printf 'connect %s jsgoat\n' "$ticket"; sleep 8; printf 'net\n'; sleep 1; printf 'quit\n' ) \
-        | timeout 60 "$goats_bin" --mods mods > "$client_log" 2>&1
+        | GOATS_REGISTRY_STORE="$registry_ref" \
+            timeout 60 "$goats_bin" --mods mods > "$client_log" 2>&1
     client_status=$?
     wait "$host_pid"
     host_status=$?
@@ -283,7 +300,7 @@ cd "$root"
 : > "$log"
 # `GOATSD_HERD`, when set, sizes the host's herd through the shipping `--herd` flag:
 # `herd` at a large count is the only run that proves the world datagram carries it.
-"$server" godot-host $mods_flag ${GOATSD_HERD:+--herd "$GOATSD_HERD"} ${GOATSD_FLAGS:+$GOATSD_FLAGS} > "$log" 2>&1 &
+"$server" godot-host $mods_flag --registry-store "$registry_host" ${GOATSD_HERD:+--herd "$GOATSD_HERD"} ${GOATSD_FLAGS:+$GOATSD_FLAGS} > "$log" 2>&1 &
 server_pid=$!
 
 cleanup() {
@@ -321,10 +338,12 @@ if [ "$mode" = "pair" ]; then
     b=$root/target/peers-b.log
     : > "$a"
     : > "$b"
-    GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+    GOATSD_TICKET="$ticket" GOATS_REGISTRY_STORE="$registry_a" \
+        timeout -k 10 240 "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
         --script res://tools/verify_peers_live.gd > "$a" 2>&1 &
     pid_a=$!
-    GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+    GOATSD_TICKET="$ticket" GOATS_REGISTRY_STORE="$registry_b" \
+        timeout -k 10 240 "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
         --script res://tools/verify_peers_live.gd > "$b" 2>&1 &
     pid_b=$!
     wait "$pid_a"
@@ -345,12 +364,14 @@ elif [ "$mode" = "herd" ]; then
     # *checked*: the probe insists the mirror holds exactly the count the host was asked for,
     # which a client emitting one part of a split snapshot would fail.
     GOATSD_TICKET="$ticket" GOATS_PROBE=1 GOATS_PROBE_HERD="${GOATSD_HERD:-}" \
-        "$godot_bin" --headless --path "$(to_native "$godot_dir")"
+        GOATS_REGISTRY_STORE="$registry_scene" \
+        timeout -k 10 240 "$godot_bin" --headless --path "$(to_native "$godot_dir")"
     status=$?
 elif [ "$mode" = "death" ]; then
     # The real scene, and the probe that kills and respawns its own goat: what a client's *own*
     # death has to leave alone is the herd it mirrors, which is the host's.
-    GOATSD_TICKET="$ticket" "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+    GOATSD_TICKET="$ticket" GOATS_REGISTRY_STORE="$registry_scene" \
+        timeout -k 10 240 "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
         --script res://tools/verify_herd_death.gd
     status=$?
 elif [ "$mode" = "pull" ]; then
@@ -367,17 +388,24 @@ elif [ "$mode" = "shot" ]; then
     # The real scene, in a window, long enough for a populated world to arrive and
     # for the herd to ease onto the ground under it. See `tools/screenshot.gd`.
     GOATSD_TICKET="$ticket" GOATS_SHOT_FRAMES=${GOATS_SHOT_FRAMES:-600} \
+        GOATS_REGISTRY_STORE="$registry_scene" \
         "$godot_bin" --path "$(to_native "$godot_dir")" \
         --script res://tools/screenshot.gd --resolution ${GOATS_SHOT_RESOLUTION:-1280x720}
     status=$?
     echo "interop.sh: wrote $godot_dir/shot.png"
 else
-    GOATSD_TICKET="$ticket" GOATSD_EXPECT="$mode" \
-        "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
+    GOATSD_TICKET="$ticket" GOATSD_EXPECT="$mode" GOATS_REGISTRY_STORE="$registry_scene" \
+        timeout -k 10 240 "$godot_bin" --headless --path "$(to_native "$godot_dir")" \
         --script res://tools/verify_interop.gd
     status=$?
 fi
 set -e
+
+# 124 is `timeout`'s: the scene was killed rather than failing. It used to be a CI
+# job that sat on this step until the hour ran out, so it gets a line of its own.
+if [ "$status" -eq 124 ]; then
+    echo "interop.sh: ${mode} did not finish inside its timeout; the scene was killed" >&2
+fi
 
 echo "---- goatsd said ----"
 # The session's own view: joins, leaves, the roster and chat.

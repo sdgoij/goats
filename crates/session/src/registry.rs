@@ -122,10 +122,19 @@ impl RegistryConfig {
     /// this is the standing form for a node with no swarm (`--nojoin`, a test, a
     /// catalogue-only process). The identity is the node's -- `GOATS_SWARM_KEY`
     /// for a client -- and `GOATS_REGISTRY_TOPIC` selects another catalogue.
+    ///
+    /// `store` is where the blobs live, and `GOATS_REGISTRY_STORE` overrides it: the
+    /// store is a redb file and its lock is exclusive, so two processes sharing a
+    /// mods directory -- a host and a client on one machine, two clients, the modes
+    /// in `godot/tools/interop.sh` -- wait on each other instead of both opening it.
     pub fn from_env(store: PathBuf) -> Result<Option<RegistryConfig>, String> {
         if std::env::var("GOATS_MODS_REGISTRY").is_ok_and(|value| value.trim() == "0") {
             return Ok(None);
         }
+        let store = match std::env::var("GOATS_REGISTRY_STORE") {
+            Ok(text) if !text.trim().is_empty() => PathBuf::from(text.trim()),
+            _ => store,
+        };
         let topic = match std::env::var("GOATS_REGISTRY_TOPIC") {
             Ok(text) if !text.trim().is_empty() => {
                 parse_topic(&text).map_err(|error| format!("GOATS_REGISTRY_TOPIC: {error}"))?
