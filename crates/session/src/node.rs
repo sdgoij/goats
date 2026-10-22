@@ -276,7 +276,6 @@ impl Node {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::{Duration, Instant};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -291,46 +290,24 @@ mod tests {
         dir
     }
 
-    /// `Direct` and no secret: the test binds a loopback endpoint, not the WAN.
-    fn config(store: PathBuf) -> NodeConfig {
-        NodeConfig {
-            secret: None,
-            reach: Reach::Direct,
-            blobs: Some(store),
-            session: false,
-        }
-    }
-
-    /// A second node on a store the first one holds must be *refused*, not left
-    /// waiting: `redb` waits on the lock, and it waits on the thread that also
-    /// serves a client's commands -- a wait there is a client that never joins.
-    #[tokio::test]
-    async fn a_store_another_node_holds_is_refused() {
-        let store = workspace().join("store");
-        let first = Node::bind(config(store.clone()))
-            .await
-            .expect("the first node");
-        let started = Instant::now();
-        let error = match Node::bind(config(store.clone())).await {
-            Ok(_) => panic!(
-                "a second node on {} should have been refused",
-                store.display()
-            ),
-            Err(error) => error.to_string(),
-        };
+    /// The lock this crate took on: a second opener is *refused*, not left
+    /// waiting, because `redb` waits and it waits on the thread that also serves
+    /// a client's commands -- a wait there is a client that never joins.
+    ///
+    /// No endpoint and no store: `Node::bind` is plumbing around this, and the
+    /// blocking `FsStore::load` is the very thing this must never reach.
+    #[test]
+    fn a_store_another_opener_holds_is_refused() {
+        let dir = workspace().join("store");
+        let first = lock_store(&dir).expect("the first lock");
+        let error = lock_store(&dir).expect_err("a second lock on the same directory");
         assert!(
-            error.contains("in use by another process"),
+            error.to_string().contains("in use by another process"),
             "the refusal should name the store: {error}"
         );
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the second bind waited {:.1}s instead of refusing",
-            started.elapsed().as_secs_f64()
-        );
-        // The first node's lock is what refused it, so letting go lets the next in.
+        // The first holder's guard is what refused it, so letting go lets the
+        // next one in.
         drop(first);
-        Node::bind(config(store))
-            .await
-            .expect("the store is free again");
+        lock_store(&dir).expect("the lock is free again");
     }
 }
