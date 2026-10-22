@@ -40,10 +40,21 @@ jobs:
   # client. The harness is left out too -- it is the scene job -- so this debug
   # pass is the crates that are fast unoptimized, where debug's overflow and
   # `debug_assert` checks are worth having and cost nothing.
+  #
+  # The four crates that link the engine -- `goats-godot`, `plugin`, `server`,
+  # `flight-js` -- are left out as well, and that is what makes this job finish.
+  # They are not slow in debug because of their own code: they pull in Slag with
+  # the JIT (cranelift) and, through `goats-godot`, Godot's generated bindings,
+  # which in a debug build are a 300 MB `godot-core` rlib beside three 127 MB
+  # `gdextension-api` ones, linked into every test binary. That is roughly three
+  # times what a four-core Windows runner can build and link in an hour, so the
+  # job timed out, `cache-on-failure` never completed an entry, and the next run
+  # paid the whole cold cost again. The `scene` job already builds Slag for that
+  # same graph at `--profile fast`, so it runs their tests instead.
   test:
     name: Crates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -74,7 +85,7 @@ jobs:
           # partial cache.
           cache-on-failure: true
       - name: Test the crates that need no engine
-        run: cargo test --workspace --exclude goats --exclude goats-android --exclude harness
+        run: cargo test --workspace --exclude goats --exclude goats-android --exclude harness --exclude goats-godot --exclude plugin --exclude server --exclude flight-js
 
   # The scene tests: `crates/harness` evaluates the client's exact scene on Slag
   # against a recording `rl` stub, so the suite needs no Node, no raylib and no
@@ -93,7 +104,7 @@ jobs:
   scene:
     name: Scene tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +131,16 @@ jobs:
       - name: Test the scene on the engine
         run: cargo test --profile fast -p harness -- --include-ignored --nocapture
 
+      # The four crates that link the engine, tested here rather than in the
+      # crates job: Slag, cranelift and Godot's generated bindings are what the
+      # debug job could not finish inside its job timeout (a debug
+      # `goats-godot` build is a 300 MB `godot-core` rlib plus three 127 MB
+      # `gdextension-api` ones, and every test binary links them). The graph is
+      # already built above at this profile, so what is left is the test
+      # binaries -- and `fast` is the profile that links them in minutes.
+      - name: Test the crates that link the engine
+        run: cargo test --profile fast -p plugin -p server -p flight-js -p goats-godot
+
   # The Godot client, tested for the same three desktop targets the reference client ships for
   # (`build`'s matrix). None of this ran in CI before: the port was only ever checked by hand on the
   # machine it was written on, which is how a `PROTOCOL_VERSION` mismatch -- a stale extension; the
@@ -142,7 +163,7 @@ jobs:
     name: Godot client (${{ matrix.name }})
     needs: [test, scene]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -242,7 +263,7 @@ jobs:
     name: Web build
     needs: [test, scene, godot]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     permissions:
       contents: read
     steps:
@@ -363,7 +384,7 @@ jobs:
     needs: web
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 180
     permissions:
       pages: write
       id-token: write
@@ -385,7 +406,7 @@ jobs:
     name: Build (${{ matrix.name }})
     needs: [test, scene]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -487,7 +508,7 @@ jobs:
     name: Android (arm64-v8a)
     needs: [test, scene]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
 
@@ -596,7 +617,7 @@ jobs:
     needs: godot
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
