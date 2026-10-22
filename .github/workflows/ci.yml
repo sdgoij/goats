@@ -293,7 +293,12 @@ jobs:
           targets: wasm32-unknown-emscripten
       - uses: Swatinem/rust-cache@v2
         with:
-          key: web
+          # `web-emsdk`: the cache that `web` used to hold a CMake tree configured
+          # against `setup-emsdk`'s old `_temp` folder, whose GUID path does not
+          # exist on the next run -- cmake then cannot find Emscripten.cmake or
+          # emcc and raylib-sys's build script panics. The folder is `emsdk-cache`
+          # now, inside the workspace and stable, so a fresh key is stable too.
+          key: web-emsdk
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install build dependencies
         run: |
