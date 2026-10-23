@@ -289,7 +289,7 @@ dependencies = [
 [[package]]
 name = "byteblock"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 
 [[package]]
 name = "byteorder"
@@ -701,7 +701,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 [[package]]
 name = "crux"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "byteblock",
  "half",
@@ -808,7 +808,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.5",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -971,7 +971,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2190,7 +2190,7 @@ dependencies = [
 [[package]]
 name = "jit"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "cranelift-codegen",
  "cranelift-control",
@@ -2330,7 +2330,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 [[package]]
 name = "lexer"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "crux",
  "syntax",
@@ -2917,7 +2917,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3163,7 +3163,7 @@ checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 [[package]]
 name = "parser"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "crux",
  "lexer",
@@ -3605,7 +3605,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "regexp"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "crux",
  "unicode",
@@ -3620,7 +3620,7 @@ dependencies = [
  "bitflags",
  "libc",
  "mach2 0.4.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3677,7 +3677,7 @@ dependencies = [
 [[package]]
 name = "runtime"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "crux",
  "lexer",
@@ -3715,7 +3715,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3773,7 +3773,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4095,7 +4095,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slag"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "crux",
  "jit",
@@ -4118,7 +4118,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4263,7 +4263,7 @@ dependencies = [
 [[package]]
 name = "syntax"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "crux",
 ]
@@ -4667,7 +4667,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "unicode"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "unicode-id",
  "unicode-normalization",
@@ -4812,7 +4812,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 [[package]]
 name = "wasm"
 version = "0.2.0"
-source = "git+https://github.com/sdgoij/slag?rev=7d975c8371c28dc8d20eb56d98c831fefa5061c9#7d975c8371c28dc8d20eb56d98c831fefa5061c9"
+source = "git+https://github.com/sdgoij/slag?rev=883af3dd80709ee716c7025f0d5f3028a13f4e9e#883af3dd80709ee716c7025f0d5f3028a13f4e9e"
 dependencies = [
  "byteblock",
  "cranelift-codegen",
@@ -4967,7 +4967,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
