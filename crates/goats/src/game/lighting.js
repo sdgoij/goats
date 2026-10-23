@@ -262,6 +262,11 @@ const LIT_FS = [
     // mirror pass behaves exactly as it did before M20e, which is the shape `blastEnergy`
     // and `shadowStrength` already use for an optional light.
     "uniform vec4 mirrorClip;",
+    // 1 while the terrain draws, 0 for every other lit model (a fresh program
+    // starts at 0). Only the ground's detail texture is faded with distance: a
+    // model's own texture is UV-mapped and small on screen, and greying it out
+    // would be a bug rather than an antialiasing win.
+    "uniform float detailFade;",
     "out vec4 finalColor;",
     // Depth is packed across RGB so 8-bit channels give ~24-bit precision.
     "float unpackDepth(vec3 c) { return dot(c, vec3(1.0, 1.0/255.0, 1.0/65025.0)); }",
@@ -284,7 +289,17 @@ const LIT_FS = [
     "}",
     "void main() {",
     "    if (mirrorClip.x > 0.5 && fragWorldPos.y < mirrorClip.y) discard;",
-    "    vec4 texel = texture(texture0, fragTexCoord) * colDiffuse * fragColor;",
+    // The detail texture is the ground's only albedo grain, and this host has no
+    // mip chain for it: minified point samples alias into a moiré that reads as a
+    // grid, which is what made the terrain look like a chessboard from altitude.
+    // Fading it to its own mean with distance keeps the colour and drops the
+    // noise; the per-vertex material colours stay at every range.
+    "    vec4 texel = texture(texture0, fragTexCoord);",
+    "    if (detailFade > 0.001) {",
+    "        texel.rgb = mix(vec3(0.88), texel.rgb,",
+    "            1.0 - smoothstep(10.0, 55.0, distance(camPos, fragWorldPos)));",
+    "    }",
+    "    texel *= colDiffuse * fragColor;",
     "    vec3 n = normalize(fragNormal);",
     "    vec3 viewDir = normalize(camPos - fragWorldPos);",
     "    if (dot(n, viewDir) < 0.0) n = -n;",

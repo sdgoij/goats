@@ -1552,7 +1552,16 @@ const goatsGfx = {
      */
     mesh: function (vertices, indices, normals, colors, texcoords) {
         if (typeof rl.makeModel !== "function") return null;
-        const handle = rl.makeModel(vertices, indices, normals, colors, texcoords);
+        // An empty optional channel is not "absent" to the engine: it hands the
+        // zero-length list to raylib's allocator, that returns null, and the null
+        // is reported as out-of-memory. A mod may legitimately build a triangle
+        // soup with no index list (or omit a channel), so every optional one is
+        // normalised to `undefined` here.
+        const optional = function (list) {
+            return list && list.length > 0 ? list : undefined;
+        };
+        const handle = rl.makeModel(vertices, optional(indices), optional(normals),
+            optional(colors), optional(texcoords));
         return typeof handle === "number" && handle >= 0 ? handle : null;
     },
 

@@ -365,7 +365,13 @@ function waterBuildRects(rects) {
     // Four arrays, not five: the engine's texcoords are optional, and nothing here wants a
     // UV -- the level is a uniform and the depth is `level - positions.y`, so the surface
     // needs no per-vertex channel at all.
-    waterMesh = rl.makeModel(W_VERTS, W_IDX, W_NORM, W_COL);
+    //
+    // An empty index list is not "no triangles" to the engine: `makeModel` hands
+    // the list to raylib's allocator, an empty allocation comes back null, and the
+    // null is reported as out-of-memory. A dry field has no quads at all, so the
+    // list is `undefined` instead -- the optional channel, which leaves the model
+    // with vertices and zero triangles (and nothing to draw).
+    waterMesh = rl.makeModel(W_VERTS, W_IDX.length > 0 ? W_IDX : undefined, W_NORM, W_COL);
     // A fresh model starts on raylib's default shader, and the water needs its own (it
     // is where the surface height comes from), plus the shadow map. Exactly what
     // `terrainUpload` re-applies for the ground. The reflection's map goes with them:

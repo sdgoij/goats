@@ -563,20 +563,26 @@ theme -- the port has no raygui -- and the keymap panel reproduces the scene's o
 overflow and all: 22 rows at 21 px from `y + 44` is 462 px in a 500-tall panel, so the last row
 sits six pixels past the panel's edge and `Back` is drawn over the two before it.
 
-**The ground itself** (`verify_terrain_mesh.gd`): the 48x48 grid the client builds
-through `makeModel`, as an `ArrayMesh` -- 2401 vertices and 4608 triangles, a
-normal from central differences, a per-vertex material colour from the scene's
-palette, a world-space texcoord, and a rebuild only when the snapped anchor moves
-(`terrainEnsure`'s 24-unit rule, so a step costs a rebuild and a frame does not):
+**The ground itself** (`verify_terrain_mesh.gd`): the near 48x48 grid, the 4 m mid
+ring and the 8 m far ring the client builds through `makeModel`, as one
+`ArrayMesh` with the two seam strips -- a normal from central differences (the
+surface perimeter measures the field over a fixed step so both sides of a seam
+agree), a per-vertex material colour from the scene's palette, a world-space
+texcoord, and a rebuild only when the snapped anchor moves (`terrainEnsure`'s
+32-unit rule, so a step costs a rebuild and a frame does not):
 
 ```
 vertices: 2401  triangles: 4608
-aabb: [P: (-48.0, -1.45, -48.0), S: (96.0, 2.94, 96.0)]
+surface 1: 2401 vertices, 3456 triangles
+surface 2: 2401 vertices, 3456 triangles
+surface 3: 384 vertices, 768 triangles
+surface 4: 384 vertices, 768 triangles
+mesh aabb: [P: (-192.0, -2.815, -192.0), S: (384.0, 36.645, 384.0)]
+near aabb: (-48.0, -1.331, -48.0) .. (48.0, 4.882, 48.0)
 worst height error: 0.000000 m (float32 grid against the double field)
 worst normal error: 0.000000  (normals not facing up: 0)
-first triangle normal: (0.003738, 0.997595, 0.069206)
 vertices off the palette: 0
-follow(30, 7) -> anchor (24, 0), 1 rebuild(s)
+follow(30, 7) -> anchor (32, 0), 1 rebuild(s)
 OK: the ground is the scene's grid, built from the scene's field
 ```
 
@@ -1403,7 +1409,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 
 | System | Reference | Godot home |
 | --- | --- | --- |
-| Terrain heightfield (rolling hills, mountain ridges, snow, near grid + far ring) | `game/world.js` | **Done**: `terrain.gd` (the field) + `terrain_mesh.gd` (the near grid and the ring) |
+| Terrain heightfield (rolling hills, mountain ridges, snow, near grid + mid/far rings + seam strips) | `game/world.js` | **Done**: `terrain.gd` (the field) + `terrain_mesh.gd` (the near grid, the rings and the strips) |
 | Grass field (per-cell hash, follows the goat, sways) | `game/weather.js` | **Done**: `grass.gd`, a `MultiMesh`, culled where a pool hides it |
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
 | Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` is the clock/curve/arc and drives Sky3D; the client draws the sky with the vendored addon (`addons/sky_3d`), and `sky.gdshader` + `celestial.gd` remain the reference/fallback |

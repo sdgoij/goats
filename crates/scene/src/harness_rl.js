@@ -676,9 +676,14 @@
     // hole left by `new Array(n)` is `undefined` here, and the engine's own error
     // for it is the one the far ring shipped with before this check existed. The
     // channel arrays after `indices` are optional (the water passes four), so an
-    // absent one is not a hole.
+    // absent one is not a hole -- but an *empty* one is not "nothing" either: the
+    // engine hands it to raylib, the zero-size allocation comes back null, and the
+    // null is reported as out-of-memory. A dry water mesh hit exactly that.
     function flatNumbers(values, name) {
         if (values === undefined || values === null) return;
+        if (values.length === 0) {
+            throw new TypeError("rl.makeModel: " + name + " is empty; pass undefined for an optional channel");
+        }
         for (let i = 0; i < values.length; i++) {
             if (typeof values[i] !== "number" || !isFinite(values[i])) {
                 throw new TypeError("rl.makeModel: " + name + " must be a flat array of numbers");

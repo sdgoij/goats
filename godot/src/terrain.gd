@@ -130,15 +130,15 @@ static func height_at(x: float, z: float) -> float:
 ## colours are the scene's sRGB bytes, converted to linear for Godot's pipeline by
 ## `_rgb` (`PORT.md` section 9).
 static func material(y: float, slope: float, m: float) -> Color:
-	if y > 26.0:
+	if y > 26.0 + (m - 0.5) * 3.0:
 		return _rgb(232, 238, 245)   # snow: the caps above the cloud deck
-	if slope > 0.5 or y > 1.15:
+	if slope > 0.5 or y > 1.15 + (m - 0.5) * 0.6:
 		return _rgb(128, 122, 112)   # rock: peaks and scarps
 	if y < -0.55 and m < 0.6:
 		return _rgb(104, 84, 62)     # mud: the hollows
 	if slope < 0.09 and m > 0.6:
 		return _rgb(198, 178, 130)   # sand: dry flat patches
-	if y > 0.35:
+	if y > 0.35 + (m - 0.5) * 0.3:
 		return _rgb(126, 146, 74)    # hill
 	return _rgb(98, 150, 84) if m < 0.5 else _rgb(78, 126, 66)
 

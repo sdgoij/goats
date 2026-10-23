@@ -403,7 +403,7 @@ const TUNING = {
         mountainFlat: 40,          // units that stay foothills
         mountainRamp: 120,         // units over which the range reaches full height
         snap: 32,                  // rebuild when the goat has moved this far
-        uv: 0.06,                  // texture tiles per world unit
+        uv: 0.12,                  // texture tiles per world unit
     },
     // Water (M20a). `low` and `high` are the table's own ends, in metres: `low` is the
     // terrain's floor (`-terrain.relief`, so a dry spell is exactly dry at every point of

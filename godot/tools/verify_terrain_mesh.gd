@@ -4,10 +4,11 @@
 #
 # `terrain.gd` is measured against the JavaScript (`verify_terrain.gd`). This is
 # the other half: that the *grid* built from it is the grid the client builds --
-# the near 2401-vertex, 4608-triangle surface plus the far ring's own 49x49 grid
-# with the near square cut out, a normal from central differences, a per-vertex
-# material colour, a world-space texcoord -- and that it rebuilds when the anchor
-# drifts rather than every frame.
+# the near 2401-vertex, 4608-triangle surface, the mid and far rings' own 49x49
+# grids with their inner squares cut out, and the two seam strips that close the
+# lens between a fine edge and the coarse chord meeting it -- plus a normal from
+# central differences, a per-vertex material colour, a world-space texcoord -- and
+# that it rebuilds when the anchor drifts rather than every frame.
 #
 # The geometry can be checked without a window, which is why this is a gate and
 # not a screenshot: the winding of the first triangle decides whether the ground
@@ -32,8 +33,8 @@ func _initialize() -> void:
 		print("after an explicit build: rebuilds=", node.rebuilds, " mesh set=", node.mesh != null)
 
 	var mesh := node.mesh as ArrayMesh
-	if mesh == null or mesh.get_surface_count() != 2:
-		print("FAIL: the terrain did not build its near grid and far ring")
+	if mesh == null or mesh.get_surface_count() != 5:
+		print("FAIL: the terrain did not build its near grid, two rings and two seam strips")
 		quit(1)
 		return
 
@@ -43,12 +44,9 @@ func _initialize() -> void:
 	var cols: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
 	var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
 	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
-	var far_arrays := mesh.surface_get_arrays(1)
-	var far_verts: PackedVector3Array = far_arrays[Mesh.ARRAY_VERTEX]
-	var far_indices: PackedInt32Array = far_arrays[Mesh.ARRAY_INDEX]
 
-	# 1. The grid: the client's 49x49 vertices and 48x48x2 triangles, and the far
-	#    ring's own 49x49 with the near grid's square taken out of its index list.
+	# 1. The grid: the client's 49x49 vertices and 48x48x2 triangles, the two rings'
+	#    49x49 with a 24x24-quad hole, and the two 384-vertex seam strips.
 	@warning_ignore("integer_division")
 	print("vertices: ", verts.size(), "  triangles: ", indices.size() / 3)
 	if verts.size() != 49 * 49:
@@ -58,12 +56,29 @@ func _initialize() -> void:
 	if cols.size() != verts.size() or uvs.size() != verts.size() or norms.size() != verts.size():
 		failures.append("the attribute arrays are not all the same length")
 
-	@warning_ignore("integer_division")
-	print("far vertices: ", far_verts.size(), "  far triangles: ", far_indices.size() / 3)
-	if far_verts.size() != 49 * 49:
-		failures.append("expected 2401 far vertices, got %d" % far_verts.size())
-	if far_indices.size() != (48 * 48 - 12 * 12) * 6:
-		failures.append("expected %d far indices, got %d" % [(48 * 48 - 12 * 12) * 6, far_indices.size()])
+	for surface in [1, 2]:
+		var ring_arrays := mesh.surface_get_arrays(surface)
+		var ring_verts: PackedVector3Array = ring_arrays[Mesh.ARRAY_VERTEX]
+		var ring_indices: PackedInt32Array = ring_arrays[Mesh.ARRAY_INDEX]
+		@warning_ignore("integer_division")
+		print("surface %d: %d vertices, %d triangles" % [surface, ring_verts.size(), ring_indices.size() / 3])
+		if ring_verts.size() != 49 * 49:
+			failures.append("surface %d: expected 2401 vertices, got %d" % [surface, ring_verts.size()])
+		if ring_indices.size() != (48 * 48 - 24 * 24) * 6:
+			failures.append("surface %d: expected %d indices, got %d"
+				% [surface, (48 * 48 - 24 * 24) * 6, ring_indices.size()])
+
+	for surface in [3, 4]:
+		var seam_arrays := mesh.surface_get_arrays(surface)
+		var seam_verts: PackedVector3Array = seam_arrays[Mesh.ARRAY_VERTEX]
+		var seam_indices: PackedInt32Array = seam_arrays[Mesh.ARRAY_INDEX]
+		@warning_ignore("integer_division")
+		print("surface %d: %d vertices, %d triangles" % [surface, seam_verts.size(), seam_indices.size() / 3])
+		if seam_verts.size() != 2 * (4 * 49 - 4):
+			failures.append("surface %d: expected 384 seam vertices, got %d" % [surface, seam_verts.size()])
+		if seam_indices.size() != (4 * 49 - 4) * 12:
+			failures.append("surface %d: expected %d seam indices, got %d"
+				% [surface, (4 * 49 - 4) * 12, seam_indices.size()])
 
 	# 2. The field it covers, and that it is where the anchor says it is. The near
 	#    grid's own bounds are in its vertex array; the mesh's AABB includes the ring.
@@ -115,8 +130,9 @@ func _initialize() -> void:
 	#    triangle has to be front-facing *for Godot*, which is the reverse of
 	#    raylib's convention. Asking Godot's own `Plane` rather than doing the cross
 	#    product here is the point -- the assertion is then Godot's rule and not
-	#    mine, and a mirrored winding cannot pass it by both being wrong.
-	for surface in 2:
+	#    mine, and a mirrored winding cannot pass it by both being wrong. The skirts
+	#    are vertical and emitted double-sided, so they are not in this check.
+	for surface in [0, 1, 2]:
 		var winding_arrays := mesh.surface_get_arrays(surface)
 		var winding_verts: PackedVector3Array = winding_arrays[Mesh.ARRAY_VERTEX]
 		var winding_indices: PackedInt32Array = winding_arrays[Mesh.ARRAY_INDEX]
@@ -142,8 +158,8 @@ func _initialize() -> void:
 	var worst_uv := 0.0
 	for k in [0, 500, 2400]:
 		var v: Vector3 = verts[k]
-		worst_uv = maxf(worst_uv, absf(uvs[k].x - v.x * 0.06))
-		worst_uv = maxf(worst_uv, absf(uvs[k].y - v.z * 0.06))
+		worst_uv = maxf(worst_uv, absf(uvs[k].x - v.x * 0.12))
+		worst_uv = maxf(worst_uv, absf(uvs[k].y - v.z * 0.12))
 	print("worst texcoord error: %.6f" % worst_uv)
 	if worst_uv > 0.001:
 		failures.append("the texcoords are not world-space (off by %.6f)" % worst_uv)

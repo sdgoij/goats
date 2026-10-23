@@ -6,13 +6,14 @@
 
 // ---- terrain -------------------------------------------------------------
 //
-// The ground is a heightfield drawn as two meshes rather than a field of cubes: a
-// detailed 48x48-quad grid around the goat and a coarse ring from its edge out to
-// 192 m, both built through `rl.makeModel`, so they carry real per-vertex normals,
-// UVs and colours. Immediate-mode geometry cannot: `drawCube` and
-// `drawTriangle3D` leave raylib's default normal (0, 0, 1) and texcoord (0, 0), so
-// a heightfield built from them is mis-lit and untexturable -- and a cube per cell
-// measures ~14 us, which caps a frame at roughly 100 cells. Two `drawModelEx`
+// The ground is a heightfield drawn as three surfaces rather than a field of
+// cubes: a detailed 48x48-quad grid around the goat, a 4 m mid ring out to 96 m,
+// and an 8 m far ring out to 192 m, with a seam strip at each join. All
+// are built through `rl.makeModel`, so they carry real per-vertex normals, UVs
+// and colours. Immediate-mode geometry cannot: `drawCube` and `drawTriangle3D`
+// leave raylib's default normal (0, 0, 1) and texcoord (0, 0), so a heightfield
+// built from them is mis-lit and untexturable -- and a cube per cell measures
+// ~14 us, which caps a frame at roughly 100 cells. A handful of `drawModelEx`
 // calls replace what would be hundreds.
 //
 // The height is hills plus mountains: three octaves of rolling noise, a fourth for
@@ -28,15 +29,18 @@
 
 const TERRAIN_CELL = 2;         // world units per grid cell (matches the grass)
 const TERRAIN_QUADS = 48;       // quads per side: a field of +/- 48 units
-const TERRAIN_DETAIL = 64;      // detail-texture size, in pixels
+const TERRAIN_DETAIL = 256;     // detail-texture size, in pixels
 
-// The far ring: the coarse ground outside the near grid. It follows the same
-// anchor and its hole is exactly the near grid's square, so the two meshes tile
-// without a gap; the far cells are four times the near ones, which is the whole
-// trade -- 384 m of ground for a vertex count that still rebuilds in a frame.
+// Two coarse rings outside the near grid. Both are a 48x48 grid whose square
+// hole is half their own half-extent, so they share one index topology: the mid
+// ring's 4 m cells carry the 48..96 m band, where the old 8 m ring's facets read
+// as tiles, and the far ring's 8 m cells run from 96 to 192 m.
+const TERRAIN_MID_CELL = 4;
+const TERRAIN_MID_HALF = 96;
 const TERRAIN_FAR_CELL = 8;
-const TERRAIN_FAR_QUADS = 48;   // quads per side: a field of +/- 192 units
-const TERRAIN_FAR_HOLE = 48;    // the near grid's own half-extent
+const TERRAIN_FAR_HALF = 192;
+const TERRAIN_RING_QUADS = 48;
+const TERRAIN_RING_HOLE = 24;   // quads per side removed for the hole
 
 // Per-cell ground heights for the grass, keyed by cell. The field is
 // world-anchored, so a cell's height never changes; the cache keeps `drawTufts`
@@ -62,10 +66,20 @@ const T_SNOW = [232, 238, 245];
 const TERRAIN_MESH_OK = typeof rl.makeModel === "function";
 
 let terrainMesh = -1;
-// The far ring's mesh, drawn under and outside the near one. Separate handles
+// The two coarse rings, drawn under and outside the near one. Separate handles
 // because the near grid has to stay the last `makeModel` the engine sees (the
 // harness and the app both read the near grid's facts off the newest mesh).
+let terrainMid = -1;
 let terrainFar = -1;
+// The seam strips: the vertical lens between a fine edge and the coarse chord
+// that meets it. The near grid's 2 m edge and the mid ring's 4 m edge share
+// *positions* but not *heights* -- the coarse edge is a straight chord between
+// every other fine vertex -- so the two surfaces leave a lens you can see
+// through at a grazing angle. A strip from each fine vertex to the chord at the
+// same (x, z) closes it exactly, and unlike a constant-depth skirt it has no
+// depth to fight with and no depth to run out of.
+let terrainNearSeam = -1;
+let terrainMidSeam = -1;
 let terrainDetail = -1;
 let terrainAnchorX = 0;         // snapped centre of the built grid
 let terrainAnchorZ = 0;
@@ -76,6 +90,12 @@ let terrainBuilt = false;
 // (The pending box itself is `terrainPatch`, declared with the grid below.)
 let terrainVerts = 0;
 let terrainTris = 0;
+// The lit program's `detailFade` uniform, looked up once per program. It is the
+// switch that lets the shared lit shader fade the ground's grain with distance
+// without touching the goat or the herd, whose own textures must not fade.
+let terrainFadeLoc = -1;
+let terrainFadeShader = -2;
+let terrainFadeOn = false;
 // The last anchor this reported on. The log is for the anchor moves -- one line per 24
 // units of walking -- rather than for every rebuild: a crater near the goat rebuilds the
 // mesh a handful of times over its four minutes, and none of that is news, nor should it
@@ -97,7 +117,7 @@ function terrainShape(x, z) {
 // The mountains: two ridge octaves (a ridge is the fold of a value-noise field,
 // `1 - |2n - 1|`, which is what turns blobs into crests) under a low-frequency
 // mask, so the range has passes and shoulders rather than cones. It is a pure
-// function of the world like the hills, so the far ring and the near grid sample
+// function of the world like the hills, so the rings and the near grid sample
 // the same ground.
 function terrainRidge(x, z) {
     const broad = 1 - Math.abs(2 * vnoise2(x * 0.0105 + 91.3, z * 0.0105 + 17.9) - 1);
@@ -148,32 +168,85 @@ function goatBaseY(g) {
 
 // Ground material from the height, the slope (0 flat .. 1 steep) and a
 // low-frequency patchiness noise: rock takes the peaks and scarps, mud the
-// hollows, sand the dry flat patches, and grass everything else.
+// hollows, sand the dry flat patches, and grass everything else. The two height
+// lines are *perturbed by that noise*, which is what keeps a contour from reading
+// as a hard tile edge across a 4 m or 8 m ring.
 function terrainMaterial(y, slope, m) {
-    if (y > 26) return T_SNOW;
-    if (slope > 0.5 || y > 1.15) return T_ROCK;
+    if (y > 26 + (m - 0.5) * 3) return T_SNOW;
+    if (slope > 0.5 || y > 1.15 + (m - 0.5) * 0.6) return T_ROCK;
     if (y < -0.55 && m < 0.6) return T_MUD;
     if (slope < 0.09 && m > 0.6) return T_SAND;
-    if (y > 0.35) return T_HILL;
+    if (y > 0.35 + (m - 0.5) * 0.3) return T_HILL;
     return m < 0.5 ? T_GRASS : T_GRASS_DK;
 }
 
-// A subtle tiling detail texture (neutral noise around 0.85), so the material
+// A subtle tiling detail texture (neutral noise around 0.88), so the material
 // colours keep a grain up close without a texture atlas.
+//
+// The noise is **periodic**: every octave is a whole number of lattice cells
+// across the tile, and the lattice wraps, so the pattern has no left/right or
+// top/bottom edge. A non-periodic noise is cheap to write and wrong to tile --
+// each repeat starts on a different value, so once the ground is far enough away
+// for a repeat to be one flat colour the landscape is a chessboard of 8 m
+// squares. The table is baked per octave because the per-pixel path would
+// otherwise pay a `Math.sin` per lattice corner, 65k pixels at a time.
+function terrainNoiseTable(period) {
+    const table = new Array(period * period);
+    for (let y = 0; y < period; y++) {
+        for (let x = 0; x < period; x++) {
+            table[y * period + x] = hash(x * 57.0 + y * 131.0);
+        }
+    }
+    return table;
+}
+
+function terrainNoiseSample(table, period, x, y) {
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    const xf = x - xi;
+    const yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf);
+    const v = yf * yf * (3 - 2 * yf);
+    const x0 = ((xi % period) + period) % period;
+    const y0 = ((yi % period) + period) % period;
+    const x1 = x0 + 1 === period ? 0 : x0 + 1;
+    const y1 = y0 + 1 === period ? 0 : y0 + 1;
+    const a = table[y0 * period + x0];
+    const b = table[y0 * period + x1];
+    const c = table[y1 * period + x0];
+    const d = table[y1 * period + x1];
+    return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+
 function makeTerrainTexture() {
     const n = TERRAIN_DETAIL;
+    // Four octaves, each an exact number of lattice cells across the tile: 1 m,
+    // 35 cm, 13 cm and 5 cm features at the 8.3 m world period.
+    const cells = [8, 24, 64, 160];
+    const amp = [0.50, 0.27, 0.15, 0.08];
+    const tables = [];
+    for (let o = 0; o < cells.length; o++) tables.push(terrainNoiseTable(cells[o]));
     let pixels = "";
     for (let y = 0; y < n; y++) {
         for (let x = 0; x < n; x++) {
-            const v = 0.60 * vnoise2(x * 0.13 + 2.3, y * 0.13 + 7.7) +
-                0.27 * vnoise2(x * 0.31 + 19.1, y * 0.31 + 4.3) +
-                0.13 * hash(x * 5.7 + y * 17.3);
-            const c = Math.round(196 + 59 * clamp(v, 0, 1));
+            let v = 0;
+            for (let o = 0; o < cells.length; o++) {
+                v += amp[o] * terrainNoiseSample(tables[o], cells[o],
+                    x * cells[o] / n, y * cells[o] / n);
+            }
+            const c = Math.round(198 + 57 * clamp(v, 0, 1));
             pixels += HEX256[c] + HEX256[Math.round(c * 0.97)] +
                 HEX256[Math.round(c * 0.88)] + "ff";
         }
     }
     terrainDetail = rl.makeTexture(n, n, pixels);
+    // `makeTexture` comes back point-sampled, which is right for a mod's chunky
+    // atlas and wrong for a ground grain magnified across a metre: point samples
+    // of a 3 cm texel read as the squares the field looked pixelated with.
+    if (terrainDetail >= 0 && typeof rl.setTextureFilter === "function" &&
+        typeof rl.TEXTURE_FILTER_BILINEAR === "number") {
+        rl.setTextureFilter(terrainDetail, rl.TEXTURE_FILTER_BILINEAR);
+    }
 }
 
 // Build the grid at the current anchor: one `makeModel` call, replacing the
@@ -199,29 +272,57 @@ const T_STAMP = new Array(T_N * T_N);
 let terrainIdxBuilt = false;
 let terrainStampId = 0;
 
-// The far ring's arrays. The grid is a square at `TERRAIN_FAR_CELL`, with the
-// quads inside the near grid's own square left out of the index list; the
-// heights are still filled there, because a vertex just outside the hole reads
-// its inside neighbour for the normal. The unused inner vertices are zero and
-// unreferenced -- four thousand floats nobody samples is cheaper than a second
-// topology to keep track of.
-const F_N = TERRAIN_FAR_QUADS + 1;
-const F_HALF = (TERRAIN_FAR_QUADS * TERRAIN_FAR_CELL) / 2;
-// The hole's first and last grid index, in cells: `[-48, 48]` splits into 8 m
-// cells at 18..=30.
-const F_HOLE0 = (F_HALF - TERRAIN_FAR_HOLE) / TERRAIN_FAR_CELL;
-const F_HOLE1 = (F_HALF + TERRAIN_FAR_HOLE) / TERRAIN_FAR_CELL;
-const F_H = new Array(F_N * F_N);
+// The two rings' arrays. Both grids are `RING_N` square at their own cell size,
+// with the quads inside their hole left out of the index list; the heights are
+// still filled there, because a vertex just outside the hole reads its inside
+// neighbour for the normal. The unused inner vertices are zero and unreferenced --
+// a few thousand floats nobody samples is cheaper than a second topology.
+const RING_N = TERRAIN_RING_QUADS + 1;
+const RING_HOLE0 = (TERRAIN_RING_QUADS - TERRAIN_RING_HOLE) / 2;
+const RING_HOLE1 = (TERRAIN_RING_QUADS + TERRAIN_RING_HOLE) / 2;
+const RING_IDX = new Array((TERRAIN_RING_QUADS * TERRAIN_RING_QUADS -
+    (RING_HOLE1 - RING_HOLE0) * (RING_HOLE1 - RING_HOLE0)) * 6);
+let terrainRingIdxBuilt = false;
+
+const M_H = new Array(RING_N * RING_N);
 // Filled with zeroes up front: the hole's interior is never indexed, but the
 // engine's `makeModel` takes a flat array of numbers and a sparse array is not
 // one. The ring overwrites every entry it uses; the rest stay zero and unseen.
-const F_VERTS = new Array(F_N * F_N * 3).fill(0);
-const F_NORMS = new Array(F_N * F_N * 3).fill(0);
-const F_COLS = new Array(F_N * F_N * 4).fill(0);
-const F_UVS = new Array(F_N * F_N * 2).fill(0);
-const F_IDX = new Array((TERRAIN_FAR_QUADS * TERRAIN_FAR_QUADS -
-    (F_HOLE1 - F_HOLE0) * (F_HOLE1 - F_HOLE0)) * 6);
-let terrainFarIdxBuilt = false;
+const M_VERTS = new Array(RING_N * RING_N * 3).fill(0);
+const M_NORMS = new Array(RING_N * RING_N * 3).fill(0);
+const M_COLS = new Array(RING_N * RING_N * 4).fill(0);
+const M_UVS = new Array(RING_N * RING_N * 2).fill(0);
+
+const F_H = new Array(RING_N * RING_N);
+const F_VERTS = new Array(RING_N * RING_N * 3).fill(0);
+const F_NORMS = new Array(RING_N * RING_N * 3).fill(0);
+const F_COLS = new Array(RING_N * RING_N * 4).fill(0);
+const F_UVS = new Array(RING_N * RING_N * 2).fill(0);
+
+// One seam strip's arrays, reused for both seams: `makeModel` copies them into
+// the engine, so the near strip and the mid strip can be built from the same
+// objects. The perimeter is the same 49-vertex square for both; the indices are
+// static.
+const SEAM_COUNT = 4 * RING_N - 4;
+const SEAM_I = new Array(SEAM_COUNT);
+const SEAM_J = new Array(SEAM_COUNT);
+const SEAM_VERTS = new Array(SEAM_COUNT * 2 * 3).fill(0);
+const SEAM_NORMS = new Array(SEAM_COUNT * 2 * 3).fill(0);
+const SEAM_COLS = new Array(SEAM_COUNT * 2 * 4).fill(0);
+const SEAM_UVS = new Array(SEAM_COUNT * 2 * 2).fill(0);
+const SEAM_IDX = new Array(SEAM_COUNT * 12);
+let seamPerimeterBuilt = false;
+
+// The perimeter of a ring's *hole*, in the same order as a surface's own
+// perimeter and with half the vertices: the near grid's 2 m edge meets the mid
+// ring's 4 m hole, and the mid ring's 4 m edge meets the far ring's 8 m one, so
+// both seams are exactly two fine vertices per coarse one. That ratio is what
+// lets `terrainSeamBuild` find the chord's height under a fine vertex by
+// interpolating between one coarse vertex and the next.
+const HOLE_N = RING_HOLE1 - RING_HOLE0 + 1;
+const HOLE_PERIM = 4 * HOLE_N - 4;
+const HOLE_I = new Array(HOLE_PERIM);
+const HOLE_J = new Array(HOLE_PERIM);
 
 // The ground that has changed since the mesh was last handed to the engine, as
 // world-space boxes, and `null`-free: a crater folds its own circle in through
@@ -343,9 +444,30 @@ function terrainStampCraters(rects) {
     }
 }
 
+// The step the *surface boundary* normals are measured over. It is fixed in
+// metres rather than taken from the grid, because a seam is two grids with
+// different cell sizes meeting: a 2 m central difference and a 4 m one describe
+// the same hill differently, and the difference lands exactly on the shared
+// edge -- a hard line where the material flips from grass to rock. Measuring
+// both sides over the same 2 m makes the two vertices agree exactly.
+const TERRAIN_EDGE_STEP = 2.0;
+
+// The slope at a world point, from the field itself. Used for the vertices on a
+// surface's perimeter, where the grid's own neighbours stop (the final row's
+// one-sided difference is half the true slope, which is a second way the two
+// sides of a seam disagree).
+function terrainEdgeSlope(wx, wz, out) {
+    const d = TERRAIN_EDGE_STEP;
+    out[0] = (terrainBaseHeight(wx + d, wz) - terrainBaseHeight(wx - d, wz)) / (2 * d);
+    out[1] = (terrainBaseHeight(wx, wz + d) - terrainBaseHeight(wx, wz - d)) / (2 * d);
+}
+
+// Scratch for `terrainEdgeSlope`, so the per-vertex path allocates nothing.
+const TERRAIN_EDGE_SLOPE = [0, 0];
+
 // One vertex's position, normal, colour and texcoord. Also its own function, for the
 // same reason as the row.
-function terrainVertex(k, i, j) {
+function terrainVertex(k, i, j, edge) {
     const wx = terrainAnchorX - T_HALF + i * TERRAIN_CELL;
     const wz = terrainAnchorZ - T_HALF + j * TERRAIN_CELL;
     const y = T_H[k];
@@ -353,11 +475,20 @@ function terrainVertex(k, i, j) {
     T_VERTS[k * 3 + 1] = y;
     T_VERTS[k * 3 + 2] = wz;
     // Central differences on the grid give the normal, so the shading is smooth
-    // across cells without a normal attribute on the geometry.
-    const dx = (T_H[k + (i < T_N - 1 ? 1 : 0)] - T_H[k - (i > 0 ? 1 : 0)]) /
-        (2 * TERRAIN_CELL);
-    const dz = (T_H[k + (j < T_N - 1 ? T_N : 0)] - T_H[k - (j > 0 ? T_N : 0)]) /
-        (2 * TERRAIN_CELL);
+    // across cells without a normal attribute on the geometry. The perimeter is
+    // the exception: it samples the world instead, so it agrees with the coarser
+    // surface on the other side of the seam.
+    let dx, dz;
+    if (edge) {
+        terrainEdgeSlope(wx, wz, TERRAIN_EDGE_SLOPE);
+        dx = TERRAIN_EDGE_SLOPE[0];
+        dz = TERRAIN_EDGE_SLOPE[1];
+    } else {
+        dx = (T_H[k + (i < T_N - 1 ? 1 : 0)] - T_H[k - (i > 0 ? 1 : 0)]) /
+            (2 * TERRAIN_CELL);
+        dz = (T_H[k + (j < T_N - 1 ? T_N : 0)] - T_H[k - (j > 0 ? T_N : 0)]) /
+            (2 * TERRAIN_CELL);
+    }
     const inv = 1 / Math.sqrt(dx * dx + dz * dz + 1);
     T_NORMS[k * 3] = -dx * inv;
     T_NORMS[k * 3 + 1] = inv;
@@ -373,8 +504,10 @@ function terrainVertex(k, i, j) {
 }
 
 function terrainAttrRow(j, i0, i1) {
-    const base = j * T_N;
-    for (let i = i0; i <= i1; i++) terrainVertex(base + i, i, j);
+    const edgeRow = j === 0 || j === T_N - 1;
+    for (let i = i0; i <= i1; i++) {
+        terrainVertex(j * T_N + i, i, j, edgeRow || i === 0 || i === T_N - 1);
+    }
 }
 
 // Wound like raylib's own `GenMeshPlane` (the same two triangles per quad). Built
@@ -407,6 +540,13 @@ function terrainBuildRects(rects) {
         const rect = rects[r];
         for (let j = rect.j0; j <= rect.j1; j++) terrainAttrRow(j, rect.i0, rect.i1);
     }
+    // The near grid's outer edge is the seam the mid ring meets; its strip closes
+    // the lens between the 2 m and 4 m triangulations. It hangs off the boundary
+    // heights and attributes just computed and the mid ring's hole heights (which
+    // `terrainMidBuild` wrote before this call), so it is rebuilt with them (and is
+    // cheap enough to rebuild even for a crater patch).
+    terrainNearSeam = terrainSeamBuild(T_H, T_NORMS, T_COLS, T_UVS,
+        T_HALF, TERRAIN_CELL, M_H, terrainNearSeam);
     // The ground the water is a function of has just changed, so the table is recomputed with
     // it (water.js), mesh and all -- *over the same rectangles*, which is what keeps a crater
     // from costing the whole grid. It runs *before* `terrainUpload` on purpose: the terrain
@@ -421,20 +561,23 @@ function terrainBuild(i0, i1, j0, j1) {
     terrainBuildRects([{ i0: i0, i1: i1, j0: j0, j1: j1 }]);
 }
 
-// The one engine call the mesh costs. The arrays are the same objects every time, which
-// is why a re-upload measured 0.2 ms against 13 ms for freshly allocated ones.
+// The one engine call a ground mesh costs, plus the material bindings every
+// fresh model needs. A fresh model starts on raylib's default shader, so the lit
+// program and the shadow map are re-applied the same way the goat's material gets
+// them. The ground meshes are `makeModel` meshes with no bone data, so they take
+// the *plain* program on every build (never `modelShaderFor`).
+function terrainBind(model) {
+    rl.setModelTexture(model, 0, terrainDetail);
+    if (litShader >= 0) rl.setModelShader(model, useLighting ? litShader : -1);
+    if (shadowColor >= 0) rl.setModelTexture(model, SHADOW_MAP_INDEX, shadowColor);
+}
+
 function terrainUpload() {
     if (terrainMesh >= 0) rl.unloadModel(terrainMesh);
     terrainMesh = rl.makeModel(T_VERTS, T_IDX, T_NORMS, T_COLS, T_UVS);
     terrainVerts = T_N * T_N;
     terrainTris = TERRAIN_QUADS * TERRAIN_QUADS * 2;
-    rl.setModelTexture(terrainMesh, 0, terrainDetail);
-    // A fresh model starts on raylib's default shader, so re-apply the lit
-    // program and the shadow map the same way the goat's material gets them. The
-    // terrain is a `makeModel` mesh with no bone data, so it takes the *plain*
-    // program on every build (never `modelShaderFor`).
-    if (litShader >= 0) rl.setModelShader(terrainMesh, useLighting ? litShader : -1);
-    if (shadowColor >= 0) rl.setModelTexture(terrainMesh, SHADOW_MAP_INDEX, shadowColor);
+    terrainBind(terrainMesh);
     terrainBuilt = true;
     if (terrainAnchorX !== terrainLogX || terrainAnchorZ !== terrainLogZ) {
         terrainLogX = terrainAnchorX;
@@ -445,85 +588,217 @@ function terrainUpload() {
     }
 }
 
-// The far ring's topology. The quads inside the near grid's square are the hole;
-// the ones around it are the range the player sees from the air. Built once --
-// the ring's shape is the anchor's only in position, and the four thousand
-// vertices it spans never change topology.
-function terrainFarIndices() {
+// The two rings' topology. Both are 48x48 grids with a 24x24-quad hole, so one
+// index list serves the mid ring and the far one. The quads inside the hole are
+// the inner surface's square; the ones around it are the range.
+function terrainRingIndices() {
     let t = 0;
-    for (let j = 0; j < TERRAIN_FAR_QUADS; j++) {
-        for (let i = 0; i < TERRAIN_FAR_QUADS; i++) {
-            if (i >= F_HOLE0 && i < F_HOLE1 && j >= F_HOLE0 && j < F_HOLE1) continue;
-            const a = j * F_N + i;
+    for (let j = 0; j < TERRAIN_RING_QUADS; j++) {
+        for (let i = 0; i < TERRAIN_RING_QUADS; i++) {
+            if (i >= RING_HOLE0 && i < RING_HOLE1 && j >= RING_HOLE0 && j < RING_HOLE1) continue;
+            const a = j * RING_N + i;
             const b = a + 1;
-            const c = a + F_N;
+            const c = a + RING_N;
             const d = c + 1;
-            F_IDX[t++] = a; F_IDX[t++] = c; F_IDX[t++] = b;
-            F_IDX[t++] = b; F_IDX[t++] = c; F_IDX[t++] = d;
+            RING_IDX[t++] = a; RING_IDX[t++] = c; RING_IDX[t++] = b;
+            RING_IDX[t++] = b; RING_IDX[t++] = c; RING_IDX[t++] = d;
         }
     }
 }
 
-// One row of the far ring's heights -- the whole row, hole included, because the
+// One row of a ring's heights -- the whole row, hole included, because the
 // vertices on the hole's edge take their normal from the inside neighbour.
-function terrainFarHeightRow(j) {
-    const wz = terrainAnchorZ - F_HALF + j * TERRAIN_FAR_CELL;
-    const x0 = terrainAnchorX - F_HALF;
-    const base = j * F_N;
-    for (let i = 0; i < F_N; i++) {
-        F_H[base + i] = terrainBaseHeight(x0 + i * TERRAIN_FAR_CELL, wz);
+function terrainRingHeightRow(H, half, cell, j) {
+    const wz = terrainAnchorZ - half + j * cell;
+    const x0 = terrainAnchorX - half;
+    const base = j * RING_N;
+    for (let i = 0; i < RING_N; i++) {
+        H[base + i] = terrainBaseHeight(x0 + i * cell, wz);
     }
 }
 
-// One far vertex. The same arithmetic as `terrainVertex`, on the far grid's own
+// One ring vertex. The same arithmetic as `terrainVertex`, on the ring's own
 // spacing, so a ring vertex shades exactly as a near one would at the same point.
-function terrainFarVertex(k, i, j) {
-    const wx = terrainAnchorX - F_HALF + i * TERRAIN_FAR_CELL;
-    const wz = terrainAnchorZ - F_HALF + j * TERRAIN_FAR_CELL;
-    const y = F_H[k];
-    F_VERTS[k * 3] = wx;
-    F_VERTS[k * 3 + 1] = y;
-    F_VERTS[k * 3 + 2] = wz;
-    const dx = (F_H[k + (i < F_N - 1 ? 1 : 0)] - F_H[k - (i > 0 ? 1 : 0)]) /
-        (2 * TERRAIN_FAR_CELL);
-    const dz = (F_H[k + (j < F_N - 1 ? F_N : 0)] - F_H[k - (j > 0 ? F_N : 0)]) /
-        (2 * TERRAIN_FAR_CELL);
+// `edge` marks a vertex on the ring's outer boundary or on the rim of its hole:
+// those are seams, and they take the field's slope at the fixed edge step so the
+// surface on the other side of the seam agrees with them.
+function terrainRingVertex(H, VERTS, NORMS, COLS, UVS, half, cell, k, i, j, edge) {
+    const wx = terrainAnchorX - half + i * cell;
+    const wz = terrainAnchorZ - half + j * cell;
+    const y = H[k];
+    VERTS[k * 3] = wx;
+    VERTS[k * 3 + 1] = y;
+    VERTS[k * 3 + 2] = wz;
+    let dx, dz;
+    if (edge) {
+        terrainEdgeSlope(wx, wz, TERRAIN_EDGE_SLOPE);
+        dx = TERRAIN_EDGE_SLOPE[0];
+        dz = TERRAIN_EDGE_SLOPE[1];
+    } else {
+        dx = (H[k + (i < RING_N - 1 ? 1 : 0)] - H[k - (i > 0 ? 1 : 0)]) / (2 * cell);
+        dz = (H[k + (j < RING_N - 1 ? RING_N : 0)] - H[k - (j > 0 ? RING_N : 0)]) / (2 * cell);
+    }
     const inv = 1 / Math.sqrt(dx * dx + dz * dz + 1);
-    F_NORMS[k * 3] = -dx * inv;
-    F_NORMS[k * 3 + 1] = inv;
-    F_NORMS[k * 3 + 2] = -dz * inv;
+    NORMS[k * 3] = -dx * inv;
+    NORMS[k * 3 + 1] = inv;
+    NORMS[k * 3 + 2] = -dz * inv;
     const c = terrainMaterial(y, Math.min(1, Math.sqrt(dx * dx + dz * dz)),
         vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7));
-    F_COLS[k * 4] = c[0];
-    F_COLS[k * 4 + 1] = c[1];
-    F_COLS[k * 4 + 2] = c[2];
-    F_COLS[k * 4 + 3] = 255;
-    F_UVS[k * 2] = wx * TUNING.terrain.uv;
-    F_UVS[k * 2 + 1] = wz * TUNING.terrain.uv;
+    COLS[k * 4] = c[0];
+    COLS[k * 4 + 1] = c[1];
+    COLS[k * 4 + 2] = c[2];
+    COLS[k * 4 + 3] = 255;
+    UVS[k * 2] = wx * TUNING.terrain.uv;
+    UVS[k * 2 + 1] = wz * TUNING.terrain.uv;
 }
 
-// Rebuild the far ring at the near grid's anchor and hand the engine the mesh.
-// The ring is uploaded *before* the near grid (which the caller does), because the
-// newest `makeModel` is the mesh the harness reports the terrain's facts from.
-function terrainFarBuild() {
-    if (!terrainFarIdxBuilt) { terrainFarIndices(); terrainFarIdxBuilt = true; }
-    for (let j = 0; j < F_N; j++) terrainFarHeightRow(j);
-    for (let j = 0; j < F_N; j++) {
-        const row = j * F_N;
+// Whether a ring vertex sits on an edge that meets another surface: the outer
+// square, or one of the hole's rims. A vertex in the hole's *column* but outside
+// its rows is ordinary ground and keeps the grid's own difference.
+function terrainRingEdge(i, j) {
+    if (i === 0 || i === RING_N - 1 || j === 0 || j === RING_N - 1) return true;
+    const inHoleI = i >= RING_HOLE0 && i <= RING_HOLE1;
+    const inHoleJ = j >= RING_HOLE0 && j <= RING_HOLE1;
+    return ((i === RING_HOLE0 || i === RING_HOLE1) && inHoleJ) ||
+        ((j === RING_HOLE0 || j === RING_HOLE1) && inHoleI);
+}
+
+// Rebuild one ring at the near grid's anchor and hand the engine the mesh. The
+// caller rebuilds the rings *before* the near grid, because the newest `makeModel`
+// is the mesh the harness reports the terrain's facts from.
+function terrainRingBuild(H, VERTS, NORMS, COLS, UVS, half, cell, old) {
+    if (!terrainRingIdxBuilt) { terrainRingIndices(); terrainRingIdxBuilt = true; }
+    for (let j = 0; j < RING_N; j++) terrainRingHeightRow(H, half, cell, j);
+    for (let j = 0; j < RING_N; j++) {
+        const row = j * RING_N;
         // The hole's interior vertices are unreferenced; the two boundary rows and
         // columns are not, and they need their normals like any other vertex.
-        if (j <= F_HOLE0 || j >= F_HOLE1) {
-            for (let i = 0; i < F_N; i++) terrainFarVertex(row + i, i, j);
+        if (j <= RING_HOLE0 || j >= RING_HOLE1) {
+            for (let i = 0; i < RING_N; i++) {
+                terrainRingVertex(H, VERTS, NORMS, COLS, UVS, half, cell, row + i, i, j,
+                    terrainRingEdge(i, j));
+            }
         } else {
-            for (let i = 0; i <= F_HOLE0; i++) terrainFarVertex(row + i, i, j);
-            for (let i = F_HOLE1; i < F_N; i++) terrainFarVertex(row + i, i, j);
+            for (let i = 0; i <= RING_HOLE0; i++) {
+                terrainRingVertex(H, VERTS, NORMS, COLS, UVS, half, cell, row + i, i, j,
+                    terrainRingEdge(i, j));
+            }
+            for (let i = RING_HOLE1; i < RING_N; i++) {
+                terrainRingVertex(H, VERTS, NORMS, COLS, UVS, half, cell, row + i, i, j,
+                    terrainRingEdge(i, j));
+            }
         }
     }
-    if (terrainFar >= 0) rl.unloadModel(terrainFar);
-    terrainFar = rl.makeModel(F_VERTS, F_IDX, F_NORMS, F_COLS, F_UVS);
-    rl.setModelTexture(terrainFar, 0, terrainDetail);
-    if (litShader >= 0) rl.setModelShader(terrainFar, useLighting ? litShader : -1);
-    if (shadowColor >= 0) rl.setModelTexture(terrainFar, SHADOW_MAP_INDEX, shadowColor);
+    if (old >= 0) rl.unloadModel(old);
+    const model = rl.makeModel(VERTS, RING_IDX, NORMS, COLS, UVS);
+    terrainBind(model);
+    return model;
+}
+
+// The perimeter of every surface, in order around the square, and the seam
+// strip's index list. Shared by both seams: the near grid and the rings are all
+// `RING_N` square. Each edge is a quad, emitted with both windings -- a seam is
+// looked at through the lens from one side and from outside the other, and
+// raylib keeps only the front face.
+function terrainSeamIndices() {
+    if (seamPerimeterBuilt) return;
+    seamPerimeterBuilt = true;
+    let p = 0;
+    for (let i = 0; i < RING_N; i++) { SEAM_I[p] = i; SEAM_J[p] = 0; p++; }
+    for (let j = 1; j < RING_N; j++) { SEAM_I[p] = RING_N - 1; SEAM_J[p] = j; p++; }
+    for (let i = RING_N - 2; i >= 0; i--) { SEAM_I[p] = i; SEAM_J[p] = RING_N - 1; p++; }
+    for (let j = RING_N - 2; j >= 1; j--) { SEAM_I[p] = 0; SEAM_J[p] = j; p++; }
+    // The hole's perimeter, in the same order but `HOLE_N` square.
+    p = 0;
+    for (let i = RING_HOLE0; i <= RING_HOLE1; i++) { HOLE_I[p] = i; HOLE_J[p] = RING_HOLE0; p++; }
+    for (let j = RING_HOLE0 + 1; j <= RING_HOLE1; j++) { HOLE_I[p] = RING_HOLE1; HOLE_J[p] = j; p++; }
+    for (let i = RING_HOLE1 - 1; i >= RING_HOLE0; i--) { HOLE_I[p] = i; HOLE_J[p] = RING_HOLE1; p++; }
+    for (let j = RING_HOLE1 - 1; j >= RING_HOLE0 + 1; j--) { HOLE_I[p] = RING_HOLE0; HOLE_J[p] = j; p++; }
+    let t = 0;
+    for (let k = 0; k < SEAM_COUNT; k++) {
+        const next = (k + 1) % SEAM_COUNT;
+        const a = k * 2;            // fine
+        const b = next * 2;         // fine, next
+        const c = next * 2 + 1;     // coarse, next
+        const d = k * 2 + 1;        // coarse
+        SEAM_IDX[t++] = a; SEAM_IDX[t++] = b; SEAM_IDX[t++] = c;
+        SEAM_IDX[t++] = a; SEAM_IDX[t++] = c; SEAM_IDX[t++] = d;
+        SEAM_IDX[t++] = a; SEAM_IDX[t++] = c; SEAM_IDX[t++] = b;
+        SEAM_IDX[t++] = a; SEAM_IDX[t++] = d; SEAM_IDX[t++] = c;
+    }
+}
+
+// Rebuild a seam strip. The top vertices are the fine surface's own boundary -- a
+// seam never invents a second edge. The bottom vertices stand at the same (x, z)
+// with the height of the *coarse* chord crossing them, which is a straight line
+// between every other fine vertex: at an even fine index that is the coarse
+// vertex itself (a degenerate quad, invisible), and between two of them the
+// strip spans the lens the two triangulations leave. Two fine vertices per
+// coarse one is what makes the position along the chord `k / 2`.
+function terrainSeamBuild(H, NORMS, COLS, UVS, half, cell, coarseH, old) {
+    terrainSeamIndices();
+    const ratio = SEAM_COUNT / HOLE_PERIM;
+    for (let k = 0; k < SEAM_COUNT; k++) {
+        const i = SEAM_I[k];
+        const j = SEAM_J[k];
+        const src = j * RING_N + i;
+        const wx = terrainAnchorX - half + i * cell;
+        const wz = terrainAnchorZ - half + j * cell;
+        const y = H[src];
+        // Where along the coarse perimeter this fine vertex lies. Both lists
+        // start at the same corner and run the same way, so the parameter is
+        // just the fine index scaled into coarse steps.
+        const at = k / ratio;
+        const c0 = Math.floor(at) % HOLE_PERIM;
+        const f = at - Math.floor(at);
+        const c1 = (c0 + 1) % HOLE_PERIM;
+        const y0 = coarseH[HOLE_J[c0] * RING_N + HOLE_I[c0]];
+        const y1 = coarseH[HOLE_J[c1] * RING_N + HOLE_I[c1]];
+        const yChord = y0 + (y1 - y0) * f;
+        const top = k * 2;
+        const bot = top + 1;
+        SEAM_VERTS[top * 3] = wx;
+        SEAM_VERTS[top * 3 + 1] = y;
+        SEAM_VERTS[top * 3 + 2] = wz;
+        SEAM_VERTS[bot * 3] = wx;
+        SEAM_VERTS[bot * 3 + 1] = yChord;
+        SEAM_VERTS[bot * 3 + 2] = wz;
+        // The fine surface's normal and colour on both edges, so the strip
+        // shades as the ground it fills rather than as a wall.
+        for (let c = 0; c < 3; c++) {
+            SEAM_NORMS[top * 3 + c] = NORMS[src * 3 + c];
+            SEAM_NORMS[bot * 3 + c] = NORMS[src * 3 + c];
+        }
+        for (let c = 0; c < 4; c++) {
+            SEAM_COLS[top * 4 + c] = COLS[src * 4 + c];
+            SEAM_COLS[bot * 4 + c] = COLS[src * 4 + c];
+        }
+        SEAM_UVS[top * 2] = UVS[src * 2];
+        SEAM_UVS[top * 2 + 1] = UVS[src * 2 + 1];
+        SEAM_UVS[bot * 2] = UVS[src * 2];
+        SEAM_UVS[bot * 2 + 1] = UVS[src * 2 + 1];
+    }
+    if (old >= 0) rl.unloadModel(old);
+    const model = rl.makeModel(SEAM_VERTS, SEAM_IDX, SEAM_NORMS, SEAM_COLS, SEAM_UVS);
+    terrainBind(model);
+    return model;
+}
+
+// The mid ring (4 m cells, 48..96 m) and the far ring (8 m, 96..192 m). Both
+// share the near grid's anchor, and each ring's hole matches the surface inside
+// it, so the three tile: the near covers the mid's hole and the mid covers the
+// far's. The far ring is built first because the mid seam hangs off its hole
+// boundary; the near grid is built last because it must be the newest model.
+function terrainMidBuild() {
+    terrainMid = terrainRingBuild(M_H, M_VERTS, M_NORMS, M_COLS, M_UVS,
+        TERRAIN_MID_HALF, TERRAIN_MID_CELL, terrainMid);
+    terrainMidSeam = terrainSeamBuild(M_H, M_NORMS, M_COLS, M_UVS,
+        TERRAIN_MID_HALF, TERRAIN_MID_CELL, F_H, terrainMidSeam);
+}
+
+function terrainFarBuild() {
+    terrainFar = terrainRingBuild(F_H, F_VERTS, F_NORMS, F_COLS, F_UVS,
+        TERRAIN_FAR_HALF, TERRAIN_FAR_CELL, terrainFar);
 }
 
 // Startup: make the detail texture and the first grid.
@@ -535,7 +810,11 @@ function makeTerrain() {
     makeTerrainTexture();
     terrainAnchorX = Math.round(goat.px / TUNING.terrain.snap) * TUNING.terrain.snap;
     terrainAnchorZ = Math.round(goat.pz / TUNING.terrain.snap) * TUNING.terrain.snap;
+    // Far first: the mid seam interpolates the far ring's hole heights. The near
+    // grid is last because the harness reads the terrain's facts off the newest
+    // `makeModel`.
     terrainFarBuild();
+    terrainMidBuild();
     terrainBuild(0, T_N - 1, 0, T_N - 1);
 }
 
@@ -554,8 +833,10 @@ function terrainEnsure(px, pz) {
         terrainPatches.length = 0;
         terrainAnchorX = ax;
         terrainAnchorZ = az;
-        // The ring first: the near grid has to stay the last mesh the engine is handed.
+        // Far, then mid (whose seam needs the far hole), then near: the near grid has
+        // to stay the last mesh the engine is handed.
         terrainFarBuild();
+        terrainMidBuild();
         terrainBuild(0, T_N - 1, 0, T_N - 1);
         return;
     }
@@ -576,11 +857,34 @@ function drawTerrain(tint) {
             70, 0.1, 70, tint);
         return;
     }
-    // The ring is the same material and sits level with the near grid at their
-    // shared boundary, so drawing it first lets the near grid's finer triangles
-    // win the depth test where the two meet.
+    // Far to near: the coarser rings are the ground behind the finer ones at each
+    // seam, and each strip is drawn after the surface it hangs from so it is only
+    // seen through the lens it exists to close.
+    //
+    // `detailFade` is on for exactly these five submissions. `setShaderValue`
+    // binds the program to write the value, which the next `drawModelEx` would do
+    // anyway, and the lit shader is shared with every model in the scene.
+    if (useLighting && litShader >= 0 && typeof rl.getShaderLocation === "function" &&
+        typeof rl.setShaderValue === "function" &&
+        typeof rl.SHADER_UNIFORM_FLOAT === "number") {
+        if (terrainFadeShader !== litShader) {
+            terrainFadeShader = litShader;
+            terrainFadeLoc = rl.getShaderLocation(litShader, "detailFade");
+        }
+        if (terrainFadeLoc >= 0) {
+            rl.setShaderValue(litShader, terrainFadeLoc, 1, rl.SHADER_UNIFORM_FLOAT);
+            terrainFadeOn = true;
+        }
+    }
     if (terrainFar >= 0) rl.drawModelEx(terrainFar, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, tint);
+    if (terrainMid >= 0) rl.drawModelEx(terrainMid, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, tint);
+    if (terrainMidSeam >= 0) rl.drawModelEx(terrainMidSeam, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, tint);
     rl.drawModelEx(terrainMesh, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, tint);
+    if (terrainNearSeam >= 0) rl.drawModelEx(terrainNearSeam, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, tint);
+    if (terrainFadeOn) {
+        rl.setShaderValue(litShader, terrainFadeLoc, 0, rl.SHADER_UNIFORM_FLOAT);
+        terrainFadeOn = false;
+    }
 }
 
 // Point the terrain material at the lit program, or back at raylib's default
@@ -591,7 +895,10 @@ function drawTerrain(tint) {
 // model was drawn last (`slag/.notes/gpu-skinning.md`, section 1b).
 function setTerrainShader(shader) {
     if (terrainMesh >= 0) rl.setModelShader(terrainMesh, shader);
+    if (terrainMid >= 0) rl.setModelShader(terrainMid, shader);
     if (terrainFar >= 0) rl.setModelShader(terrainFar, shader);
+    if (terrainNearSeam >= 0) rl.setModelShader(terrainNearSeam, shader);
+    if (terrainMidSeam >= 0) rl.setModelShader(terrainMidSeam, shader);
 }
 
 // ---- day/night -----------------------------------------------------------
