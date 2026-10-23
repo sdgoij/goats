@@ -40,14 +40,20 @@ extends RefCounted
 const CELL := 2.0
 ## Quads per side: a field of +/- 48 units.
 const QUADS := 48
-## Peak displacement, in metres -- `TUNING.terrain.relief`.
+## Peak displacement of the rolling hills, in metres -- `TUNING.terrain.relief`.
 static var RELIEF: float = 2.1
 ## The spawn bowl's radius, in units, that stays level.
 static var FLAT: float = 6.0
 ## The units over which the bowl reaches full relief.
 static var RAMP: float = 16.0
+## A full ridge's height above the hills -- `TUNING.terrain.mountain`.
+static var MOUNTAIN: float = 38.0
+## The radius that stays foothills, and the units over which the range reaches
+## full height (`TUNING.terrain.mountainFlat` / `mountainRamp`).
+static var MOUNTAIN_FLAT: float = 40.0
+static var MOUNTAIN_RAMP: float = 120.0
 ## Rebuild the mesh when the goat has moved this far -- `TUNING.terrain.snap`.
-static var SNAP: float = 24.0
+static var SNAP: float = 32.0
 
 ## The hash the whole field is built from: `core.js`'s, verbatim.
 static func value_hash(n: float) -> float:
@@ -69,24 +75,45 @@ static func vnoise2(x: float, y: float) -> float:
 	var d: float = value_hash((xi + 1.0) * 57.0 + (yi + 1.0) * 131.0)
 	return (a * (1.0 - u) + b * u) * (1.0 - v) + (c * (1.0 - u) + d * u) * v
 
-## Three octaves: broad hills with smaller bumps on top. `world.js`
-## `terrainShape`, verbatim.
+## GLSL's `smoothstep`, for the scene's own eased terms (the bowl and the mountain
+## ramp). `t` is clamped before the cubic so an out-of-range value lands on an edge.
+static func smoothstep(lo: float, hi: float, v: float) -> float:
+	var t: float = (v - lo) / (hi - lo)
+	t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+	return t * t * (3.0 - 2.0 * t)
+
+## Four octaves: broad hills with smaller bumps on top. The last one is the detail
+## the near grid's 2 m cells can resolve. `world.js` `terrainShape`, verbatim.
 static func shape(x: float, z: float) -> float:
-	var broad: float = 0.62 * vnoise2(x * 0.033 + 13.7, z * 0.033 + 5.1)
-	var middle: float = 0.26 * vnoise2(x * 0.081 + 41.3, z * 0.081 + 27.9)
+	var broad: float = 0.58 * vnoise2(x * 0.033 + 13.7, z * 0.033 + 5.1)
+	var middle: float = 0.25 * vnoise2(x * 0.081 + 41.3, z * 0.081 + 27.9)
 	var fine: float = 0.12 * vnoise2(x * 0.191 + 77.1, z * 0.191 + 61.3)
-	return broad + middle + fine
+	var grain: float = 0.05 * vnoise2(x * 0.29 + 5.3, z * 0.29 + 33.7)
+	return broad + middle + fine + grain
+
+## The mountains: two folded noise octaves under a low-frequency mask. A ridge is
+## `1 - |2n - 1|`, which is what turns blobs into crests; the square sharpens the
+## crests and flattens the passes. `world.js` `terrainRidge`, verbatim.
+static func ridge(x: float, z: float) -> float:
+	var broad: float = 1.0 - absf(2.0 * vnoise2(x * 0.0105 + 91.3, z * 0.0105 + 17.9) - 1.0)
+	var fine: float = 1.0 - absf(2.0 * vnoise2(x * 0.028 + 3.7, z * 0.028 + 55.1) - 1.0)
+	var crest: float = 0.72 * broad + 0.28 * fine
+	var mask: float = smoothstep(0.30, 0.70, vnoise2(x * 0.0062 + 7.3, z * 0.0062 + 41.7))
+	return crest * crest * mask
 
 ## The ground before craters: a level bowl around the origin, easing into the
-## noise over `RAMP` so there is no cliff at the bowl's edge. `world.js`
-## `terrainBaseHeight`, verbatim.
+## hills over `RAMP`, plus the mountain range ramping in over its own, wider
+## radius. `world.js` `terrainBaseHeight`, verbatim.
 static func base_height(x: float, z: float) -> float:
 	var d: float = sqrt(x * x + z * z)
 	var t: float = (d - FLAT) / RAMP
 	t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
 	t = t * t * (3.0 - 2.0 * t)
+	var tm: float = (d - MOUNTAIN_FLAT) / MOUNTAIN_RAMP
+	tm = 0.0 if tm < 0.0 else (1.0 if tm > 1.0 else tm)
+	tm = tm * tm * (3.0 - 2.0 * tm)
 	var relief: float = (shape(x, z) - 0.5) * 2.0 * RELIEF * t
-	return relief
+	return relief + ridge(x, z) * MOUNTAIN * tm
 
 ## The ground at a point, which is what every reader wants: the field, plus whatever
 ## has been blown out of it. This is the function the client calls `terrainHeight`.
@@ -103,6 +130,8 @@ static func height_at(x: float, z: float) -> float:
 ## colours are the scene's sRGB bytes, converted to linear for Godot's pipeline by
 ## `_rgb` (`PORT.md` section 9).
 static func material(y: float, slope: float, m: float) -> Color:
+	if y > 26.0:
+		return _rgb(232, 238, 245)   # snow: the caps above the cloud deck
 	if slope > 0.5 or y > 1.15:
 		return _rgb(128, 122, 112)   # rock: peaks and scarps
 	if y < -0.55 and m < 0.6:

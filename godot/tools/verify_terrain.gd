@@ -19,7 +19,8 @@
 extends SceneTree
 
 ## `world.js` / `weather.js` / `core.js`, transcribed *from their sources*, with
-## `TUNING.terrain` inlined: `flat` 6, `ramp` 16, `relief` 2.1.
+## `TUNING.terrain` inlined: `relief` 2.1, `flat` 6, `ramp` 16, `mountain` 38,
+## `mountainFlat` 40, `mountainRamp` 120.
 const JS := """
 function hash(n) { const s = Math.sin(n * 127.1) * 43758.5453; return s - Math.floor(s); }
 function vnoise2(x, y) {
@@ -32,17 +33,33 @@ function vnoise2(x, y) {
     const d = hash((xi + 1) * 57.0 + (yi + 1) * 131.0);
     return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
 }
+function smoothstep(lo, hi, v) {
+    let t = (v - lo) / (hi - lo);
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    return t * t * (3 - 2 * t);
+}
 function terrainShape(x, z) {
-    return 0.62 * vnoise2(x * 0.033 + 13.7, z * 0.033 + 5.1) +
-        0.26 * vnoise2(x * 0.081 + 41.3, z * 0.081 + 27.9) +
-        0.12 * vnoise2(x * 0.191 + 77.1, z * 0.191 + 61.3);
+    return 0.58 * vnoise2(x * 0.033 + 13.7, z * 0.033 + 5.1) +
+        0.25 * vnoise2(x * 0.081 + 41.3, z * 0.081 + 27.9) +
+        0.12 * vnoise2(x * 0.191 + 77.1, z * 0.191 + 61.3) +
+        0.05 * vnoise2(x * 0.29 + 5.3, z * 0.29 + 33.7);
+}
+function terrainRidge(x, z) {
+    const broad = 1 - Math.abs(2 * vnoise2(x * 0.0105 + 91.3, z * 0.0105 + 17.9) - 1);
+    const fine = 1 - Math.abs(2 * vnoise2(x * 0.028 + 3.7, z * 0.028 + 55.1) - 1);
+    const ridge = 0.72 * broad + 0.28 * fine;
+    const mask = smoothstep(0.30, 0.70, vnoise2(x * 0.0062 + 7.3, z * 0.0062 + 41.7));
+    return ridge * ridge * mask;
 }
 function terrainBaseHeight(x, z) {
     const d = Math.sqrt(x * x + z * z);
     let t = (d - 6) / 16;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     t = t * t * (3 - 2 * t);
-    return (terrainShape(x, z) - 0.5) * 2 * 2.1 * t;
+    let tm = (d - 40) / 120;
+    tm = tm < 0 ? 0 : tm > 1 ? 1 : tm;
+    tm = tm * tm * (3 - 2 * tm);
+    return (terrainShape(x, z) - 0.5) * 2 * 2.1 * t + terrainRidge(x, z) * 38 * tm;
 }
 """
 
@@ -58,10 +75,11 @@ const SAMPLES := [
 ]
 
 ## A disagreement this large is a real difference in the transcription rather
-## than in `sin`. The measured residual is ~5e-11 (see below), so this is two
-## orders of magnitude above it and still nine orders below a centimetre -- the
-## wire quantizes a *device* to the centimetre, so nothing here can move one
-## across a cell boundary.
+## than in `sin`. The measured residual is ~7e-10 (see below) on the mountain
+## range, where a 700-millionths-of-a-sine error is multiplied by a metre of
+## relief; this is still nine orders below a centimetre -- the wire quantizes a
+## *device* to the centimetre, so nothing here can move one across a cell
+## boundary.
 ##
 ## **Bit-exactness is not reachable**, and it is worth being precise about why:
 ## `value_hash` is `sin(n * 127.1) * 43758.5453` and `n` runs to tens of
@@ -71,13 +89,13 @@ const SAMPLES := [
 ## Rust's, which is what the scene's `Math.sin` bottoms out in. The two agree to
 ## about ten significant digits and no closer.
 ##
-## What that costs, measured rather than guessed: a 5e-11 metre error in the
+## What that costs, measured rather than guessed: a sub-micrometre error in the
 ## ground, and -- for the one thing that is *derived* rather than sent, the device
 ## field -- a chance of a peer disagreeing that is the odds of a hash landing
-## within 5e-11 of a threshold. The devices that have gone off and the craters
+## within that of a threshold. The devices that have gone off and the craters
 ## they left are on the wire (`spent`, `craters` in the world snapshot), so the
 ## divergence cannot accumulate.
-const TOLERANCE := 1e-9
+const TOLERANCE := 1e-8
 
 func _initialize() -> void:
 	var failures: Array[String] = []

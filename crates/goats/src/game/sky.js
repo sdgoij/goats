@@ -484,9 +484,11 @@ const SKY_RIGHT = [1, 0, 0];
 const SKY_UP = [0, 1, 0];
 
 // Which part of the sky a pass draws. The frame draws the air and the cloud as two
-// passes whenever `skySplitOn`, with `drawCelestial` between them, so the bodies
-// end up *under* the clouds rather than painted over them; `SKY_LAYER_ALL` is the
-// single pass for where that is not available.
+// passes whenever `skySplitOn`: the air first, then `drawCelestial`, then the world,
+// and the cloud layer last of the ground -- so the bodies end up *under* the clouds
+// rather than painted over them, and the deck lands *over* the hills it hangs above
+// when the goat flies up through it. `SKY_LAYER_ALL` is the single pass for where the
+// split is not available.
 const SKY_LAYER_ALL = 0;
 const SKY_LAYER_AIR = 1;
 const SKY_LAYER_CLOUD = 2;
@@ -504,7 +506,8 @@ function skySplitOn() {
 // Draw one layer of the sky. `cx/cy/cz` is the camera, `tx/ty/tz` its target; the
 // forward/right/up basis is rebuilt here and handed to the shader, which turns
 // each pixel back into a view ray. `layer` is `SKY_LAYER_*`, the whole sky by
-// default.
+// default. The cloud layer is drawn after the ground (see `sceneFrame`), so its
+// premultiplied composite lands over the terrain rather than behind it.
 function drawSky(cx, cy, cz, tx, ty, tz, sw, sh, dt, layer) {
     if (layer === undefined) layer = SKY_LAYER_ALL;
     // The cloud field's clock advances once a frame, in whichever layer is drawn

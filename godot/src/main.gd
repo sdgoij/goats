@@ -83,6 +83,12 @@ var flight: Flight
 @onready var grass: Grass = $Grass
 @onready var explosions: Explosions = $Explosions
 @onready var celestial: Celestial = $Celestial
+## The script is preloaded rather than named: `class_name CloudLayer` is new, and a
+## headless `--script` run does not rebuild Godot's global class cache, so a type
+## annotation against the name fails to parse before the cache is written. A
+## preloaded script is a type in its own right.
+const CLOUD_LAYER := preload("res://src/cloud_layer.gd")
+@onready var cloud_layer: CLOUD_LAYER = $CloudLayer
 ## The sound (M22): the beds, the slots and the four rules `audio.js` is (`audio.gd`).
 @onready var audio: Audio = $Audio
 @onready var hud: Hud = $Ui/Hud
@@ -665,6 +671,12 @@ func _set_up_sky() -> void:
 	# fog would be a third overlay this scene does not budget for.
 	sky3d.sky3d_enabled = true
 	sky3d.fog_enabled = false
+	# The cumulus is the port's *world-space* deck now (`CloudLayer`). Sky3D paints
+	# its clouds in the sky stage, whose depth is infinity, so a goat could climb
+	# through the altitude forever and never arrive at them; the scene's slab hangs
+	# at `cloudBase`..`cloudTop` and the flight model is supposed to reach it. The
+	# addon keeps the atmosphere, the stars, the cirrus and the celestial bodies.
+	sky3d.sky.cumulus_visible = false
 	sun = sky3d.sun
 	# The addon multiplies its below-horizon ground colour by the atmosphere. The old
 	# sky clamped rays below the horizon to the horizon colour, so white here keeps that
@@ -1671,12 +1683,21 @@ func _advance(delta: float) -> void:
 ## one. With this inside `_advance`, a menu opened on the first frame never set a single sky
 ## uniform and the panel hung over nothing; a picture found it, and no data could.
 ##
-## Cloud drift belongs to Sky3D's own process now; this function only moves the clock and
-## the weather into the addon's properties.
+## Cloud drift is the port's now too: Sky3D keeps the atmosphere, the cirrus and the
+## bodies, while the cumulus deck is `CloudLayer` (`cloud_layer.gd`). This function
+## moves the clock and the weather into both.
 func _apply_sky(_camera: Vector3) -> void:
 	# The port's own curve is still what gameplay reads (the goat's night drain), and it is
 	# still what the sky's *clock* means. Sky3D is driven from it rather than owning time.
 	_sky_light = float(SkyModel.sample(_hours)["light"])
+	# The deck the goat can fly through. It follows the camera's column and the same
+	# clock and wind the rest of the world reads, and it is part of the `sky` setting
+	# the same way the addon's sky is. Updated before the addon guard so a scene without
+	# Sky3D still has clouds -- and a world to fly above them in.
+	if cloud_layer != null:
+		cloud_layer.visible = settings.sky
+		cloud_layer.follow(_camera, _hours, _sky_light, _cloudiness,
+			_wind_x, _wind_z, _sway_time)
 	if sky3d == null or sky3d.sky == null:
 		return
 

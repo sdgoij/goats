@@ -1182,14 +1182,6 @@ function sceneFrame() {
     drawStars();
     drawCelestial(cx, cy, cz);
     perfMark("stars");
-    if (skySplit) {
-        // Out of 3D for the one pass that has to land over the bodies and under the
-        // world: the cloud layer, which attenuates what it covers.
-        rl.endMode3D();
-        drawSky(cx, cy, cz, goat.px, ty, goat.pz, screenW, screenH, dt, SKY_LAYER_CLOUD);
-        perfMark("sky_clouds");
-        rl.beginMode3D(vx, vy, vz, lookX, lookY, lookZ, 55);
-    }
     if (!skyShaderOn) drawClouds();
     perfMark("clouds");
 
@@ -1207,15 +1199,41 @@ function sceneFrame() {
         perfMark("tufts");
         drawTerrain(rl.WHITE);
         perfMark("terrain");
+        // The planar fallback is a shadow on the ground, so it belongs under the deck
+        // with the ground: the goat itself is drawn after the cloud pass.
+        if (haveModel && shadowMode === SHADOW_PLANAR && shadowShader >= 0 && LIGHT_DIR[1] > 0.06) {
+            rl.setModelShader(model, modelShaderFor(model, shadowShader));
+            setShadowUniforms();
+            drawModelGoat(goat, rl.WHITE);
+            rl.setModelShader(model, modelShaderFor(model, litShader));
+        }
+    } else {
+        // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
+        drawTerrain(ambTint);
+        perfMark("terrain");
+        drawTufts(goat, ambTuft, 576, 180, true);
+        perfMark("tufts");
+        // The blob is on the ground, like the ground: under the deck.
+        drawShadow();
+    }
+
+    // The cloud layer is drawn *after* the ground and *before* the goats. The slab
+    // hangs five to ten metres up, so the ground is always behind it on a ray that
+    // crosses it -- painting it after the ground is what puts the deck over the hills
+    // when the goat flies above them, instead of under the terrain where a full-screen
+    // background pass would leave it. The goats go after it because the camera rides
+    // above the player: a flying goat is in front of the deck, not in it. The water
+    // stays last for its own reason (it has to blend over what stands in it), which
+    // is the one surface that gives up a little to the deck for that look.
+    if (skySplit) {
+        rl.endMode3D();
+        drawSky(cx, cy, cz, goat.px, ty, goat.pz, screenW, screenH, dt, SKY_LAYER_CLOUD);
+        perfMark("sky_clouds");
+        rl.beginMode3D(vx, vy, vz, lookX, lookY, lookZ, 55);
+    }
+
+    if (lit) {
         if (haveModel) {
-            // The planar fallback is drawn first, under the goat; the shadow
-            // map is sampled by the lit shader during the goat's own draw.
-            if (shadowMode === SHADOW_PLANAR && shadowShader >= 0 && LIGHT_DIR[1] > 0.06) {
-                rl.setModelShader(model, modelShaderFor(model, shadowShader));
-                setShadowUniforms();
-                drawModelGoat(goat, rl.WHITE);
-                rl.setModelShader(model, modelShaderFor(model, litShader));
-            }
             drawModelGoat(goat, rl.WHITE);
             drawEyes();
         }
@@ -1227,19 +1245,16 @@ function sceneFrame() {
         // The water surface (M20b): last in the 3D pass, because it is the scene's only
         // transparent model and has to blend over the ground and over anything standing
         // in it. It shares the lit program's uniforms, so it lives in this branch; with
-        // the lighting off the field is still simulated, just not drawn.
+        // the lighting off the field is still simulated, just not drawn. It is drawn
+        // over the cloud pass, so a *flying* goat above the deck sees a pool at its own
+        // level rather than under the cloud -- a small trade for keeping the wading
+        // look, which is what "anything standing in it" means.
         waterDraw();
         perfMark("water");
         if (shadowMode === SHADOW_MAP && shadowStrengthNow > 0.001) lightingText = "lit + shadow map";
         else if (shadowMode === SHADOW_PLANAR && LIGHT_DIR[1] > 0.06) lightingText = "lit + planar shadow";
         else lightingText = "lit";
     } else {
-        // No shader: the M2/M3 look, with the ambient tint and a blob shadow.
-        drawTerrain(ambTint);
-        perfMark("terrain");
-        drawTufts(goat, ambTuft, 576, 180, true);
-        drawShadow();
-        perfMark("tufts");
         if (haveModel) {
             drawModelGoat(goat, ambTint);
             drawEyes();

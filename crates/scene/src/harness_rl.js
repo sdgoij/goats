@@ -274,6 +274,16 @@
         // test; here the scene's *use* of it matters, so the arrays are kept for
         // the facts derived in `harnessObserve`.
         makeModel: (vertices, indices, normals, colors, texcoords) => {
+            // The engine takes five *flat* number arrays and rejects a hole or a
+            // non-number outright (`argument 0 must be a flat array of numbers`).
+            // The stub says so too: a sparse array is exactly the bug a stub that
+            // only counts vertices would hide until the real client crashed --
+            // which is how the far ring's unreferenced centre first shipped.
+            flatNumbers(vertices, "argument 0 (vertices)");
+            flatNumbers(indices, "argument 1 (indices)");
+            flatNumbers(normals, "argument 2 (normals)");
+            flatNumbers(colors, "argument 3 (colours)");
+            flatNumbers(texcoords, "argument 4 (texcoords)");
             counters.terrainMeshesBuilt += 1;
             lastTerrainMesh = {
                 vertices: vertices, indices: indices, normals: normals,
@@ -659,6 +669,20 @@
     function circleArgs(x, y, radius, name) {
         if (typeof x !== "number" || typeof y !== "number" || typeof radius !== "number") {
             throw new TypeError(name + ": x, y and radius must be numbers");
+        }
+    }
+
+    // The engine's `makeModel` contract: a packed array, element by element. A
+    // hole left by `new Array(n)` is `undefined` here, and the engine's own error
+    // for it is the one the far ring shipped with before this check existed. The
+    // channel arrays after `indices` are optional (the water passes four), so an
+    // absent one is not a hole.
+    function flatNumbers(values, name) {
+        if (values === undefined || values === null) return;
+        for (let i = 0; i < values.length; i++) {
+            if (typeof values[i] !== "number" || !isFinite(values[i])) {
+                throw new TypeError("rl.makeModel: " + name + " must be a flat array of numbers");
+            }
         }
     }
 

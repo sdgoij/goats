@@ -4,9 +4,10 @@
 #
 # `terrain.gd` is measured against the JavaScript (`verify_terrain.gd`). This is
 # the other half: that the *grid* built from it is the grid the client builds --
-# 2401 vertices and 4608 triangles, a normal from central differences, a
-# per-vertex material colour, a world-space texcoord -- and that it rebuilds when
-# the anchor drifts rather than every frame.
+# the near 2401-vertex, 4608-triangle surface plus the far ring's own 49x49 grid
+# with the near square cut out, a normal from central differences, a per-vertex
+# material colour, a world-space texcoord -- and that it rebuilds when the anchor
+# drifts rather than every frame.
 #
 # The geometry can be checked without a window, which is why this is a gate and
 # not a screenshot: the winding of the first triangle decides whether the ground
@@ -14,10 +15,10 @@
 # looking perfectly correct in the data.
 extends SceneTree
 
-## `world.js`'s palette, as sRGB bytes (`T_ROCK` .. `T_HILL`).
+## `world.js`'s palette, as sRGB bytes (`T_ROCK` .. `T_SNOW`).
 const PALETTE := [
 	[128, 122, 112], [104, 84, 62], [198, 178, 130],
-	[98, 150, 84], [78, 126, 66], [126, 146, 74],
+	[98, 150, 84], [78, 126, 66], [126, 146, 74], [232, 238, 245],
 ]
 
 func _initialize() -> void:
@@ -31,8 +32,8 @@ func _initialize() -> void:
 		print("after an explicit build: rebuilds=", node.rebuilds, " mesh set=", node.mesh != null)
 
 	var mesh := node.mesh as ArrayMesh
-	if mesh == null or mesh.get_surface_count() != 1:
-		print("FAIL: the terrain built no mesh")
+	if mesh == null or mesh.get_surface_count() != 2:
+		print("FAIL: the terrain did not build its near grid and far ring")
 		quit(1)
 		return
 
@@ -42,8 +43,12 @@ func _initialize() -> void:
 	var cols: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
 	var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
 	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var far_arrays := mesh.surface_get_arrays(1)
+	var far_verts: PackedVector3Array = far_arrays[Mesh.ARRAY_VERTEX]
+	var far_indices: PackedInt32Array = far_arrays[Mesh.ARRAY_INDEX]
 
-	# 1. The grid: the client's 49x49 vertices and 48x48x2 triangles.
+	# 1. The grid: the client's 49x49 vertices and 48x48x2 triangles, and the far
+	#    ring's own 49x49 with the near grid's square taken out of its index list.
 	@warning_ignore("integer_division")
 	print("vertices: ", verts.size(), "  triangles: ", indices.size() / 3)
 	if verts.size() != 49 * 49:
@@ -53,13 +58,32 @@ func _initialize() -> void:
 	if cols.size() != verts.size() or uvs.size() != verts.size() or norms.size() != verts.size():
 		failures.append("the attribute arrays are not all the same length")
 
-	# 2. The field it covers, and that it is where the anchor says it is.
+	@warning_ignore("integer_division")
+	print("far vertices: ", far_verts.size(), "  far triangles: ", far_indices.size() / 3)
+	if far_verts.size() != 49 * 49:
+		failures.append("expected 2401 far vertices, got %d" % far_verts.size())
+	if far_indices.size() != (48 * 48 - 12 * 12) * 6:
+		failures.append("expected %d far indices, got %d" % [(48 * 48 - 12 * 12) * 6, far_indices.size()])
+
+	# 2. The field it covers, and that it is where the anchor says it is. The near
+	#    grid's own bounds are in its vertex array; the mesh's AABB includes the ring.
 	var box := mesh.get_aabb()
-	print("aabb: ", box)
-	if not is_equal_approx(box.size.x, 96.0) or not is_equal_approx(box.size.z, 96.0):
-		failures.append("the grid does not span 96 units: %s" % box.size)
-	if not is_equal_approx(box.position.x, -48.0) or not is_equal_approx(box.position.z, -48.0):
-		failures.append("the grid does not start at -48: %s" % box.position)
+	print("mesh aabb: ", box)
+	if not is_equal_approx(box.size.x, 384.0) or not is_equal_approx(box.size.z, 384.0):
+		failures.append("the far ring does not span 384 units: %s" % box.size)
+	if not is_equal_approx(box.position.x, -192.0) or not is_equal_approx(box.position.z, -192.0):
+		failures.append("the far ring does not start at -192: %s" % box.position)
+	var near_low := Vector3(INF, INF, INF)
+	var near_high := Vector3(-INF, -INF, -INF)
+	for v in verts:
+		near_low = near_low.min(v)
+		near_high = near_high.max(v)
+	print("near aabb: ", near_low, " .. ", near_high)
+	if not is_equal_approx(near_high.x - near_low.x, 96.0) \
+			or not is_equal_approx(near_high.z - near_low.z, 96.0):
+		failures.append("the near grid does not span 96 units")
+	if not is_equal_approx(near_low.x, -48.0) or not is_equal_approx(near_low.z, -48.0):
+		failures.append("the near grid does not start at -48: %s" % near_low)
 
 	# 3. The heights are the field's. The vertices are float32 and the field is
 	#    double, so this compares to a tenth of a millimetre -- a transcription
@@ -92,13 +116,17 @@ func _initialize() -> void:
 	#    raylib's convention. Asking Godot's own `Plane` rather than doing the cross
 	#    product here is the point -- the assertion is then Godot's rule and not
 	#    mine, and a mirrored winding cannot pass it by both being wrong.
-	var a: Vector3 = verts[indices[0]]
-	var b: Vector3 = verts[indices[1]]
-	var c: Vector3 = verts[indices[2]]
-	var facing := Plane(a, b, c).normal
-	print("first triangle faces: ", facing)
-	if facing.y <= 0.0:
-		failures.append("the first triangle is wound the wrong way for Godot (faces %s)" % facing)
+	for surface in 2:
+		var winding_arrays := mesh.surface_get_arrays(surface)
+		var winding_verts: PackedVector3Array = winding_arrays[Mesh.ARRAY_VERTEX]
+		var winding_indices: PackedInt32Array = winding_arrays[Mesh.ARRAY_INDEX]
+		var a: Vector3 = winding_verts[winding_indices[0]]
+		var b: Vector3 = winding_verts[winding_indices[1]]
+		var c: Vector3 = winding_verts[winding_indices[2]]
+		var facing := Plane(a, b, c).normal
+		print("surface %d's first triangle faces: %s" % [surface, facing])
+		if facing.y <= 0.0:
+			failures.append("surface %d is wound the wrong way for Godot (faces %s)" % [surface, facing])
 
 	# 6. The material colour is one of the palette's, per vertex.
 	var off_palette := 0
@@ -125,8 +153,8 @@ func _initialize() -> void:
 	node.follow(30.0, 7.0)
 	var moved: Vector2 = node.anchor()
 	print("follow(30, 7) -> anchor (%.0f, %.0f), %d rebuild(s)" % [moved.x, moved.y, node.rebuilds - before])
-	if moved != Vector2(24.0, 0.0):
-		failures.append("the anchor should snap to (24, 0), got %s" % moved)
+	if moved != Vector2(32.0, 0.0):
+		failures.append("the anchor should snap to (32, 0), got %s" % moved)
 	if node.rebuilds != before + 1:
 		failures.append("a snap of 6 units did not rebuild")
 
@@ -136,16 +164,16 @@ func _initialize() -> void:
 		failures.append("a step inside the same cell rebuilt the grid")
 
 	before = node.rebuilds
-	node.follow(40.0, 7.0)
+	node.follow(70.0, 7.0)
 	moved = node.anchor()
-	print("follow(40, 7) -> anchor (%.0f, %.0f), %d rebuild(s)" % [moved.x, moved.y, node.rebuilds - before])
-	if moved != Vector2(48.0, 0.0) or node.rebuilds != before + 1:
-		failures.append("the second snap did not rebuild at (48, 0): %s" % moved)
+	print("follow(70, 7) -> anchor (%.0f, %.0f), %d rebuild(s)" % [moved.x, moved.y, node.rebuilds - before])
+	if moved != Vector2(64.0, 0.0) or node.rebuilds != before + 1:
+		failures.append("the second snap did not rebuild at (64, 0): %s" % moved)
 
 	# The grid moved with the anchor, and the field under it is still the field.
 	var moved_arrays := (node.mesh as ArrayMesh).surface_get_arrays(0)
 	var moved_verts: PackedVector3Array = moved_arrays[Mesh.ARRAY_VERTEX]
-	if moved_verts.size() == 0 or not is_equal_approx(moved_verts[0].x, 0.0):
+	if moved_verts.size() == 0 or not is_equal_approx(moved_verts[0].x, 16.0):
 		failures.append("the rebuilt grid did not move with the anchor: %s" % moved_verts[0])
 
 	node.free()

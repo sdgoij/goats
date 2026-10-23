@@ -62,18 +62,34 @@ function vnoise2(x, y) {
     const d = hash((xi + 1) * 57.0 + (yi + 1) * 131.0);
     return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
 }
+function smoothstep(lo, hi, v) {
+    let s = (v - lo) / (hi - lo);
+    s = s < 0 ? 0 : (s > 1 ? 1 : s);
+    return s * s * (3 - 2 * s);
+}
 function terrainShape(x, z) {
-    const broad = 0.62 * vnoise2(x * 0.033 + 13.7, z * 0.033 + 5.1);
-    const middle = 0.26 * vnoise2(x * 0.081 + 41.3, z * 0.081 + 27.9);
+    const broad = 0.58 * vnoise2(x * 0.033 + 13.7, z * 0.033 + 5.1);
+    const middle = 0.25 * vnoise2(x * 0.081 + 41.3, z * 0.081 + 27.9);
     const fine = 0.12 * vnoise2(x * 0.191 + 77.1, z * 0.191 + 61.3);
-    return broad + middle + fine;
+    const grain = 0.05 * vnoise2(x * 0.29 + 5.3, z * 0.29 + 33.7);
+    return broad + middle + fine + grain;
+}
+function terrainRidge(x, z) {
+    const broad = 1 - Math.abs(2 * vnoise2(x * 0.0105 + 91.3, z * 0.0105 + 17.9) - 1);
+    const fine = 1 - Math.abs(2 * vnoise2(x * 0.028 + 3.7, z * 0.028 + 55.1) - 1);
+    const ridge = 0.72 * broad + 0.28 * fine;
+    const mask = smoothstep(0.30, 0.70, vnoise2(x * 0.0062 + 7.3, z * 0.0062 + 41.7));
+    return ridge * ridge * mask;
 }
 function terrainBaseHeight(x, z) {
     const d = Math.sqrt(x * x + z * z);
     let t = (d - 6) / 16;
     t = t < 0 ? 0 : (t > 1 ? 1 : t);
     t = t * t * (3 - 2 * t);
-    return (terrainShape(x, z) - 0.5) * 2 * 2.1 * t;
+    let tm = (d - 40) / 120;
+    tm = tm < 0 ? 0 : (tm > 1 ? 1 : tm);
+    tm = tm * tm * (3 - 2 * tm);
+    return (terrainShape(x, z) - 0.5) * 2 * 2.1 * t + terrainRidge(x, z) * 38 * tm;
 }
 // No craters are dug in this tape, so `terrainHeight` is the field alone.
 function terrainHeight(x, z) { return terrainBaseHeight(x, z); }

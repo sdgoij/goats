@@ -282,6 +282,9 @@ static func _leaves() -> Dictionary:
 			"terrain.relief": [Terrain, &"RELIEF", PackedStringArray()],
 			"terrain.flat": [Terrain, &"FLAT", PackedStringArray()],
 			"terrain.ramp": [Terrain, &"RAMP", PackedStringArray()],
+			"terrain.mountain": [Terrain, &"MOUNTAIN", PackedStringArray()],
+			"terrain.mountainFlat": [Terrain, &"MOUNTAIN_FLAT", PackedStringArray()],
+			"terrain.mountainRamp": [Terrain, &"MOUNTAIN_RAMP", PackedStringArray()],
 			"terrain.snap": [Terrain, &"SNAP", PackedStringArray()],
 			"terrain.uv": [TerrainMesh, &"UV_SCALE", PackedStringArray()],
 			# The table and its drag. `enabled` and `reflection` are the scene's (header).

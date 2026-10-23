@@ -34,8 +34,8 @@ const CRATER_Z: f64 = 8.0;
 /// The lattice the window case samples. Two anchors one `TUNING.terrain.snap` apart -- the
 /// step the grid takes as the goat walks -- share x `-48..24` and z `-144..-48`; this is
 /// that band 12 m inside every edge, so no point on it is draining out of either window.
-const SHARED_LO: (f64, f64) = (-36.0, -132.0);
-const SHARED_HI: (f64, f64) = (12.0, -60.0);
+const SHARED_LO: (f64, f64) = (58.0, -132.0);
+const SHARED_HI: (f64, f64) = (106.0, -60.0);
 
 /// `sceneWater`, parsed.
 fn water(harness: &mut Harness) -> Value {
@@ -1233,18 +1233,19 @@ fn the_water_at_a_fixed_point_is_the_same_from_two_windows() {
     rain(&mut harness, 1.0);
 
     // The window follows the goat, so one world point gets read from two of them here: two
-    // anchors one snap step apart, and a lattice of points well inside both. The water is a
-    // fact about the *ground* -- the rain fills the hollows that ground has -- and the ground
-    // does not move when the goat does, so two windows have to agree about every point they
-    // share. They did not. The table was taken from the window's own extremes, so over this
-    // one step the level moved 0.855 m, the wetted count went 50 to 30, and a point whose
-    // ground and spill both windows agreed about to the last bit was 0.11 m under water in
-    // one and dry in the other: a pool that vanished as the goat walked and came back on the
-    // step back. The table is the world's now and this holds. Reading the ground the same way
-    // is the control -- a window that disagrees about *that* is failing for a reason this
-    // case is not about.
-    let (a_ground, a_depth) = window_at(&mut harness, -24.0, -96.0);
-    let (b_ground, b_depth) = window_at(&mut harness, 0.0, -96.0);
+    // anchors one snap step apart, and a lattice of points well inside both. The band sits
+    // over a hollow in the mountain field, because a shared band with no water in it proves
+    // nothing about the table. The water is a fact about the *ground* -- the rain fills the
+    // hollows that ground has -- and the ground does not move when the goat does, so two
+    // windows have to agree about every point they share. They did not. The table was taken
+    // from the window's own extremes, so over this one step the level moved 0.855 m, the
+    // wetted count went 50 to 30, and a point whose ground and spill both windows agreed
+    // about to the last bit was 0.11 m under water in one and dry in the other: a pool that
+    // vanished as the goat walked and came back on the step back. The table is the world's
+    // now and this holds. Reading the ground the same way is the control -- a window that
+    // disagrees about *that* is failing for a reason this case is not about.
+    let (a_ground, a_depth) = window_at(&mut harness, 64.0, -96.0);
+    let (b_ground, b_depth) = window_at(&mut harness, 96.0, -96.0);
 
     checks.check(
         "both windows sampled the same points",

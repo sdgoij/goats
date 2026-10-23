@@ -391,10 +391,18 @@ const TUNING = {
         hold: { clear: [22, 45], cloudy: [16, 34], rain: [20, 40], clearing: [8, 16] },
     },
     terrain: {
-        relief: 2.1,               // peak displacement, in metres
+        relief: 2.1,               // peak displacement of the rolling hills, in metres
         flat: 6,                   // spawn-bowl radius that stays level, in units
         ramp: 16,                  // units over which the bowl reaches full relief
-        snap: 24,                  // rebuild when the goat has moved this far
+        // The mountains (the far ring's headline feature). `mountain` is a full
+        // ridge's height above the hills, and the two radii keep the spawn meadow
+        // a meadow: the field is a foothill inside `mountainFlat` and reaches the
+        // full range over the next `mountainRamp` units, so a new goat never opens
+        // its eyes against a cliff.
+        mountain: 38,              // metres at a full ridge
+        mountainFlat: 40,          // units that stay foothills
+        mountainRamp: 120,         // units over which the range reaches full height
+        snap: 32,                  // rebuild when the goat has moved this far
         uv: 0.06,                  // texture tiles per world unit
     },
     // Water (M20a). `low` and `high` are the table's own ends, in metres: `low` is the
@@ -885,6 +893,15 @@ const TUFT = rl.color(78, 128, 66);
 
 function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
+}
+
+// GLSL's `smoothstep`, for the scene's own maths (the mountain mask and any
+// other eased term). `t` is clamped before the cubic, so an out-of-range value
+// lands exactly on an edge rather than overshooting it.
+function smoothstep(lo, hi, v) {
+    let t = (v - lo) / (hi - lo);
+    t = clamp(t, 0, 1);
+    return t * t * (3 - 2 * t);
 }
 
 function mod1(v) {

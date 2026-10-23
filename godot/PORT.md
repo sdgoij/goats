@@ -268,8 +268,10 @@ This is the port's first *measured* answer to the determinism risk rather than
 an intention, and section 9 has what it means. In short: the transcription is
 right — every octave, the bowl, the interpolation and the order — and
 bit-exactness is **not reachable**, because the hash takes `sin` at arguments in
-the millions where the answer depends on the argument-reduction algorithm. 5e-11
-metres is where the two engines stop agreeing.
+the millions where the answer depends on the argument-reduction algorithm. Under
+a nanometre (7e-10 m on the mountain range) is where the two engines stop
+agreeing; the gate's tolerance is 1e-8 m, still nine orders below the centimetre
+the wire quantizes a device to.
 
 And with the field in place the herd stands on it, and the ground is *drawn*
 from it:
@@ -1401,7 +1403,7 @@ specification: the rewrite is judged against `shots_*`, `shot_*.png` and
 
 | System | Reference | Godot home |
 | --- | --- | --- |
-| Terrain heightfield (3-octave noise, materials, drifting) | `game/world.js` | **Done**: `terrain.gd` (the field) + `terrain_mesh.gd` (the grid) |
+| Terrain heightfield (rolling hills, mountain ridges, snow, near grid + far ring) | `game/world.js` | **Done**: `terrain.gd` (the field) + `terrain_mesh.gd` (the near grid and the ring) |
 | Grass field (per-cell hash, follows the goat, sways) | `game/weather.js` | **Done**: `grass.gd`, a `MultiMesh`, culled where a pool hides it |
 | Gaits, speed from stride/duty, health/energy | `game/goat.js` | **Done**: `player_goat.gd`, gated frame for frame |
 | Day/night clock, sky, sun/moon, stars | `game/world.js`, `game/lighting.js` | **Done**: `sky.gd` is the clock/curve/arc and drives Sky3D; the client draws the sky with the vendored addon (`addons/sky_3d`), and `sky.gdshader` + `celestial.gd` remain the reference/fallback |
@@ -1420,15 +1422,17 @@ Two decisions were settled with the plan and are recorded where they belong:
   with `K` cycling map / planar / off. That pipeline is not reproduced. Godot's
   shadow atlas is the shadow system, and `K` keeps only the planar fallback as a
   debug view.
-- **The sky's model still ports; its drawing is Sky3D's.** `sky.gd` is still
-  `world.js`'s curve and `lighting.js`'s light, transcribed and gated, and it is
-  still what gameplay reads (`_sky_light`). The client renders it through the
-  vendored Sky3D addon instead of `sky.gdshader`: the addon owns the sky material,
-  the atmosphere, clouds, stars and the sun/moon discs, and `_apply_sky` writes the
-  port's clock, sun/moon arc, cloudiness and wind into it every frame. `sky.gdshader`
-  and `celestial.gd` remain as the reference renderer and the fallback. The trade is
-  the scene's exact `sky.js` look for a richer sky; the curve and its gate are
-  unchanged.
+- **The sky's model still ports; its drawing is Sky3D's, and the cumulus is the
+  port's own volume.** `sky.gd` is still `world.js`'s curve and `lighting.js`'s light,
+  transcribed and gated, and it is still what gameplay reads (`_sky_light`). The
+  client renders the atmosphere, the stars, the cirrus and the sun/moon discs through
+  the vendored Sky3D addon, and `_apply_sky` writes the port's clock, sun/moon arc,
+  cloudiness and wind into it every frame. Sky3D's **cumulus** is turned off:
+  its clouds live in the sky stage at infinity, so a flying goat could never reach
+  them. `cloud_layer.gd` + `cloud_layer.gdshader` are the deck instead -- the
+  scene's 5..9.5 m slab as a camera-centred box marched in world space, which the
+  goat climbs through and which covers the ground when it is above it. `sky.gdshader`
+  and `celestial.gd` remain as the reference renderer and the fallback.
 
 `GPU_SKINNING` disappears: Godot always skins on the GPU, so the plain/skinned
 shader duality in `lighting.js` — which exists only because raylib can be built

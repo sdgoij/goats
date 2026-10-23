@@ -1,4 +1,4 @@
-# The ground, drawn: `world.js`'s heightfield as one mesh.
+# The ground, drawn: `world.js`'s heightfield as one mesh with two surfaces.
 #
 # The field itself is `terrain.gd` -- a pure function of where you are, which is
 # what the herd stands on and what the scene's own heightfield is measured
@@ -6,6 +6,12 @@
 # builds through `makeModel`, and the reason it is one mesh rather than a field of
 # cubes (a cube per cell measured ~14 us and capped a frame at about a hundred of
 # them, so the whole field would not fit in a frame at all).
+#
+# The second surface is the far ring (`world.js` `terrainFarBuild`): the same field
+# on an 8 m grid, whose hole is exactly the near grid's square, out to 192 units.
+# That is what gives the mountains somewhere to stand and the flying goat
+# something to look at; it shares the near grid's anchor and material, so it costs
+# one more submission and no new resource to keep in step.
 #
 # Three things are transcriptions and not reinterpretations, because they decide
 # what the ground looks like:
@@ -39,11 +45,25 @@ const HALF := 48.0
 const DETAIL_SIZE := 64
 static var UV_SCALE: float = 0.06
 
+## The far ring (`world.js` `TERRAIN_FAR_*`): a coarse square whose hole is the
+## near grid's own square, so the two surfaces tile without a gap. Eight-metre
+## cells out to 192 units is the trade that fits the visible range in the same
+## rebuild budget as the near grid.
+const FAR_CELL := 8.0
+const FAR_QUADS := 48
+const FAR_N := FAR_QUADS + 1
+const FAR_HALF := 192.0
+## The near grid's half-extent, in far cells: the hole its quads leave.
+const FAR_HOLE0 := 18
+const FAR_HOLE1 := 30
+
 ## The ground as the mirror draws it (M20e): the same mesh and the same look, seen from under
 ## the terrain. See `mirror_material`.
 const MIRROR_SHADER := preload("res://src/terrain_mirror.gdshader")
 
 var _heights := PackedFloat64Array()
+var _far_heights := PackedFloat64Array()
+var _far_indices := PackedInt32Array()
 var _mesh: ArrayMesh
 var _material: StandardMaterial3D
 ## Whether the ground is drawn through the lit material or the unshaded one (`L` and the settings
@@ -79,8 +99,8 @@ func follow(x: float, z: float) -> bool:
 ##
 ## The whole grid, not the cells the crater reaches. The scene patches the affected
 ## rectangle (`terrainStampCraters`) because it measured a full rebuild as too much;
-## the port rebuilds the whole field on an anchor move already (every 24 units of
-## travel, so every eight seconds at a run), so a bang costs what a walk past a
+## the port rebuilds the whole field on an anchor move already (every 32 units of
+## travel, so every six seconds at a run), so a bang costs what a walk past a
 ## boundary costs and nothing more.
 func refresh() -> void:
 	if _built:
@@ -205,6 +225,91 @@ func build(anchor_x: float, anchor_z: float) -> void:
 		_mesh.clear_surfaces()
 	_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	_mesh.surface_set_material(0, _material)
+	# The far ring is a second surface of the same mesh: the same material, the
+	# same detail texture and the same draw, so the range costs one more submission
+	# and no new resource to keep in step with the ground.
+	_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _build_far(anchor_x, anchor_z))
+	_mesh.surface_set_material(1, _material)
+
+## The far ring (`world.js` `terrainFarBuild`): the same field on an eight-metre
+## grid, with the quads over the near grid's square left out. The heights are
+## filled across the hole as well -- a vertex on its edge reads its inside
+## neighbour for the normal -- but those inner vertices are never indexed.
+func _build_far(anchor_x: float, anchor_z: float) -> Array:
+	var count: int = FAR_N * FAR_N
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var cols := PackedColorArray()
+	var uvs := PackedVector2Array()
+	verts.resize(count)
+	norms.resize(count)
+	cols.resize(count)
+	uvs.resize(count)
+	_far_heights.resize(count)
+
+	var x0: float = anchor_x - FAR_HALF
+	var z0: float = anchor_z - FAR_HALF
+
+	for j in FAR_N:
+		var wz: float = z0 + j * FAR_CELL
+		var row: int = j * FAR_N
+		for i in FAR_N:
+			_far_heights[row + i] = Terrain.base_height(x0 + i * FAR_CELL, wz)
+
+	for j in FAR_N:
+		var wz: float = z0 + j * FAR_CELL
+		var row: int = j * FAR_N
+		# The hole's interior is unreferenced; its boundary rows and columns are not.
+		var inner: bool = j > FAR_HOLE0 and j < FAR_HOLE1
+		for i in FAR_N:
+			if inner and i > FAR_HOLE0 and i < FAR_HOLE1:
+				continue
+			var k: int = row + i
+			var wx: float = x0 + i * FAR_CELL
+			var y: float = float(_far_heights[k])
+			verts[k] = Vector3(wx, y, wz)
+
+			var fwd_i: int = 1 if i < FAR_N - 1 else 0
+			var back_i: int = 1 if i > 0 else 0
+			var fwd_j: int = FAR_N if j < FAR_N - 1 else 0
+			var back_j: int = FAR_N if j > 0 else 0
+			var dx: float = (_far_heights[k + fwd_i] - _far_heights[k - back_i]) / (2.0 * FAR_CELL)
+			var dz: float = (_far_heights[k + fwd_j] - _far_heights[k - back_j]) / (2.0 * FAR_CELL)
+			var inv: float = 1.0 / sqrt(dx * dx + dz * dz + 1.0)
+			norms[k] = Vector3(-dx * inv, inv, -dz * inv)
+
+			var slope: float = minf(1.0, sqrt(dx * dx + dz * dz))
+			var patch: float = Terrain.vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7)
+			cols[k] = Terrain.material(y, slope, patch)
+			uvs[k] = Vector2(wx * UV_SCALE, wz * UV_SCALE)
+
+	if _far_indices.is_empty():
+		_far_indices.resize((FAR_QUADS * FAR_QUADS - (FAR_HOLE1 - FAR_HOLE0) * (FAR_HOLE1 - FAR_HOLE0)) * 6)
+		var t: int = 0
+		for j in FAR_QUADS:
+			for i in FAR_QUADS:
+				if i >= FAR_HOLE0 and i < FAR_HOLE1 and j >= FAR_HOLE0 and j < FAR_HOLE1:
+					continue
+				var a: int = j * FAR_N + i
+				var b: int = a + 1
+				var c: int = a + FAR_N
+				var d: int = c + 1
+				_far_indices[t] = a
+				_far_indices[t + 1] = b
+				_far_indices[t + 2] = c
+				_far_indices[t + 3] = b
+				_far_indices[t + 4] = d
+				_far_indices[t + 5] = c
+				t += 6
+
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = norms
+	arrays[Mesh.ARRAY_COLOR] = cols
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = _far_indices
+	return arrays
 
 ## The detail texture, made on first use.
 func _detail_texture() -> ImageTexture:

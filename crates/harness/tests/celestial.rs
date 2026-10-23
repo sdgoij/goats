@@ -336,10 +336,11 @@ fn the_sun_and_moon_sit_on_the_light() {
 }
 
 /// The cloud layer is composited *over* the bodies, which is the whole of "the sun
-/// is behind the cloud": the sky is drawn in two passes -- the air, then the clouds
-/// -- with `drawCelestial` in between, so a cloud that drifts over the sun takes it
-/// per pixel, out of the sky's own march, instead of the sun being painted on top
-/// of the cloud.
+/// is behind the cloud": the sky's air is drawn first, `drawCelestial` follows it,
+/// and the cloud pass runs after the ground -- so a cloud that drifts over the sun
+/// takes it per pixel, out of the sky's own march, instead of the sun being painted
+/// on top of the cloud. The world between the two passes is what puts the deck over
+/// the terrain when the goat flies above it.
 ///
 /// None of that is a number the scene can report, so the stub keeps one frame's
 /// draw order (`Observations::layers`) and these checks read it. The single-pass
@@ -441,16 +442,18 @@ fn the_bodies_are_under_the_cloud_layer() {
         (&night.layers, &moon_rows),
     );
 
-    // ...and the world is over the cloud layer, not under it: the terrain is the
-    // first model drawn after it.
+    // ...and the world is *under* the cloud layer, not over it: the terrain is drawn
+    // before the cloud pass, which is what lets the deck cover the ground when the
+    // camera is above it. Drawing the sky's clouds as a background before the world
+    // is the bug this order exists to prevent.
     let ground_rows = rows_of(layers, MODEL, &[terrain]);
     checks.check(
-        "the ground is drawn over the cloud layer",
+        "the ground is drawn under the cloud layer",
         terrain > 0
             && !ground_rows.is_empty()
             && ground_rows
                 .iter()
-                .all(|position| cloud.is_some_and(|c| *position > c)),
+                .all(|position| cloud.is_some_and(|c| *position < c)),
         (cloud, terrain, &ground_rows),
     );
 

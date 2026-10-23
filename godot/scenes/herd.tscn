@@ -1,4 +1,4 @@
-[gd_scene load_steps=19 format=3]
+[gd_scene load_steps=20 format=3]
 
 [ext_resource type="Script" path="res://src/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/herd.gd" id="2_herd"]
@@ -17,6 +17,7 @@
 [ext_resource type="Script" path="res://addons/sky_3d/src/Sky3D.gd" id="15_sky3d"]
 [ext_resource type="Script" path="res://addons/sky_3d/src/SkyDome.gd" id="16_skydome"]
 [ext_resource type="Script" path="res://addons/sky_3d/src/TimeOfDay.gd" id="17_tod"]
+[ext_resource type="Script" path="res://src/cloud_layer.gd" id="18_clouds"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 2
@@ -60,6 +61,9 @@ script = ExtResource("11_bots")
 
 [node name="Terrain" type="MeshInstance3D" parent="."]
 script = ExtResource("3_terrain")
+
+[node name="CloudLayer" type="MeshInstance3D" parent="."]
+script = ExtResource("18_clouds")
 
 [node name="Water" type="MeshInstance3D" parent="."]
 script = ExtResource("10_water")

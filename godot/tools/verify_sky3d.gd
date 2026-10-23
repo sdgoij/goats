@@ -107,6 +107,17 @@ func _process(_delta: float) -> bool:
 		if absf(sky.cirrus_coverage - SkyModel.cirrus_of(1.0)) > 0.001:
 			failures.append("overcast cirrus coverage is %.4f, not %.4f"
 				% [sky.cirrus_coverage, SkyModel.cirrus_of(1.0)])
+		# The cumulus is the port's world-space deck, not the addon's sky-stage one:
+		# a cloud at infinity is a cloud the goat can never fly into.
+		if sky.cumulus_visible:
+			failures.append("Sky3D still paints its cumulus at infinity")
+		var clouds: MeshInstance3D = main.get_node_or_null("CloudLayer") as MeshInstance3D
+		if clouds == null:
+			failures.append("the scene has no world-space CloudLayer")
+		elif not clouds.visible:
+			failures.append("the world-space CloudLayer is hidden")
+		elif clouds.material_override == null:
+			failures.append("the CloudLayer has no shader material")
 
 	print("sky material: ", environment.sky.sky_material if environment.sky != null else null)
 	print("sun: ", sun, ", moon: ", moon)
