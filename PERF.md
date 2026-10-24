@@ -1178,6 +1178,53 @@ computes one band instead of 2401 vertices.
 
 `terrainprobe` was temporary and is not in the tree; the numbers above are its output.
 
+### The anchor step: a band, not a field (scene-side)
+
+The sentence above was the lead, and this is what landed. The anchor snaps to 32 and
+every grid's cell size divides it, so the new grid is the old one shifted by whole
+cells. The overlapping vertices describe the same world points, so their heights and
+attributes are copied and only the strip the shift exposed is sampled -- ~1900 field
+calls instead of ~7200. The shift is **in place**: this engine's collector does not
+record a write to a global slot, so reassigning a module-level array binding to a fresh
+array is a `write-barrier miss` panic, and in-place also costs one less allocation.
+
+Two details the correctness depends on:
+
+* **A move on both axes exposes two strips, not their bounding box.** The dirty set is
+  an L: the columns the x shift uncovered (all rows) plus the rows the z shift uncovered
+  (all columns). Using the box would rewrite most of the grid; using only the corner
+  leaves the rest stale.
+* **A moved world point may change edge rule.** A vertex that was on the outer edge (or
+a hole rim) and is now interior was shaded with the fixed-step edge slope, and one that
+moved onto an edge with the grid's own difference. The rule is `outer(i) or outer(j) or
+(rim(i) and hole(j)) or (rim(j) and hole(i))`, so per-axis bit tables answer it for a
+whole row; the scan compares each copied vertex's old and new rule and rewrites the few
+that differ. `observations.rs`'s `an_incremental_step_is_the_same_ground_as_a_full_rebuild`
+walks a diagonal, a negative step and both, then forces the full path and compares all
+nineteen arrays -- the step is bit-identical.
+
+Release client, 8 `perf` windows of 240 frames with the goat flying to the mountains:
+
+| | before | after |
+| --- | --- | --- |
+| `terrain_upd` per step (field, attributes, water, upload) | ~10-14 ms | ~5 ms |
+| worst frame over the flight | 200-431 ms | 100 ms |
+| `slow` frames per 240 | 3-15 | 1-4 |
+
+The Godot port had the same problem with a bigger multiplier, and it had no JIT to soften
+it: one `build()` was 90 ms, 54 of which was 7203 `Terrain.base_height` calls at ~7.5 us
+a point. It now shifts and rewrites a band (8-12 ms) **and** samples the field in Rust
+(`crates/godot/src/terrain.rs`: a 2401-point grid in 0.4 ms, and the browser build links
+the same sampler). `godot/tools/bench_build.gd` measures the step, the diagonal step and
+a full resample; `godot/tools/bench_terrain.gd` measures the ground's share of a drawn
+frame, which was never the problem -- 0.2-0.3 ms at 1280x720 on a 4090, i.e. under 5%
+of the frame.
+
+What is left of a step is the attribute pass (one material noise and one normal per new
+vertex), the seam strips, and the water's own full-window bake -- the water still moves
+its whole window, because its bake is world-anchored and its index list is cut once for
+the grid. Those are the next leads if a browser step is still audible.
+
 ### The allocation rate: what the mods read (scene-side)
 
 The collector's section above leaves one number open -- the ~8.5k young boxes a minor,

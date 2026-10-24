@@ -91,6 +91,79 @@ fn the_observations_cover_the_run() {
 }
 
 #[test]
+fn an_incremental_step_is_the_same_ground_as_a_full_rebuild() {
+    // The terrain shifts its three grids on a snapped anchor move and resamples only
+    // the strip that moved. That has to be the ground a full rebuild would have
+    // drawn, down to the attributes -- otherwise a walking goat sees the shading of
+    // the grid it came from. `terrainStep(NaN, NaN, true)` is the full path.
+    let mut harness = Harness::start().expect("evaluate the scene");
+    harness.run(4).expect("build the first grid");
+
+    let walk = [
+        (96.0, 0.0),
+        (96.0, 64.0),
+        (32.0, 64.0),
+        (32.0, 96.0),
+        (0.0, 32.0),
+    ];
+    for (x, z) in walk {
+        // `terrainEnsure` is the frame's own call; driving it directly keeps the
+        // goat (and the JS globals) out of the comparison.
+        harness
+            .call("terrainEnsure", &[json!(x), json!(z)])
+            .expect("take the step");
+    }
+
+    let step = checksum(&mut harness);
+    harness
+        .eval("terrainStep(NaN, NaN, true)")
+        .expect("full rebuild");
+    let full = checksum(&mut harness);
+    assert_eq!(
+        step, full,
+        "an incremental step differs from a full rebuild"
+    );
+}
+
+/// A position-weighted sum of every attribute array. One number per grid surface,
+/// so a changed vertex anywhere moves it.
+fn checksum(harness: &mut Harness) -> Vec<f64> {
+    let mut out = Vec::new();
+    for name in [
+        "T_VERTS",
+        "T_NORMS",
+        "T_COLS",
+        "T_UVS",
+        "T_H",
+        "M_VERTS",
+        "M_NORMS",
+        "M_COLS",
+        "M_UVS",
+        "M_H",
+        "F_VERTS",
+        "F_NORMS",
+        "F_COLS",
+        "F_UVS",
+        "F_H",
+        "SEAM_VERTS",
+        "SEAM_NORMS",
+        "SEAM_COLS",
+        "SEAM_UVS",
+    ] {
+        let value = harness
+            .eval(&format!(
+                "(function () {{ var a = {name}; var s = 0; \
+                 for (var k = 0; k < a.length; k++) s += a[k] * ((k % 13) + 1); return s; }})()"
+            ))
+            .expect("checksum")
+            .as_f64()
+            .expect("a number");
+        out.push(value);
+    }
+    out
+}
+
+#[test]
 fn the_scene_state_is_reachable_from_a_test() {
     let mut harness = Harness::start().expect("evaluate the scene");
 

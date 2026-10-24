@@ -45,6 +45,9 @@ mod net;
 #[cfg(target_arch = "wasm32")]
 #[path = "net_web.rs"]
 mod net;
+/// The terrain field's sampling loop, for the mesh builder (`terrain_mesh.gd`).
+/// Pure Rust and stateless, so the browser build has it too.
+mod terrain;
 #[cfg(not(target_arch = "wasm32"))]
 mod voice;
 

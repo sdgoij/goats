@@ -569,7 +569,17 @@ ring and the 8 m far ring the client builds through `makeModel`, as one
 surface perimeter measures the field over a fixed step so both sides of a seam
 agree), a per-vertex material colour from the scene's palette, a world-space
 texcoord, and a rebuild only when the snapped anchor moves (`terrainEnsure`'s
-32-unit rule, so a step costs a rebuild and a frame does not):
+32-unit rule, so a step costs a rebuild and a frame does not).
+
+A step is **incremental**, as it is in the scene: the anchor snaps to 32 and every
+cell divides it, so the new grid is the old one shifted by whole cells, the overlap
+is copied and only the strip the shift exposed is sampled. The **field sampling**
+is Rust (`crates/godot/src/terrain.rs`), because 7203 GDScript samples were 54 ms of
+the 90 ms rebuild; the extension is the same one the browser build links, and the
+GDScript transcription is the fallback for a host without it. The gate checks both
+halves: the Rust field against `Terrain.base_height` (3e-10 m, `sin`'s last bit),
+and a walked sequence of negative and diagonal steps against a full resample of the
+same anchor (identical to the last bit, all five surfaces):
 
 ```
 vertices: 2401  triangles: 4608
@@ -583,6 +593,8 @@ worst height error: 0.000000 m (float32 grid against the double field)
 worst normal error: 0.000000  (normals not facing up: 0)
 vertices off the palette: 0
 follow(30, 7) -> anchor (32, 0), 1 rebuild(s)
+incremental vs full: worst attribute error 0.000000000
+Rust field vs GDScript: worst 0.000000000319 m
 OK: the ground is the scene's grid, built from the scene's field
 ```
 

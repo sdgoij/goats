@@ -192,6 +192,53 @@ func _initialize() -> void:
 	if moved_verts.size() == 0 or not is_equal_approx(moved_verts[0].x, 16.0):
 		failures.append("the rebuilt grid did not move with the anchor: %s" % moved_verts[0])
 
+	# 8b. The incremental update is the same ground as a full resample. Walk a
+	#     diagonal (both strips) and a negative step, snapshot the five surfaces,
+	#     then rebuild the same anchor from scratch and compare every attribute.
+	var walk := [[64.0, 0.0], [64.0, 32.0], [96.0, 32.0], [96.0, 64.0], [64.0, 64.0], [32.0, 64.0]]
+	for step in walk:
+		node.follow(step[0], step[1])
+	var walked: Array = _snapshot(node)
+	node.refresh()
+	var rebuilt: Array = _snapshot(node)
+	var worst_step := 0.0
+	for s in walked.size():
+		var a: Array = walked[s]
+		var b: Array = rebuilt[s]
+		for field in a.size():
+			var va: Variant = a[field]
+			var vb: Variant = b[field]
+			if va.size() != vb.size():
+				worst_step = INF
+				continue
+			for k in va.size():
+				worst_step = maxf(worst_step, _attr_diff(va[k], vb[k]))
+	print("incremental vs full: worst attribute error %.9f" % worst_step)
+	if worst_step > 0.000001:
+		failures.append("an incremental step differs from a full rebuild by %.6f" % worst_step)
+
+	# 8c. The Rust field sampler (when the extension is loaded) is the scene's
+	#     field. It is what builds the mesh on a normal client, so a drift here
+	#     would draw ground the goat does not stand on.
+	if ClassDB.class_exists("TerrainField"):
+		var sampler: Object = ClassDB.instantiate("TerrainField")
+		var empty := PackedFloat64Array()
+		empty.resize(49 * 49)
+		var rust: PackedFloat64Array = sampler.call("fill_heights", empty,
+			-48.0, -48.0, 2.0, 49, 0, 0, true,
+			Terrain.RELIEF, Terrain.FLAT, Terrain.RAMP,
+			Terrain.MOUNTAIN, Terrain.MOUNTAIN_FLAT, Terrain.MOUNTAIN_RAMP)
+		var worst_rust := 0.0
+		for j in 49:
+			for i in 49:
+				var want: float = Terrain.base_height(-48.0 + i * 2.0, -48.0 + j * 2.0)
+				worst_rust = maxf(worst_rust, absf(rust[j * 49 + i] - want))
+		print("Rust field vs GDScript: worst %.12f m" % worst_rust)
+		if worst_rust > 0.000000001:
+			failures.append("the Rust field drifts from the scene's by %.9f" % worst_rust)
+	else:
+		print("TerrainField: extension absent, the GDScript sampler builds the ground")
+
 	node.free()
 
 	if failures.is_empty():
@@ -215,3 +262,22 @@ func _in_palette(colour: Color) -> bool:
 				and absf(c.b - colour.b) < tolerance:
 			return true
 	return false
+
+## The five surfaces' attribute arrays, for an incremental-vs-full comparison.
+func _snapshot(node: Node) -> Array:
+	var mesh: ArrayMesh = node.mesh
+	var out: Array = []
+	for s in mesh.get_surface_count():
+		var a: Array = mesh.surface_get_arrays(s)
+		out.append([a[Mesh.ARRAY_VERTEX], a[Mesh.ARRAY_NORMAL],
+			a[Mesh.ARRAY_COLOR], a[Mesh.ARRAY_TEX_UV]])
+	return out
+
+func _attr_diff(a: Variant, b: Variant) -> float:
+	match typeof(a):
+		TYPE_VECTOR3, TYPE_VECTOR2:
+			return (a - b).length()
+		TYPE_COLOR:
+			return maxf(absf(a.r - b.r), maxf(absf(a.g - b.g), absf(a.b - b.b)))
+		_:
+			return absf(float(a) - float(b))

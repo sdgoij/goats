@@ -256,7 +256,15 @@ function makeTerrainTexture() {
 // The arrays are the grid's, not the call's: they are allocated once and recomputed
 // into. So is the index list -- the 48x48 topology never changes, whatever the anchor
 // or the craters do -- and the recompute is limited to the rectangle that actually
-// moved, which is the whole field for a step and a handful of vertices for a crater.
+// moved, which is a strip for a step and a handful of vertices for a crater.
+//
+// A step is **incremental**: every cell size divides the 32 unit snap, so the new
+// grid is the old one shifted by whole cells. The overlapping vertices are the
+// same world points and their attributes are copied, and only the strip the shift
+// uncovered is resampled (~1900 points instead of ~7200). The shift is **in place**:
+// the scene's arrays are module-level and this engine's collector does not record a
+// write to a global slot, so handing a binding a fresh array is a write-barrier
+// miss (and a panic). It also costs one less allocation per step.
 const T_N = TERRAIN_QUADS + 1;                  // vertices per side
 const T_HALF = (TERRAIN_QUADS * TERRAIN_CELL) / 2;
 const T_H = new Array(T_N * T_N);
@@ -465,48 +473,189 @@ function terrainEdgeSlope(wx, wz, out) {
 // Scratch for `terrainEdgeSlope`, so the per-vertex path allocates nothing.
 const TERRAIN_EDGE_SLOPE = [0, 0];
 
-// One vertex's position, normal, colour and texcoord. Also its own function, for the
-// same reason as the row.
-function terrainVertex(k, i, j, edge) {
-    const wx = terrainAnchorX - T_HALF + i * TERRAIN_CELL;
-    const wz = terrainAnchorZ - T_HALF + j * TERRAIN_CELL;
-    const y = T_H[k];
-    T_VERTS[k * 3] = wx;
-    T_VERTS[k * 3 + 1] = y;
-    T_VERTS[k * 3 + 2] = wz;
+// One vertex's position, normal, colour and texcoord. One function for the near
+// grid and the rings: they differ only in spacing and in the edge rule.
+function terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, k, i, j, ring) {
+    const wx = terrainAnchorX - half + i * cell;
+    const wz = terrainAnchorZ - half + j * cell;
+    const y = H[k];
+    VERTS[k * 3] = wx;
+    VERTS[k * 3 + 1] = y;
+    VERTS[k * 3 + 2] = wz;
     // Central differences on the grid give the normal, so the shading is smooth
-    // across cells without a normal attribute on the geometry. The perimeter is
-    // the exception: it samples the world instead, so it agrees with the coarser
-    // surface on the other side of the seam.
+    // across cells. The perimeter is the exception: it samples the world over a
+    // fixed step, so it agrees with the coarser surface on the other side of a
+    // seam.
+    const edge = ring ? terrainRingEdge(i, j)
+        : (i === 0 || i === n - 1 || j === 0 || j === n - 1);
     let dx, dz;
     if (edge) {
         terrainEdgeSlope(wx, wz, TERRAIN_EDGE_SLOPE);
         dx = TERRAIN_EDGE_SLOPE[0];
         dz = TERRAIN_EDGE_SLOPE[1];
     } else {
-        dx = (T_H[k + (i < T_N - 1 ? 1 : 0)] - T_H[k - (i > 0 ? 1 : 0)]) /
-            (2 * TERRAIN_CELL);
-        dz = (T_H[k + (j < T_N - 1 ? T_N : 0)] - T_H[k - (j > 0 ? T_N : 0)]) /
-            (2 * TERRAIN_CELL);
+        dx = (H[k + (i < n - 1 ? 1 : 0)] - H[k - (i > 0 ? 1 : 0)]) / (2 * cell);
+        dz = (H[k + (j < n - 1 ? n : 0)] - H[k - (j > 0 ? n : 0)]) / (2 * cell);
     }
     const inv = 1 / Math.sqrt(dx * dx + dz * dz + 1);
-    T_NORMS[k * 3] = -dx * inv;
-    T_NORMS[k * 3 + 1] = inv;
-    T_NORMS[k * 3 + 2] = -dz * inv;
+    NORMS[k * 3] = -dx * inv;
+    NORMS[k * 3 + 1] = inv;
+    NORMS[k * 3 + 2] = -dz * inv;
     const c = terrainMaterial(y, Math.min(1, Math.sqrt(dx * dx + dz * dz)),
         vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7));
-    T_COLS[k * 4] = c[0];
-    T_COLS[k * 4 + 1] = c[1];
-    T_COLS[k * 4 + 2] = c[2];
-    T_COLS[k * 4 + 3] = 255;
-    T_UVS[k * 2] = wx * TUNING.terrain.uv;
-    T_UVS[k * 2 + 1] = wz * TUNING.terrain.uv;
+    COLS[k * 4] = c[0];
+    COLS[k * 4 + 1] = c[1];
+    COLS[k * 4 + 2] = c[2];
+    COLS[k * 4 + 3] = 255;
+    UVS[k * 2] = wx * TUNING.terrain.uv;
+    UVS[k * 2 + 1] = wz * TUNING.terrain.uv;
 }
 
-function terrainAttrRow(j, i0, i1) {
-    const edgeRow = j === 0 || j === T_N - 1;
-    for (let i = i0; i <= i1; i++) {
-        terrainVertex(j * T_N + i, i, j, edgeRow || i === 0 || i === T_N - 1);
+// Write every vertex of `rects` for one grid.
+function terrainWriteRects(H, VERTS, NORMS, COLS, UVS, half, cell, n, rects, ring) {
+    for (let r = 0; r < rects.length; r++) {
+        const rect = rects[r];
+        for (let j = rect.j0; j <= rect.j1; j++) {
+            const row = j * n;
+            for (let i = rect.i0; i <= rect.i1; i++) {
+                terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, row + i, i, j, ring);
+            }
+        }
+    }
+}
+
+// ---- incremental grids ----------------------------------------------------
+//
+// Every cell size divides `TUNING.terrain.snap`, so a snapped step is the same
+// grid shifted by whole cells. The overlapping vertices describe the same world
+// points, so their heights and attributes are copied and only the strip the shift
+// uncovered is sampled -- ~1900 field calls instead of ~7200, which is what makes
+// a step affordable in a browser frame.
+
+// How many cells a snapped step is in this grid's units; `n` when the move is not
+// a whole number of cells or is at least the whole grid (a teleport).
+function terrainShift(delta, cell, n) {
+    const steps = delta / cell;
+    const rounded = Math.round(steps);
+    if (Math.abs(steps - rounded) > 1e-5 || Math.abs(rounded) >= n) return n;
+    return rounded;
+}
+
+// A grid's heights after the anchor moved by (di, dj) cells. In place: the new
+// position of a cell is `i + di`, so iterating away from the side the rows/columns
+// move toward never overwrites a source that a later cell still needs.
+function terrainShiftHeights(H, x0, z0, cell, n, di, dj, full) {
+    if (full || H.length !== n * n) {
+        for (let j = 0; j < n; j++) {
+            const wz = z0 + j * cell;
+            const row = j * n;
+            for (let i = 0; i < n; i++) H[row + i] = terrainBaseHeight(x0 + i * cell, wz);
+        }
+        return;
+    }
+    const jStep = dj > 0 ? 1 : -1;
+    for (let j = dj > 0 ? 0 : n - 1; j >= 0 && j < n; j += jStep) {
+        const row = j * n;
+        const sj = j + dj;
+        if (sj < 0 || sj >= n) {
+            const wz = z0 + j * cell;
+            for (let i = 0; i < n; i++) H[row + i] = terrainBaseHeight(x0 + i * cell, wz);
+            continue;
+        }
+        const srow = sj * n;
+        const iStep = di > 0 ? 1 : -1;
+        for (let i = di > 0 ? 0 : n - 1; i >= 0 && i < n; i += iStep) {
+            const si = i + di;
+            if (si >= 0 && si < n) H[row + i] = H[srow + si];
+            else H[row + i] = terrainBaseHeight(x0 + i * cell, z0 + j * cell);
+        }
+    }
+}
+
+// The attribute arrays after the same shift, also in place. Entries outside the
+// overlap keep their old values until `terrainDirtyRects` rewrites them.
+function terrainShiftAttr(A, n, stride, di, dj) {
+    if (di === 0 && dj === 0) return;
+    const jStep = dj > 0 ? 1 : -1;
+    for (let j = dj > 0 ? 0 : n - 1; j >= 0 && j < n; j += jStep) {
+        const sj = j + dj;
+        if (sj < 0 || sj >= n) continue;
+        const drow = j * n;
+        const srow = sj * n;
+        const iStep = di > 0 ? 1 : -1;
+        for (let i = di > 0 ? 0 : n - 1; i >= 0 && i < n; i += iStep) {
+            const si = i + di;
+            if (si < 0 || si >= n) continue;
+            const d = (drow + i) * stride;
+            const s = (srow + si) * stride;
+            for (let c = 0; c < stride; c++) A[d + c] = A[s + c];
+        }
+    }
+}
+
+// The blocks a shift made new, widened by `pad` vertices so the normals on the
+// inner edge read the new neighbour. A move on both axes exposes two strips,
+// whose union is an L -- not the corner their bounding box would be.
+function terrainDirtyRects(n, di, dj, full, pad) {
+    if (full || (di === 0 && dj === 0)) return [{ i0: 0, i1: n - 1, j0: 0, j1: n - 1 }];
+    const rects = [];
+    if (di !== 0) {
+        const i0 = di > 0 ? n - di : 0;
+        const i1 = di > 0 ? n - 1 : -di - 1;
+        rects.push({
+            i0: Math.max(0, i0 - pad), i1: Math.min(n - 1, i1 + pad), j0: 0, j1: n - 1,
+        });
+    }
+    if (dj !== 0) {
+        const j0 = dj > 0 ? n - dj : 0;
+        const j1 = dj > 0 ? n - 1 : -dj - 1;
+        rects.push({
+            i0: 0, i1: n - 1, j0: Math.max(0, j0 - pad), j1: Math.min(n - 1, j1 + pad),
+        });
+    }
+    return rects;
+}
+
+// One axis' edge bits: `outer` (the two ends), `rim` (the hole's lines) and
+// `hole` (inside the hole's span). `terrainRingEdge` is exactly these three per
+// axis.
+function terrainAxisBits(n, ring) {
+    const outer = new Array(n);
+    const rim = new Array(n);
+    const hole = new Array(n);
+    for (let v = 0; v < n; v++) {
+        outer[v] = (v === 0 || v === n - 1) ? 1 : 0;
+        rim[v] = ring && (v === RING_HOLE0 || v === RING_HOLE1) ? 1 : 0;
+        hole[v] = ring && v >= RING_HOLE0 && v <= RING_HOLE1 ? 1 : 0;
+    }
+    return [outer, rim, hole];
+}
+
+// Recompute the copied vertices whose *edge rule* changed under the shift. A world
+// point that was on the outer edge (or a hole rim) and is now interior was shaded
+// with the fixed-step edge slope, and one that moved onto an edge with the grid's
+// own difference. The edge rule is `outer(i) or outer(j) or (rim(i) and hole(j))
+// or (rim(j) and hole(i))`, so per-axis bits answer a whole row at a time.
+function terrainFixEdgeChanges(H, VERTS, NORMS, COLS, UVS, half, cell, n, di, dj, ring) {
+    const bits = terrainAxisBits(n, ring);
+    const outer = bits[0];
+    const rim = bits[1];
+    const hole = bits[2];
+    for (let j = 0; j < n; j++) {
+        const sj = j + dj;
+        if (sj < 0 || sj >= n) continue;
+        const njO = outer[j], njR = rim[j], njH = hole[j];
+        const sjO = outer[sj], sjR = rim[sj], sjH = hole[sj];
+        const row = j * n;
+        for (let i = 0; i < n; i++) {
+            const si = i + di;
+            if (si < 0 || si >= n) continue;
+            const now = outer[i] | njO | (rim[i] & njH) | (njR & hole[i]);
+            const was = outer[si] | sjO | (rim[si] & sjH) | (sjR & hole[si]);
+            if (now !== was) {
+                terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, row + i, i, j, ring);
+            }
+        }
     }
 }
 
@@ -526,39 +675,105 @@ function terrainIndices() {
     }
 }
 
+// The tail every near-grid build shares: craters over the freshly sampled cells,
+// the attributes over the rectangles that need them, the seam strip (which hangs
+// off the boundary), the water rebuild, and the upload. The terrain has to be the
+// last mesh the engine is handed, because that is the one the harness reads its
+// facts back off, so `terrainUpload` is last and the water (also a `makeModel`
+// mesh) is before it.
+function terrainApplyNear(attrRects, craterRects, waterRects) {
+    terrainStampCraters(craterRects);
+    terrainWriteRects(T_H, T_VERTS, T_NORMS, T_COLS, T_UVS, T_HALF, TERRAIN_CELL, T_N,
+        attrRects, false);
+    terrainNearSeam = terrainSeamBuild(T_H, T_NORMS, T_COLS, T_UVS,
+        T_HALF, TERRAIN_CELL, M_H, terrainNearSeam);
+    waterRebuild(waterRects);
+    terrainUpload();
+}
+
+// A crater patch or a collapse: the heights are sampled again for the rectangles
+// (which `terrainPatchRect` has already widened by a cell), then the usual tail.
 function terrainBuildRects(rects) {
     if (!terrainIdxBuilt) { terrainIndices(); terrainIdxBuilt = true; }
-    // The ground itself for every rectangle, then every crater over all of them, then
-    // the vertices: the craters are added to heights, so no vertex may be derived from a
-    // height before the last stamp has landed on it.
     for (let r = 0; r < rects.length; r++) {
         const rect = rects[r];
         for (let j = rect.j0; j <= rect.j1; j++) terrainHeightRow(j, rect.i0, rect.i1);
     }
-    terrainStampCraters(rects);
-    for (let r = 0; r < rects.length; r++) {
-        const rect = rects[r];
-        for (let j = rect.j0; j <= rect.j1; j++) terrainAttrRow(j, rect.i0, rect.i1);
-    }
-    // The near grid's outer edge is the seam the mid ring meets; its strip closes
-    // the lens between the 2 m and 4 m triangulations. It hangs off the boundary
-    // heights and attributes just computed and the mid ring's hole heights (which
-    // `terrainMidBuild` wrote before this call), so it is rebuilt with them (and is
-    // cheap enough to rebuild even for a crater patch).
-    terrainNearSeam = terrainSeamBuild(T_H, T_NORMS, T_COLS, T_UVS,
-        T_HALF, TERRAIN_CELL, M_H, terrainNearSeam);
-    // The ground the water is a function of has just changed, so the table is recomputed with
-    // it (water.js), mesh and all -- *over the same rectangles*, which is what keeps a crater
-    // from costing the whole grid. It runs *before* `terrainUpload` on purpose: the terrain
-    // has to be the last mesh the engine is handed, because that is the one the harness reads
-    // its facts back off, and the water surface is a `makeModel` mesh in the same handle
-    // range.
-    waterRebuild(rects);
-    terrainUpload();
+    terrainApplyNear(rects, rects, rects);
 }
 
-function terrainBuild(i0, i1, j0, j1) {
-    terrainBuildRects([{ i0: i0, i1: i1, j0: j0, j1: j1 }]);
+// A snapped anchor move: shift the three grids and resample only the strips the
+// shift uncovered. `forceFull` is a teleport, a first build, or a move on the same
+// frame the ground itself changed (a crater the shift would otherwise carry over
+// unstamped).
+function terrainStep(prevX, prevZ, forceFull) {
+    if (!terrainIdxBuilt) { terrainIndices(); terrainIdxBuilt = true; }
+    if (!terrainRingIdxBuilt) { terrainRingIndices(); terrainRingIdxBuilt = true; }
+    const dx = terrainAnchorX - prevX;
+    const dz = terrainAnchorZ - prevZ;
+    let full = forceFull || !isFinite(prevX) || !isFinite(prevZ);
+    let di = 0, dj = 0, mdi = 0, mdj = 0, fdi = 0, fdj = 0;
+    if (!full) {
+        di = terrainShift(dx, TERRAIN_CELL, T_N);
+        dj = terrainShift(dz, TERRAIN_CELL, T_N);
+        mdi = terrainShift(dx, TERRAIN_MID_CELL, RING_N);
+        mdj = terrainShift(dz, TERRAIN_MID_CELL, RING_N);
+        fdi = terrainShift(dx, TERRAIN_FAR_CELL, RING_N);
+        fdj = terrainShift(dz, TERRAIN_FAR_CELL, RING_N);
+        if (di >= T_N || dj >= T_N || mdi >= RING_N || mdj >= RING_N ||
+            fdi >= RING_N || fdj >= RING_N) full = true;
+    }
+    if (full) { di = 0; dj = 0; mdi = 0; mdj = 0; fdi = 0; fdj = 0; }
+
+    // Far first: the mid seam interpolates the far ring's hole heights.
+    terrainShiftHeights(F_H, terrainAnchorX - TERRAIN_FAR_HALF,
+        terrainAnchorZ - TERRAIN_FAR_HALF, TERRAIN_FAR_CELL, RING_N, fdi, fdj, full);
+    terrainShiftAttr(F_VERTS, RING_N, 3, fdi, fdj);
+    terrainShiftAttr(F_NORMS, RING_N, 3, fdi, fdj);
+    terrainShiftAttr(F_COLS, RING_N, 4, fdi, fdj);
+    terrainShiftAttr(F_UVS, RING_N, 2, fdi, fdj);
+    const farRects = terrainDirtyRects(RING_N, fdi, fdj, full, 1);
+    terrainWriteRects(F_H, F_VERTS, F_NORMS, F_COLS, F_UVS, TERRAIN_FAR_HALF,
+        TERRAIN_FAR_CELL, RING_N, farRects, true);
+    if (!full) {
+        terrainFixEdgeChanges(F_H, F_VERTS, F_NORMS, F_COLS, F_UVS, TERRAIN_FAR_HALF,
+            TERRAIN_FAR_CELL, RING_N, fdi, fdj, true);
+    }
+    terrainFar = terrainRingUpload(F_VERTS, F_NORMS, F_COLS, F_UVS, terrainFar);
+
+    terrainShiftHeights(M_H, terrainAnchorX - TERRAIN_MID_HALF,
+        terrainAnchorZ - TERRAIN_MID_HALF, TERRAIN_MID_CELL, RING_N, mdi, mdj, full);
+    terrainShiftAttr(M_VERTS, RING_N, 3, mdi, mdj);
+    terrainShiftAttr(M_NORMS, RING_N, 3, mdi, mdj);
+    terrainShiftAttr(M_COLS, RING_N, 4, mdi, mdj);
+    terrainShiftAttr(M_UVS, RING_N, 2, mdi, mdj);
+    const midRects = terrainDirtyRects(RING_N, mdi, mdj, full, 1);
+    terrainWriteRects(M_H, M_VERTS, M_NORMS, M_COLS, M_UVS, TERRAIN_MID_HALF,
+        TERRAIN_MID_CELL, RING_N, midRects, true);
+    if (!full) {
+        terrainFixEdgeChanges(M_H, M_VERTS, M_NORMS, M_COLS, M_UVS, TERRAIN_MID_HALF,
+            TERRAIN_MID_CELL, RING_N, mdi, mdj, true);
+    }
+    terrainMidSeam = terrainSeamBuild(M_H, M_NORMS, M_COLS, M_UVS,
+        TERRAIN_MID_HALF, TERRAIN_MID_CELL, F_H, terrainMidSeam);
+    terrainMid = terrainRingUpload(M_VERTS, M_NORMS, M_COLS, M_UVS, terrainMid);
+
+    terrainShiftHeights(T_H, terrainAnchorX - T_HALF, terrainAnchorZ - T_HALF,
+        TERRAIN_CELL, T_N, di, dj, full);
+    terrainShiftAttr(T_VERTS, T_N, 3, di, dj);
+    terrainShiftAttr(T_NORMS, T_N, 3, di, dj);
+    terrainShiftAttr(T_COLS, T_N, 4, di, dj);
+    terrainShiftAttr(T_UVS, T_N, 2, di, dj);
+const attrRects = terrainDirtyRects(T_N, di, dj, full, 1);
+	// Craters are stamped over the *new* cells only: a copied cell already carries
+	// the term at its world point, and stamping again would add it twice.
+	const craterRects = terrainDirtyRects(T_N, di, dj, full, 0);
+	if (!full) {
+		terrainFixEdgeChanges(T_H, T_VERTS, T_NORMS, T_COLS, T_UVS, T_HALF, TERRAIN_CELL,
+			T_N, di, dj, false);
+	}
+	const fullRect = [{ i0: 0, i1: T_N - 1, j0: 0, j1: T_N - 1 }];
+    terrainApplyNear(attrRects, craterRects, fullRect);
 }
 
 // The one engine call a ground mesh costs, plus the material bindings every
@@ -606,52 +821,6 @@ function terrainRingIndices() {
     }
 }
 
-// One row of a ring's heights -- the whole row, hole included, because the
-// vertices on the hole's edge take their normal from the inside neighbour.
-function terrainRingHeightRow(H, half, cell, j) {
-    const wz = terrainAnchorZ - half + j * cell;
-    const x0 = terrainAnchorX - half;
-    const base = j * RING_N;
-    for (let i = 0; i < RING_N; i++) {
-        H[base + i] = terrainBaseHeight(x0 + i * cell, wz);
-    }
-}
-
-// One ring vertex. The same arithmetic as `terrainVertex`, on the ring's own
-// spacing, so a ring vertex shades exactly as a near one would at the same point.
-// `edge` marks a vertex on the ring's outer boundary or on the rim of its hole:
-// those are seams, and they take the field's slope at the fixed edge step so the
-// surface on the other side of the seam agrees with them.
-function terrainRingVertex(H, VERTS, NORMS, COLS, UVS, half, cell, k, i, j, edge) {
-    const wx = terrainAnchorX - half + i * cell;
-    const wz = terrainAnchorZ - half + j * cell;
-    const y = H[k];
-    VERTS[k * 3] = wx;
-    VERTS[k * 3 + 1] = y;
-    VERTS[k * 3 + 2] = wz;
-    let dx, dz;
-    if (edge) {
-        terrainEdgeSlope(wx, wz, TERRAIN_EDGE_SLOPE);
-        dx = TERRAIN_EDGE_SLOPE[0];
-        dz = TERRAIN_EDGE_SLOPE[1];
-    } else {
-        dx = (H[k + (i < RING_N - 1 ? 1 : 0)] - H[k - (i > 0 ? 1 : 0)]) / (2 * cell);
-        dz = (H[k + (j < RING_N - 1 ? RING_N : 0)] - H[k - (j > 0 ? RING_N : 0)]) / (2 * cell);
-    }
-    const inv = 1 / Math.sqrt(dx * dx + dz * dz + 1);
-    NORMS[k * 3] = -dx * inv;
-    NORMS[k * 3 + 1] = inv;
-    NORMS[k * 3 + 2] = -dz * inv;
-    const c = terrainMaterial(y, Math.min(1, Math.sqrt(dx * dx + dz * dz)),
-        vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7));
-    COLS[k * 4] = c[0];
-    COLS[k * 4 + 1] = c[1];
-    COLS[k * 4 + 2] = c[2];
-    COLS[k * 4 + 3] = 255;
-    UVS[k * 2] = wx * TUNING.terrain.uv;
-    UVS[k * 2 + 1] = wz * TUNING.terrain.uv;
-}
-
 // Whether a ring vertex sits on an edge that meets another surface: the outer
 // square, or one of the hole's rims. A vertex in the hole's *column* but outside
 // its rows is ordinary ground and keeps the grid's own difference.
@@ -663,32 +832,11 @@ function terrainRingEdge(i, j) {
         ((j === RING_HOLE0 || j === RING_HOLE1) && inHoleI);
 }
 
-// Rebuild one ring at the near grid's anchor and hand the engine the mesh. The
-// caller rebuilds the rings *before* the near grid, because the newest `makeModel`
-// is the mesh the harness reports the terrain's facts from.
-function terrainRingBuild(H, VERTS, NORMS, COLS, UVS, half, cell, old) {
-    if (!terrainRingIdxBuilt) { terrainRingIndices(); terrainRingIdxBuilt = true; }
-    for (let j = 0; j < RING_N; j++) terrainRingHeightRow(H, half, cell, j);
-    for (let j = 0; j < RING_N; j++) {
-        const row = j * RING_N;
-        // The hole's interior vertices are unreferenced; the two boundary rows and
-        // columns are not, and they need their normals like any other vertex.
-        if (j <= RING_HOLE0 || j >= RING_HOLE1) {
-            for (let i = 0; i < RING_N; i++) {
-                terrainRingVertex(H, VERTS, NORMS, COLS, UVS, half, cell, row + i, i, j,
-                    terrainRingEdge(i, j));
-            }
-        } else {
-            for (let i = 0; i <= RING_HOLE0; i++) {
-                terrainRingVertex(H, VERTS, NORMS, COLS, UVS, half, cell, row + i, i, j,
-                    terrainRingEdge(i, j));
-            }
-            for (let i = RING_HOLE1; i < RING_N; i++) {
-                terrainRingVertex(H, VERTS, NORMS, COLS, UVS, half, cell, row + i, i, j,
-                    terrainRingEdge(i, j));
-            }
-        }
-    }
+// Hand the engine one ring's arrays. The heights and attributes are the caller's
+// (shifted in `terrainStep`); the caller rebuilds the rings *before* the near
+// grid, because the newest `makeModel` is the mesh the harness reports the
+// terrain's facts from.
+function terrainRingUpload(VERTS, NORMS, COLS, UVS, old) {
     if (old >= 0) rl.unloadModel(old);
     const model = rl.makeModel(VERTS, RING_IDX, NORMS, COLS, UVS);
     terrainBind(model);
@@ -789,18 +937,6 @@ function terrainSeamBuild(H, NORMS, COLS, UVS, half, cell, coarseH, old) {
 // it, so the three tile: the near covers the mid's hole and the mid covers the
 // far's. The far ring is built first because the mid seam hangs off its hole
 // boundary; the near grid is built last because it must be the newest model.
-function terrainMidBuild() {
-    terrainMid = terrainRingBuild(M_H, M_VERTS, M_NORMS, M_COLS, M_UVS,
-        TERRAIN_MID_HALF, TERRAIN_MID_CELL, terrainMid);
-    terrainMidSeam = terrainSeamBuild(M_H, M_NORMS, M_COLS, M_UVS,
-        TERRAIN_MID_HALF, TERRAIN_MID_CELL, F_H, terrainMidSeam);
-}
-
-function terrainFarBuild() {
-    terrainFar = terrainRingBuild(F_H, F_VERTS, F_NORMS, F_COLS, F_UVS,
-        TERRAIN_FAR_HALF, TERRAIN_FAR_CELL, terrainFar);
-}
-
 // Startup: make the detail texture and the first grid.
 function makeTerrain() {
     if (!TERRAIN_MESH_OK) {
@@ -810,12 +946,8 @@ function makeTerrain() {
     makeTerrainTexture();
     terrainAnchorX = Math.round(goat.px / TUNING.terrain.snap) * TUNING.terrain.snap;
     terrainAnchorZ = Math.round(goat.pz / TUNING.terrain.snap) * TUNING.terrain.snap;
-    // Far first: the mid seam interpolates the far ring's hole heights. The near
-    // grid is last because the harness reads the terrain's facts off the newest
-    // `makeModel`.
-    terrainFarBuild();
-    terrainMidBuild();
-    terrainBuild(0, T_N - 1, 0, T_N - 1);
+    // The first build is a full one; after this every anchor move is a shift.
+    terrainStep(NaN, NaN, true);
 }
 
 // Rebuild the grid when the goat has left the one it was built around, or patch the
@@ -829,15 +961,16 @@ function terrainEnsure(px, pz) {
     const moved = !terrainBuilt || ax !== terrainAnchorX || az !== terrainAnchorZ;
     if (!moved && terrainPatches.length === 0) return;
     if (moved) {
-        // A step covers the whole field, so anything pending is already in it.
+        const prevX = terrainBuilt ? terrainAnchorX : NaN;
+        const prevZ = terrainBuilt ? terrainAnchorZ : NaN;
+        // A crater or a collapse since the last build changes cells the shift would
+        // simply copy over, so a move on that frame takes the full path (a crater
+        // that lands *after* this point is patched by `terrainEnsure`'s rectangle).
+        const groundChanged = terrainPatches.length > 0;
         terrainPatches.length = 0;
         terrainAnchorX = ax;
         terrainAnchorZ = az;
-        // Far, then mid (whose seam needs the far hole), then near: the near grid has
-        // to stay the last mesh the engine is handed.
-        terrainFarBuild();
-        terrainMidBuild();
-        terrainBuild(0, T_N - 1, 0, T_N - 1);
+        terrainStep(prevX, prevZ, groundChanged);
         return;
     }
     const rects = [];

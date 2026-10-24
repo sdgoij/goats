@@ -87,6 +87,22 @@ const MIRROR_SHADER := preload("res://src/terrain_mirror.gdshader")
 var _heights := PackedFloat64Array()
 var _mid_heights := PackedFloat64Array()
 var _far_heights := PackedFloat64Array()
+## The three grids' drawn attributes, kept between builds so an anchor step can
+## *shift* the part of the field that did not move instead of resampling it. A 32
+## unit step exposes one strip of new ground per grid, so this is what turns a
+## 90 ms rebuild into one that samples a quarter of the vertices.
+var _verts := PackedVector3Array()
+var _norms := PackedVector3Array()
+var _cols := PackedColorArray()
+var _uvs := PackedVector2Array()
+var _mid_verts := PackedVector3Array()
+var _mid_norms := PackedVector3Array()
+var _mid_cols := PackedColorArray()
+var _mid_uvs := PackedVector2Array()
+var _far_verts := PackedVector3Array()
+var _far_norms := PackedVector3Array()
+var _far_cols := PackedColorArray()
+var _far_uvs := PackedVector2Array()
 var _ring_indices := PackedInt32Array()
 var _seam_indices := PackedInt32Array()
 var _mesh: ArrayMesh
@@ -100,9 +116,19 @@ var _lit := true
 var _detail: ImageTexture
 var _anchor := Vector2(INF, INF)
 var _built := false
+## Set by `refresh`: the ground changed under the mesh, so the shifted arrays are
+## stale and the next build has to resample the field.
+var _force_full := false
 ## How many times the grid has been rebuilt, which is what a gate reads to tell a
 ## rebuild from a no-op.
 var rebuilds := 0
+
+## The Rust field sampler (`crates/godot/src/terrain.rs`), made once when the
+## extension is loaded. It is `null` on a host without the library, where the
+## GDScript transcription below is the ground instead; the two are checked against
+## each other by `tools/verify_terrain_mesh.gd`.
+static var _rust_field: Object = null
+static var _rust_checked := false
 
 func _ready() -> void:
 	build(0.0, 0.0)
@@ -129,6 +155,7 @@ func follow(x: float, z: float) -> bool:
 ## boundary costs and nothing more.
 func refresh() -> void:
 	if _built:
+		_force_full = true
 		build(_anchor.x, _anchor.y)
 
 ## The field's centre: the grid spans `anchor +/- HALF`.
@@ -145,9 +172,12 @@ func anchor() -> Vector2:
 func heights() -> PackedFloat64Array:
 	return _heights
 
-## Build the whole grid at an anchor. The scene patches rectangles for a crater or
-## a collapse; nothing changes the ground here yet, so every rebuild is the whole
-## field.
+## Build the grid at an anchor. A move is **incremental**: the anchor snaps to
+## `Terrain.SNAP` and every grid's cell divides it, so the new grid is the old one
+## shifted by a whole number of cells. The overlapping vertices describe the same
+## world points, so their heights and attributes are copied, and only the strip the
+## shift uncovered is sampled. That is the difference between ~7200 field samples
+## every 32 units and ~1900.
 func build(anchor_x: float, anchor_z: float) -> void:
 	# Lazily, rather than in `_ready`: `_ready` is not guaranteed to have run before
 	# the first `follow` in every host (a `SceneTree` script that adds the node
@@ -155,68 +185,52 @@ func build(anchor_x: float, anchor_z: float) -> void:
 	# that is invisible for reasons no data shows.
 	if _material == null:
 		_material = _make_material()
+	var prev_x: float = _anchor.x
+	var prev_z: float = _anchor.y
+	var had: bool = _built
 	_anchor = Vector2(anchor_x, anchor_z)
 	_built = true
 	rebuilds += 1
 
-	var count: int = N * N
-	var verts := PackedVector3Array()
-	var norms := PackedVector3Array()
-	var cols := PackedColorArray()
-	var uvs := PackedVector2Array()
-	verts.resize(count)
-	norms.resize(count)
-	cols.resize(count)
-	uvs.resize(count)
-	_heights.resize(count)
+	# A step's shifts, in each grid's own cells. `_shift_steps` returns the grid
+	# size when the move is not a whole number of cells or is larger than the grid
+	# (a teleport), which makes the build a full resample instead.
+	var full: bool = not had or _force_full
+	_force_full = false
+	var di := 0
+	var dj := 0
+	var mdi := 0
+	var mdj := 0
+	var fdi := 0
+	var fdj := 0
+	if not full:
+		di = _shift_steps(anchor_x - prev_x, Terrain.CELL, N)
+		dj = _shift_steps(anchor_z - prev_z, Terrain.CELL, N)
+		mdi = _shift_steps(anchor_x - prev_x, MID_CELL, RING_N)
+		mdj = _shift_steps(anchor_z - prev_z, MID_CELL, RING_N)
+		fdi = _shift_steps(anchor_x - prev_x, FAR_CELL, RING_N)
+		fdj = _shift_steps(anchor_z - prev_z, FAR_CELL, RING_N)
+		if di >= N or dj >= N or mdi >= RING_N or mdj >= RING_N \
+				or fdi >= RING_N or fdj >= RING_N:
+			full = true
+	if full:
+		di = 0
+		dj = 0
+		mdi = 0
+		mdj = 0
+		fdi = 0
+		fdj = 0
 
 	var x0: float = anchor_x - HALF
 	var z0: float = anchor_z - HALF
-
-	# Heights first, for the whole grid: a vertex's normal reads its neighbours, so
-	# no vertex may be derived before every height it can see is written.
-	for j in N:
-		var wz: float = z0 + j * Terrain.CELL
-		var row: int = j * N
-		for i in N:
-			var wx: float = x0 + i * Terrain.CELL
-			_heights[row + i] = Terrain.base_height(wx, wz)
-
-	for j in N:
-		var wz: float = z0 + j * Terrain.CELL
-		var row: int = j * N
-		for i in N:
-			var k: int = row + i
-			var wx: float = x0 + i * Terrain.CELL
-			var y: float = float(_heights[k])
-			verts[k] = Vector3(wx, y, wz)
-
-			# Central differences on the grid, the scene's own edge handling
-			# included: at the last column the forward sample is the cell itself
-			# rather than a reflected one, which halves the slope there instead of
-			# inventing a neighbour. The perimeter does not use that handling: it
-			# samples the field over `EDGE_STEP`, so it agrees with the coarser
-			# surface on the other side of the seam.
-			var dx: float = 0.0
-			var dz: float = 0.0
-			if i == 0 or i == N - 1 or j == 0 or j == N - 1:
-				var edge := _edge_slope(wx, wz)
-				dx = edge.x
-				dz = edge.y
-			else:
-				var fwd_i: int = 1 if i < N - 1 else 0
-				var back_i: int = 1 if i > 0 else 0
-				var fwd_j: int = N if j < N - 1 else 0
-				var back_j: int = N if j > 0 else 0
-				dx = (_heights[k + fwd_i] - _heights[k - back_i]) / (2.0 * Terrain.CELL)
-				dz = (_heights[k + fwd_j] - _heights[k - back_j]) / (2.0 * Terrain.CELL)
-			var inv: float = 1.0 / sqrt(dx * dx + dz * dz + 1.0)
-			norms[k] = Vector3(-dx * inv, inv, -dz * inv)
-
-			var slope: float = minf(1.0, sqrt(dx * dx + dz * dz))
-			var patch: float = Terrain.vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7)
-			cols[k] = Terrain.material(y, slope, patch)
-			uvs[k] = Vector2(wx * UV_SCALE, wz * UV_SCALE)
+	_heights = _shift_heights(_heights, x0, z0, Terrain.CELL, N, di, dj, full)
+	var near_rects: Array = _dirty_rects(N, di, dj, full)
+	var near := _write_grid(x0, z0, Terrain.CELL, N, _heights, di, dj,
+		_verts, _norms, _cols, _uvs, near_rects, false)
+	_verts = near[0]
+	_norms = near[1]
+	_cols = near[2]
+	_uvs = near[3]
 
 	# The topology is the same grid at every anchor, so it is built once.
 	#
@@ -246,10 +260,10 @@ func build(anchor_x: float, anchor_z: float) -> void:
 
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = norms
-	arrays[Mesh.ARRAY_COLOR] = cols
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_VERTEX] = _verts
+	arrays[Mesh.ARRAY_NORMAL] = _norms
+	arrays[Mesh.ARRAY_COLOR] = _cols
+	arrays[Mesh.ARRAY_TEX_UV] = _uvs
 	arrays[Mesh.ARRAY_INDEX] = indices
 
 	# The mid and far rings are further surfaces of the same mesh: the same
@@ -260,8 +274,60 @@ func build(anchor_x: float, anchor_z: float) -> void:
 	# Far is built before mid because the mid seam reads the far ring's hole
 	# heights, and the surfaces are *added* in near/mid/far order so the surface
 	# indices stay what the gates and the mirror expect.
-	var far_arrays := _build_ring(anchor_x, anchor_z, FAR_CELL, FAR_HALF, _far_heights)
-	var mid_arrays := _build_ring(anchor_x, anchor_z, MID_CELL, MID_HALF, _mid_heights)
+	_far_heights = _shift_heights(_far_heights, anchor_x - FAR_HALF, anchor_z - FAR_HALF,
+		FAR_CELL, RING_N, fdi, fdj, full)
+	var far_rects: Array = _dirty_rects(RING_N, fdi, fdj, full)
+	var far := _write_grid(anchor_x - FAR_HALF, anchor_z - FAR_HALF, FAR_CELL, RING_N,
+		_far_heights, fdi, fdj, _far_verts, _far_norms, _far_cols, _far_uvs, far_rects, true)
+	_far_verts = far[0]
+	_far_norms = far[1]
+	_far_cols = far[2]
+	_far_uvs = far[3]
+
+	_mid_heights = _shift_heights(_mid_heights, anchor_x - MID_HALF, anchor_z - MID_HALF,
+		MID_CELL, RING_N, mdi, mdj, full)
+	var mid_rects: Array = _dirty_rects(RING_N, mdi, mdj, full)
+	var mid := _write_grid(anchor_x - MID_HALF, anchor_z - MID_HALF, MID_CELL, RING_N,
+		_mid_heights, mdi, mdj, _mid_verts, _mid_norms, _mid_cols, _mid_uvs, mid_rects, true)
+	_mid_verts = mid[0]
+	_mid_norms = mid[1]
+	_mid_cols = mid[2]
+	_mid_uvs = mid[3]
+
+	if _ring_indices.is_empty():
+		_ring_indices.resize((RING_QUADS * RING_QUADS \
+			- (RING_HOLE1 - RING_HOLE0) * (RING_HOLE1 - RING_HOLE0)) * 6)
+		var r: int = 0
+		for j in RING_QUADS:
+			for i in RING_QUADS:
+				if i >= RING_HOLE0 and i < RING_HOLE1 and j >= RING_HOLE0 and j < RING_HOLE1:
+					continue
+				var a: int = j * RING_N + i
+				var b: int = a + 1
+				var c: int = a + RING_N
+				var d: int = c + 1
+				_ring_indices[r] = a
+				_ring_indices[r + 1] = b
+				_ring_indices[r + 2] = c
+				_ring_indices[r + 3] = b
+				_ring_indices[r + 4] = d
+				_ring_indices[r + 5] = c
+				r += 6
+
+	var mid_arrays := []
+	mid_arrays.resize(Mesh.ARRAY_MAX)
+	mid_arrays[Mesh.ARRAY_VERTEX] = _mid_verts
+	mid_arrays[Mesh.ARRAY_NORMAL] = _mid_norms
+	mid_arrays[Mesh.ARRAY_COLOR] = _mid_cols
+	mid_arrays[Mesh.ARRAY_TEX_UV] = _mid_uvs
+	mid_arrays[Mesh.ARRAY_INDEX] = _ring_indices
+	var far_arrays := []
+	far_arrays.resize(Mesh.ARRAY_MAX)
+	far_arrays[Mesh.ARRAY_VERTEX] = _far_verts
+	far_arrays[Mesh.ARRAY_NORMAL] = _far_norms
+	far_arrays[Mesh.ARRAY_COLOR] = _far_cols
+	far_arrays[Mesh.ARRAY_TEX_UV] = _far_uvs
+	far_arrays[Mesh.ARRAY_INDEX] = _ring_indices
 
 	if _mesh == null:
 		_mesh = ArrayMesh.new()
@@ -275,111 +341,267 @@ func build(anchor_x: float, anchor_z: float) -> void:
 	_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, far_arrays)
 	_mesh.surface_set_material(2, _material)
 
-	var near_seam := _build_seam(verts, norms, cols, uvs, _mid_heights)
+	var near_seam := _build_seam(_verts, _norms, _cols, _uvs, _mid_heights)
 	_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, near_seam)
 	_mesh.surface_set_material(3, _material)
-	var mid_verts: PackedVector3Array = mid_arrays[Mesh.ARRAY_VERTEX]
-	var mid_norms: PackedVector3Array = mid_arrays[Mesh.ARRAY_NORMAL]
-	var mid_cols: PackedColorArray = mid_arrays[Mesh.ARRAY_COLOR]
-	var mid_uvs: PackedVector2Array = mid_arrays[Mesh.ARRAY_TEX_UV]
-	var mid_seam := _build_seam(mid_verts, mid_norms, mid_cols, mid_uvs, _far_heights)
+	var mid_seam := _build_seam(_mid_verts, _mid_norms, _mid_cols, _mid_uvs, _far_heights)
 	_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, mid_seam)
 	_mesh.surface_set_material(4, _material)
 
-## One ring (`world.js` `terrainRingBuild`): a `RING_N` square at `cell` metres,
-## with the quads over its hole left out. The heights are filled across the hole as
-## well -- a vertex on its edge reads its inside neighbour for the normal -- but
-## those inner vertices are never indexed. The index topology is the same for the
-## mid and far rings, so it is built once.
-func _build_ring(anchor_x: float, anchor_z: float, cell: float, half: float,
-		grid_heights: PackedFloat64Array) -> Array:
-	var count: int = RING_N * RING_N
-	var verts := PackedVector3Array()
-	var norms := PackedVector3Array()
-	var cols := PackedColorArray()
-	var uvs := PackedVector2Array()
-	verts.resize(count)
-	norms.resize(count)
-	cols.resize(count)
-	uvs.resize(count)
-	grid_heights.resize(count)
+## How many cells a snapped step is, in this grid's units; `n` when the move is
+## not a whole number of cells or is at least the whole grid (a teleport).
+func _shift_steps(delta: float, cell: float, n: int) -> int:
+	var steps: float = delta / cell
+	var rounded: float = round(steps)
+	if absf(steps - rounded) > 0.0001 or absf(rounded) >= float(n):
+		return n
+	return int(rounded)
 
-	var x0: float = anchor_x - half
-	var z0: float = anchor_z - half
+## The blocks of a grid that a shift made new, each widened by one vertex so the
+## normals on its inner edge are rebuilt too (they read the new neighbour). A move
+## on both axes exposes two strips, whose union is an L -- *not* the corner their
+## bounding box would be. Each entry is `[i0, i1, j0, j1]`.
+func _dirty_rects(n: int, di: int, dj: int, full: bool) -> Array:
+	if full or (di == 0 and dj == 0):
+		return [[0, n - 1, 0, n - 1]]
+	var rects: Array = []
+	if di != 0:
+		var i0: int = n - di if di > 0 else 0
+		var i1: int = n - 1 if di > 0 else -di - 1
+		rects.append([maxi(0, i0 - 1), mini(n - 1, i1 + 1), 0, n - 1])
+	if dj != 0:
+		var j0: int = n - dj if dj > 0 else 0
+		var j1: int = n - 1 if dj > 0 else -dj - 1
+		rects.append([0, n - 1, maxi(0, j0 - 1), mini(n - 1, j1 + 1)])
+	return rects
 
-	for j in RING_N:
+## A grid's heights after the anchor moved by (`di`, `dj`) cells: the overlapping
+## entries are the same world points and are copied, the exposed strip is sampled.
+##
+## The sampling is ~7 us a point in GDScript, which is the whole reason a rebuild
+## had to stop resampling three grids; when the Rust extension is present the loop
+## runs there instead (`crates/godot/src/terrain.rs`, the same maths and the same
+## `is-this-a-whole-cell` copy rule).
+func _shift_heights(src: PackedFloat64Array, x0: float, z0: float, cell: float,
+		n: int, di: int, dj: int, full: bool) -> PackedFloat64Array:
+	var field: Object = _rust_fill()
+	if field != null:
+		return field.call("fill_heights", src, x0, z0, cell, n, di, dj, full,
+			Terrain.RELIEF, Terrain.FLAT, Terrain.RAMP,
+			Terrain.MOUNTAIN, Terrain.MOUNTAIN_FLAT, Terrain.MOUNTAIN_RAMP)
+	return _shift_heights_gd(src, x0, z0, cell, n, di, dj, full)
+
+## The Rust field sampler, made on first use. `ClassDB` rather than a typed
+## reference so a build without the extension still parses and falls back.
+static func _rust_fill() -> Object:
+	if not _rust_checked:
+		_rust_checked = true
+		if ClassDB.class_exists("TerrainField"):
+			_rust_field = ClassDB.instantiate("TerrainField")
+	return _rust_field
+
+func _shift_heights_gd(src: PackedFloat64Array, x0: float, z0: float, cell: float,
+		n: int, di: int, dj: int, full: bool) -> PackedFloat64Array:
+	var out := PackedFloat64Array()
+	out.resize(n * n)
+	if full or src.size() != n * n:
+		for j in n:
+			var wz: float = z0 + j * cell
+			var row: int = j * n
+			for i in n:
+				out[row + i] = Terrain.base_height(x0 + i * cell, wz)
+		return out
+	for j in n:
 		var wz: float = z0 + j * cell
-		var row: int = j * RING_N
-		for i in RING_N:
-			grid_heights[row + i] = Terrain.base_height(x0 + i * cell, wz)
-
-	for j in RING_N:
-		var wz: float = z0 + j * cell
-		var row: int = j * RING_N
-		# The hole's interior is unreferenced; its boundary rows and columns are not.
-		var inner: bool = j > RING_HOLE0 and j < RING_HOLE1
-		for i in RING_N:
-			if inner and i > RING_HOLE0 and i < RING_HOLE1:
-				continue
-			var k: int = row + i
-			var wx: float = x0 + i * cell
-			var y: float = float(grid_heights[k])
-			verts[k] = Vector3(wx, y, wz)
-
-			var fwd_i: int = 1 if i < RING_N - 1 else 0
-			var back_i: int = 1 if i > 0 else 0
-			var fwd_j: int = RING_N if j < RING_N - 1 else 0
-			var back_j: int = RING_N if j > 0 else 0
-			var dx: float = 0.0
-			var dz: float = 0.0
-			if _ring_edge(i, j):
-				var edge := _edge_slope(wx, wz)
-				dx = edge.x
-				dz = edge.y
+		var row: int = j * n
+		var sj: int = j + dj
+		for i in n:
+			var si: int = i + di
+			if sj >= 0 and sj < n and si >= 0 and si < n:
+				out[row + i] = src[sj * n + si]
 			else:
-				dx = (grid_heights[k + fwd_i] - grid_heights[k - back_i]) / (2.0 * cell)
-				dz = (grid_heights[k + fwd_j] - grid_heights[k - back_j]) / (2.0 * cell)
-			var inv: float = 1.0 / sqrt(dx * dx + dz * dz + 1.0)
-			norms[k] = Vector3(-dx * inv, inv, -dz * inv)
+				out[row + i] = Terrain.base_height(x0 + i * cell, wz)
+	return out
 
-			var slope: float = minf(1.0, sqrt(dx * dx + dz * dz))
-			var patch: float = Terrain.vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7)
-			cols[k] = Terrain.material(y, slope, patch)
-			uvs[k] = Vector2(wx * UV_SCALE, wz * UV_SCALE)
+## The attributes of a grid after the same shift. Entries outside the overlap are
+## left at zero: `_dirty_rect` is exactly the set the write pass replaces.
+func _shift_vec3(src: PackedVector3Array, n: int, di: int, dj: int) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	out.resize(n * n)
+	if src.size() != n * n or (di == 0 and dj == 0):
+		return out
+	for j in n:
+		var sj: int = j + dj
+		if sj < 0 or sj >= n:
+			continue
+		var row: int = j * n
+		var srow: int = sj * n
+		for i in n:
+			var si: int = i + di
+			if si >= 0 and si < n:
+				out[row + i] = src[srow + si]
+	return out
 
-	if _ring_indices.is_empty():
-		_ring_indices.resize((RING_QUADS * RING_QUADS \
-			- (RING_HOLE1 - RING_HOLE0) * (RING_HOLE1 - RING_HOLE0)) * 6)
-		var t: int = 0
-		for j in RING_QUADS:
-			for i in RING_QUADS:
-				if i >= RING_HOLE0 and i < RING_HOLE1 and j >= RING_HOLE0 and j < RING_HOLE1:
+func _shift_vec2(src: PackedVector2Array, n: int, di: int, dj: int) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	out.resize(n * n)
+	if src.size() != n * n or (di == 0 and dj == 0):
+		return out
+	for j in n:
+		var sj: int = j + dj
+		if sj < 0 or sj >= n:
+			continue
+		var row: int = j * n
+		var srow: int = sj * n
+		for i in n:
+			var si: int = i + di
+			if si >= 0 and si < n:
+				out[row + i] = src[srow + si]
+	return out
+
+func _shift_color(src: PackedColorArray, n: int, di: int, dj: int) -> PackedColorArray:
+	var out := PackedColorArray()
+	out.resize(n * n)
+	if src.size() != n * n or (di == 0 and dj == 0):
+		return out
+	for j in n:
+		var sj: int = j + dj
+		if sj < 0 or sj >= n:
+			continue
+		var row: int = j * n
+		var srow: int = sj * n
+		for i in n:
+			var si: int = i + di
+			if si >= 0 and si < n:
+				out[row + i] = src[srow + si]
+	return out
+
+## Rewrite one grid's position, normal, colour and texcoord over the dirty blocks.
+## `ring` selects the hole-rim edge rule; the near grid's perimeter is the outer
+## square. Returns the four arrays in that order.
+##
+## A copied vertex's attributes are only valid if it was shaded the same way
+## before and after the shift: a world point that was on the outer edge (or on a
+## hole rim) and is now interior was lit with the fixed-step edge slope, and one
+## that moved onto an edge with the grid's own difference. Those are recomputed
+## too -- they are thin lines, and a scan for them costs nothing beside the field.
+func _write_grid(x0: float, z0: float, cell: float, n: int, grid: PackedFloat64Array,
+		di: int, dj: int, prev_verts: PackedVector3Array, prev_norms: PackedVector3Array,
+		prev_cols: PackedColorArray, prev_uvs: PackedVector2Array,
+		rects: Array, ring: bool) -> Array:
+	var verts := _shift_vec3(prev_verts, n, di, dj)
+	var norms := _shift_vec3(prev_norms, n, di, dj)
+	var cols := _shift_color(prev_cols, n, di, dj)
+	var uvs := _shift_vec2(prev_uvs, n, di, dj)
+	for rect in rects:
+		var i0: int = rect[0]
+		var i1: int = rect[1]
+		var j0: int = rect[2]
+		var j1: int = rect[3]
+		for j in range(j0, j1 + 1):
+			_write_row(x0, z0, cell, n, grid, i0, i1, j, verts, norms, cols, uvs, ring)
+	if di != 0 or dj != 0:
+		# A copied vertex's attributes are only valid if it was shaded the same way
+		# before and after the shift: a world point that was on the outer edge (or a
+		# hole rim) and is now interior was lit with the fixed-step edge slope, and
+		# one that moved onto an edge with the grid's own difference. The edge rule
+		# is `outer(i) or outer(j) or (rim(i) and holeRange(j)) or (rim(j) and
+		# holeRange(i))`, so each axis' three bits answer it for a whole row at a
+		# time and the scan is arithmetic rather than a call per vertex.
+		var bits := _axis_bits(n, ring)
+		var oi: PackedByteArray = bits[0]
+		var ri: PackedByteArray = bits[1]
+		var hi: PackedByteArray = bits[2]
+		for j in n:
+			var sj: int = j + dj
+			if sj < 0 or sj >= n:
+				continue
+			var nj_o: int = oi[j]
+			var nj_r: int = ri[j]
+			var nj_h: int = hi[j]
+			var sj_o: int = oi[sj]
+			var sj_r: int = ri[sj]
+			var sj_h: int = hi[sj]
+			for i in n:
+				var si: int = i + di
+				if si < 0 or si >= n:
 					continue
-				var a: int = j * RING_N + i
-				var b: int = a + 1
-				var c: int = a + RING_N
-				var d: int = c + 1
-				_ring_indices[t] = a
-				_ring_indices[t + 1] = b
-				_ring_indices[t + 2] = c
-				_ring_indices[t + 3] = b
-				_ring_indices[t + 4] = d
-				_ring_indices[t + 5] = c
-				t += 6
+				var now: int = oi[i] | nj_o | (ri[i] & nj_h) | (nj_r & hi[i])
+				var was: int = oi[si] | sj_o | (ri[si] & sj_h) | (sj_r & hi[si])
+				if now != was:
+					_write_row(x0, z0, cell, n, grid, i, i, j, verts, norms, cols, uvs, ring)
+	return [verts, norms, cols, uvs]
 
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = norms
-	arrays[Mesh.ARRAY_COLOR] = cols
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_INDEX] = _ring_indices
-	return arrays
+## One axis' edge bits: `outer` (the two ends), `rim` (the hole's lines) and
+## `hole` (inside the hole's span). `_ring_edge` is exactly these three per axis.
+func _axis_bits(n: int, ring: bool) -> Array:
+	var outer := PackedByteArray()
+	var rim := PackedByteArray()
+	var hole := PackedByteArray()
+	outer.resize(n)
+	rim.resize(n)
+	hole.resize(n)
+	for v in n:
+		outer[v] = 1 if (v == 0 or v == n - 1) else 0
+		if ring:
+			rim[v] = 1 if (v == RING_HOLE0 or v == RING_HOLE1) else 0
+			hole[v] = 1 if (v >= RING_HOLE0 and v <= RING_HOLE1) else 0
+	return [outer, rim, hole]
+
+func _write_row(x0: float, z0: float, cell: float, n: int, grid: PackedFloat64Array,
+		i0: int, i1: int, j: int, verts: PackedVector3Array, norms: PackedVector3Array,
+		cols: PackedColorArray, uvs: PackedVector2Array, ring: bool) -> void:
+	var wz: float = z0 + j * cell
+	var row: int = j * n
+	for i in range(i0, i1 + 1):
+		var k: int = row + i
+		var wx: float = x0 + i * cell
+		var y: float = float(grid[k])
+		verts[k] = Vector3(wx, y, wz)
+
+		# Central differences on the grid, the scene's own edge handling
+		# included: at the last column the forward sample is the cell itself
+		# rather than a reflected one, which halves the slope there instead of
+		# inventing a neighbour. The perimeter does not use that handling: it
+		# samples the field over `EDGE_STEP`, so it agrees with the coarser
+		# surface on the other side of the seam.
+		var edge: bool = _ring_edge(i, j) if ring \
+			else (i == 0 or i == n - 1 or j == 0 or j == n - 1)
+		var dx: float = 0.0
+		var dz: float = 0.0
+		if edge:
+			var slope2 := _edge_slope(wx, wz)
+			dx = slope2.x
+			dz = slope2.y
+		else:
+			var fwd_i: int = 1 if i < n - 1 else 0
+			var back_i: int = 1 if i > 0 else 0
+			var fwd_j: int = n if j < n - 1 else 0
+			var back_j: int = n if j > 0 else 0
+			dx = (grid[k + fwd_i] - grid[k - back_i]) / (2.0 * cell)
+			dz = (grid[k + fwd_j] - grid[k - back_j]) / (2.0 * cell)
+		var inv: float = 1.0 / sqrt(dx * dx + dz * dz + 1.0)
+		norms[k] = Vector3(-dx * inv, inv, -dz * inv)
+
+		var slope: float = minf(1.0, sqrt(dx * dx + dz * dz))
+		var patch: float = Terrain.vnoise2(wx * 0.07 + 3.1, wz * 0.07 + 9.7)
+		cols[k] = Terrain.material(y, slope, patch)
+		uvs[k] = Vector2(wx * UV_SCALE, wz * UV_SCALE)
 
 ## The slope at a world point over the fixed `EDGE_STEP`, so a surface's
 ## perimeter shades the way the field does rather than the way its own cell size
-## happens to sample it. `world.js` `terrainEdgeSlope`.
+## happens to sample it. `world.js` `terrainEdgeSlope`. The sampling is Rust when
+## the extension is present: a perimeter vertex asks for four field values and a
+## rebuild asks for hundreds of them.
 func _edge_slope(x: float, z: float) -> Vector2:
+	var field: Object = _rust_fill()
+	if field != null:
+		return field.call("slope", x, z, EDGE_STEP,
+			Terrain.RELIEF, Terrain.FLAT, Terrain.RAMP,
+			Terrain.MOUNTAIN, Terrain.MOUNTAIN_FLAT, Terrain.MOUNTAIN_RAMP)
+	return _edge_slope_gd(x, z)
+
+func _edge_slope_gd(x: float, z: float) -> Vector2:
 	var d: float = EDGE_STEP
 	var dx: float = (Terrain.base_height(x + d, z) - Terrain.base_height(x - d, z)) / (2.0 * d)
 	var dz: float = (Terrain.base_height(x, z + d) - Terrain.base_height(x, z - d)) / (2.0 * d)
