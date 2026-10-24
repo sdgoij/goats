@@ -132,14 +132,20 @@ func build(heights: PackedFloat64Array, grid_anchor: Vector2) -> void:
 	@warning_ignore("integer_division")
 	quads = t / 6
 
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = norms
-	arrays[Mesh.ARRAY_INDEX] = indices
-
 	var built := ArrayMesh.new()
-	built.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	# A window whose every quad is above the ceiling has **no water at all**, and an
+	# empty index array is not "no triangles" to the renderer: it reports
+	# `index_array_len == NO_INDEX_ARRAY` and refuses the surface (`_surface_set_data`
+	# gets a null index width), which a debug build prints on every step over dry
+	# ground. Skipping the surface is the right shape: an unindexed vertex list would
+	# be drawn as a triangle soup, and a mesh with no surface draws nothing.
+	if t > 0:
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = verts
+		arrays[Mesh.ARRAY_NORMAL] = norms
+		arrays[Mesh.ARRAY_INDEX] = indices
+		built.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh = built
 	if _material == null:
 		_material = ShaderMaterial.new()

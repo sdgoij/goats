@@ -200,6 +200,24 @@ func _initialize() -> void:
 		pushed = (surface.material_override as ShaderMaterial).get_shader_parameter("water_level")
 	print("level: pushed -0.5, read back %s" % str(pushed))
 
+	# 5. A dry window. Every quad above the ceiling means no water at all, and an
+	#    empty index array is not "no triangles" to the renderer: it reports
+	#    `index_array_len == NO_INDEX_ARRAY` and refuses the surface. That is a debug
+	#    build's error line on every step over high, dry ground, so the shape is
+	#    asserted here: no quads, no surface, and the mesh is still usable.
+	var dry := PackedFloat64Array()
+	dry.resize(heights.size())
+	for k in dry.size():
+		dry[k] = Water.HIGH + 5.0
+	surface.build(dry, anchor)
+	var dry_surfaces: int = (surface.mesh as ArrayMesh).get_surface_count()
+	print("dry window: %d quad(s), %d surface(s)" % [surface.quads, dry_surfaces])
+	if surface.quads != 0:
+		failures.append("a dry window kept %d quad(s)" % surface.quads)
+	if dry_surfaces != 0:
+		failures.append("a dry window built %d surface(s); an empty index list is not a surface"
+			% dry_surfaces)
+
 	var _kept: int = surface.quads
 	surface.free()
 	grid.free()
