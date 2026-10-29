@@ -69,6 +69,17 @@ build rather than the revision, which is itself the most actionable finding here
   here is also thousands of `rl.*` calls, but the microsecond figures §4 read off
   the probe were mostly the interpreter, not the crossing (§4b): fix the gate and
   the scene's own loops stop paying it.
+- **The engine's `b6471e55` (155 commits) is invisible in this frame.** Same scene,
+  both pins, 12–13 dry windows each: every phase is within 0.02 ms and both totals
+  sit on the vsync cap (9.55 vs 9.59 ms of phases, `boundary` 6.94 vs 6.90). The
+  probe is unchanged (a call 4.51 → 4.42 µs, a property read 8.29 → 8.25) and so
+  are the scene's loop bodies; the two rows that moved outside the noise are
+  object-literal creation, **+5.8%** (`perf loop new`, 143.1 → 151.4 ns/iter), and
+  `player.state()`, **−25%** in the mods' corpus (Appendix E). **The JIT cache
+  fix on top of it (`1f534297`) is invisible for the same reason it cannot
+  apply**: 358 bodies compile against a cap of 1024, so `jit evicted` is 0 — but
+  the census reads 134 deopt events a frame, which is where the per-call cost
+  §4c left open probably lives (Appendix E).
 
 ## 1. What was measured, and how
 
@@ -1845,3 +1856,217 @@ largest attributable numbers are `fatguy`'s 0.49 ms and the crater/effect draw i
 both are scene-side work rather than a compile gate: the mod bodies are compiled on this pin
 (`jitprobe`), and the effects are a count of live craters and billboards. The next lever is
 reducing what is submitted or how often it is rebuilt, not hoisting global reads.
+
+## Appendix E — the `b6471e55` pin: 155 commits, and the frame does not move
+
+The lock moved from `883af3dd` to `b6471e5590cbd48780b130b1a92e632f9a8d6517`, 155 commits. By
+subject: 43 `perf`, 26 `fix`, 45 `docs`, 20 `refactor`, 12 `feat`, 3 `test`, 3 `ci`, 3 `build`. What
+is in the range, in order of what could reach this binary:
+
+- **The JIT's optimizing tier**: a non-escaping object's mutable field replaced by a scalar
+  (`7685ef95`), a loop-carried field promoted to a header phi (`e17a62d3`), a call spliced when the
+  callee is declared in the body or built by it (`680c90e9`, `c1c29864`, `ed779781`), and a seam for
+  the leaf read guard (`cc5f90c6`).
+- **The interpreter and runtime**: the IC value cells, the IC caches, the realm, module, job and
+  compiled-body tables moved into `AgentRoots`; the leaf cache turned into a `Cell` table of `Copy`
+  records with a cached negative verdict (`f6b9f374`, `3bbc06fa`); `Object.keys`/`values`/`entries`
+  enumerated without a per-key lookup (`b53e6d00`, `27770016`); map transitions memoized
+  (`b883f9aa`); a declaration site's source texts and a per-iteration capture slot reused
+  (`6dc4ef68`, `d9e8eea8`).
+- **wasm**: v128 arithmetic lowered to native vector instructions, and the relaxed-SIMD ops
+  (`f81bc301` … `b8a68034`). That is the browser export's win, and nothing here measures it.
+- **A new engine crate, `stackprobe`**: native recursion bounded by the thread's stack instead of a
+  frame count (`d08a165b`, `5d8b91b5`). `crux` gained it and `regexp` swapped `crux` for it, which is
+  the whole of the `Cargo.lock` change beyond the revision itself.
+
+Protocol as §1 and Appendix D: `cargo build --release -p goats` (the profile's one codegen unit and
+thin LTO), windowed, vsync, sound off, five mods, weather offline and seeded. **Both pins were
+measured on the same scene**, which is not the scene Appendix D measured — mountains and the cloud
+deck, the terrain tiles and stepping, and the dry-water fix have landed since — so Appendix D's
+numbers do not compare with these columns; the two columns here compare with each other.
+
+The pin then moved one commit further, to `1f534297f179b1fbd1888500913d35c480951c63` ("fix(jit): evict
+by use, and only the overflow"). That fix is measured at the end of this appendix.
+
+Dry windows only: `mirror` reads 0.06 until the seeded weather turns wet, and at that point
+`mirror`, `water` and `tuft_draw` all jump, so the wet windows are excluded (12 windows on
+`883af3dd`, 13 on `b6471e55`, `n=240` each).
+
+### The frame
+
+| phase | `883af3dd` | `b6471e55` | | phase | `883af3dd` | `b6471e55` |
+| --- | ---: | ---: | --- | --- | ---: | ---: |
+| `food` | 0.36 | 0.36 | | `sky2d` | 0.30 | 0.30 |
+| `weather` | 0.54 | 0.54 | | `mirror` | 0.06 | 0.06 |
+| `clouds_upd` | 0.06 | 0.06 | | `stars` | 0.13 | 0.14 |
+| `rain_upd` | 0.09 | 0.09 | | `sky_clouds` | 0.40 | 0.40 |
+| `audio` | 0.19 | 0.19 | | `clouds` | 0.00 | 0.00 |
+| `food_upd` | 0.07 | 0.07 | | `tuft_setup` | 0.13 | 0.13 |
+| `fx_upd` | 0.25 | 0.25 | | `tuft_field` | 0.23 | 0.24 |
+| `light` | 0.53 | 0.53 | | `tuft_draw` | 0.27 | 0.27 |
+| `input` | 0.12 | 0.12 | | `tufts` | 0.02 | 0.02 |
+| `goat_sim` | 0.50 | 0.50 | | `terrain` | 0.07 | 0.07 |
+| `goat_pose` | 0.07 | 0.07 | | `goat` | 0.16 | 0.16 |
+| `bots_ai` | 0.21 | 0.22 | | `bots` | 0.20 | 0.21 |
+| `peers_upd` | 0.02 | 0.02 | | `peers` | 0.02 | 0.02 |
+| `collide` | 0.05 | 0.05 | | `water` | 0.01 | 0.01 |
+| `portals` | 0.07 | 0.06 | | `fx` | 0.62 | 0.60 |
+| `terrain_upd` | 0.02 | 0.02 | | `mods_draw3d` | 0.24 | 0.26 |
+| `mods_upd` | 1.35 | 1.36 | | `endmode3d` | 0.06 | 0.06 |
+| `shadow_grass` | 0.46 | 0.46 | | `rain2d` | 0.03 | 0.04 |
+| `shadow_goat` | 0.13 | 0.13 | | `fxaa` | 0.04 | 0.05 |
+| `shadow_bots` | 0.29 | 0.29 | | `hud` | 0.30 | 0.30 |
+| `shadow_mods` | 0.61 | 0.62 | | `mods_hud` | 0.05 | 0.05 |
+| `shadow_tail` | 0.12 | 0.13 | | `mod2d` | 0.01 | 0.01 |
+
+| group | `883af3dd` | `b6471e55` |
+| --- | ---: | ---: |
+| update | 4.51 | 4.51 |
+| shadow | 1.61 | 1.62 |
+| draw | 3.36 | 3.38 |
+| rebuild (`rb_mesh` + `rb_bake`, amortised) | 0.08 | 0.08 |
+| **phases** | **9.55** | **9.59** |
+| `boundary` (swap wait) | 6.94 | 6.90 |
+| total | 16.49 | 16.49 |
+| fps | 59–60 | 59–60 |
+
+A rebuild is a mark inside a rebuild, so it only lands in one window in four: 0.23/0.26 for `rb_mesh`
+and 0.08/0.09 for `rb_bake` *in the windows that carry one*, and ~0.08 a frame amortised, which is
+what the group row counts. Every other row is inside the spread a single window shows on this machine
+(Appendix D's ablation table moves rows by ±0.1 between runs). `fx` 0.62 → 0.60 and `mods_draw3d`
+0.24 → 0.26 are the effect pool and the mods' draw hooks, both count-dependent; `shadow_mods`
+0.61 → 0.62 is the five mods' shadow pass. The draw subtotal counts `sky2d`, `mirror`, the HUD rows and
+`fxaa`, which the subtotals above do not all do, so read the phase rows rather than the group totals.
+
+**The scene has ~7 ms of headroom at vsync and the new pin does not move a millisecond of
+it.** That is the headline: for this workload the 155 commits are invisible.
+
+### The probe
+
+`perf probe` ×3 after warm-up, nanoseconds per iteration as the probe reports it:
+
+| loop | `883af3dd` | `b6471e55` |
+| --- | ---: | ---: |
+| `rl.getFPS()` (a call) | 4542 / 4495 / 4478 | 4423 / 4398 / 4427 |
+| `rl.WHITE` (a property read) | 8155 / 8381 / 8339 | 8128 / 8333 / 8301 |
+| `Math.sin(i)` | 4650 / 4652 / 4563 | 4489 / 4541 / 4542 |
+| `sink += i * 3` (same function) | 656 / 801 / 725 | 508 / 600 / 666 |
+| `pureNs` (own function, no engine) | 52 / 9.7 / 9.8 | 53 / 12.9 / 9.7 |
+
+The crossing reads 2% cheaper and a property read 0.5%, both inside the probe's own spread (§4b, §6).
+Nothing in the interface moved.
+
+### The loop benchmark (`bench.sh`)
+
+One process per body, 200 iterations armed a frame, the reply after the 24 s window; ns per
+iteration, every sample taken (a single value means one process ran that body):
+
+| body | `883af3dd` | `b6471e55` | Δ |
+| --- | ---: | ---: | ---: |
+| `arith` | 63.6 (65.2, 62.0) | 64.1 (65.7, 62.6) | +0.8% |
+| `arithinline` | 21.0 (21.9, 20.0) | 21.1 (20.9, 21.3) | +0.6% |
+| `global` | 105.5 | 105.3 | −0.2% |
+| `field` | 112.4 (112.3, 112.9, 114.2, 110.3) | 112.0 (117.3, 109.1, 111.7, 109.7) | −0.4% |
+| `fieldset` | 126.5 | 122.9 | −2.9% |
+| `index` | 115.8 (117.1, 114.6) | 111.3 (112.5, 110.5, 110.8) | −3.9% |
+| `sqrt` | 78.9 | 79.0 | +0.2% |
+| `call` | 125.3 | 125.3 | 0 |
+| `new` | **143.1** (147.0, 139.9, 141.1, 144.3) | **151.4** (152.8, 150.8, 149.7, 152.4) | **+5.8%** |
+
+`arith` and `arithinline` are the scene's own small bodies, `global`/`field`/`fieldset`/`index`/`sqrt`
+its shapes, `call` a parameter-only callee, and `new` the calibration row — one object literal is one
+box, so it should be pure allocation. Only `new` and `index` separate: `new`'s four samples on the new
+pin (149.7–152.8) sit entirely above the four on the old (139.9–147.0), and `index`'s do the reverse
+(110.5–112.5 over three samples, against 114.6–117.1 over two). Everything else, including two
+repeats of `field` on each pin, is inside the ±5–9% that two samples of one pin show against each
+other.
+
+A 6% cost on object-literal creation is consistent with the range's own additions to the creation
+path — a per-site closure source, a memoized map-transition lookup, certification of methods and
+accessors on a literal — and it does not show up in the frame, where `mods_upd` (the row that
+allocates) is flat. Worth re-checking on the engine's own corpus rather than here.
+
+### The `jitprobe` corpus
+
+Two consecutive `jitprobe` commands per process, ns/iter, every body inside a mod. Read the two
+columns at the same position: a second probe in the same process drifts, by a few per cent on most
+rows and by 35–47% on `player.state()` here:
+
+| body | `883af3dd` run 1 / 2 | `b6471e55` run 1 / 2 |
+| --- | ---: | ---: |
+| `arith` (parameters only) | 9.4 / 9.8 | 9.1 / 10.2 |
+| `outer-read` (wrapper-scope `const`) | 12.8 / 13.3 | 12.3 / 12.5 |
+| `outer-chain` | 17.5 / 21.6 | 17.3 / 18.8 |
+| `global-read` (`Math.PI`) | 12.6 / 12.5 | 12.8 / 12.9 |
+| `call-outer` | 33.4 / 32.6 | 33.0 / 33.5 |
+| `call-param` | 15.7 / 14.7 | 15.3 / 15.4 |
+| `sqrt-global` | 14.0 / 14.0 | 13.7 / 14.2 |
+| `pow-half` (`** 0.5`) | 32.5 / 32.4 | 33.1 / 33.6 |
+| `s one loop` | 9.3 / 9.3 | 9.2 / 9.3 |
+| `s two loops` | 543.0 / 678.2 | 494.7 / 588.9 |
+| `s loop+branch` | 550.0 / 591.5 | 520.2 / 499.9 |
+| `collide-current` | 3994 / 4356 | 3890 / 4018 |
+| `collide-leaf` | 3689 / 4012 | 3596 / 3640 |
+| `water.depthAt` | 1204 / 1250 | 1201 / 1193 |
+| `player.state()` | **1879 / 2770** | **1486 / 1999** |
+| `terrainHeight 0,0` | 23036 / 24166 | 23268 / 23745 |
+| `r1 flat` (one loop, compiled) | 60.5 / 62.6 | **66.2 / 70.0** |
+| `r2 two flat` | 2657 / 2313 | 2753 / 2142 |
+| `r5 r4 inline pair` | 3751 / 4011 | 3683 / 3662 |
+| `pad0` / `pad16` | 164 / 140, 180 / 177 | 154 / 136, 170 / 168 |
+
+What survives the drift, because both positions agree:
+
+- **`player.state()` is 21–28% cheaper** (1879 → 1486 and 2770 → 1999), and it is the one API call
+  whose body builds a fresh object per call — which is what scalar replacement and the phi promotion
+  are for. `water.depthAt` and `terrainHeight`, which return a number, are flat.
+- **The interpreter-bound bodies are 5–13% cheaper**: `s two loops` 543/678 → 495/589,
+  `s loop+branch` 550/592 → 520/500, `collide-leaf` 3689/4012 → 3596/3640, `collide-current`
+  3994/4356 → 3890/4018, and the `r5`–`r8` ladder rungs. This is the IC and `AgentRoots` work; it is
+  real but it is the part of a frame that the scene has already moved out of (see §5b).
+- **`r1 flat` is 9–12% dearer** (60.5/62.6 → 66.2/70.0) — the compiled single-loop body, the same
+  direction as the `new` row above.
+- **The compile gate is unchanged**: `global-read` 12.6/12.5 → 12.8/12.9 ns, one `arith` step, so
+  mods still compile their global reads (Appendix D's finding holds), and `s two loops` is still the
+  gate at ~500–590 ns whether it is measured there or here.
+
+### What it means
+
+- **This pin is a wash on this game.** The frame is the same to the millisecond, the probe is the
+  same, the scene's loop bodies are the same, and the two differences that are outside the noise
+  point in opposite directions: literal creation +6%, `player.state()` −25%.
+- **The parts of the range that matter for shipping are not in this frame.** The wasm SIMD lowering
+  is the browser export's; the `stackprobe` dependency bounds native recursion, which §4c's
+  per-call question and the `terrainHeight` 23 µs row would notice only if it changed the depth a
+  body can recurse to.
+- **The scene side is where the headroom still is** (Appendix D's *What is left*): a 16.7 ms frame
+  with ~7 ms of headroom means the engine's remaining interface cost — a batched submission path,
+  a batched key read — is the only engine lever that would show up as fps here.
+
+### The cache fix, measured (`1f534297`)
+
+`1f534297` is one commit on top of the pin above: the JIT body cache's eviction was ordered by a
+clock that only advanced on a *compile* (so "least recently used" was "least recently compiled") and
+removed half the cache at the cap, and the fix evicts only the overflow, by a per-body use count. The
+failure it describes is a mass eviction taking the startup bodies, which then re-earn the compile
+threshold while the frame runs at 40–45 fps. Two checks, both from the client:
+
+- **The body set never reaches the cap.** The engine's census (printed by `dump_refusal_census`, which
+  only the engine's CLI calls: the `slag` facade re-exports no JIT counter, so a local checkout with
+  one line added to `jit_cache_drop` produced these numbers, and the line is not in the pin) over 8
+  `fatguy boom mine` bangs four seconds apart: **358 bodies compiled, `jit evicted` 0**, in 3225
+  frames. The pre-fix pin compiled **360** in 3232 frames — if the mass eviction had ever run, that
+  number would be above the body set, because every evicted body recompiles. Against a cap of 1024
+  (`EVICT_TO_ENTRIES` 512, on both pins) nothing is within a factor of three of the cache filling, so
+  neither the eviction policy nor `SLAG_JIT_CACHE_CAP=4096` can move this frame, and the 4096 run
+  measured the same as the default: `worst` 35–51 ms, `slow` 0–3 per 240, fps 59–60.
+- **The drop did not reproduce.** Eight bangs with a `perf` print every second, so the window is one
+  second and a 0.4 s fall to 40 fps would read ~52 fps: 58–60 fps in every window on both pins,
+  `worst` 41–51 ms after warm-up, `slow` 0–5 per 240 frames. The one large frame in either run was
+  warm-up, not a bang (388 ms on the pre-fix pin, 17–51 ms on the fixed one, one sample each).
+
+What the census did show is `jit deopts` at **134 events a frame**, identical on both pins (431,520 in
+3225 frames; 432,892 in 3232). That counter is bumped where a compiled leaf body's guard fails and the
+rest of the body finishes interpreted (`runtime/src/ir.rs`), which is the per-call shape §4c left
+open — `collide-current` at 3.6–4.0 µs a call, ~40× the corpus's compiled kernel. It is the number
+the next instrument should carry, not the cache.

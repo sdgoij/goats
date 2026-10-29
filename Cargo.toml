@@ -13,6 +13,10 @@ members = ["crates/goats", "crates/android", "crates/flight", "crates/flight-js"
 # `cargo run` and a bare `cargo build` mean the client, so the README's
 # `cargo run --release` keeps working. Use `--workspace` to build or test all.
 default-members = ["crates/goats"]
+# The local engine checkout `slag/` is gitignored and has a workspace of its own;
+# it is a path dependency when the pin is flipped (see `[workspace.dependencies]`),
+# never a member here.
+exclude = ["slag"]
 
 # Every external dependency is declared here once — source and version only —
 # so a version bump or a fork swap is a single line. Each crate depends on
@@ -30,7 +34,7 @@ pull = { path = "crates/pull" }
 voice = { path = "crates/voice" }
 
 # The engine. Flip between the published revision and a local checkout here.
-slag = { git = "https://github.com/sdgoij/slag", rev = "883af3dd80709ee716c7025f0d5f3028a13f4e9e" }
+slag = { git = "https://github.com/sdgoij/slag", rev = "1f534297f179b1fbd1888500913d35c480951c63" }
 # slag = { path = "slag/crates/slag" }
 
 # Serialisation / framing.
