@@ -778,11 +778,15 @@ func _process(delta: float) -> void:
 	# so does this -- the camera it draws from is the world's own, mirrored through the water's
 	# plane, and the surface reads what it drew at its own column, flipped in the row.
 	water_mirror.run(camera, water.level())
+	# How much of the weather the goat is *under* (`weather.js` `rainShelter`): above the
+	# cloud deck there is nothing over it for the rain to fall out of, so the overlay, the
+	# rain bed and the thunder all fade with the same share.
+	var shelter: float = SkyModel.rain_shelter_at(goat.base_y())
 	if not frozen:
 		_advance(delta)
 		# The sound, once a frame and after the weather has settled: the beds ride the rain and
 		# the wind, the thunder rolls off the rain, and the grit a bang threw lands here.
-		audio.update(delta, float(_weather_now().get("rain_amount", 0.0)), _wind_sway)
+		audio.update(delta, float(_weather_now().get("rain_amount", 0.0)) * shelter, _wind_sway)
 	# Voice, on *both* paths: a session's speech does not stop when the world does, which is why
 	# the raylib client pumps its mixer outside its own pause gate too.
 	voice.update()
@@ -802,7 +806,7 @@ func _process(delta: float) -> void:
 	# are only updated when the fallback renderer is in use.
 	if celestial.visible:
 		celestial.update(here.x, here.z, SkyModel.sun_dir(_hours), _cloudiness)
-	rain.show_for(weather, _wind_x)
+	rain.show_for(weather, _wind_x, shelter)
 	_publish_pose(delta)
 	_publish_world()
 	# The HUD's three setting read-outs are `Settings`' now (M25): the console's `setting` verb and

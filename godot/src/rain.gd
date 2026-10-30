@@ -14,6 +14,11 @@
 # the wind's x component times `0.035`. Nothing is clipped or binned -- at full rain
 # that is `TUNING.weather.rainMax` one-pixel lines, which is cheap.
 #
+# The overlay has no altitude of its own, so it fades with the goat's share of the
+# weather (`SkyModel.rain_shelter_at`): above the cloud deck there is nothing over the
+# goat to fall out of, and a downpour painted across the clear air it had just climbed
+# into was simply wrong.
+#
 # `mouse_filter` is `IGNORE` and not Godot's default `STOP` for a `Control`: a
 # full-viewport control that consumes the mouse would swallow the camera drag before
 # `main.gd`'s `_unhandled_input` ever saw it.
@@ -30,20 +35,26 @@ const LENGTH := 0.045
 ## `drawRain`'s `(0.6 + d.speed)`: the shortest a streak can be.
 const SPEED_BIAS := 0.6
 
-## The machine whose pool is drawn, and this frame's wind. Both are handed in
-## (`show_for`) rather than reached for, because the weather is `main.gd`'s and the
-## wind is the wire's or the scene's depending on whether there is a session.
+## The machine whose pool is drawn, this frame's wind, and how much of the weather the
+## goat is under (`SkyModel.rain_shelter_at`). All three are handed in (`show_for`)
+## rather than reached for, because the weather is `main.gd`'s, the wind is the wire's
+## or the scene's depending on whether there is a session, and the altitude is the
+## goat's.
 var _weather: Weather
 var _wind_x := 0.0
+var _shelter := 1.0
 
 func _ready() -> void:
 	# A `Control` defaults to `STOP`, which would eat the mouse the camera wants.
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-## The one call a frame: which weather, and the wind that slants it.
-func show_for(weather: Weather, wind_x: float) -> void:
+## The one call a frame: which weather, the wind that slants it, and how much of it the
+## goat is under -- above the cloud deck there is nothing over it for the streaks to
+## fall out of, so they fade with that share.
+func show_for(weather: Weather, wind_x: float, shelter: float) -> void:
 	_weather = weather
 	_wind_x = wind_x
+	_shelter = shelter
 	queue_redraw()
 
 ## `drawRain`, one `draw_line` per live drop. A drop's `x`/`y` are fractions of the
@@ -54,14 +65,16 @@ func _draw() -> void:
 	if _weather == null:
 		return
 	var active: int = _weather.rain_active()
-	if active <= 0:
+	if active <= 0 or _shelter <= 0.01:
 		return
 	var viewport: Vector2 = get_viewport_rect().size
 	var slant: float = _wind_x * SLANT * viewport.x
+	var colour: Color = COLOUR
+	colour.a *= _shelter
 	var drops: Array = _weather.drops
 	for i in active:
 		var drop: Dictionary = drops[i]
 		var sx: float = roundf(float(drop["x"]) * viewport.x)
 		var sy: float = roundf(float(drop["y"]) * viewport.y)
 		var length: float = LENGTH * viewport.y * (SPEED_BIAS + float(drop["speed"]))
-		draw_line(Vector2(sx, sy), Vector2(sx + slant, sy + length), COLOUR, 1.0)
+		draw_line(Vector2(sx, sy), Vector2(sx + slant, sy + length), colour, 1.0)

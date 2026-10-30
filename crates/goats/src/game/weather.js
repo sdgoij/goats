@@ -27,6 +27,12 @@ let weatherTimer = 24;
 let cloudiness = 0.05;      // 0..1, eased toward the state's target
 let rainAmount = 0.0;       // 0..1, eased
 let rainActive = 0;
+// How much of the weather the goat is *under*, 1 below the cloud deck easing to 0 just
+// above it. The streaks are a screen-space overlay with no altitude of their own, so
+// this is what decides whether there is anything over the goat for them to fall out of
+// -- without it a goat flying above the deck still had a downpour painted across the
+// clear air it had just climbed into.
+let rainShelter = 1.0;
 let windX = 1.0, windZ = 0.2;
 let windSway = 0.4;
 let weatherSpeed = 1.0;      // multiplier on the goat's ground speed
@@ -396,8 +402,22 @@ function rainFall(list, count, dt, wind, seed, hashFn) {
     return seed;
 }
 
+// The shelter at a height: the deck's top is where the weather stops, and the fade
+// takes one slab thickness, so climbing through the deck throttles the rain instead
+// of cutting it off at a plane. The deck's own numbers, so a `tune sky.cloudTop`
+// moves the rain with the clouds.
+function rainShelterAt(y) {
+    const base = TUNING.sky.cloudBase;
+    const top = TUNING.sky.cloudTop;
+    const t = (y - top) / Math.max(top - base, 0.001);
+    if (t <= 0) return 1;
+    if (t >= 1) return 0;
+    return 1 - t * t * (3 - 2 * t);
+}
+
 function updateRain(dt) {
     rainActive = Math.min(RAIN.length, Math.round(TUNING.weather.rainMax * rainAmount));
+    rainShelter = rainShelterAt(goatBaseY(goat));
     rainSeed = rainFall(RAIN, rainActive, dt, windX, rainSeed, hash);
 }
 
@@ -411,8 +431,12 @@ function updateRain(dt) {
 // engine for each drop is better off also computing what it draws.
 function drawRain(w, h) {
     if (rainActive <= 0) return;
+    // Nothing over the goat to fall out of. The drops keep falling -- they are the same
+    // stream the next frame draws -- but they are not drawn.
+    const alpha = Math.round(150 * rainShelter);
+    if (alpha <= 0) return;
     const slant = windX * 0.035;
-    const col = rl.color(182, 202, 232, 150);
+    const col = rl.color(182, 202, 232, alpha);
     for (let i = 0; i < rainActive; i++) {
         const d = RAIN[i];
         const sx = d.x * w;

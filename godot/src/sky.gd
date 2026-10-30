@@ -88,6 +88,20 @@ static func mix_of(a: float, b: float, t: float) -> float:
 static func mod24(hours: float) -> float:
 	return fposmod(hours, 24.0)
 
+## `weather.js` `rainShelterAt`: how much of the weather the goat is *under*, 1 below
+## the deck's top and 0 one slab thickness above it. The streaks are a screen-space
+## overlay with no altitude of their own, so this is what decides whether there is
+## anything over the goat for them to fall out of.
+static func rain_shelter_at(y: float) -> float:
+	var base: float = CLOUD_BASE
+	var top: float = CLOUD_TOP
+	var t: float = (y - top) / maxf(top - base, 0.001)
+	if t <= 0.0:
+		return 1.0
+	if t >= 1.0:
+		return 0.0
+	return 1.0 - t * t * (3.0 - 2.0 * t)
+
 ## Sample the sky curve at `hours`: the rounded top and horizon colours as `Color`
 ## (so `Color8` bytes, exactly as the scene's `rl.color` packs them -- display
 ## space: `apply` converts them for Godot's pipeline) and the 0..1 light factor,

@@ -268,16 +268,20 @@ function playBlast(x, z, depth) {
 function updateAudio(dt) {
     if (!audioReady) return;
     if (musicMain >= 0) rl.updateMusic(musicMain);
+    // The rain this goat can actually hear. Above the deck there is nothing over it to
+    // fall on it, so the bed goes quiet and the thunder stops with the streaks --
+    // `rainShelter` is the same share `drawRain` fades the overlay by.
+    const rainHere = rainAmount * rainShelter;
     if (rainLoop >= 0) {
         rl.updateMusic(rainLoop);
-        rl.setMusicVolume(rainLoop, muted ? 0 : musicGain() * RAIN_VOLUME * rainAmount);
+        rl.setMusicVolume(rainLoop, muted ? 0 : musicGain() * RAIN_VOLUME * rainHere);
     }
     if (windLoop >= 0) {
         rl.updateMusic(windLoop);
         rl.setMusicVolume(windLoop, muted ? 0 : musicGain() * WIND_VOLUME * windSway);
     }
     thunderCooldown -= dt;
-    if (rainAmount > 0.55 && thunderCooldown <= 0 && THUNDERS.length > 0) {
+    if (rainHere > 0.55 && thunderCooldown <= 0 && THUNDERS.length > 0) {
         const sound = sfxPick(THUNDERS);
         if (!muted) {
             rl.setSoundVolume(sound, sfxGain() * 0.8);
