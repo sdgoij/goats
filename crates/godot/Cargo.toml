@@ -72,7 +72,13 @@ serde_json = { workspace = true }
 #   compiled-mod path (`crates/plugin`, `ABIv1.md`) needs.
 # * Deliberately **not** `raylib`: Godot draws. There is no `rl` in the facade at
 #   all -- a mod uses the API's own `goats.draw` / `goats.gfx` (`godot/PORT.md`
-#   section 6).
+#   section 6). That is also why a `cargo build --workspace` has to leave this crate
+#   out: feature unification is per package, so `crates/goats` asking for
+#   `slag/raylib` hands *this* build the same feature, and the extension then links
+#   a raylib it never initialises. On Windows the link fails outright (`LNK1106` on
+#   `goats_godot.dll.exp`, with `libraylib_sys` in the command line). Build it
+#   alone -- `crates/godot/build.sh`, or `cargo build -p goats-godot` -- which is
+#   what CI's `godot` job does, and why its `build` job excludes this crate.
 slag = { workspace = true, features = ["jit"] }
 # The session layer: iroh transport, tickets, the join handshake and the roster.
 # These are the *same* crates the raylib client and `goatsd` use, which is what

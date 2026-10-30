@@ -467,8 +467,16 @@ jobs:
       # `goats-android` is left out: its only product is the phone's `.so`, and the
       # `android` job builds it for the target that matters. Built here it would be a
       # host `cdylib` nobody packages (and a leftover MSVC linker warning).
+      #
+      # `goats-godot` is left out for a sharper reason: it is a `cdylib` and a member
+      # of this workspace, so a workspace build *unifies* `slag`'s `raylib` feature
+      # (which `goats` asks for) into its tree -- and a GDExtension that links raylib
+      # is exactly what `crates/godot/Cargo.toml` forbids. On Windows that link then
+      # dies in the linker (`LNK1106: cannot seek` on `goats_godot.dll.exp`, with
+      # `libraylib_sys` in the line). The extension has its own job (`godot`), which
+      # builds it with `crates/godot/build.sh` -- `-p goats-godot`, alone, no raylib.
       - name: Build
-        run: cargo build --release --workspace --exclude goats-android
+        run: cargo build --release --workspace --exclude goats-android --exclude goats-godot
 
       # The client's own unit tests -- the one thing the `test` job cannot reach,
       # because it leaves out the crate that links raylib (whose build dependencies
