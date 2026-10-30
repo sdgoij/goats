@@ -1218,8 +1218,8 @@ decisions behind it and the constraints that shape it.
   startup (`goatsd: world set: <id>@<version>#<hash>`), which is what made the
   diagnosis one look rather than a guess. Opaque assets are still compared byte
   byte, since the loader cannot know what they are. `mods/birds` itself is
-  pinned at `2799fcffef72bd1d` by a test, because a release ships it and an
-  older client refuses a server whose birds differs. That pin has moved nine
+  pinned at `3e0d0ddab5b0c89` by a test, because a release ships it and an
+  older client refuses a server whose birds differs. That pin has moved ten
   times: once when the mod's arithmetic was rewritten to stop naming `Math`
   (PERF.md §4b), again when the flock learned to set devices off, to sit on
   the goat and to squawk (M19's surface, below), then because it offers the
@@ -1246,8 +1246,14 @@ decisions behind it and the constraints that shape it.
   back in 3D and a seven-number row carrying the attitude -- 1.1.0. The ninth
   is the multiplayer slice: the payload grew a `riders` map naming who is
   aboard, so a joiner's own client can grant its goat the capability -- 1.2.0,
-  and a boundary by design like every move before it. Deliberate changes all
-  nine, and a compatibility boundary: a peer on the older birds cannot join a
+  and a boundary by design like every move before it. The tenth is the herd:
+  a bird that landed on a bot used to be shaken off on the first frame of the
+  very run its capture needed, so no bot ever captured one -- and a captured
+  bird then rode for ever, so the flock only had to learn to fly once. It now
+  keeps a perch through a bot's gait, startles a bot into the run, and lets the
+  bird go again on its own coin (`TUNING.herd.botReleaseLanding` 0.5 on a
+  landing, `botReleaseAir` 0.1 in the air) -- 1.3.0. Deliberate changes all
+  ten, and a compatibility boundary: a peer on the older birds cannot join a
   host on the newer one. The test's failure
   message prints the new digest in the source's own form, so the next move is
   a paste rather than another decimal-to-hex conversion by hand. (A note in

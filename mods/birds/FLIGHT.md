@@ -1,5 +1,14 @@
 # Captured-bird flight — design proposal
 
+> **Editing this mod moves its signature.** A `side: "world"` mod's digest
+> (`APIv1.md` §6.2) covers every entry, manifest and asset byte, and
+> `crates/mods/src/lib.rs` pins it — so a change anywhere in this directory
+> fails a test in a crate `cargo test -p harness` does not build. Move it
+> deliberately: bump `mod.json`'s version, paste the digest the failure prints,
+> and write the move up in the ROADMAP's M14d. This file is documentation and is
+> *not* hashed, which is why the warning can live here and not in `mod.js` (a
+> comment there is a new signature).
+
 **Status:** gameplay contract proposed; the shared crate's R0 has landed
 (`crates/flight`, 35 unit tests plus a doctest). No client integration yet.
 **Feature owner:** `mods/birds/`.

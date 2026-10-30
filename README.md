@@ -287,11 +287,17 @@ cargo run --release   # the profile the game ships, and the one PERF.md measures
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 
-- **Scene tests** on `ubuntu-latest` and `windows-latest`: `cargo test
-  --workspace --exclude goats` (the mod loader, the protocol, the session and the
-  harness's fast cases), then `cargo test --release -p harness -- --ignored`,
-  which runs the whole scene on Slag -- the scripted timeline, the mod cases and
-  both checked-in fixtures. No Node, no raylib, no display.
+- **Crates** and **Scene tests**, each on `ubuntu-latest` and `windows-latest`.
+  The first runs the crates that need no engine -- the mod loader (and the birds'
+  pinned digest), the protocol, the session -- and the second runs the whole scene
+  on Slag, ignored cases included: the scripted timeline, the mod cases and both
+  checked-in fixtures, then the crates that link the engine. No Node, no raylib,
+  no display. `README.md`'s *Tests and tools* is the copy to run locally.
+- **Godot client** on Linux x86-64, Linux AArch64 and Windows: the extension, the
+  project import and `godot/tools/gates.sh`, whose 42 gates are the port's own
+  conformance suite.
+- **Web build**, which exports the Godot client and the reference client and
+  deploys them to GitHub Pages from `main`.
 - **Builds** for the three supported targets, each uploaded as a workflow
   artifact:
 
@@ -676,25 +682,59 @@ small — run from the repository root (as `cargo run` does).
 
 ## Tests and tools
 
+**A passing test is not a passing suite.** Run what CI runs, every time, even
+when the change looks local: the cases that name your change can pass while one
+in a crate you never opened fails, and CI is then the first place anyone finds
+out. Two traps in particular:
+
+- **A `side: "world"` mod's signature is its digest, and the digest is pinned.**
+  Editing *any* file in `mods/birds` -- its code, its manifest, even the version
+  bump that should accompany the move -- changes `the_birds_fixture_digest_is_pinned`
+  in `crates/mods`, because a release ships that mod and an older client refuses
+  a server whose flock differs. That test lives in a crate `-p harness` does not
+  build, so a mod-only change still fails the suite. The rule is `APIv1.md`
+  §6.2, its history is the M14d write-up in `ROADMAP.md`, and `AGENTS.md` is the
+  short version of both this and the list below.
+- **The Godot port is not Rust.** `godot/tools/gates.sh` is 42 gates over
+  GDScript plus the port's own header checks, and a `godot/src/*.gd` edit is
+  invisible to `cargo test`.
+
+So a change is green when all four are:
+
 ```sh
-# The whole scene suite on the engine: gaits, stats, death, weather, the bot
-# herd, the menu, the console, the mods and both fixtures (205 cases).
-# `--profile fast` is `release` minus the link it pays for its 13% (see Cargo.toml),
-# for local runs only -- CI gates on `--release`, the same build that ships.
-cargo test --profile fast -p harness -- --ignored --nocapture
+# 1. The crates that need no engine (CI's `Crates` job). This is the one that
+#    reads the mod fixtures, and so the one that owns the digest pin.
+cargo test --workspace --exclude goats --exclude goats-android --exclude harness \
+    --exclude goats-godot --exclude plugin --exclude server --exclude flight-js
 
-# The fast tests: the mod loader, the protocol, the session, and the harness's
-# spike and observation cases
-cargo test --workspace --exclude goats
+# 2. The scene on the engine, ignored cases included (CI's `Scene tests` job):
+#    gaits, stats, death, weather, the herd, the menu, the console, the mods,
+#    the birds' flight and both fixtures.
+cargo test --profile fast -p harness -- --include-ignored --nocapture
 
+# 3. The crates that link the engine (the same job's second step).
+cargo test --profile fast -p plugin -p server -p flight-js -p goats-godot
+
+# 4. The client's own cases (CI's `Build` job), and the port's gates.
+cargo test --release -p goats
+GODOT_BIN=<godot> sh godot/tools/gates.sh
+```
+
+`--profile fast` is `release` minus the link it pays for its 13% (see
+`Cargo.toml`); it is what the scene job runs, and the shipped build's own tests
+are step 4's `--release`.
+
+Tools that are not tests:
+
+```sh
 # Inspect the model's clips, textures and materials
 python tools/inspect_glb.py goat_animated.glb
 
 # Re-author the sleep/death clips and re-export (run inside Blender)
-#   exec(open("tools/goat_states.py").read())
+#   exec(open('tools/goat_states.py').read())
 
 # Re-author the idle/sleep/jump variants and re-export (run inside Blender)
-#   exec(open("tools/goat_variants.py").read())
+#   exec(open('tools/goat_variants.py').read())
 
 # The engine's raylib surface test (from the Slag checkout)
 cargo test -p runtime --features raylib --lib raylib

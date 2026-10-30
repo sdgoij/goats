@@ -1376,6 +1376,19 @@ Two details matter when two ends disagree:
   whose code does not is exactly the silent divergence the digest exists to
   catch.
 
+**Editing a world mod moves its signature.** There is no cosmetic change to a
+running world mod: a comment in the entry, a version bump, a replaced sound and
+a rewritten rule are all the same event -- the digest changes, and a peer on the
+old bytes cannot join. That is the point of hashing rather than trusting
+`version`, and it makes the pin on the shipped example an obligation rather than
+a formality: `crates/mods`'s `the_birds_fixture_digest_is_pinned` holds
+`mods/birds/`'s digest, so **any** edit inside that directory fails a test in a
+crate `cargo test -p harness` never builds. Moving it is deliberate: bump the
+mod's version, paste the digest the failure prints, and record the move in the
+ROADMAP's M14d. Documentation beside the mod is not hashed (`FLIGHT.md` is not
+part of the digest, the entry text is), which is why the warnings live there and
+not in the code.
+
 Both ends print what they have, so a refusal can be read against them: `goatsd`
 logs `goatsd: world set: <id>@<version>#<hash>` at startup and the client logs
 `[mods] world set: ...`; the console's `mod info <id>` shows the same hash. A
