@@ -1144,6 +1144,76 @@ fn the_cases(checks: &mut Checks) {
         );
     }
 
+    // ---- a bird that lands on a bot is captured by its next hop --------------
+    // The herd's capture *is* the hop it takes during a zoomies run (`bots.js`,
+    // `FLIGHT.md` §3.3), so a run must not shake a bird off its back -- and a real run
+    // hops only every half second or so, because `botNewAction` puts the next hop on
+    // cooldown the moment it starts one. `stepPerch` used to leave on the frame its
+    // rider's gait changed, which for a bot is the first frame of that run: the bird was
+    // gone a second before the hop that would have captured it, so no bot ever captured
+    // a bird and the herd never flew.
+    {
+        let mut world = World::in_frame_with_herd(1);
+        world.frame(30);
+        let run = || "goats.bots.get(0).zoomies(6)";
+        // A run, and its first hop: the next hop is now on cooldown, which is the window
+        // a bird has to survive.
+        let _ = world.harness.eval(run()).expect("zoomies");
+        let mut hopped = false;
+        for _ in 0..300 {
+            world.frame(1);
+            if world.text("BOTS[0].mode") == "jump" {
+                hopped = true;
+                break;
+            }
+        }
+        checks.check(
+            "a bot with the zoomies hops",
+            hopped,
+            world.text("BOTS[0].mode"),
+        );
+        let _ = world.harness.eval(run()).expect("zoomies");
+        let sat = world.command("birds sit 0");
+        world.frame(1);
+        let after = world.status();
+        checks.check(
+            "a bird on a running bot's back stays there",
+            sat == "ok bird sitting on bot 0"
+                && count(&after["states"], "perch") == 1.0
+                && !world.flag("BOTS[0].flightCapable"),
+            (sat, after),
+        );
+        // The hop the run was already heading for is the capture.
+        let mut caught = false;
+        for _ in 0..300 {
+            let _ = world.harness.eval(run());
+            world.frame(1);
+            if world.flag("BOTS[0].flightCapable") {
+                caught = true;
+                break;
+            }
+        }
+        checks.check(
+            "a bot's run captures the bird on its back",
+            caught,
+            (world.text("BOTS[0].mode"), world.status()),
+        );
+        let mut flew = false;
+        for _ in 0..300 {
+            let _ = world.harness.eval(run());
+            world.frame(1);
+            if world.text("BOTS[0].mode") == "fly" {
+                flew = true;
+                break;
+            }
+        }
+        checks.check(
+            "...and the bot's next hop is the take-off",
+            flew,
+            (world.text("BOTS[0].mode"), world.status()),
+        );
+    }
+
     // ---- a joiner mirrors a ride ---------------------------------------------
     // The host publishes the seat and the attitude; a client is not told *which* goat
     // a bird chose and does not need to be (`FLIGHT.md` §8).

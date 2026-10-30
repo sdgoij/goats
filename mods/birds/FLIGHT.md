@@ -426,6 +426,16 @@ jump was itself one of the bot's zoomies hops, so its `zoom` clock is still
 running and the next hop is the take-off; the mod must not call `zoomies()`
 mid-jump, because that writes `mode = "run"` and cancels the jump.
 
+A bot has to *get* a bird first, and that is the mod's job too: a bird that
+settles on a bot's back startles it, and `stepPerch` puts the bot into a run
+(`bot.zoomies(3)`) until the hop captures the bird. The two rules only work as a
+pair. The herd's capture is a hop taken during a run, so a run must not end the
+perch (`stepPerch` leaves only for the *player's* gait), and a bird perched on a
+bot will only survive to see a hop if something makes the bot run -- left to the
+bot's own actions, a capture was a hundred-second accident and the herd never
+learned to fly. Only a bot with no bird yet is startled, so the flock arms itself
+once rather than on every landing.
+
 ### 3.9 Rendering and pivots
 
 The goat is drawn with a whole-body rotation composed exactly like the birds'
@@ -611,7 +621,7 @@ Extend the `birds` verb:
 | --- | --- |
 | `birds mount` | Put `BIRDS[0]` on the player's goat in `RIDE` and grant flight (the test/demo path). |
 | `birds drop` | Release the player's captured bird and call `player.release()` if flying. |
-| `birds sit [peer]` | Put `BIRDS[0]` on the player's goat in `PERCH` as a landing would, or on the named joiner's goat -- the host's view of a peer's perch. |
+| `birds sit [bot\|peer]` | Put `BIRDS[0]` on the player's goat in `PERCH` as a landing would, on bot `[bot]` (the perch the herd's own capture starts from), or on the named joiner's goat -- the host's view of a peer's perch. |
 | `birds ride [bot\|peer]` | Put a bird on bot `[bot]` (granting it and starting its zoomies), or on the named joiner's goat in `RIDE` (the rider map grants it on that client). |
 | `birds` (no verb) | Status adds `captured: n` and the riders, beside the existing state counts. |
 

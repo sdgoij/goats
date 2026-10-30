@@ -598,6 +598,28 @@ function perchOnGoat(b) {
     setSt(b, ST.PERCH, 600);   // long enough to watch the goat fill up
 }
 
+// The same on a bot (`birds sit <n>`, and the capture the landing path takes on its
+// own): a plain perch with nothing armed. The bot's own hop is the capture, so this
+// seats the bird exactly where a landing would and lets `updateRiders` do the rest.
+function perchOnBot(b, index) {
+    if (b.captured) dismount(b);
+    const bot = goats.bots.get(index);
+    b.perch = index;
+    b.peer = "";
+    b.x = bot.x;
+    b.z = bot.z;
+    b.y = groundAt(bot.x, bot.z) + PERCH_H;
+    b.yaw = bot.yaw;
+    b.prevYaw = b.yaw;
+    b.vx = b.vz = b.vy = 0;
+    b.pitch = b.roll = b.yawRate = 0;
+    b.sent = false;
+    b.captured = false;
+    b.justCaptured = false;
+    b.tx = b.x; b.ty = b.y; b.tz = b.z; b.tyaw = b.yaw;
+    setSt(b, ST.PERCH, 600);
+}
+
 // The same on a joiner's goat, for the host's flock (`birds sit <name>` and the capture
 // test). The peer row is the host's mirror of it, so this is a seat on where the peer is
 // being drawn, exactly like a landing would be.
@@ -729,8 +751,9 @@ function pickPerch(b) {
     return best !== null && flockRnd() < 0.35 ? best : null;
 }
 
-// Where a perched bird sits, or null if its goat is gone. `speed` lets a bird
-// leave a goat that starts moving.
+// Where a perched bird sits, or null if its goat is gone. `speed` is the rider's own
+// gait, which `stepPerch` reads for the player alone: a bot's or a peer's gait is the
+// capture, not a reason to leave.
 function perchTarget(b) {
     if (b.perch === PERCH_PLAYER) {
         const p = goats.player.state();
@@ -1163,7 +1186,33 @@ function stepLand(b, dt) {
 
 function stepPerch(b, dt) {
     const t = perchTarget(b);
-    if (t === null || t.speed > 2) { startTakeoff(b); return; }
+    // The player's own speed is the one gait a bird leaves for, and even that is only
+    // the *perch*: a captured bird is in `RIDE`, so the run that follows a capture never
+    // reaches here. A bot's and a peer's gait must not end a perch, because for them the
+    // gait *is* the capture -- a bot is captured by the hop it takes during a zoomies
+    // run (`bots.js`, `FLIGHT.md` §3.3) and a joiner's goat by its own client's jump
+    // (§8). Reading their gait as "leaving" ended every bot perch on the frame its run
+    // began, which is the one frame the hop needed, so the herd never captured a bird
+    // and never flew.
+    if (t === null || (b.perch === PERCH_PLAYER && t.speed > 2)) {
+        startTakeoff(b);
+        return;
+    }
+    // A bird on a bot's back is not a quiet perch: the goat it landed on bolts, and a
+    // bolting goat hops -- and the hop is the capture, the one after it the take-off
+    // (`bots.js`, `FLIGHT.md` §3.3). Left to the herd's own zoomies the window is too
+    // small to matter (a bird sits four to nine seconds, a bot picks a run about one
+    // action in ten), which is why the herd never learned to fly even once the perch
+    // could survive a run. Only a bot with no bird yet is startled: one already carrying
+    // needs no encouragement, so the flock arms itself once rather than for ever. Never
+    // mid-hop, though -- `zoomies` writes `mode = "run"`, and that cancels the jump the
+    // capture is made of (`FLIGHT.md` §3.8).
+    if (b.perch >= 0) {
+        const bot = goats.bots.get(b.perch);
+        if (bot !== null && !bot.flight && bot.mode !== "run" && bot.mode !== "jump") {
+            bot.zoomies(3);
+        }
+    }
     b.x = t.x;
     b.z = t.z;
     b.y = t.y;
@@ -1761,10 +1810,20 @@ goats.command("birds", function (parts) {
     if (verb === "sit") {
         // A bird on the goat's back, and the rest of the flock on the ground beside it.
         // A name seats it on that joiner's goat instead, which is the host's own view of
-        // the capture (`FLIGHT.md` §8): the bird is a plain perch until that goat jumps.
+        // the capture (`FLIGHT.md` §8), and a number seats it on that bot, which is the
+        // capture path the landing would have taken (`FLIGHT.md` §3.8): the perch is
+        // plain until the goat jumps, and a bot jumps on its next zoomies hop.
         gatherBirds();
         if (BIRDS.length === 0) return "ok birds sitting";
         if (parts[2] !== undefined) {
+            const want = Number(parts[2]);
+            if (IS_FINITE(want)) {
+                if (!goats.net.localWorld()) return "error birds: the host owns the flock";
+                const index = FLOOR(want);
+                if (goats.bots.get(index) === null) return "error birds: no bot " + index;
+                perchOnBot(BIRDS[0], index);
+                return "ok bird sitting on bot " + index;
+            }
             if (!PEERS_API) return "error birds: this client has no peers";
             if (!goats.net.localWorld()) return "error birds: the host owns the flock";
             refreshPeers();
