@@ -19,6 +19,28 @@ each [release](https://github.com/sdgoij/goats/releases); to build it yourself:
 cargo run --release
 ```
 
+## Three implementations
+
+This repository is more than one thing, and each part gates the others:
+
+| Implementation | Language | What it proves |
+| --- | --- | --- |
+| this client (`crates/goats`) | the JavaScript scene over `rl` | the behaviour itself -- it is the reference |
+| the Godot port (`godot/`) | the same JavaScript, Godot's renderer | the contract: 42 gates compare the port with the reference |
+| a Noctis port (a separate project) | Rust | that the rules are portable rather than Slag's |
+
+Four clients on two engines, desktop and WebAssembly. What travels between them
+is the *mechanics* -- the herd, the weather machine, the water table,
+captured-bird flight, the mod contract -- because each is a rule with a number
+behind it. The presentation is the part that gets re-implemented per engine.
+
+Goats also began as, and still is, **Slag's benchmark**: a workload large enough
+to find what a conformance suite cannot (a write-barrier miss, a zero-length
+array that allocates nothing, a body with two loops that falls out of the
+compiled path). That makes the frame budget part of the contract too --
+`PERF.md`'s numbers are only comparable if the workload is pinned beside them,
+the way a world mod's digest is pinned beside the mod (`APIv1.md` §6.2).
+
 ## Demo
 
 **Play it in the browser: [sdgoij.github.io/goats](https://sdgoij.github.io/goats)** --
