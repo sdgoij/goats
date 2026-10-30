@@ -1006,12 +1006,42 @@ function dismount(b) {
 
 // Capture polling and the riders' transitions, once a frame at the top of the sim.
 // The `last` tables are what make this an edge rather than a state: the goat spends
-// several frames in `jump`, and a capture is the *entering* of it.
+// several frames in `jump`, and a capture is the *entering* of it. The same pass decides
+// when the herd lets its bird go -- `releaseIn` is the flight's own clock, in seconds left
+// before a bot drops it in the air.
 let lastPlayerMode = "";
 const lastBotMode = [];
+const releaseIn = [];
 const lastPeerMode = {};
 
-function updateRiders(pivot) {
+// The herd's own coin. It is a *local* stream rather than a registered one: `updateRiders`
+// runs only in `simulate`, so only the host ever draws from it (a client mirrors), and
+// taking the draws from `flockRnd` would move every perch the flock picks afterwards --
+// the separation `weather.js` keeps for the rain. A registered stream would also be a
+// second stream under this mod's id, which is a change to the session's own key order.
+let herdSeed = 0x1e5793a5;
+function herdRnd() {
+    herdSeed ^= herdSeed << 13;
+    herdSeed >>>= 0;
+    herdSeed ^= herdSeed >>> 17;
+    herdSeed ^= herdSeed << 5;
+    herdSeed >>>= 0;
+    return herdSeed / 4294967296;
+}
+
+// A `TUNING.herd` odds leaf, read through the tuning tree so a `tune` moves it like any
+// other number. A client whose tree lacks the leaf gets the fallback: the port's tree is
+// a subset and an absent path is an error there, not a zero.
+function releaseChance(path, fallback) {
+    try {
+        const v = goats.tuning.get(path);
+        return typeof v === "number" && IS_FINITE(v) ? clamp(v, 0, 1) : fallback;
+    } catch (error) {
+        return fallback;
+    }
+}
+
+function updateRiders(pivot, dt) {
     if (!FLIGHT_API) return;
     refreshPeers();
     const p = goats.player.state();
@@ -1023,16 +1053,43 @@ function updateRiders(pivot) {
 
     const list = goats.bots.list();
     for (let i = 0; i < list.length; i++) {
-        const mode = list[i].mode;
-        if (mode === "jump" && lastBotMode[i] !== "jump" && riderOf(i) === null) {
+        const bot = list[i];
+        const mode = bot.mode;
+        const was = lastBotMode[i];
+        if (mode === "jump" && was !== "jump" && riderOf(i) === null) {
             const b = perchedOn(i);
             if (b !== null) captureBird(b, i);
+        }
+        // The herd lets go, and both halves are its own choice rather than the player's
+        // `E`: half the landings hand the bird back, and one flight in ten drops it in the
+        // air. Without them a captured bird rides for ever, so the herd stops having to
+        // catch one -- and catching one is the whole of learning to fly.
+        if (mode === "fly" && was !== "fly") {
+            // Counted from the take-off, so a release comes mid-flight rather than on the
+            // first frame of it.
+            releaseIn[i] = herdRnd() < releaseChance("herd.botReleaseAir", 0.1)
+                ? 2 + herdRnd() * 8
+                : -1;
+        } else if (was === "fly" && mode !== "fly" && mode !== "fall") {
+            // Landed. (`fall` is the release's own exit and is handled by the rule below,
+            // which takes the bird off a goat that has come down without it.)
+            releaseIn[i] = -1;
+            const rider = riderOf(i);
+            if (rider !== null && herdRnd() < releaseChance("herd.botReleaseLanding", 0.5)) {
+                releaseBird(rider);
+            }
+        } else if (mode === "fly" && releaseIn[i] >= 0) {
+            releaseIn[i] -= dt;
+            // `release` is the goat's own way out -- the player's `E` -- so it falls from
+            // where the bird left it, and the rule below lets the bird go.
+            if (releaseIn[i] < 0) bot.release();
         }
         lastBotMode[i] = mode;
     }
     // The herd can be resized under the table; a shorter list leaves stale entries
     // that the next bot at that index would inherit, so trim it here.
     lastBotMode.length = list.length;
+    releaseIn.length = list.length;
 
     // ...and the same edge for a joiner's goat, from the host's mirror of it. The name is
     // the identity and a frame's absence of it is a disconnect, so the table is rebuilt and
@@ -1443,7 +1500,7 @@ function simulate(dt) {
     refreshPeers();
     // Capture and release first: the frame the goat jumps is the frame the bird
     // becomes its rider, and a goat that has lost its bird is a plain perch again.
-    updateRiders(ridePivot);
+    updateRiders(ridePivot, dt);
     for (let i = 0; i < BIRDS.length; i++) {
         const b = BIRDS[i];
         // A non-finite position draws as nothing, so recover the bird rather

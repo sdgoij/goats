@@ -467,6 +467,13 @@ const TUNING = {
     herd: {
         count: 7,                  // bot goats, 0..MAX_HERD
         deathLinger: 8,            // seconds a killed bot lies there before it gets up
+        // The herd's odds of letting a captured bird go. They are the flock's own coin
+        // rather than the player's `E`, and the birds mod reads them through
+        // `goats.tuning` so a `tune` moves them like any other leaf. A bird that rides
+        // for ever is a herd that stops having to catch one, and the catch -- a bird
+        // landing on a goat that then bolts -- is the whole of learning to fly.
+        botReleaseLanding: 0.5,    // share of landings that hand the bird back
+        botReleaseAir: 0.1,        // share of flights that drop it in the air instead
         spec: [
             { coat: [196, 168, 128], scale: 0.80, bold: 0.95, lazy: 0.55, name: "tan kid" },
             { coat: [222, 216, 206], scale: 1.06, bold: 1.00, lazy: 0.50, name: "cream" },
@@ -541,6 +548,9 @@ const TUNING_CLAMP = {
     // A killed bot has to lie there for *some* of it: `0` would ping-pong it in and
     // out of the world, and the death is worth watching.
     "herd.deathLinger": [0.5, 120],
+    // An odds leaf is a share: below zero is not "never" and above one is not "always".
+    "herd.botReleaseLanding": [0, 1],
+    "herd.botReleaseAir": [0, 1],
     // The meal's second helping: a fraction outside 0..1 is not a full belly, and a
     // negative heal would make eating a way to lose health.
     "food.fullBelly": [0, 1],

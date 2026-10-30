@@ -1102,12 +1102,17 @@ fn the_cases(checks: &mut Checks) {
 
     // ---- the herd flies too --------------------------------------------------
     // `birds ride 0` is the same grant on a bot; its next zoomies hop is the take-off
-    // (`bots.js`), and a landing keeps the bird (`FLIGHT.md` §4.2, §9).
+    // (`bots.js`), and a landing keeps the bird (`FLIGHT.md` §4.2, §9) -- *unless* the herd
+    // hands it back, which is its own coin (`TUNING.herd.botReleaseLanding`) and is pinned
+    // off here.
     {
         let mut world = World::in_frame_with_herd(1);
         world.frame(30);
-        // A short flight so the landing is in this case rather than eighteen seconds out.
+        // A short flight so the landing is in this case rather than eighteen seconds out,
+        // and no releases, so "keeps the bird" is a rule rather than a fifty-fifty.
         let _ = world.harness.eval("tuningSet('flight.botTime', 1.5)");
+        let _ = world.harness.eval("tuningSet('herd.botReleaseLanding', 0)");
+        let _ = world.harness.eval("tuningSet('herd.botReleaseAir', 0)");
         let rode = world.command("birds ride 0");
         checks.check(
             "`birds ride` puts a bird on a bot",
@@ -1211,6 +1216,69 @@ fn the_cases(checks: &mut Checks) {
             "...and the bot's next hop is the take-off",
             flew,
             (world.text("BOTS[0].mode"), world.status()),
+        );
+    }
+
+    // ---- the herd lets its bird go -------------------------------------------
+    // `TUNING.herd.botReleaseAir` and `botReleaseLanding`: one captured bird does not ride
+    // for ever just because the goat that caught it is a bot. Both odds are pinned at
+    // their ends here -- a coin is not a rule -- and the two exits are the player's own:
+    // in the air the goat falls from where the bird left it, on the ground the bird flies
+    // off and the goat has to catch another.
+    {
+        let mut world = World::in_frame_with_herd(1);
+        world.frame(30);
+        let _ = world.harness.eval("tuningSet('herd.botReleaseAir', 1)");
+        let _ = world.harness.eval("tuningSet('herd.botReleaseLanding', 0)");
+        let _ = world.command("birds ride 0");
+        let mut flew = false;
+        for _ in 0..300 {
+            world.frame(1);
+            if world.text("BOTS[0].mode") == "fly" {
+                flew = true;
+                break;
+            }
+        }
+        let mut let_go = false;
+        for _ in 0..700 {
+            world.frame(1);
+            if world.status()["captured"] == json!(0) {
+                let_go = true;
+                break;
+            }
+        }
+        checks.check(
+            "a flight can end with the bird let go in the air",
+            flew && let_go && !world.flag("BOTS[0].flightCapable"),
+            (world.text("BOTS[0].mode"), world.status()),
+        );
+    }
+    {
+        let mut world = World::in_frame_with_herd(1);
+        world.frame(30);
+        let _ = world.harness.eval("tuningSet('flight.botTime', 1.5)");
+        let _ = world.harness.eval("tuningSet('herd.botReleaseAir', 0)");
+        let _ = world.harness.eval("tuningSet('herd.botReleaseLanding', 1)");
+        let _ = world.command("birds ride 0");
+        let mut flew = false;
+        let mut let_go = false;
+        for _ in 0..400 {
+            world.frame(1);
+            if world.text("BOTS[0].mode") == "fly" {
+                flew = true;
+            } else if flew && world.status()["captured"] == json!(0) {
+                let_go = true;
+                break;
+            }
+        }
+        checks.check(
+            "a landing can hand the bird back",
+            flew && let_go && !world.flag("BOTS[0].flightCapable"),
+            (
+                world.text("BOTS[0].mode"),
+                world.flag("BOTS[0].flightCapable"),
+                world.status(),
+            ),
         );
     }
 

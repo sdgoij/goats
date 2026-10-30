@@ -436,6 +436,17 @@ bot's own actions, a capture was a hundred-second accident and the herd never
 learned to fly. Only a bot with no bird yet is startled, so the flock arms itself
 once rather than on every landing.
 
+And it lets go, on its own coin (`TUNING.herd.botReleaseLanding` and
+`botReleaseAir`, read through `goats.tuning` so a `tune` moves them): half the
+landings hand the bird back, and one flight in ten ends with a release in the
+air. Both exits are the player's own `E` -- on the ground the bird flies off and
+the goat has to catch another, and in the air the goat falls from where the bird
+left it. The two odds are on a stream of their own (`herdRnd`, a local one:
+only the host runs `updateRiders`), because a coin drawn from `flockRnd` would
+move every perch the flock picks afterwards. Without them a captured bird rides
+for ever, and a herd that never has to catch the next one has not really learned
+anything.
+
 ### 3.9 Rendering and pivots
 
 The goat is drawn with a whole-body rotation composed exactly like the birds'

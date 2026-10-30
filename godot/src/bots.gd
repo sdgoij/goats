@@ -142,6 +142,12 @@ const COUNT := 7
 const MAX_HERD := 100
 ## `TUNING.herd.deathLinger`: seconds a killed bot lies there before it gets up.
 static var DEATH_LINGER: float = 8.0
+## `TUNING.herd.botReleaseLanding` / `botReleaseAir`: the herd's own odds of letting a
+## captured bird go, on a landing and in the air. The birds mod is the reader -- it takes
+## them off the tuning tree, so these are leaves like the rest of the herd's and `tune`
+## moves them here too.
+static var RELEASE_LANDING: float = 0.5
+static var RELEASE_AIR: float = 0.1
 ## `TUNING.herd.spec`: coat colour, body scale and temperament. `bold` scales a bot's
 ## cruising speed; `lazy` biases it toward standing still.
 static var SPEC: Array = [

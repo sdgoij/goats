@@ -81,6 +81,8 @@ const INT := {
 const CLAMP := {
 	"herd.count": [0.0, Bots.MAX_HERD],
 	"herd.deathLinger": [0.5, 120.0],
+	"herd.botReleaseLanding": [0.0, 1.0],
+	"herd.botReleaseAir": [0.0, 1.0],
 	"food.fullBelly": [0.0, 1.0],
 	"food.fullBellyHeal": [0.0, 100.0],
 	"camera.minDist": [0.1, 1000.0],
@@ -303,8 +305,11 @@ static func _leaves() -> Dictionary:
 			# The day's length is the sky's; the cold's multiplier is the goat's.
 			"world.dayLength": [SkyModel, &"DAY_LENGTH", PackedStringArray()],
 			"world.nightDrainMult": [PlayerGoat, &"NIGHT_DRAIN_MULT", PackedStringArray()],
-			# `count` is the scene's (header); the linger and the pool are the herd's.
+			# `count` is the scene's (header); the linger and the pool are the herd's, and so
+			# are the birds' release odds -- the birds mod is the one reader.
 			"herd.deathLinger": [Bots, &"DEATH_LINGER", PackedStringArray()],
+			"herd.botReleaseLanding": [Bots, &"RELEASE_LANDING", PackedStringArray()],
+			"herd.botReleaseAir": [Bots, &"RELEASE_AIR", PackedStringArray()],
 			"herd.spec": [Bots, &"SPEC", PackedStringArray()],
 			"camera.yaw": [Tuning, &"CAMERA_YAW", PackedStringArray()],
 			"camera.pitch": [Tuning, &"CAMERA_PITCH", PackedStringArray()],
