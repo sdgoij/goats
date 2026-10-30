@@ -200,13 +200,21 @@ function lerpColor(a, b, t) {
 
 const CLOUDS = [];
 (function buildClouds() {
+    // The puffs are the M2 fallback for the sky shader, so they are the same deck
+    // the shader marches and have to hang at the same altitude: a scatter of
+    // 26..48 m was a second, much higher layer that only showed up when the shader
+    // was off, which is exactly when a cloud that changes height reads as a bug.
+    // They spread across the slab's own band instead, so the two renderers agree
+    // about where the weather is.
+    const base = TUNING.sky.cloudBase;
+    const band = TUNING.sky.cloudTop - TUNING.sky.cloudBase;
     for (let i = 0; i < 46; i++) {
         const a = hash(i * 2.1) * Math.PI * 2;
         const r = 26 + hash(i * 3.3) * 74;
         CLOUDS.push({
             x: Math.cos(a) * r,
             z: Math.sin(a) * r,
-            y: 26 + hash(i * 5.5) * 22,
+            y: base + band * (0.15 + hash(i * 5.5) * 0.7),
             size: 12 + hash(i * 7.1) * 22,
             cover: hash(i * 9.9),
         });

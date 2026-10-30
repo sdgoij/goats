@@ -1,6 +1,6 @@
 # The cumulus deck, as a world-space volume the goat can fly through.
 #
-# `sky.js`'s cloud slab hangs at `TUNING.sky.cloudBase`..`cloudTop` (5..9.5 m) and
+# `sky.js`'s cloud slab hangs at `TUNING.sky.cloudBase`..`cloudTop` (44..50 m) and
 # the scene's March is a function of the eye's height, so climbing into it is part
 # of the world. Sky3D paints its cumulus in the *sky stage*, which is at infinity:
 # no altitude ever arrives at it. This node is the deck itself -- a camera-centred

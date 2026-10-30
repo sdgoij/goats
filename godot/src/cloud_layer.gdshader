@@ -3,7 +3,7 @@
 //
 // Sky3D's clouds are painted by the sky stage, which is at infinity: a goat can
 // climb through the altitude forever and never arrive at them. The scene's own
-// slab is at `TUNING.sky.cloudBase`..`cloudTop` (5..9.5 m), and this is that slab
+// slab is at `TUNING.sky.cloudBase`..`cloudTop` (44..50 m), and this is that slab
 // as geometry -- a camera-centred box with only its far faces drawn (`cull_front`),
 // whose fragment shader marches the same density field the reference sky does.
 //

@@ -157,7 +157,7 @@ const SKY_FS = [
     // ~0.0003 UV per metre; the slab is shallower, so the scale is a little
     // larger. `drift` is still in the old q units, so it is scaled with it.
     "    vec2 uv = p.xz * 0.001 - drift * 0.0083;",
-    // Eight slices rather than four: the marching slab stays 5.0..9.5 m, but
+    // Eight slices rather than four: the marching slab is a few metres thick, but
     // the noise changes more often with height, which is what makes the volume
     // read as towers instead of a flat deck.
     "    float slice = (y - 0.5) * 8.0;",

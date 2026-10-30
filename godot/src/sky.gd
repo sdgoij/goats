@@ -46,13 +46,15 @@ const OVERCAST_BOT := [150, 154, 162]
 
 ## `TUNING.world.dayLength`: real seconds for one 24 h day.
 static var DAY_LENGTH: float = 240.0
-## `TUNING.sky`, the slab geometry the shader marches.
-static var CLOUD_BASE: float = 5.0
-static var CLOUD_TOP: float = 9.5
+## `TUNING.sky`, the slab geometry the shader marches. The deck hangs above the
+## range and above anything that walks (`terrain.mountain` is 38 over `relief` 2.1),
+## so the camera never crosses it on a hop and the peaks are never buried in it.
+static var CLOUD_BASE: float = 44.0
+static var CLOUD_TOP: float = 50.0
 static var CLOUD_SCALE: float = 0.055
 static var CLOUD_DETAIL: float = 0.35
 static var CLOUD_ABSORB: float = 1.35
-static var CIRRUS_LEVEL: float = 15.0
+static var CIRRUS_LEVEL: float = 90.0
 static var CLOUD_SPEED: float = 0.55
 ## `TUNING.sky.steps`, indexed by `SETTINGS.cloud` (default 1, "medium"). It is a
 ## `static var` rather than the `const` the scene's `SETTINGS.cloud` is, because the

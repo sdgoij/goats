@@ -484,12 +484,25 @@ const TUNING = {
         maxDist: 12.0,
     },
     sky: {
-        cloudBase: 5.0,            // world height of the layer bottom
-        cloudTop: 9.5,             // world height of the layer top
+        // The deck hangs above everything that *walks*, and that is what the two
+        // altitudes are for. At 5..9.5 m it sat in the band the goat itself flies
+        // through, so every hop and every climb put the eye in or out of the slab,
+        // and the deck's coverage of the screen flipped with the goat's own
+        // altitude -- which reads as the clouds riding up and down with it. Now it
+        // clears the orbit camera (at most 12 m up, at the steepest pitch it
+        // allows) and the whole range (`terrain.mountain` 38 over `terrain.relief`
+        // 2.1, so the peaks are never buried in it), while staying under
+        // `flight.ceiling` (60 m over the meadow): fly up to break through the deck
+        // and look down on it, and the summits stay below it either way.
+        cloudBase: 44.0,           // world height of the layer bottom
+        cloudTop: 50.0,            // world height of the layer top
         scale: 0.055,              // base shape frequency
         detail: 0.35,              // high-frequency edge erosion
         absorb: 1.35,              // extinction per unit density
-        cirrusLevel: 15.0,         // world height of the thin high layer
+        // The thin high layer has to stay *above* the cumulus it is drawn over, so
+        // it moves with the deck rather than sitting where it did relative to the
+        // old 5 m base.
+        cirrusLevel: 90.0,         // world height of the thin high layer
         speed: 0.55,               // how fast the layer drifts with the wind
         steps: [6, 12, 22],        // march steps per quality level
     },

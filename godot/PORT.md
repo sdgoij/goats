@@ -681,9 +681,9 @@ Seven goats -- the real skinned model, at the per-spec scales the scene gives th
 -- standing in the swaying grass on the heightfield, lit by the scene's own sun,
 under the scene's own dawn sky. The camera moved to do it: three metres up and
 fifteen back, which is where the scene's own camera rides, and `TUNING.sky`
-`cloudBase` is 5 -- so the camera is *under* the cloud deck, two metres of air
-below it. That matters: the march is a function of where the eye is inside the
-slab, and from higher up the same deck is a band across the horizon instead of a
+`cloudBase` is 44 -- so the camera is *well under* the cloud deck, forty metres of
+air below it. That matters: the march is a function of where the eye is inside the
+slab, and from higher up the same deck is a floor under the goat instead of a
 canopy overhead. `GOATS_CLOUD` (section 6's staging knobs) is what makes the
 cumulus visible at all, because the scene boots `clear`.
 
@@ -1448,7 +1448,7 @@ Two decisions were settled with the plan and are recorded where they belong:
   cloudiness and wind into it every frame. Sky3D's **cumulus** is turned off:
   its clouds live in the sky stage at infinity, so a flying goat could never reach
   them. `cloud_layer.gd` + `cloud_layer.gdshader` are the deck instead -- the
-  scene's 5..9.5 m slab as a camera-centred box marched in world space, which the
+  scene's 44..50 m slab as a camera-centred box marched in world space, which the
   goat climbs through and which covers the ground when it is above it. `sky.gdshader`
   and `celestial.gd` remain as the reference renderer and the fallback.
 

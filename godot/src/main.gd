@@ -143,10 +143,10 @@ var _roster: Array = []
 ## from and clamped by `TUNING.camera`. The scene's `sceneFrame` owns the same three
 ## numbers and moves them the same way, and they matter more than they look: the
 ## scene's camera rides about three metres up (`TUNING.camera.dist` 5.2 at pitch
-## 0.42) while its cloud slab hangs from `TUNING.sky.cloudBase` 5 to `cloudTop` 9.5
-## -- so the eye is *under* the deck, and the sky shader's march is a function of
-## that. From higher up the same slab is a band across the horizon instead of a
-## canopy overhead.
+## 0.42) while its cloud slab hangs from `TUNING.sky.cloudBase` 44 to `cloudTop` 50
+## -- so the eye is well *under* the deck at every pitch the orbit allows, and the
+## sky shader's march is a function of that. Flying up crosses the slab and turns
+## it from a canopy overhead into a floor under the goat.
 var _cam_yaw := Tuning.CAMERA_YAW
 var _cam_pitch := Tuning.CAMERA_PITCH
 var _cam_dist := Tuning.CAMERA_DIST

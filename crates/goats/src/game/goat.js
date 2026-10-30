@@ -1218,13 +1218,13 @@ function sceneFrame() {
     }
 
     // The cloud layer is drawn *after* the ground and *before* the goats. The slab
-    // hangs five to ten metres up, so the ground is always behind it on a ray that
-    // crosses it -- painting it after the ground is what puts the deck over the hills
-    // when the goat flies above them, instead of under the terrain where a full-screen
-    // background pass would leave it. The goats go after it because the camera rides
-    // above the player: a flying goat is in front of the deck, not in it. The water
-    // stays last for its own reason (it has to blend over what stands in it), which
-    // is the one surface that gives up a little to the deck for that look.
+    // hangs well above the range (`TUNING.sky.cloudBase`), so every surface is behind
+    // it on a ray that crosses it -- painting it after the ground is what puts the deck
+    // over the hills when the goat flies above them, instead of under the terrain where
+    // a full-screen background pass would leave it. The goats go after it because the
+    // camera rides above the player: a flying goat is in front of the deck, not in it.
+    // The water stays last for its own reason (it has to blend over what stands in it),
+    // which is the one surface that gives up a little to the deck for that look.
     if (skySplit) {
         rl.endMode3D();
         drawSky(cx, cy, cz, goat.px, ty, goat.pz, screenW, screenH, dt, SKY_LAYER_CLOUD);
