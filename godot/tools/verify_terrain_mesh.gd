@@ -16,12 +16,6 @@
 # looking perfectly correct in the data.
 extends SceneTree
 
-## `world.js`'s palette, as sRGB bytes (`T_ROCK` .. `T_SNOW`).
-const PALETTE := [
-	[128, 122, 112], [104, 84, 62], [198, 178, 130],
-	[98, 150, 84], [78, 126, 66], [126, 146, 74], [232, 238, 245],
-]
-
 func _initialize() -> void:
 	var failures: Array[String] = []
 
@@ -144,14 +138,26 @@ func _initialize() -> void:
 		if facing.y <= 0.0:
 			failures.append("surface %d is wound the wrong way for Godot (faces %s)" % [surface, facing])
 
-	# 6. The material colour is one of the palette's, per vertex.
-	var off_palette := 0
+	# 6. The material colour is `Terrain.material` *at that vertex*: the mesh carries a
+	#    per-vertex colour that has to be the one its own height, slope and patch
+	#    noise imply. The palette is a blend now, so "one of seven colours" is not the
+	#    question any more; tying the colour to the geometry is the stronger one, and
+	#    it is the contract the client's mesh has too.
+	var worst_col := 0.0
+	var worst_col_at := ""
 	for k in cols.size():
-		if not _in_palette(cols[k]):
-			off_palette += 1
-	print("vertices off the palette: ", off_palette)
-	if off_palette != 0:
-		failures.append("%d vertices are not a palette colour" % off_palette)
+		var expect := _material_of(verts[k], norms[k])
+		var delta: float = maxf(absf(cols[k].r - expect.r),
+			maxf(absf(cols[k].g - expect.g), absf(cols[k].b - expect.b)))
+		if delta > worst_col:
+			worst_col = delta
+			worst_col_at = "vertex %d at (%.2f, %.2f)" % [k, verts[k].x, verts[k].z]
+	print("worst material error: %.8f%s" % [worst_col,
+		"" if worst_col_at == "" else " at " + worst_col_at])
+	# The vertex buffer stores colours as 8-bit, so a comparison against the float the
+	# material computed can be a byte out -- the same allowance the palette test made.
+	if worst_col > 2.0 / 255.0:
+		failures.append("a vertex colour is not the material at that vertex (off by %f)" % worst_col)
 
 	# 7. The texcoord is world-space, so the detail tiles per unit and not per
 	#    quad -- the same cell is a different UV at a different anchor.
@@ -251,17 +257,14 @@ func _initialize() -> void:
 			print("FAIL: ", f)
 		quit(1)
 
-func _in_palette(colour: Color) -> bool:
-	for entry in PALETTE:
-		# The mesh carries the palette in linear space (`Terrain._rgb`), and the
-		# vertex buffer stores colours as 8-bit, so a linear component can be up to
-		# half a byte from its exact conversion.
-		var c := Color8(entry[0], entry[1], entry[2]).srgb_to_linear()
-		var tolerance := 1.0 / 255.0
-		if absf(c.r - colour.r) < tolerance and absf(c.g - colour.g) < tolerance \
-				and absf(c.b - colour.b) < tolerance:
-			return true
-	return false
+## The colour `Terrain.material` gives a vertex, from the vertex's own data: the
+## slope is the normal's, and the patch noise is the scene's at that (x, z).
+func _material_of(vertex: Vector3, normal: Vector3) -> Color:
+	var dx: float = -normal.x / normal.y
+	var dz: float = -normal.z / normal.y
+	var slope: float = minf(1.0, sqrt(dx * dx + dz * dz))
+	return Terrain.material(vertex.y, slope,
+		Terrain.vnoise2(vertex.x * 0.07 + 3.1, vertex.z * 0.07 + 9.7))
 
 ## The five surfaces' attribute arrays, for an incremental-vs-full comparison.
 func _snapshot(node: Node) -> Array:

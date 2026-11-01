@@ -26,6 +26,20 @@
 // `terrainHeight` is the single source of truth for the ground: the goat, the
 // herd, the grass, the eyes and both shadows all read it, so nothing floats or
 // sinks as the ground rises.
+//
+// A vertex's *normal and colour* are a function of where it is, not of which grid
+// holds it: both are measured over `TERRAIN_SLOPE_STEP` metres of the field, the
+// same stencil at every level of detail. That is what stops the three surfaces
+// from reading as three surfaces. Each grid's own cell is the obvious stencil and
+// the wrong one -- a 2 m central difference and an 8 m one describe the same hill
+// differently (the fourth noise octave is ~3.4 m, at the 2 m grid's own Nyquist
+// limit), and the difference lands exactly on the join between two of them. With
+// one stencil the three agree vertex for vertex wherever they share a world point,
+// so a seam is a change of triangle density and nothing else.
+//
+// The border that *was* visible from the air was not this one: it was the lit
+// program reaching the near grid and not the rings. See `terrainRebind` and the
+// call in `makeLighting`.
 
 const TERRAIN_CELL = 2;         // world units per grid cell (matches the grass)
 const TERRAIN_QUADS = 48;       // quads per side: a field of +/- 48 units
@@ -41,6 +55,17 @@ const TERRAIN_FAR_CELL = 8;
 const TERRAIN_FAR_HALF = 192;
 const TERRAIN_RING_QUADS = 48;
 const TERRAIN_RING_HOLE = 24;   // quads per side removed for the hole
+
+// The one stencil every surface's normal and material are measured over, in
+// metres. Four is the widest step that all three grids can agree on: the near
+// grid reads it from its own heights (2 cells), the mid ring from its own (1
+// cell), and the far ring -- whose cells are 8 m, so it has no sample at +/-4 --
+// from the field itself. One stencil, three ways to reach it, one answer.
+const TERRAIN_SLOPE_STEP = 4.0;
+const T_SLOPE_CELLS = TERRAIN_SLOPE_STEP / TERRAIN_CELL;        // 2
+const M_SLOPE_CELLS = TERRAIN_SLOPE_STEP / TERRAIN_MID_CELL;    // 1
+// 0 means "not a whole number of cells": that grid reads the field instead.
+const F_SLOPE_CELLS = 0;
 
 // Per-cell ground heights for the grass, keyed by cell. The field is
 // world-anchored, so a cell's height never changes; the cache keeps `drawTufts`
@@ -59,6 +84,9 @@ const T_GRASS_DK = [78, 126, 66];
 const T_HILL = [126, 146, 74];
 // The caps, which are what give a 30 m peak a readable height from the valley.
 const T_SNOW = [232, 238, 245];
+// Where `terrainMaterial` writes its answer: one scratch colour, so the
+// per-vertex path allocates nothing.
+const TERRAIN_MAT = [0, 0, 0];
 
 // The mesh binding the heightfield needs. Without it the ground falls back to
 // the flat slab and `terrainHeight` stays at zero, so placement maths still
@@ -171,13 +199,64 @@ function goatBaseY(g) {
 // hollows, sand the dry flat patches, and grass everything else. The two height
 // lines are *perturbed by that noise*, which is what keeps a contour from reading
 // as a hard tile edge across a 4 m or 8 m ring.
+//
+// Every line here is a *band*, not a threshold. Each material is mixed in over a
+// smoothstep ramp, in the order the old thresholds implied (snow over rock over
+// mud over sand over hill over grass). A hard threshold is what turns the 14 m
+// patchiness into 14 m *tiles*: the palette entry flips over one vertex, so the
+// ground reads as a field of flat colour patches -- and the same hillside read at
+// 2 m and at 8 m puts those borders in different places, which is what made a ring
+// of LOD visible as a change of pattern. A ramp survives a change of sample rate as
+// a slightly different shade instead of as a border, and it keeps the broad
+// material variety the palette was there for.
 function terrainMaterial(y, slope, m) {
-    if (y > 26 + (m - 0.5) * 3) return T_SNOW;
-    if (slope > 0.5 || y > 1.15 + (m - 0.5) * 0.6) return T_ROCK;
-    if (y < -0.55 && m < 0.6) return T_MUD;
-    if (slope < 0.09 && m > 0.6) return T_SAND;
-    if (y > 0.35 + (m - 0.5) * 0.3) return T_HILL;
-    return m < 0.5 ? T_GRASS : T_GRASS_DK;
+    // Grass to dark grass over the patchiness. Same hue at two lightnesses, so
+    // this one is the field's own broad variation rather than a material change.
+    const g = smoothstep(0.35, 0.65, m);
+    let r = T_GRASS[0] + (T_GRASS_DK[0] - T_GRASS[0]) * g;
+    let gr = T_GRASS[1] + (T_GRASS_DK[1] - T_GRASS[1]) * g;
+    let b = T_GRASS[2] + (T_GRASS_DK[2] - T_GRASS[2]) * g;
+
+    // Hill, on the height the patchiness perturbs.
+    const hillY = 0.35 + (m - 0.5) * 0.3;
+    let w = smoothstep(hillY - 0.3, hillY + 0.3, y);
+    r += (T_HILL[0] - r) * w;
+    gr += (T_HILL[1] - gr) * w;
+    b += (T_HILL[2] - b) * w;
+
+    // Sand on the flat, dry patches: the flatter the ground and the drier the
+    // patch noise, the more of it.
+    w = (1 - smoothstep(0.05, 0.14, slope)) * smoothstep(0.52, 0.68, m);
+    r += (T_SAND[0] - r) * w;
+    gr += (T_SAND[1] - gr) * w;
+    b += (T_SAND[2] - b) * w;
+
+    // Mud in the hollows.
+    w = (1 - smoothstep(-0.9, -0.35, y)) * (1 - smoothstep(0.5, 0.7, m));
+    r += (T_MUD[0] - r) * w;
+    gr += (T_MUD[1] - gr) * w;
+    b += (T_MUD[2] - b) * w;
+
+    // Rock on the scarps and above the hill line. The two routes to it are the
+    // old `slope > 0.5 || y > ...`, kept as a maximum so a steep *and* high vertex
+    // is still one rock vertex rather than two mixes.
+    const rockY = 1.15 + (m - 0.5) * 0.6;
+    w = Math.max(smoothstep(0.40, 0.62, slope), smoothstep(rockY - 0.45, rockY + 0.45, y));
+    r += (T_ROCK[0] - r) * w;
+    gr += (T_ROCK[1] - gr) * w;
+    b += (T_ROCK[2] - b) * w;
+
+    // Snow above the snow line, which the patchiness also moves.
+    const snowY = 26 + (m - 0.5) * 3;
+    w = smoothstep(snowY - 1.2, snowY + 1.2, y);
+    r += (T_SNOW[0] - r) * w;
+    gr += (T_SNOW[1] - gr) * w;
+    b += (T_SNOW[2] - b) * w;
+
+    TERRAIN_MAT[0] = r;
+    TERRAIN_MAT[1] = gr;
+    TERRAIN_MAT[2] = b;
+    return TERRAIN_MAT;
 }
 
 // A subtle tiling detail texture (neutral noise around 0.88), so the material
@@ -370,17 +449,18 @@ function terrainClampIndex(v) {
     return v;
 }
 
-// The vertices a pending patch touches, widened by one vertex on every side: the
-// normals come from central differences, so the vertices at the edge of the change
-// need their neighbours' heights to be current too.
+// The vertices a pending patch touches, widened on every side by the shared
+// stencil: the normals are central differences over `TERRAIN_SLOPE_STEP`, so a
+// vertex that far from the change has to be rewritten too.
 function terrainPatchRect(p) {
     const x0 = terrainAnchorX - T_HALF;
     const z0 = terrainAnchorZ - T_HALF;
+    const pad = T_SLOPE_CELLS;
     return {
-        i0: terrainClampIndex(Math.floor((p.minX - x0) / TERRAIN_CELL) - 1),
-        i1: terrainClampIndex(Math.ceil((p.maxX - x0) / TERRAIN_CELL) + 1),
-        j0: terrainClampIndex(Math.floor((p.minZ - z0) / TERRAIN_CELL) - 1),
-        j1: terrainClampIndex(Math.ceil((p.maxZ - z0) / TERRAIN_CELL) + 1),
+        i0: terrainClampIndex(Math.floor((p.minX - x0) / TERRAIN_CELL) - pad),
+        i1: terrainClampIndex(Math.ceil((p.maxX - x0) / TERRAIN_CELL) + pad),
+        j0: terrainClampIndex(Math.floor((p.minZ - z0) / TERRAIN_CELL) - pad),
+        j1: terrainClampIndex(Math.ceil((p.maxZ - z0) / TERRAIN_CELL) + pad),
     };
 }
 
@@ -452,50 +532,53 @@ function terrainStampCraters(rects) {
     }
 }
 
-// The step the *surface boundary* normals are measured over. It is fixed in
-// metres rather than taken from the grid, because a seam is two grids with
-// different cell sizes meeting: a 2 m central difference and a 4 m one describe
-// the same hill differently, and the difference lands exactly on the shared
-// edge -- a hard line where the material flips from grass to rock. Measuring
-// both sides over the same 2 m makes the two vertices agree exactly.
-const TERRAIN_EDGE_STEP = 2.0;
-
-// The slope at a world point, from the field itself. Used for the vertices on a
-// surface's perimeter, where the grid's own neighbours stop (the final row's
-// one-sided difference is half the true slope, which is a second way the two
-// sides of a seam disagree).
-function terrainEdgeSlope(wx, wz, out) {
-    const d = TERRAIN_EDGE_STEP;
-    out[0] = (terrainBaseHeight(wx + d, wz) - terrainBaseHeight(wx - d, wz)) / (2 * d);
-    out[1] = (terrainBaseHeight(wx, wz + d) - terrainBaseHeight(wx, wz - d)) / (2 * d);
+// The slope at a world point, from the field itself, over the shared
+// `TERRAIN_SLOPE_STEP`. Used wherever a grid has no sample on both sides of the
+// stencil: every vertex of the far ring (8 m cells, so no +/-4 m neighbour) and
+// the edge band of the two grids that do (the central difference would run off
+// the array). Those are exactly the vertices a seam shares with a coarser
+// surface, so both sides take the same route to the same number.
+function terrainSlopeAt(wx, wz) {
+    const d = TERRAIN_SLOPE_STEP;
+    TERRAIN_SLOPE[0] = (terrainBaseHeight(wx + d, wz) - terrainBaseHeight(wx - d, wz)) / (2 * d);
+    TERRAIN_SLOPE[1] = (terrainBaseHeight(wx, wz + d) - terrainBaseHeight(wx, wz - d)) / (2 * d);
 }
 
-// Scratch for `terrainEdgeSlope`, so the per-vertex path allocates nothing.
-const TERRAIN_EDGE_SLOPE = [0, 0];
+// Scratch for `terrainSlopeAt`, so the per-vertex path allocates nothing.
+const TERRAIN_SLOPE = [0, 0];
 
 // One vertex's position, normal, colour and texcoord. One function for the near
-// grid and the rings: they differ only in spacing and in the edge rule.
-function terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, k, i, j, ring) {
+// grid and the rings: they differ only in spacing and in how they reach the
+// shared stencil.
+//
+// `stepCells` is `TERRAIN_SLOPE_STEP` in this grid's cells (2 for the near grid, 1
+// for the mid ring, 0 for the far one, which reads the field). It is the whole of
+// the LOD difference: with the same stencil on every surface, a world point's
+// normal and colour do not depend on which grid drew it, so a seam is a change of
+// triangle density and nothing else.
+function terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, k, i, j, stepCells) {
     const wx = terrainAnchorX - half + i * cell;
     const wz = terrainAnchorZ - half + j * cell;
     const y = H[k];
     VERTS[k * 3] = wx;
     VERTS[k * 3 + 1] = y;
     VERTS[k * 3 + 2] = wz;
-    // Central differences on the grid give the normal, so the shading is smooth
-    // across cells. The perimeter is the exception: it samples the world over a
-    // fixed step, so it agrees with the coarser surface on the other side of a
-    // seam.
-    const edge = ring ? terrainRingEdge(i, j)
-        : (i === 0 || i === n - 1 || j === 0 || j === n - 1);
+    // Central differences over `TERRAIN_SLOPE_STEP`, so the shading is smooth
+    // across cells and the *scale* of it is the same on every surface. The edge
+    // band and the far ring read the field instead: a one-sided difference is a
+    // slope *near* the vertex rather than at it, and the vertex on the other side
+    // of a seam is measured centrally, so the two would disagree on the shared
+    // point -- which is exactly the border this stencil exists to remove.
+    const span = 2 * TERRAIN_SLOPE_STEP;
     let dx, dz;
-    if (edge) {
-        terrainEdgeSlope(wx, wz, TERRAIN_EDGE_SLOPE);
-        dx = TERRAIN_EDGE_SLOPE[0];
-        dz = TERRAIN_EDGE_SLOPE[1];
+    if (stepCells < 1 || i < stepCells || i > n - 1 - stepCells ||
+        j < stepCells || j > n - 1 - stepCells) {
+        terrainSlopeAt(wx, wz);
+        dx = TERRAIN_SLOPE[0];
+        dz = TERRAIN_SLOPE[1];
     } else {
-        dx = (H[k + (i < n - 1 ? 1 : 0)] - H[k - (i > 0 ? 1 : 0)]) / (2 * cell);
-        dz = (H[k + (j < n - 1 ? n : 0)] - H[k - (j > 0 ? n : 0)]) / (2 * cell);
+        dx = (H[k + stepCells] - H[k - stepCells]) / span;
+        dz = (H[k + stepCells * n] - H[k - stepCells * n]) / span;
     }
     const inv = 1 / Math.sqrt(dx * dx + dz * dz + 1);
     NORMS[k * 3] = -dx * inv;
@@ -512,13 +595,13 @@ function terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, k, i, j, r
 }
 
 // Write every vertex of `rects` for one grid.
-function terrainWriteRects(H, VERTS, NORMS, COLS, UVS, half, cell, n, rects, ring) {
+function terrainWriteRects(H, VERTS, NORMS, COLS, UVS, half, cell, n, rects, stepCells) {
     for (let r = 0; r < rects.length; r++) {
         const rect = rects[r];
         for (let j = rect.j0; j <= rect.j1; j++) {
             const row = j * n;
             for (let i = rect.i0; i <= rect.i1; i++) {
-                terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, row + i, i, j, ring);
+                terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, row + i, i, j, stepCells);
             }
         }
     }
@@ -616,44 +699,37 @@ function terrainDirtyRects(n, di, dj, full, pad) {
     return rects;
 }
 
-// One axis' edge bits: `outer` (the two ends), `rim` (the hole's lines) and
-// `hole` (inside the hole's span). `terrainRingEdge` is exactly these three per
-// axis.
-function terrainAxisBits(n, ring) {
-    const outer = new Array(n);
-    const rim = new Array(n);
-    const hole = new Array(n);
+// One axis' edge bits: 1 for a vertex whose shared stencil runs off that axis'
+// array, which is the band `stepCells` wide at each end. For the near grid that
+// is two vertices, for the mid ring one, and for the far ring none -- it reads
+// the field at every vertex, so its rule never changes and the pass below does
+// nothing there.
+function terrainAxisBits(n, stepCells) {
+    const near = new Array(n);
     for (let v = 0; v < n; v++) {
-        outer[v] = (v === 0 || v === n - 1) ? 1 : 0;
-        rim[v] = ring && (v === RING_HOLE0 || v === RING_HOLE1) ? 1 : 0;
-        hole[v] = ring && v >= RING_HOLE0 && v <= RING_HOLE1 ? 1 : 0;
+        near[v] = (v < stepCells || v > n - 1 - stepCells) ? 1 : 0;
     }
-    return [outer, rim, hole];
+    return near;
 }
 
 // Recompute the copied vertices whose *edge rule* changed under the shift. A world
-// point that was on the outer edge (or a hole rim) and is now interior was shaded
-// with the fixed-step edge slope, and one that moved onto an edge with the grid's
-// own difference. The edge rule is `outer(i) or outer(j) or (rim(i) and hole(j))
-// or (rim(j) and hole(i))`, so per-axis bits answer a whole row at a time.
-function terrainFixEdgeChanges(H, VERTS, NORMS, COLS, UVS, half, cell, n, di, dj, ring) {
-    const bits = terrainAxisBits(n, ring);
-    const outer = bits[0];
-    const rim = bits[1];
-    const hole = bits[2];
+// point that was in the edge band and is now interior was shaded one-sided, and
+// one that moved into the band with the central difference. The rule is
+// `near(i) or near(j)`, so one bit per axis answers a whole row at a time.
+function terrainFixEdgeChanges(H, VERTS, NORMS, COLS, UVS, half, cell, n, di, dj, stepCells) {
+    if (stepCells < 1) return;
+    const near = terrainAxisBits(n, stepCells);
     for (let j = 0; j < n; j++) {
         const sj = j + dj;
         if (sj < 0 || sj >= n) continue;
-        const njO = outer[j], njR = rim[j], njH = hole[j];
-        const sjO = outer[sj], sjR = rim[sj], sjH = hole[sj];
+        const nj = near[j];
+        const sjn = near[sj];
         const row = j * n;
         for (let i = 0; i < n; i++) {
             const si = i + di;
             if (si < 0 || si >= n) continue;
-            const now = outer[i] | njO | (rim[i] & njH) | (njR & hole[i]);
-            const was = outer[si] | sjO | (rim[si] & sjH) | (sjR & hole[si]);
-            if (now !== was) {
-                terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, row + i, i, j, ring);
+            if ((near[i] | nj) !== (near[si] | sjn)) {
+                terrainGridVertex(H, VERTS, NORMS, COLS, UVS, half, cell, n, row + i, i, j, stepCells);
             }
         }
     }
@@ -692,7 +768,8 @@ function terrainApplyNear(attrRects, craterRects, waterRects) {
 }
 
 // A crater patch or a collapse: the heights are sampled again for the rectangles
-// (which `terrainPatchRect` has already widened by a cell), then the usual tail.
+// (which `terrainPatchRect` has already widened by the shared stencil), then the
+// usual tail.
 function terrainBuildRects(rects) {
     if (!terrainIdxBuilt) { terrainIndices(); terrainIdxBuilt = true; }
     for (let r = 0; r < rects.length; r++) {
@@ -734,10 +811,10 @@ function terrainStep(prevX, prevZ, forceFull) {
     terrainShiftAttr(F_UVS, RING_N, 2, fdi, fdj);
     const farRects = terrainDirtyRects(RING_N, fdi, fdj, full, 1);
     terrainWriteRects(F_H, F_VERTS, F_NORMS, F_COLS, F_UVS, TERRAIN_FAR_HALF,
-        TERRAIN_FAR_CELL, RING_N, farRects, true);
+        TERRAIN_FAR_CELL, RING_N, farRects, F_SLOPE_CELLS);
     if (!full) {
         terrainFixEdgeChanges(F_H, F_VERTS, F_NORMS, F_COLS, F_UVS, TERRAIN_FAR_HALF,
-            TERRAIN_FAR_CELL, RING_N, fdi, fdj, true);
+            TERRAIN_FAR_CELL, RING_N, fdi, fdj, F_SLOPE_CELLS);
     }
     terrainFar = terrainRingUpload(F_VERTS, F_NORMS, F_COLS, F_UVS, terrainFar);
 
@@ -749,10 +826,10 @@ function terrainStep(prevX, prevZ, forceFull) {
     terrainShiftAttr(M_UVS, RING_N, 2, mdi, mdj);
     const midRects = terrainDirtyRects(RING_N, mdi, mdj, full, 1);
     terrainWriteRects(M_H, M_VERTS, M_NORMS, M_COLS, M_UVS, TERRAIN_MID_HALF,
-        TERRAIN_MID_CELL, RING_N, midRects, true);
+        TERRAIN_MID_CELL, RING_N, midRects, M_SLOPE_CELLS);
     if (!full) {
         terrainFixEdgeChanges(M_H, M_VERTS, M_NORMS, M_COLS, M_UVS, TERRAIN_MID_HALF,
-            TERRAIN_MID_CELL, RING_N, mdi, mdj, true);
+            TERRAIN_MID_CELL, RING_N, mdi, mdj, M_SLOPE_CELLS);
     }
     terrainMidSeam = terrainSeamBuild(M_H, M_NORMS, M_COLS, M_UVS,
         TERRAIN_MID_HALF, TERRAIN_MID_CELL, F_H, terrainMidSeam);
@@ -770,7 +847,7 @@ const attrRects = terrainDirtyRects(T_N, di, dj, full, 1);
 	const craterRects = terrainDirtyRects(T_N, di, dj, full, 0);
 	if (!full) {
 		terrainFixEdgeChanges(T_H, T_VERTS, T_NORMS, T_COLS, T_UVS, T_HALF, TERRAIN_CELL,
-			T_N, di, dj, false);
+			T_N, di, dj, T_SLOPE_CELLS);
 	}
 	const fullRect = [{ i0: 0, i1: T_N - 1, j0: 0, j1: T_N - 1 }];
     terrainApplyNear(attrRects, craterRects, fullRect);
@@ -819,17 +896,6 @@ function terrainRingIndices() {
             RING_IDX[t++] = b; RING_IDX[t++] = c; RING_IDX[t++] = d;
         }
     }
-}
-
-// Whether a ring vertex sits on an edge that meets another surface: the outer
-// square, or one of the hole's rims. A vertex in the hole's *column* but outside
-// its rows is ordinary ground and keeps the grid's own difference.
-function terrainRingEdge(i, j) {
-    if (i === 0 || i === RING_N - 1 || j === 0 || j === RING_N - 1) return true;
-    const inHoleI = i >= RING_HOLE0 && i <= RING_HOLE1;
-    const inHoleJ = j >= RING_HOLE0 && j <= RING_HOLE1;
-    return ((i === RING_HOLE0 || i === RING_HOLE1) && inHoleJ) ||
-        ((j === RING_HOLE0 || j === RING_HOLE1) && inHoleI);
 }
 
 // Hand the engine one ring's arrays. The heights and attributes are the caller's
@@ -1018,6 +1084,19 @@ function drawTerrain(tint) {
         rl.setShaderValue(litShader, terrainFadeLoc, 0, rl.SHADER_UNIFORM_FLOAT);
         terrainFadeOn = false;
     }
+}
+
+// Re-apply the material bindings every ground mesh needs -- the lit program and
+// the shadow map, both of which `terrainBind` owns. `makeLighting` runs two load
+// steps after `makeTerrain`, so the meshes it built could not be bound when they
+// were made; this is the call that finishes the job, over all five, now that the
+// programs and the shadow map exist.
+function terrainRebind() {
+    if (terrainMesh >= 0) terrainBind(terrainMesh);
+    if (terrainMid >= 0) terrainBind(terrainMid);
+    if (terrainFar >= 0) terrainBind(terrainFar);
+    if (terrainNearSeam >= 0) terrainBind(terrainNearSeam);
+    if (terrainMidSeam >= 0) terrainBind(terrainMidSeam);
 }
 
 // Point the terrain material at the lit program, or back at raylib's default

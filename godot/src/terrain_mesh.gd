@@ -27,9 +27,9 @@
 #
 #   * the **normals come from central differences on the grid**, not from
 #     `SurfaceTool.generate_normals()` -- so the shading is smooth across cells.
-#     The **perimeter is the exception**: it measures the field over a fixed
-#     2 m step (`EDGE_STEP`) so the finer and coarser sides of a seam agree at
-#     the shared vertex instead of shading it differently and drawing a line;
+#     Every surface measures the same field over the same fixed step
+#     (`SLOPE_STEP`), so the finer and coarser sides of a seam agree at the shared
+#     vertex instead of shading it differently and drawing a line;
 #   * the **material is a per-vertex colour** from `Terrain.material`, so adjacent
 #     cells blend and a material boundary reads as a gradient rather than a tile;
 #   * the **UVs are world-space** (`wx * UV_SCALE`, 0.12), so the detail texture
@@ -74,11 +74,17 @@ const RING_HOLE1 := 36
 ## inside them. That ratio is what `_build_seam` interpolates over.
 const HOLE_N := RING_HOLE1 - RING_HOLE0 + 1
 const HOLE_PERIM := 4 * HOLE_N - 4
-## The step a seam vertex's normal is measured over, in metres. Fixed rather than
-## the grid's, so a 2 m boundary and the 4 m boundary meeting it measure the same
-## hill the same way -- the alternative is a hard shading and material line exactly
-## on every seam.
-const EDGE_STEP := 2.0
+## The step a vertex's normal and material are measured over, in metres. One
+## stencil for every surface, because a 2 m central difference and an 8 m one
+## describe the same hill differently and the difference lands exactly on a seam.
+## `world.js` `TERRAIN_SLOPE_STEP`; the three grids reach it in their own cells
+## (`SLOPE_CELLS` below), and the far ring, whose cells are 8 m, samples the field.
+const SLOPE_STEP := 4.0
+## `SLOPE_STEP` in each grid's cells: near, mid, far. 0 means "not a whole number
+## of cells", which is the far ring's case -- it has no sample 4 m away.
+const NEAR_SLOPE_CELLS := 2
+const MID_SLOPE_CELLS := 1
+const FAR_SLOPE_CELLS := 0
 
 ## The ground as the mirror draws it (M20e): the same mesh and the same look, seen from under
 ## the terrain. See `mirror_material`.
@@ -226,7 +232,7 @@ func build(anchor_x: float, anchor_z: float) -> void:
 	_heights = _shift_heights(_heights, x0, z0, Terrain.CELL, N, di, dj, full)
 	var near_rects: Array = _dirty_rects(N, di, dj, full)
 	var near := _write_grid(x0, z0, Terrain.CELL, N, _heights, di, dj,
-		_verts, _norms, _cols, _uvs, near_rects, false)
+		_verts, _norms, _cols, _uvs, near_rects, NEAR_SLOPE_CELLS)
 	_verts = near[0]
 	_norms = near[1]
 	_cols = near[2]
@@ -278,7 +284,7 @@ func build(anchor_x: float, anchor_z: float) -> void:
 		FAR_CELL, RING_N, fdi, fdj, full)
 	var far_rects: Array = _dirty_rects(RING_N, fdi, fdj, full)
 	var far := _write_grid(anchor_x - FAR_HALF, anchor_z - FAR_HALF, FAR_CELL, RING_N,
-		_far_heights, fdi, fdj, _far_verts, _far_norms, _far_cols, _far_uvs, far_rects, true)
+		_far_heights, fdi, fdj, _far_verts, _far_norms, _far_cols, _far_uvs, far_rects, FAR_SLOPE_CELLS)
 	_far_verts = far[0]
 	_far_norms = far[1]
 	_far_cols = far[2]
@@ -288,7 +294,7 @@ func build(anchor_x: float, anchor_z: float) -> void:
 		MID_CELL, RING_N, mdi, mdj, full)
 	var mid_rects: Array = _dirty_rects(RING_N, mdi, mdj, full)
 	var mid := _write_grid(anchor_x - MID_HALF, anchor_z - MID_HALF, MID_CELL, RING_N,
-		_mid_heights, mdi, mdj, _mid_verts, _mid_norms, _mid_cols, _mid_uvs, mid_rects, true)
+		_mid_heights, mdi, mdj, _mid_verts, _mid_norms, _mid_cols, _mid_uvs, mid_rects, MID_SLOPE_CELLS)
 	_mid_verts = mid[0]
 	_mid_norms = mid[1]
 	_mid_cols = mid[2]
@@ -477,18 +483,19 @@ func _shift_color(src: PackedColorArray, n: int, di: int, dj: int) -> PackedColo
 	return out
 
 ## Rewrite one grid's position, normal, colour and texcoord over the dirty blocks.
-## `ring` selects the hole-rim edge rule; the near grid's perimeter is the outer
-## square. Returns the four arrays in that order.
+## `step_cells` is `SLOPE_STEP` in this grid's cells (`NEAR_SLOPE_CELLS`,
+## `MID_SLOPE_CELLS`, `FAR_SLOPE_CELLS`), which is the whole of the LOD difference
+## in the attributes. Returns the four arrays in that order.
 ##
-## A copied vertex's attributes are only valid if it was shaded the same way
-## before and after the shift: a world point that was on the outer edge (or on a
-## hole rim) and is now interior was lit with the fixed-step edge slope, and one
-## that moved onto an edge with the grid's own difference. Those are recomputed
-## too -- they are thin lines, and a scan for them costs nothing beside the field.
+## A copied vertex's attributes depend on where it is, so they survive a shift --
+## except where its *edge rule* changed: a world point that was in the edge band and
+## is now interior was shaded over the field, and one that moved into the band with
+## the grid's own difference. Those are recomputed too -- they are thin bands, and a
+## scan for them costs nothing beside the field.
 func _write_grid(x0: float, z0: float, cell: float, n: int, grid: PackedFloat64Array,
 		di: int, dj: int, prev_verts: PackedVector3Array, prev_norms: PackedVector3Array,
 		prev_cols: PackedColorArray, prev_uvs: PackedVector2Array,
-		rects: Array, ring: bool) -> Array:
+		rects: Array, step_cells: int) -> Array:
 	var verts := _shift_vec3(prev_verts, n, di, dj)
 	var norms := _shift_vec3(prev_norms, n, di, dj)
 	var cols := _shift_color(prev_cols, n, di, dj)
@@ -499,58 +506,38 @@ func _write_grid(x0: float, z0: float, cell: float, n: int, grid: PackedFloat64A
 		var j0: int = rect[2]
 		var j1: int = rect[3]
 		for j in range(j0, j1 + 1):
-			_write_row(x0, z0, cell, n, grid, i0, i1, j, verts, norms, cols, uvs, ring)
-	if di != 0 or dj != 0:
-		# A copied vertex's attributes are only valid if it was shaded the same way
-		# before and after the shift: a world point that was on the outer edge (or a
-		# hole rim) and is now interior was lit with the fixed-step edge slope, and
-		# one that moved onto an edge with the grid's own difference. The edge rule
-		# is `outer(i) or outer(j) or (rim(i) and holeRange(j)) or (rim(j) and
-		# holeRange(i))`, so each axis' three bits answer it for a whole row at a
-		# time and the scan is arithmetic rather than a call per vertex.
-		var bits := _axis_bits(n, ring)
-		var oi: PackedByteArray = bits[0]
-		var ri: PackedByteArray = bits[1]
-		var hi: PackedByteArray = bits[2]
+			_write_row(x0, z0, cell, n, grid, i0, i1, j, verts, norms, cols, uvs, step_cells)
+	if step_cells > 0 and (di != 0 or dj != 0):
+		# The edge rule is `near(i) or near(j)`, so one bit per axis answers it for a
+		# whole row at a time and the scan is arithmetic rather than a call per vertex.
+		var near := _near_bits(n, step_cells)
 		for j in n:
 			var sj: int = j + dj
 			if sj < 0 or sj >= n:
 				continue
-			var nj_o: int = oi[j]
-			var nj_r: int = ri[j]
-			var nj_h: int = hi[j]
-			var sj_o: int = oi[sj]
-			var sj_r: int = ri[sj]
-			var sj_h: int = hi[sj]
+			var nj: int = near[j]
+			var sjn: int = near[sj]
 			for i in n:
 				var si: int = i + di
 				if si < 0 or si >= n:
 					continue
-				var now: int = oi[i] | nj_o | (ri[i] & nj_h) | (nj_r & hi[i])
-				var was: int = oi[si] | sj_o | (ri[si] & sj_h) | (sj_r & hi[si])
-				if now != was:
-					_write_row(x0, z0, cell, n, grid, i, i, j, verts, norms, cols, uvs, ring)
+				if (near[i] | nj) != (near[si] | sjn):
+					_write_row(x0, z0, cell, n, grid, i, i, j, verts, norms, cols, uvs, step_cells)
 	return [verts, norms, cols, uvs]
 
-## One axis' edge bits: `outer` (the two ends), `rim` (the hole's lines) and
-## `hole` (inside the hole's span). `_ring_edge` is exactly these three per axis.
-func _axis_bits(n: int, ring: bool) -> Array:
-	var outer := PackedByteArray()
-	var rim := PackedByteArray()
-	var hole := PackedByteArray()
-	outer.resize(n)
-	rim.resize(n)
-	hole.resize(n)
+## One axis' edge bits: 1 for a vertex whose stencil runs off that axis' array,
+## which is the band `step_cells` wide at each end. The far ring's `step_cells` is 0
+## -- it samples the field everywhere, so its rule never changes.
+func _near_bits(n: int, step_cells: int) -> PackedByteArray:
+	var near := PackedByteArray()
+	near.resize(n)
 	for v in n:
-		outer[v] = 1 if (v == 0 or v == n - 1) else 0
-		if ring:
-			rim[v] = 1 if (v == RING_HOLE0 or v == RING_HOLE1) else 0
-			hole[v] = 1 if (v >= RING_HOLE0 and v <= RING_HOLE1) else 0
-	return [outer, rim, hole]
+		near[v] = 1 if (v < step_cells or v > n - 1 - step_cells) else 0
+	return near
 
 func _write_row(x0: float, z0: float, cell: float, n: int, grid: PackedFloat64Array,
 		i0: int, i1: int, j: int, verts: PackedVector3Array, norms: PackedVector3Array,
-		cols: PackedColorArray, uvs: PackedVector2Array, ring: bool) -> void:
+		cols: PackedColorArray, uvs: PackedVector2Array, step_cells: int) -> void:
 	var wz: float = z0 + j * cell
 	var row: int = j * n
 	for i in range(i0, i1 + 1):
@@ -559,27 +546,22 @@ func _write_row(x0: float, z0: float, cell: float, n: int, grid: PackedFloat64Ar
 		var y: float = float(grid[k])
 		verts[k] = Vector3(wx, y, wz)
 
-		# Central differences on the grid, the scene's own edge handling
-		# included: at the last column the forward sample is the cell itself
-		# rather than a reflected one, which halves the slope there instead of
-		# inventing a neighbour. The perimeter does not use that handling: it
-		# samples the field over `EDGE_STEP`, so it agrees with the coarser
-		# surface on the other side of the seam.
-		var edge: bool = _ring_edge(i, j) if ring \
-			else (i == 0 or i == n - 1 or j == 0 or j == n - 1)
+		# Central differences over `SLOPE_STEP`, the same stencil on every surface,
+		# so a shared vertex is shaded the same on both sides of a seam. The edge
+		# band -- and the far ring, whose cells are 8 m -- measures the field
+		# instead, because a one-sided difference is a slope *near* the vertex
+		# rather than at it, and the vertex on the other side is measured centrally.
+		var span: float = 2.0 * SLOPE_STEP
 		var dx: float = 0.0
 		var dz: float = 0.0
-		if edge:
+		if step_cells < 1 or i < step_cells or i > n - 1 - step_cells \
+				or j < step_cells or j > n - 1 - step_cells:
 			var slope2 := _edge_slope(wx, wz)
 			dx = slope2.x
 			dz = slope2.y
 		else:
-			var fwd_i: int = 1 if i < n - 1 else 0
-			var back_i: int = 1 if i > 0 else 0
-			var fwd_j: int = n if j < n - 1 else 0
-			var back_j: int = n if j > 0 else 0
-			dx = (grid[k + fwd_i] - grid[k - back_i]) / (2.0 * cell)
-			dz = (grid[k + fwd_j] - grid[k - back_j]) / (2.0 * cell)
+			dx = (grid[k + step_cells] - grid[k - step_cells]) / span
+			dz = (grid[k + step_cells * n] - grid[k - step_cells * n]) / span
 		var inv: float = 1.0 / sqrt(dx * dx + dz * dz + 1.0)
 		norms[k] = Vector3(-dx * inv, inv, -dz * inv)
 
@@ -588,35 +570,25 @@ func _write_row(x0: float, z0: float, cell: float, n: int, grid: PackedFloat64Ar
 		cols[k] = Terrain.material(y, slope, patch)
 		uvs[k] = Vector2(wx * UV_SCALE, wz * UV_SCALE)
 
-## The slope at a world point over the fixed `EDGE_STEP`, so a surface's
-## perimeter shades the way the field does rather than the way its own cell size
-## happens to sample it. `world.js` `terrainEdgeSlope`. The sampling is Rust when
-## the extension is present: a perimeter vertex asks for four field values and a
-## rebuild asks for hundreds of them.
+## The slope at a world point over the shared `SLOPE_STEP`. Used wherever a grid has
+## no sample on both sides of the stencil: every vertex of the far ring, and the edge
+## band of the two grids that do. Those are exactly the vertices a seam shares with a
+## coarser surface, so both sides take the same route to the same number.
+## `world.js` `terrainSlopeAt`. The sampling is Rust when the extension is present: an
+## edge vertex asks for four field values and a rebuild asks for hundreds of them.
 func _edge_slope(x: float, z: float) -> Vector2:
 	var field: Object = _rust_fill()
 	if field != null:
-		return field.call("slope", x, z, EDGE_STEP,
+		return field.call("slope", x, z, SLOPE_STEP,
 			Terrain.RELIEF, Terrain.FLAT, Terrain.RAMP,
 			Terrain.MOUNTAIN, Terrain.MOUNTAIN_FLAT, Terrain.MOUNTAIN_RAMP)
 	return _edge_slope_gd(x, z)
 
 func _edge_slope_gd(x: float, z: float) -> Vector2:
-	var d: float = EDGE_STEP
+	var d: float = SLOPE_STEP
 	var dx: float = (Terrain.base_height(x + d, z) - Terrain.base_height(x - d, z)) / (2.0 * d)
 	var dz: float = (Terrain.base_height(x, z + d) - Terrain.base_height(x, z - d)) / (2.0 * d)
 	return Vector2(dx, dz)
-
-## Whether a ring vertex sits on an edge that meets another surface: the outer
-## square, or one of the hole's rims. A vertex in the hole's column but outside
-## its rows is ordinary ground and keeps the grid's own difference.
-func _ring_edge(i: int, j: int) -> bool:
-	if i == 0 or i == RING_N - 1 or j == 0 or j == RING_N - 1:
-		return true
-	var in_hole_i: bool = i >= RING_HOLE0 and i <= RING_HOLE1
-	var in_hole_j: bool = j >= RING_HOLE0 and j <= RING_HOLE1
-	return ((i == RING_HOLE0 or i == RING_HOLE1) and in_hole_j) \
-		or ((j == RING_HOLE0 or j == RING_HOLE1) and in_hole_i)
 
 ## The hole's perimeter in the same order as a surface's own perimeter, but
 ## `HOLE_N` square. Built on the first seam and kept: it is a property of the

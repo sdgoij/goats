@@ -126,24 +126,59 @@ static func height_at(x: float, z: float) -> float:
 	return y
 
 ## Ground material from the height, the slope (0 flat .. 1 steep) and the
-## low-frequency patchiness noise. `world.js` `terrainMaterial`, verbatim; the
-## colours are the scene's sRGB bytes, converted to linear for Godot's pipeline by
-## `_rgb` (`PORT.md` section 9).
+## low-frequency patchiness noise. `world.js` `terrainMaterial`, and the structure
+## matters: every line is a *band*, not a threshold, mixed in the order the old
+## thresholds implied (snow over rock over mud over sand over hill over grass). A
+## hard palette flip is what turns the 14 m patchiness into 14 m tiles, and what two
+## sample rates put in different places.
+##
+## The blend is in the scene's sRGB bytes and only the *result* is converted to
+## linear (`_rgb`): converting first would mix in a different space than the
+## reference does (`PORT.md` section 9).
 static func material(y: float, slope: float, m: float) -> Color:
-	if y > 26.0 + (m - 0.5) * 3.0:
-		return _rgb(232, 238, 245)   # snow: the caps above the cloud deck
-	if slope > 0.5 or y > 1.15 + (m - 0.5) * 0.6:
-		return _rgb(128, 122, 112)   # rock: peaks and scarps
-	if y < -0.55 and m < 0.6:
-		return _rgb(104, 84, 62)     # mud: the hollows
-	if slope < 0.09 and m > 0.6:
-		return _rgb(198, 178, 130)   # sand: dry flat patches
-	if y > 0.35 + (m - 0.5) * 0.3:
-		return _rgb(126, 146, 74)    # hill
-	return _rgb(98, 150, 84) if m < 0.5 else _rgb(78, 126, 66)
+	# Grass to dark grass over the patchiness: the same hue at two lightnesses.
+	var g: float = smoothstep(0.35, 0.65, m)
+	var r: float = lerpf(98.0, 78.0, g)
+	var gr: float = lerpf(150.0, 126.0, g)
+	var b: float = lerpf(84.0, 66.0, g)
+
+	var hill_y: float = 0.35 + (m - 0.5) * 0.3
+	var w: float = smoothstep(hill_y - 0.3, hill_y + 0.3, y)
+	r = lerpf(r, 126.0, w)
+	gr = lerpf(gr, 146.0, w)
+	b = lerpf(b, 74.0, w)
+
+	# Sand on the flat, dry patches.
+	w = (1.0 - smoothstep(0.05, 0.14, slope)) * smoothstep(0.52, 0.68, m)
+	r = lerpf(r, 198.0, w)
+	gr = lerpf(gr, 178.0, w)
+	b = lerpf(b, 130.0, w)
+
+	# Mud in the hollows.
+	w = (1.0 - smoothstep(-0.9, -0.35, y)) * (1.0 - smoothstep(0.5, 0.7, m))
+	r = lerpf(r, 104.0, w)
+	gr = lerpf(gr, 84.0, w)
+	b = lerpf(b, 62.0, w)
+
+	# Rock on the scarps and above the hill line: one band, two routes in.
+	var rock_y: float = 1.15 + (m - 0.5) * 0.6
+	w = maxf(smoothstep(0.40, 0.62, slope), smoothstep(rock_y - 0.45, rock_y + 0.45, y))
+	r = lerpf(r, 128.0, w)
+	gr = lerpf(gr, 122.0, w)
+	b = lerpf(b, 112.0, w)
+
+	# Snow above the snow line, which the patchiness also moves.
+	var snow_y: float = 26.0 + (m - 0.5) * 3.0
+	w = smoothstep(snow_y - 1.2, snow_y + 1.2, y)
+	r = lerpf(r, 232.0, w)
+	gr = lerpf(gr, 238.0, w)
+	b = lerpf(b, 245.0, w)
+
+	return _rgb(r, gr, b)
 
 ## The scene's palette is sRGB bytes and Godot's pipeline is linear. `Color8` does
 ## not convert, so the conversion is explicit here -- this is the ground's half of
-## the display-space/linear split (`PORT.md` section 9).
-static func _rgb(r: int, g: int, b: int) -> Color:
-	return Color8(r, g, b).srgb_to_linear()
+## the display-space/linear split (`PORT.md` section 9). The blend happens in sRGB
+## bytes, so this takes the blended floats rather than integers.
+static func _rgb(r: float, g: float, b: float) -> Color:
+	return Color(r / 255.0, g / 255.0, b / 255.0).srgb_to_linear()

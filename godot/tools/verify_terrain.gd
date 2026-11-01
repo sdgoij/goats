@@ -61,6 +61,26 @@ function terrainBaseHeight(x, z) {
     tm = tm * tm * (3 - 2 * tm);
     return (terrainShape(x, z) - 0.5) * 2 * 2.1 * t + terrainRidge(x, z) * 38 * tm;
 }
+// The material, as the scene blends it: every line is a band, mixed in the order
+// the old thresholds implied, and the answer is sRGB bytes.
+function terrainMaterial(y, slope, m) {
+    const g = smoothstep(0.35, 0.65, m);
+    let r = 98 + (78 - 98) * g, gr = 150 + (126 - 150) * g, b = 84 + (66 - 84) * g;
+    const hillY = 0.35 + (m - 0.5) * 0.3;
+    let w = smoothstep(hillY - 0.3, hillY + 0.3, y);
+    r += (126 - r) * w; gr += (146 - gr) * w; b += (74 - b) * w;
+    w = (1 - smoothstep(0.05, 0.14, slope)) * smoothstep(0.52, 0.68, m);
+    r += (198 - r) * w; gr += (178 - gr) * w; b += (130 - b) * w;
+    w = (1 - smoothstep(-0.9, -0.35, y)) * (1 - smoothstep(0.5, 0.7, m));
+    r += (104 - r) * w; gr += (84 - gr) * w; b += (62 - b) * w;
+    const rockY = 1.15 + (m - 0.5) * 0.6;
+    w = Math.max(smoothstep(0.40, 0.62, slope), smoothstep(rockY - 0.45, rockY + 0.45, y));
+    r += (128 - r) * w; gr += (122 - gr) * w; b += (112 - b) * w;
+    const snowY = 26 + (m - 0.5) * 3;
+    w = smoothstep(snowY - 1.2, snowY + 1.2, y);
+    r += (232 - r) * w; gr += (238 - gr) * w; b += (245 - b) * w;
+    return [r, gr, b];
+}
 """
 
 ## Points covering the three regimes: inside the spawn bowl (height 0), through
@@ -97,6 +117,21 @@ const SAMPLES := [
 ## divergence cannot accumulate.
 const TOLERANCE := 1e-8
 
+## Height, slope and patch noise for a material sample. The points sit inside each
+## band and on both sides of every boundary, so a band that is one `smoothstep`
+## wrong shows up as a colour rather than as a plausible-looking one.
+const MAT_SAMPLES := [
+	[0.0, 0.0, 0.2], [0.0, 0.0, 0.8], [0.45, 0.12, 0.62],
+	[0.6, 0.1, 0.5], [0.9, 0.2, 0.4], [-0.2, 0.02, 0.9],
+	[0.1, 0.05, 0.7], [-1.2, 0.1, 0.4], [-0.8, 0.2, 0.55],
+	[0.5, 0.7, 0.5], [2.0, 0.55, 0.3], [1.6, 0.2, 0.5],
+	[27.0, 0.2, 0.5], [30.0, 0.3, 0.9], [-0.5, 0.08, 0.3],
+]
+
+## A byte of sRGB is 1/255 and both sides compute the same float blend, so this is
+## the room a float round trip through linear and back needs, and no more.
+const MATERIAL_TOLERANCE := 1e-5
+
 func _initialize() -> void:
 	var failures: Array[String] = []
 
@@ -109,7 +144,10 @@ func _initialize() -> void:
 
 	# The oracle: the scene's own functions, run by the scene's own engine.
 	var source: String = JS + "\nconst S = " + JSON.stringify(SAMPLES) + ";\n" \
-		+ "for (const p of S) console.log('T ' + p[0] + ' ' + p[1] + ' ' + terrainBaseHeight(p[0], p[1]));\n"
+		+ "for (const p of S) console.log('T ' + p[0] + ' ' + p[1] + ' ' + terrainBaseHeight(p[0], p[1]));\n" \
+		+ "const M = " + JSON.stringify(MAT_SAMPLES) + ";\n" \
+		+ "for (const p of M) { const c = terrainMaterial(p[0], p[1], p[2]); " \
+		+ "console.log('M ' + p[0] + ' ' + p[1] + ' ' + p[2] + ' ' + c[0] + ' ' + c[1] + ' ' + c[2]); }\n"
 	var evaluated: String = host.call("eval_js", source)
 	if evaluated != "ok":
 		print("FAIL: the JavaScript oracle did not run: ", evaluated)
@@ -145,12 +183,49 @@ func _initialize() -> void:
 	if worst == 0.0:
 		print("the two implementations agree bit for bit")
 
+	# The material: a blend of the palette, so it is compared channel by channel
+	# rather than as a membership test. `Terrain.material` answers in linear and
+	# the scene's bytes are sRGB, so the round trip is the comparison.
+	var worst_mat := 0.0
+	var worst_mat_at := ""
+	var mat_compared := 0
+	for line in answers:
+		if not line.begins_with("log M "):
+			continue
+		var mp: PackedStringArray = line.split(" ")
+		if mp.size() != 8:
+			continue
+		var my := float(mp[2])
+		var mslope := float(mp[3])
+		var mm := float(mp[4])
+		var got: Color = Terrain.material(my, mslope, mm).linear_to_srgb()
+		mat_compared += 1
+		for c in 3:
+			var expect := float(mp[5 + c]) / 255.0
+			var have: float = [got.r, got.g, got.b][c]
+			var difference := absf(have - expect)
+			if difference > worst_mat:
+				worst_mat = difference
+				worst_mat_at = "(y %.2f, slope %.2f, m %.2f) channel %d: js %.6f, gd %.6f" \
+					% [my, mslope, mm, c, expect, have]
+
+	print("compared ", mat_compared, " of ", MAT_SAMPLES.size(), " material sample(s)")
+	print("largest material disagreement: %.9f (tolerance %.9f)" \
+		% [worst_mat, MATERIAL_TOLERANCE])
+	if worst_mat_at != "":
+		print("  worst at ", worst_mat_at)
+
 	host.free()
 
 	if compared != SAMPLES.size():
 		failures.append("the oracle answered %d of %d points" % [compared, SAMPLES.size()])
 	if worst > TOLERANCE:
 		failures.append("the port disagrees with the scene by %f (limit %f)" % [worst, TOLERANCE])
+	if mat_compared != MAT_SAMPLES.size():
+		failures.append("the oracle answered %d of %d material samples" % [mat_compared, MAT_SAMPLES.size()])
+	if worst_mat > MATERIAL_TOLERANCE:
+		failures.append("the port's material disagrees with the scene by %f (limit %f)" \
+			% [worst_mat, MATERIAL_TOLERANCE])
 
 	if failures.is_empty():
 		print("OK: the GDScript heightfield is the scene's heightfield")

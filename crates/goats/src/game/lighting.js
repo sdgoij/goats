@@ -287,6 +287,29 @@ const LIT_FS = [
     "    }",
     "    return sum / 49.0;",
     "}",
+    // The ground's *far* grain, computed rather than sampled. The 8.3 m detail
+    // texture has no mip chain, so beyond ~55 m it is faded to its own mean (see
+    // below) -- which leaves a mountainside at distance a flat sheet of colour, the
+    // clay look. A procedural value noise at two much coarser scales (54 m and 23 m)
+    // has no minification problem worth a mip chain: from 300 m up one period is
+    // still dozens of pixels across, and it is faded in over the band the fine grain
+    // fades out, so the two cross over instead of one simply stopping.
+    // A sin-free hash on purpose: `fract(sin(dot(...)))` is the usual one, but it is
+    // two transcendentals a corner for every ground fragment the screen covers, and
+    // it bands differently on different drivers -- which is a poor trade for four
+    // clients sharing one scene.
+    "float grainHash(vec2 p) {",
+    "    vec3 q = fract(vec3(p.xyx) * 0.1031);",
+    "    q += dot(q, q.yzx + 33.33);",
+    "    return fract((q.x + q.y) * q.z);",
+    "}",
+    "float grainNoise(vec2 p) {",
+    "    vec2 i = floor(p);",
+    "    vec2 f = fract(p);",
+    "    vec2 u = f * f * (3.0 - 2.0 * f);",
+    "    return mix(mix(grainHash(i), grainHash(i + vec2(1.0, 0.0)), u.x),",
+    "        mix(grainHash(i + vec2(0.0, 1.0)), grainHash(i + vec2(1.0, 1.0)), u.x), u.y);",
+    "}",
     "void main() {",
     "    if (mirrorClip.x > 0.5 && fragWorldPos.y < mirrorClip.y) discard;",
     // The detail texture is the ground's only albedo grain, and this host has no
@@ -296,8 +319,19 @@ const LIT_FS = [
     // noise; the per-vertex material colours stay at every range.
     "    vec4 texel = texture(texture0, fragTexCoord);",
     "    if (detailFade > 0.001) {",
+    "        float fadeDist = distance(camPos, fragWorldPos);",
     "        texel.rgb = mix(vec3(0.88), texel.rgb,",
-    "            1.0 - smoothstep(10.0, 55.0, distance(camPos, fragWorldPos)));",
+    "            1.0 - smoothstep(10.0, 55.0, fadeDist));",
+    // The coarse grain takes over where the fine one has nothing left to say. Two
+    // octaves, weighted to the larger; the smaller is what keeps the pattern from
+    // reading as a field of soft blobs. It is a warm/cool split as well as a
+    // lightness one -- on grey rock a pure brightness noise of this amplitude is
+    // invisible, while a shift between soil-warm and moss-cool reads immediately.
+    "        float farGrain = smoothstep(30.0, 90.0, fadeDist);",
+    "        float grain = (0.60 * grainNoise(fragWorldPos.xz * (1.0 / 54.0)) +",
+    "            0.40 * grainNoise(fragWorldPos.xz * (1.0 / 16.0)) - 0.5) * farGrain;",
+    "        texel.r *= 1.0 + grain * 0.34;",
+    "        texel.gb *= 1.0 + grain * 0.18;",
     "    }",
     "    texel *= colDiffuse * fragColor;",
     "    vec3 n = normalize(fragNormal);",
@@ -839,8 +873,21 @@ function makeLighting() {
     // The terrain is a mesh with no bone data, so it takes the lit program the
     // same way on both builds (`modelShaderFor` is for rigs). The water surface is
     // the same kind of mesh with a program of its own.
-    if (terrainMesh >= 0) rl.setModelShader(terrainMesh, litShader);
-    if (waterMesh >= 0 && waterShader >= 0) rl.setModelShader(waterMesh, waterShader);
+    //
+    // All five ground meshes, not just the near grid: `makeTerrain` runs two load
+    // steps before this one, so every mesh it built is on raylib's default program
+    // and without the shadow map. Binding only `terrainMesh` here left the two rings
+    // and both seam strips unlit until something else rebuilt them -- and the near
+    // grid is rebuilt constantly (a crater patches it) while the rings are only
+    // rebuilt by a 32 m step, so the ground read as a lit square inside an unlit
+    // field. From the air that square is the chessboard.
+    terrainRebind();
+    if (waterMesh >= 0 && waterShader >= 0) {
+        rl.setModelShader(waterMesh, waterShader);
+        // The shadow map for the same reason: the water is built in `makeTerrain`'s
+        // step too, so `waterRebuild` saw `shadowColor` as -1 as well.
+        if (shadowColor >= 0) rl.setModelTexture(waterMesh, SHADOW_MAP_INDEX, shadowColor);
+    }
     console.log("lighting: lit shader " + litShader + ", shadow shader " + shadowShader +
         (skinnedOk ? ", skinned" : ""));
 }

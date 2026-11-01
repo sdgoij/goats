@@ -252,15 +252,21 @@ for one that cannot be tracked; and it reports the worst remaining gap —
 What it could not do was put the goats *on the ground*: the world snapshot
 carries no terrain, so a joiner has to compute it. That is the next gate.
 
-**The ground** (`verify_terrain.gd`): `terrain.gd` is `world.js`'s heightfield,
-transcribed — and the oracle is the JavaScript itself, run by the embedded
-engine, which is the engine the client runs it on:
+**The ground** (`verify_terrain.gd`): `terrain.gd` is `world.js`'s heightfield
+*and* its ground material, transcribed — and the oracle is the JavaScript itself,
+run by the embedded engine, which is the engine the client runs it on. The
+heightfield is compared in metres; the material is a blend of the palette's bands
+now rather than a lookup, so it is compared channel by channel instead of as a
+membership test:
 
 ```
-oracle answered 17 line(s)
+oracle answered 32 line(s)
 compared 17 of 17 sample point(s)
-largest disagreement: 0.000000000050 m (tolerance 0.000000001000 m)
-  worst at (22.000, 0.000): js 0.87172325296239017, gd 0.87172325301269160
+largest disagreement: 0.000000000686 m (tolerance 0.000000010000 m)
+  worst at (100.250, -7.750): js 7.32166514076722400, gd 7.32166514145285060
+compared 15 of 15 material sample(s)
+largest material disagreement: 0.000000032 (tolerance 0.000010000)
+  worst at (y 0.60, slope 0.10, m 0.50) channel 0: js 0.491186, gd 0.491186
 OK: the GDScript heightfield is the scene's heightfield
 ```
 
@@ -565,11 +571,14 @@ sits six pixels past the panel's edge and `Back` is drawn over the two before it
 
 **The ground itself** (`verify_terrain_mesh.gd`): the near 48x48 grid, the 4 m mid
 ring and the 8 m far ring the client builds through `makeModel`, as one
-`ArrayMesh` with the two seam strips -- a normal from central differences (the
-surface perimeter measures the field over a fixed step so both sides of a seam
-agree), a per-vertex material colour from the scene's palette, a world-space
-texcoord, and a rebuild only when the snapped anchor moves (`terrainEnsure`'s
-32-unit rule, so a step costs a rebuild and a frame does not).
+`ArrayMesh` with the two seam strips -- a normal from central differences over one
+shared 4 m stencil (every surface measures the same field over the same step, so
+both sides of a seam agree, and the edge band and the 8 m far ring take the field
+directly rather than a one-sided difference), a per-vertex material colour that is
+`Terrain.material` at that vertex -- a *blend* of the scene's palette bands, not a
+palette lookup -- a world-space texcoord, and a rebuild only when the snapped anchor
+moves (`terrainEnsure`'s 32-unit rule, so a step costs a rebuild and a frame does
+not).
 
 A step is **incremental**, as it is in the scene: the anchor snaps to 32 and every
 cell divides it, so the new grid is the old one shifted by whole cells, the overlap
@@ -591,8 +600,13 @@ mesh aabb: [P: (-192.0, -2.815, -192.0), S: (384.0, 36.645, 384.0)]
 near aabb: (-48.0, -1.331, -48.0) .. (48.0, 4.882, 48.0)
 worst height error: 0.000000 m (float32 grid against the double field)
 worst normal error: 0.000000  (normals not facing up: 0)
-vertices off the palette: 0
+surface 0's first triangle faces: (0.249988, 0.911841, 0.325655)
+surface 1's first triangle faces: (-0.384979, 0.918608, 0.089163)
+surface 2's first triangle faces: (-0.231718, 0.951484, -0.202448)
+worst material error: 0.00399813 at vertex 558 at (-10.00, -26.00)
+worst texcoord error: 0.000000
 follow(30, 7) -> anchor (32, 0), 1 rebuild(s)
+follow(70, 7) -> anchor (64, 0), 1 rebuild(s)
 incremental vs full: worst attribute error 0.000000000
 Rust field vs GDScript: worst 0.000000000319 m
 OK: the ground is the scene's grid, built from the scene's field
