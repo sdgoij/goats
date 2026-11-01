@@ -4047,6 +4047,18 @@ pose a frame old; the mirror cannot, because it runs *before* the main pass and 
 borrowing *last* frame's pose, which a walking goat shows. On a CPU-skinning build the deform
 is the expensive half of that, and it is part of what the tier costs.
 
+- **The port paid the pass over a dry meadow, and in a browser that was the frame.** The
+  scene's skip is `renderWaterMirror`'s early return; a `SubViewport` has no early return --
+  its update mode is a *state* -- so `set_tier` started the pass and nothing ever stopped it,
+  and every dry frame after M20e rendered a second copy of the world into a target nothing
+  samples. On the desktop that was ~8% of a frame (151 fps against 161, `--disable-vsync`),
+  which is why it read as noise in a desktop review; in the browser it went **40 -> 90-120 fps**
+  once `main.gd` wrote `water.is_on()` into the pass each frame. `verify_water_reflect.gd`
+  holds it now: a dry pass draws nothing, a wet one draws its tier, and the tier survives the
+  change. The transferable part is `WEB.md`'s renderer note -- a WebGL 2 frame is CPU-bound per
+  *submission*, so "does this pass run when it has nothing to draw" is worth asking of every
+  second submission the scene makes.
+
 **What a case can hold here, and what it cannot.** The harness has no GPU, so what
 `water.rs` holds about M20e is structural: the leaf and its clamp, the console route to it,
 that the frame's tier is the one the build can keep (the tier only reports the ground map

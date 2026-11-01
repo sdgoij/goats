@@ -312,7 +312,11 @@ check on any browser frame that is not the desktop's, and the reflection pass
   submission every frame, for a target nothing samples. Measured on the desktop
   build (1440x900, `--disable-vsync`, a dry meadow): ~151 fps with the pass
   running against ~161 without, and ~164 after the gate — the whole difference
-  was the wasted pass.
+  was the wasted pass. **In the browser it was the whole frame**: 40 fps before the
+  gate and 90-120 after it, on the same page and the same meadow. The desktop
+  number is the reason this was easy to miss — an eighth of a frame on a discrete
+  GPU is most of a browser frame, and the Compatibility renderer's per-submission
+  cost is what the gap was made of.
 * To test it in a browser, watch the HUD's fps and then type
   `setting reflect sky` in the console (the same leaf the menu's combo box
   writes, `water.reflection`). Sky draws nothing, ground is one cached-looking
