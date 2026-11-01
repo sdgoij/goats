@@ -416,6 +416,13 @@ func hud_text(x: float, z: float) -> String:
 	var slowed: int = int(round(DRAG * drag_fraction(x, z) * 100.0))
 	return "water %.2f m   slowed %d%%" % [depth, slowed]
 
+## Whether there is water to draw this frame -- "the table clears the window's lowest
+## ground", which is the same statement as "the deepest pool in the window has a depth".
+## `state()` reports it as `on`; this is the same bit without building a dictionary, for the
+## frame path, which reads it every frame to decide whether the reflection pass runs.
+func is_on() -> bool:
+	return _on
+
 ## The table's level this frame, which is what the surface is lifted to (`water.gdshader`)
 ## and what `state` reports rounded.
 func level() -> float:

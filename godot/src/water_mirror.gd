@@ -148,16 +148,38 @@ func has_ground() -> bool:
 	build()
 	return _ground.mesh != null
 
+## The tier last set, and whether there is water for it to reflect. Kept here because the
+## viewport's update mode is a *state* rather than a call: "don't run this frame" has to be
+## written into the target, so it cannot be skipped the way `renderWaterMirror`'s early
+## return skips it in the scene.
+var _tier := 0
+var _wet := true
+
 ## Point the pass at a tier: what it draws, and whether it runs at all. Called where the wish
 ## moves rather than every frame, because a tier is a setting.
 func set_tier(which: int) -> void:
+	_tier = which
+	_sync()
+
+## Whether there is anything to reflect this frame, which the scene asks as `!waterOn`.
+## It is **not** a micro-optimisation: the mirror tier is a second submission of the whole
+## scene, and a dry meadow was paying it every frame for a target nothing samples -- measured
+## at 5-8% of the frame on the desktop build, with a browser paying more for the same
+## submission. Cheap to call every frame: an unchanged value writes nothing.
+func set_wet(wet: bool) -> void:
+	if wet == _wet:
+		return
+	_wet = wet
+	_sync()
+
+## Write the two states into what draws them.
+func _sync() -> void:
 	build()
-	_camera.cull_mask = mask_of(which)
-	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if runs(which) \
-		else SubViewport.UPDATE_DISABLED
+	_viewport.render_target_update_mode = \
+		SubViewport.UPDATE_ALWAYS if (runs(_tier) and _wet) else SubViewport.UPDATE_DISABLED
 	# The twin is only in a tier whose mask names its layer, so a tier that does not draw the
 	# ground does not submit it either -- the pass is half the viewport but the draw is not free.
-	_ground.visible = (mask_of(which) & LAYER_GROUND_MIRROR) != 0
+	_ground.visible = ((mask_of(_tier) & LAYER_GROUND_MIRROR) != 0) and _wet
 
 ## What the pass draws this frame, and whether it runs at all -- the two things `set_tier`
 ## decides, read back off the camera and the target rather than kept beside them. There is no

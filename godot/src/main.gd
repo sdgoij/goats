@@ -774,9 +774,15 @@ func _process(delta: float) -> void:
 	# The camera is placed whether or not the world moved, and before `_advance`, which reads it:
 	# the view follows a goat that is standing still as much as one that is walking.
 	_place_camera(camera)
-	# The reflection's pass (M20e): `renderWaterMirror` runs *before* the frame's own 3D pass, and
-	# so does this -- the camera it draws from is the world's own, mirrored through the water's
+	# The reflection's pass (M20e): `renderWaterMirror` runs *before* the frame's own 3D pass,
+	# and so does this -- the camera it draws from is the world's own, mirrored through the water's
 	# plane, and the surface reads what it drew at its own column, flipped in the row.
+	#
+	# The scene skips that pass when nothing is wet (`renderWaterMirror`'s `!waterOn` return).
+	# Here it cannot be skipped -- the target's update mode is a state -- so the water's own "is
+	# there a pool in this window" bit is written into it, and a dry meadow pays no second
+	# submission at all. One frame of lag on the change, which is a millimetre of table.
+	water_mirror.set_wet(water.is_on())
 	water_mirror.run(camera, water.level())
 	# How much of the weather the goat is *under* (`weather.js` `rainShelter`): above the
 	# cloud deck there is nothing over it for the rain to fall out of, so the overlay, the

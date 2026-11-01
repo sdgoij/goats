@@ -302,6 +302,31 @@ func _initialize() -> void:
 		and WaterReflect.mask_of(WaterReflect.GROUND) == WaterMirror.MASK_GROUND
 	print("edges: ", "ok" if edge_ok else "WRONG")
 
+	# 7. A dry meadow does not pay the pass. The scene skips `renderWaterMirror` when nothing is
+	#    wet; here the target's update mode is a state, so the water's own bit has to turn it off
+	#    -- and the tier has to be re-stated, not lost, when the rain comes back.
+	var wet_mismatches := 0
+	var first_wet := ""
+	reflect.set_wish(2.0)
+	reflect.apply(surface, mirror)
+	var ran_when_wet: bool = mirror.running()
+	mirror.set_wet(false)
+	var ran_when_dry: bool = mirror.running()
+	mirror.set_wet(true)
+	var ran_again: bool = mirror.running()
+	# A headless run has no rasteriser, so every tier degrades to sky and nothing runs at all;
+	# the question there is only that the two states agree with the tier.
+	if not headless and (not ran_when_wet or ran_when_dry or not ran_again):
+		wet_mismatches += 1
+		first_wet = "wish 2: wet %s, dry %s, wet again %s" % [ran_when_wet, ran_when_dry, ran_again]
+	if int(mirror.mask()) != WaterMirror.mask_of(reflect.tier()):
+		wet_mismatches += 1
+		if first_wet == "":
+			first_wet = "the dry pass forgot the tier it was set to"
+	print("wetness: dry draws nothing, wet draws the tier, %d mismatch(es)" % wet_mismatches)
+	if first_wet != "":
+		print("  first: ", first_wet)
+
 	mirror.free()
 	host.free()
 
@@ -326,6 +351,8 @@ func _initialize() -> void:
 			% degrade_mismatches)
 	if not edge_ok:
 		failures.append("a word or a leaf outside the setting's range did not answer quietly")
+	if wet_mismatches != 0:
+		failures.append("a dry meadow pays the reflection pass: %d place(s)" % wet_mismatches)
 
 	if failures.is_empty():
 		print("OK: the port's reflection tiers are the scene's, on the port's own mirror")

@@ -32,8 +32,15 @@ render_mode cull_front;
 
 // The water's own plane, pushed by `water_mirror.gd` from `Water.level()`, and the ground's
 // detail texture, handed over by `terrain_mesh.gd` so the two draws of one mesh cannot drift.
+//
+// `filter_linear_mipmap`, not `filter_linear`: the texture has a chain (`generate_mipmaps` in
+// `terrain_mesh.gd`) and the main material samples it, but a shader uniform defaults to the
+// nearest level, so the *reflection* was minifying the 8.3 m grain with no chain at half the
+// viewport -- the moiré the client fades its detail out with distance to avoid. The grain itself
+// is not re-authored here on purpose: it is a sub-pixel detail of the scene's ground at this
+// resolution, read through a ripple, and it would cost the pass a noise per fragment.
 uniform float water_level = -2.1;
-uniform sampler2D detail_texture : hint_default_white, filter_linear, repeat_enable;
+uniform sampler2D detail_texture : hint_default_white, filter_linear_mipmap, repeat_enable;
 
 // The three things `cull_front` costs a built-in: Godot's `NORMAL` is flipped for a fragment
 // that is not front-facing, which is every fragment this material draws, so the authored

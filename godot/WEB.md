@@ -297,6 +297,30 @@ renderer. The Compatibility backend is the one place a visual difference is
 expected, and the first thing to look at if the browser frame is not the
 desktop frame.
 
+### The frame in a browser, and what to measure first
+
+A WebGL 2 frame is **CPU-bound in a way a desktop one is not**: every draw call
+crosses wasm -> JS -> WebGL, so a submission is expensive out of proportion to
+what it draws. That makes "the same scene, submitted twice" the first thing to
+check on any browser frame that is not the desktop's, and the reflection pass
+(M20e) is the one place the port submits the world twice:
+
+* The scene skips that pass when nothing is wet (`renderWaterMirror`'s
+  `!waterOn` return). The port cannot skip it -- a `SubViewport`'s update mode is
+  a state -- so `main.gd` writes the water's own `is_on()` into the pass every
+  frame. It did not, from M20e until this was found: a dry meadow paid the second
+  submission every frame, for a target nothing samples. Measured on the desktop
+  build (1440x900, `--disable-vsync`, a dry meadow): ~151 fps with the pass
+  running against ~161 without, and ~164 after the gate — the whole difference
+  was the wasted pass.
+* To test it in a browser, watch the HUD's fps and then type
+  `setting reflect sky` in the console (the same leaf the menu's combo box
+  writes, `water.reflection`). Sky draws nothing, ground is one cached-looking
+  draw, mirror is the second submission. If the browser frame does not move
+  between those three, the cost is not the reflection.
+* `verify_water_reflect.gd` holds the gate: a dry pass draws nothing, a wet one
+  draws its tier, and the tier is not lost across the change.
+
 ## Known gaps
 
 - **Mods.** The build's own **birds** and **fatguy** travel as zips in
