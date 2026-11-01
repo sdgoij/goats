@@ -147,6 +147,17 @@ const TUNING = {
     stats: {
         max: 100,
         energyDrain: { idle: 0.4, walk: 1.0, trot: 2.0, run: 4.0, fly: 2.5 },  // per second
+        // The slope's price, which is what gives a goat a reason to fly. The grade is
+        // metres of climb per metre walked, read along the heading, so crossing a
+        // hillside sideways is nearly free and a switchback works. `slopeDrainUp` is
+        // the extra share of the gait's drain per unit of grade -- a 10% climb costs
+        // half again, a 30% mountainside 2.5x -- and `slopeDrainDown` is the share a
+        // descent gives back per unit, floored so that it can cancel the gait but
+        // never turn into a gain: downhill is cheaper, not a refill. A hill that paid
+        // energy back would be a battery, and the meadow it is farmed in is finite.
+        // Flight pays neither: not paying it is the whole point of taking off.
+        slopeDrainUp: 5.0,
+        slopeDrainDown: 2.5,
         jumpEnergyCost: 2.0,
         sleepEnergyRecover: 12,    // per second
         sleepHealthRecover: 2,
@@ -544,6 +555,13 @@ const MAX_HERD = 100;
 // arrays stay arrays, and a branch is not a leaf. Bounds are only listed where
 // the game needs one.
 const TUNING_CLAMP = {
+    // The slope's two prices. Both are a *multiplier's* slope, so a negative one would
+    // read as a gravity that pulls the other way -- a climb that gets cheaper the
+    // steeper it is -- and neither may be unbounded, because 100 at a 30% grade is a
+    // mountainside that kills in two seconds. Zero is the "no slope price" setting a
+    // mod is welcome to write.
+    "stats.slopeDrainUp": [0, 100],
+    "stats.slopeDrainDown": [0, 100],
     "herd.count": [0, MAX_HERD],
     // A killed bot has to lie there for *some* of it: `0` would ping-pong it in and
     // out of the world, and the death is worth watching.

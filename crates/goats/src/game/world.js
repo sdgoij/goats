@@ -560,6 +560,24 @@ function terrainSlopeAt(wx, wz, step) {
 // Scratch for `terrainSlopeAt`, so the per-vertex path allocates nothing.
 const TERRAIN_SLOPE = [0, 0];
 
+// The grade of the ground along a heading: metres of climb per metre travelled,
+// positive uphill, negative downhill and 0 across a contour. It is `terrainSlopeAt`'s
+// gradient dotted with the heading, so a caller pays the same four samples and shares
+// the scratch, and it reads the field rather than the grid -- exactly like the slope
+// the shading uses, craters included or not for the same reason (`terrainBaseHeight`:
+// a bang must not make a hillside suddenly expensive).
+//
+// The step is the goat's stride rather than the near grid's 2 m cell. The field is
+// finer than the mesh that draws it, and a climb the 2 m cells round over is still a
+// climb the goat pays for -- which is what keeps a mountainside a wall on foot even
+// where the ground drawn under it looks gentle.
+const TERRAIN_GRADE_STEP = 1;
+
+function terrainGrade(wx, wz, dirX, dirZ) {
+    terrainSlopeAt(wx, wz, TERRAIN_GRADE_STEP);
+    return TERRAIN_SLOPE[0] * dirX + TERRAIN_SLOPE[1] * dirZ;
+}
+
 // One vertex's position, normal, colour and texcoord. One function for the near
 // grid and the rings: they differ only in spacing and in the step its outer edge
 // measures the field over.

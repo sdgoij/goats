@@ -432,9 +432,37 @@ function restart() {
     goat.py = haveModel ? 0 : V_DROP;
 }
 
+// The rate the last `updateStats` applied, in energy a second, and the grade it was
+// read against: the console's `stats` reports both, and the harness holds the rule
+// against them. `lastDrain` is the *net* rate of the awake ground modes -- the slope,
+// the night, the weather and the water all folded in -- which is the one number a
+// "why did that kill me" question wants. Both stay 0 in the modes that do not pay it
+// (sleep, death, a fall, and the flight, which burns its own energy in the crate).
+let lastDrain = 0;
+let lastGrade = 0;
+
+// The slope's share of a gait's drain at this grade: uphill multiplies, a descent
+// divides, and the floor is zero -- which is `slopeDrainDown`'s cap, not a clamp on
+// the grade. Zero means the steepest descent costs nothing at all and a hill can never
+// pay a goat back, so the rule cannot be farmed by walking up and down it.
+function slopeDrainScale(grade) {
+    if (grade > 0) return 1 + TUNING.stats.slopeDrainUp * grade;
+    return Math.max(0, 1 + TUNING.stats.slopeDrainDown * grade);
+}
+
+// The grade under the goat, along the way it is walking: `dir` is -1 for backing up,
+// so this is the ground the goat actually gains rather than the ground ahead of it.
+// Sampled at the position the frame is about to move it from, which is one frame of
+// lag on a walked metre and invisible.
+function groundGrade(dir) {
+    return terrainGrade(goat.px, goat.pz, Math.cos(goat.yaw) * dir, -Math.sin(goat.yaw) * dir);
+}
+
 // Advance health/energy for the current mode, once per frame. Returns "die"
 // when health runs out so the caller can switch to the dead state.
-function updateStats(dt) {
+function updateStats(dt, move) {
+    lastDrain = 0;
+    lastGrade = 0;
     if (mode === "dead") {
         deathTime += dt;
         return "dead";
@@ -457,6 +485,19 @@ function updateStats(dt) {
     if (skyLight < 0.25) drain *= TUNING.world.nightDrainMult;   // cold nights burn energy faster
     drain *= weatherDrain;                            // ...and so does being soaked
     drain *= waterDrainFactor();                      // ...and so does wading (M20d)
+    // The slope last, so it scales the bill the goat was already going to pay rather
+    // than only the gait's base rate. It is read only for a goat travelling *on the
+    // ground*: the three gaits, and the jump -- which covers the same ground at a gait's
+    // speed with its direction frozen at take-off (`jumpDir`), even though the rate it
+    // pays is the idle one. A goat standing still pays nothing for the hillside it
+    // stands on, and `fly`/`fall` are the air's: the flight is the reason this rule
+    // exists, so it must never pay it.
+    if (mode === "jump") lastGrade = groundGrade(jumpDir);
+    else if (mode === "walk" || mode === "trot" || mode === "run") {
+        lastGrade = groundGrade(move);
+    }
+    drain *= slopeDrainScale(lastGrade);
+    lastDrain = drain;
     stats.energy = Math.max(0, stats.energy - drain * dt);
     if (stats.energy <= 0) {
         exhausted = true;
@@ -985,7 +1026,7 @@ function sceneFrame() {
         }
     }
 
-    if (updateStats(dt) === "die") die();
+    if (updateStats(dt, move) === "die") die();
 
     // The player's idle variant advances each time it settles into idle, so
     // it cycles through the idle clips instead of always doing the same one.

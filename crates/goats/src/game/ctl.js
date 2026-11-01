@@ -142,7 +142,14 @@ function sceneCommand(line) {
             return "ok " + JSON.stringify({
                 health: ctlRound(stats.health),
                 energy: ctlRound(stats.energy),
-                exhausted: exhausted
+                exhausted: exhausted,
+                // The slope's price as the last frame charged it: the grade under the
+                // goat along the way it was walking (0 standing still, in the air, or
+                // along a contour) and the net energy a second that frame took. A
+                // review reads the rule here instead of re-deriving it, and the
+                // harness holds `drain` against `grade` and the two tuning leaves.
+                grade: ctlRound(lastGrade),
+                drain: ctlRound(lastDrain)
             });
         case "time": {
             if (parts.length === 1) {

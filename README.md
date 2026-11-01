@@ -59,9 +59,12 @@ the same page.
   so the player cycles through them and each bot settles on its own.
 - State machine covering idle / walk / trot / run / jump / **sleeping** / **dead**,
   with a script-controlled jump arc taken from the clip's root motion.
-- **Health and energy.** Energy drains faster the harder the goat works; at zero
-  it is exhausted (capped at a walk, bleeding health) until it sleeps. Sleep
-  restores energy and health; zero health is fatal.
+- **Health and energy.** Energy drains faster the harder the goat works, and the
+  ground has a say: a climb costs extra in proportion to its grade, a descent gives
+  some of it back (never more than the walk itself, so a hill is not a battery), and
+  flight pays neither. That is what makes a mountainside a wall on foot and the
+  reason to take off. At zero the goat is exhausted (capped at a walk, bleeding
+  health) until it sleeps. Sleep restores energy and health; zero health is fatal.
 - **Sleeping and death** with their own clips: the goat's real eyelids close
   while sleeping (a `LidL`/`LidR` bone pair), and on death it buckles and topples
   right over onto its side, where the cartoon X-eyes appear.

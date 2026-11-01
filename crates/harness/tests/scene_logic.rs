@@ -1323,8 +1323,13 @@ const TERRAIN_SPREAD: &str = "(function () { \
      return high - low; })()";
 
 /// Whether the spawn bowl is level: the spawn point and a spot beside it.
+///
+/// The *field's* height, not `terrainHeight`: the bowl is `terrain.flat` and stays level
+/// by construction, but `terrainHeight` adds the crater term, and by the time this is read
+/// the scripted run has been blown up several times -- a device relocated within the
+/// bowl and set off by the herd is a crater the explosion cases own, not a broken bowl.
 const SPAWN_LEVEL: &str =
-    "Math.abs(terrainHeight(0, 0)) < 1e-9 && Math.abs(terrainHeight(4, -3)) < 1e-9";
+    "Math.abs(terrainBaseHeight(0, 0)) < 1e-9 && Math.abs(terrainBaseHeight(4, -3)) < 1e-9";
 
 /// What the eating cases found.
 #[derive(Default)]
@@ -1546,6 +1551,22 @@ fn explosions_block(harness: &mut Harness) -> Result<Explosions, String> {
     // still. Every case here used to set its position with `pos`, which never
     // noticed; the walking case below is the first that has to be *driven*.
     harness.command("console close")?;
+
+    // The world is settled before anything is picked. The scripted walk trips devices of
+    // its own -- the goat's and the herd's -- and a fuse still burning here lands a bang
+    // inside a case's own few frames, which reads as "it went off at once" when it was
+    // somebody else's. Waiting for nothing to be pending and no flash to still be lit is
+    // what makes the frames below the ones each case is measuring. It runs *before* the
+    // field is read: a bang relocates the device that fired, so the nearest mine is only
+    // the nearest mine once the fuses have all resolved.
+    for _ in 0..8 {
+        let (pending, _, _, _) = explosion_state(harness)?;
+        let flash = f64_of(harness.eval("sceneExplosions().flash")?);
+        if pending == 0.0 && flash == 0.0 {
+            break;
+        }
+        drive_burst(harness, 9)?;
+    }
 
     let field = try_command_json(harness, "traps 40")?;
     out.same_field = field == try_command_json(harness, "traps 40")?;
