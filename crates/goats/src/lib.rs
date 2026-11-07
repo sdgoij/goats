@@ -1152,6 +1152,22 @@ pub fn run() {
             // which is what keeps it callable in a loop (the voice and the net
             // stop when it drops, with `run`).
             context.call(&shutdown, &JsValue::undefined(), &[]).unwrap();
+            // The engine's JIT verdicts, for a pin comparison: how many bodies it
+            // compiled, refused (they run interpreted), evicted from the code
+            // cache, and had to deopt. A body that compiles on one engine build
+            // and is refused on the next is invisible in a frame table and is the
+            // first thing to rule out when a pin moves the frame (PERF.md,
+            // Appendix F). Silent unless the engine's own switch asks, and off
+            // by default because the facade call needs an engine rev that has it
+            // (`--features jit-report`).
+            #[cfg(all(not(target_arch = "wasm32"), feature = "jit-report"))]
+            if std::env::var_os("SLAG_JIT_REPORT").is_some() {
+                let stats = slag::jit_stats();
+                println!(
+                    "[jit] compiled {} refused {} evicted {} deopted {}",
+                    stats.compiled, stats.refused, stats.evicted, stats.deopted
+                );
+            }
             eprintln!("done");
             return false;
         }

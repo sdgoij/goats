@@ -80,6 +80,14 @@ build rather than the revision, which is itself the most actionable finding here
   apply**: 358 bodies compile against a cap of 1024, so `jit evicted` is 0 — but
   the census reads 134 deopt events a frame, which is where the per-call cost
   §4c left open probably lives (Appendix E).
+- **A 30% "regression" from the engine's `master` line was the build, not the engine.** The
+  same commit as a `path` dependency measures 10.64 ms of phases and as a `git` dependency
+  14.06, with identical verdicts and identical generated code — §6's artifact, which
+  `codegen-units = 1` and thin (or fat) LTO no longer suppress. Alignment pins it
+  (`-C llvm-args=-align-all-functions=5`: both pins 10.7–10.9), and the engine's actual fix
+  — `perf(crux,jit): stop producing inline smi Numbers` — removes it outright: unflagged,
+  `509eef06` reads 10.22–10.56 ms against 10.34–10.70 for the old pin, with the bodies it
+  refuses down from 202 to 4 and `call-outer` from 32.6 to 19.7 ns/iter (Appendix F).
 
 ## 1. What was measured, and how
 
@@ -2070,3 +2078,90 @@ What the census did show is `jit deopts` at **134 events a frame**, identical on
 rest of the body finishes interpreted (`runtime/src/ir.rs`), which is the per-call shape §4c left
 open — `collide-current` at 3.6–4.0 µs a call, ~40× the corpus's compiled kernel. It is the number
 the next instrument should carry, not the cache.
+
+## Appendix F — the `master` line: a 30% build lottery, and the smi fix that ended it
+
+`2669b9a1` is 110 commits of register-lane and call-path work (the same-stack call, smi Numbers, the
+`Object.keys` cache, the leaf-env lane), `d1df5e2c` adds four correctness fixes and brings the
+body-cache fix as `0475fd0e`, and `509eef06` removes inline smi Numbers again. None is a descendant of
+`1f534297` (the merge base is `8bc1f77b`), master dropped `dump_refusal_census`, and the facade grew
+`slag::jit_stats()` at `d703d187` — which is what the verdict columns below read, through the client's
+`jit-report` feature and `SLAG_JIT_REPORT`.
+
+### A 30% "regression" that was the build
+
+Measured as a `git` dependency, which is how the manifest ships, the master line looked 1.5× slower:
+13.60–13.92 ms of phases against 10.34–10.70 for `1f534297`, and `boundary` 2.5 against ~6. One
+experiment settles it — the **same commit** (`d703d187`) built twice in one session, once as a `path`
+dependency and once as a `git` dependency on the local repository (`file:///…/slag`), with
+`Cargo.lock` otherwise identical:
+
+| `d703d187`, one source | phases | `boundary` | probe call | corpus `arith` | compiled / refused |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `path` | **10.64** | 5.78 | 4.61 µs | 11.8 | 357 / 4 |
+| `git` | **14.06** | 2.35 | 6.94 µs | 11.8 | 357 / 4 |
+
+Same verdicts, identical generated code, and every path that enters native code ~1.5× dearer in the
+`git` build. That is §6's signature — and §6's remedy, `codegen-units = 1` with `lto = "thin"`, is set
+in this manifest already and no longer suppresses it.
+
+### The lottery is layout, and alignment pins it
+
+Both pins, `git` dependency, sixteen windows each:
+
+| build | `1f534297` | `d1df5e2c` |
+| --- | ---: | ---: |
+| `lto = "thin"` (shipped) | 10.57 | 13.60–13.92 |
+| `lto = "fat"` | 10.30 | 14.09 |
+| `-C llvm-args=-align-all-functions=5` | 10.92 | **10.73** |
+
+Fat LTO is live — the image goes 52.1 → 49.0 MB — and moves neither pin, so it is not optimisation
+amount (it also costs a ~5 m 45 s build). Alignment does pin it: the pair lands 0.19 ms apart instead
+of 3.3, which is the property a pin comparison needs. But it is a stabiliser, not a win — the fast draw
+pays 3% for it — and the mechanism it names is the final layout, which is the shape the engine's own
+manifest warns about ("the interpreter's dispatch loop is a single 100 KB function").
+
+### The fix: inline smi Numbers
+
+`509eef06` (`perf(crux,jit): stop producing inline smi Numbers`) as a `git` dependency, thin LTO,
+**no flags at all**, is back in the good pin's band:
+
+| | `1f534297` | `d1df5e2c` | `509eef06` |
+| --- | ---: | ---: | ---: |
+| phases (`git`, no flags) | 10.34–10.70 | 13.60–13.92 | **10.22 / 10.56** |
+| `boundary` | 5.8–6.5 | 2.5 | 5.9–6.2 |
+| probe: a call / a property read | 4.47–4.85 / 8.49–8.81 µs | 6.0–7.2 / 10.7–12.0 | **4.39–4.59 / 8.27–8.45** |
+| corpus `arith` | 10.1 | 11.8 | **9.9** |
+| corpus `call-outer` | 32.6 | 22.1 | **19.7** |
+| `compiled` / `refused` | 374 / **202** | 357 / 4 | 367–371 / **4** |
+| `evicted` / `deopted` | 0 / 555,335 | 0 / 557,387 | 0 / 522k–556k |
+
+Three things fall out of that table:
+
+- **The frame regression was smi.** Unflagged, `509eef06` is equal to the best pin ever measured here
+  (10.22–10.56 against 10.34–10.70) with `boundary` restored to ~6 ms; the alignment flag is not
+  needed, and shipping it would cost the good draw 3%.
+- **So was the generated-code cost.** The 17% on `arith`, `s one loop`, `continue` and `if-else` was
+  all inline smi, not the register lane: they are 9.9, 9.9, 14.3 and 14.9 again.
+- **The wins survive.** Refusals stay at 4 against 202 — 50× fewer bodies interpreted — and the call
+  lane ends up 40% cheaper than the old pin (`call-outer` 32.6 → 19.7 ns/iter, and it was 22.1 on
+  `d1df5e2c`, so the smi removal helped it further).
+
+One provenance note on the corpus columns: the `1f534297`/`d1df5e2c` pair above is path-built (both
+sides controlled); the `509eef06` column is a `git` build. The corpus does not move with provenance —
+`arith` read 11.8 in both builds of `d703d187` — which is what makes that column comparable.
+
+### What this cost, and the rules it leaves
+
+- **Before attributing a frame delta to an engine rev, build the same rev two ways.** A 30% artifact is
+  larger than anything this file has measured, and it looks exactly like a regression: same phases up,
+  same `boundary` down, same "every native path is slower".
+- **A pin comparison must hold provenance fixed.** Both sides of every comparison that survives in this
+  appendix were built the same way; the two that were not are labelled, and its one cross-provenance
+  reading (path `d1df5e2c` 10.64 against `git` `1f534297` 10.57) should be treated as indicative only.
+- **Measure on a quiet machine.** At 94% CPU load (`powershell` reported it mid-session) the *same*
+  `509eef06` binary read 11.5–12.7 ms; at 4% it read 10.22 and 10.56. A 1 ms swing is the size of the
+  thing being measured.
+- **The phase table cannot see a verdict, and the cache policy never runs here.** 202 bodies refused
+  versus 4 is invisible in the frame, and `evicted` is 0 on every pin — ~360 bodies against a cap of
+  1024 — so the eviction policy is not this game's cost.
