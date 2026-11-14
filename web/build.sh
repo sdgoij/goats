@@ -103,16 +103,41 @@ case "${1:-client}" in
         mkdir -p "$DIST"
         cp "$ROOT/target/$TARGET/$PROFILE/goats.js" "$DIST/"
         cp "$ROOT/target/$TARGET/$PROFILE/goats.wasm" "$DIST/"
-        # The preloaded filesystem. rustc links in `deps/` and copies the module
-        # and the glue up, but `goats.data` is Emscripten's own side file and is
-        # not something rustc knows to move.
-        data="$ROOT/target/$TARGET/$PROFILE/goats.data"
-        [ -f "$data" ] || data="$ROOT/target/$TARGET/$PROFILE/deps/goats.data"
-        if [ -f "$data" ]; then
+        # The preloaded filesystem. Emscripten names this side file after the
+        # linker's *output*, and where that output lands is rustc's decision, not
+        # ours -- it moved between toolchains with no change in this repository.
+        # 1.99 links in `deps/` and leaves `deps/goats.data` beside the objects;
+        # 1.100 links into a `build/` scratch directory
+        # (`build/goats/<hash>/out/goats.js`) and uplifts only the `.js` and
+        # `.wasm` to the profile root, abandoning `goats.data` back in there.
+        # Neither place is a name to hard-code, so collect every `.data` the link
+        # could have left and take the newest. A missing one is a real failure
+        # (the client would boot with no mods), so it says what it did see.
+        plain="$ROOT/target/$TARGET/$PROFILE"
+        data=""
+        newest_data() {
+            for candidate in "$@"; do
+                [ -f "$candidate" ] || continue
+                if [ -z "$data" ] || [ "$candidate" -nt "$data" ]; then
+                    data="$candidate"
+                fi
+            done
+        }
+        newest_data "$plain/goats.data" "$plain"/deps/*.data "$plain"/build/goats/*/out/goats.data
+        # Last resort before giving up: anywhere under the profile, in case a
+        # later toolchain moves the link again.
+        if [ -z "$data" ]; then
+            newest_data $(find "$plain" -name '*.data' -type f 2>/dev/null)
+        fi
+        if [ -n "$data" ]; then
             cp "$data" "$DIST/goats.data"
+            echo "web: preloaded ${data#"$plain"/} -> goats.data"
         else
             rm -f "$DIST/goats.data"
-            echo "web: warning: no goats.data (the build has no preloaded files)" >&2
+            echo "web: warning: no goats.data: the link preloaded nothing" >&2
+            echo "web: what the link left behind in ${plain#"$ROOT"/}:" >&2
+            find "$plain" \( -name 'goats*' -o -name '*.data' \) -print 2>/dev/null \
+                | sed 's|^|web:   |' >&2 || true
         fi
         cp "$HERE/index.html" "$DIST/"
         echo "web: staged in $DIST"

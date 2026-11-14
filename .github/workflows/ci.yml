@@ -374,6 +374,11 @@ jobs:
       - name: Check the package
         shell: bash
         run: |
+          # Listed first so a missing file fails *with* the tree that shipped,
+          # which is the whole question when one of these disappears. `sed` reads
+          # to the end where `head` would close the pipe, and under `-o pipefail`
+          # an `ls` killed by SIGPIPE fails the step for the wrong reason.
+          ls -lhR dist-web 2>&1 | sed -n '1,60p' || true
           test -f dist-web/index.html
           grep -q 'page: "client/index.html"' dist-web/index.html
           grep -q 'value="reference"' dist-web/index.html
