@@ -385,6 +385,10 @@ jobs:
           test -f dist-web/client/index.pck
           test -f dist-web/client/index.side.wasm
           test -f dist-web/client/goats_godot.wasm
+          # The shell's own copy of the extension. Without it the page still
+          # boots, and then loses every script that names `Flight` to a parse
+          # error -- a black frame rather than a broken link.
+          test -f dist-web/goats_godot.wasm
           test -f dist-web/reference/index.html
           test -f dist-web/reference/goats.js
           test -f dist-web/reference/goats.wasm
@@ -392,6 +396,18 @@ jobs:
           # empty mod table rather than a visible failure.
           test -f dist-web/reference/goats.data
           ls -lh dist-web dist-web/client dist-web/reference
+      # The client's only real test: everything above asserts that files exist,
+      # and this asserts that the page runs. An extension that will not load and a
+      # script that will not parse are both invisible to the build and to the
+      # package check (`godot/WEB.md`, "The extension, and the 8 MB line").
+      - uses: actions/setup-node@v7
+        with:
+          # The test drives the page over the DevTools protocol through Node's
+          # built-in `WebSocket`, which is Node 22 and later.
+          node-version: 22
+      - name: Smoke the Godot client
+        shell: bash
+        run: node godot/tools/smoke_web.js dist-web
       - name: Upload the Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:

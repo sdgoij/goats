@@ -139,6 +139,7 @@ The export is **packaged under a shell page**, `godot/web/index.html`:
 GODOT=/path/to/Godot sh godot/tools/package_web.sh
 # -> target/godot-web/
 #      index.html            the shell (16:9 stage, client switcher, mod editor)
+#      goats_godot.wasm      the extension, for the shell's own boot
 #      client/index.html     the Godot export
 #      client/index.pck      ...
 #      reference/index.html  the raylib client, when web/dist exists
@@ -148,17 +149,24 @@ GODOT=/path/to/Godot sh godot/tools/package_web.sh
 beside it, and copies the raylib client's own build from `web/dist/` into
 `reference/` when it is there. The export itself writes `index.html`, `index.js`,
 `index.wasm`, the engine's own `index.side.wasm`, the project's `index.pck`, and
-the extension as `goats_godot.wasm` (about 7.7 MB). Set `GODOT` to the editor
+the extension as `client/goats_godot.wasm` (8.2 MiB). Set `GODOT` to the editor
 binary; it defaults to `godot` on `PATH`. The extension must already exist -- run
 `godot/tools/build_web.sh` first.
 
+The extension is copied up to the package root as well (`goats_godot.wasm`),
+because the shell boots the engine itself and cannot reach into `client/` for it
+(see *The extension, and the 8 MB line*). Both copies are served; a page
+downloads only the one it asks for.
+
 The packaging moment is also a build stamp. `package_web.sh` replaces
-`__BUILD__` in the shell, which puts it on `client/index.js`,
-`client/goats_godot.wasm`, `reference/goats.js` and the reference module, and it
-writes the same stamp into the Godot export's `mainPack` URL (`index.pck?v=`). A
+`__BUILD__` in the shell, which puts it on `client/index.js`, `reference/goats.js`
+and the reference module, and it writes the same stamp into the Godot export's
+`mainPack` URL (`index.pck?v=`). A
 normal reload revalidates the shell but not the 16 MB pack underneath it, so
 without the stamp a rebuild was only visible after a hard refresh; with it, the
-rebuilt pack is a new URL.
+rebuilt pack is a new URL. The extension is the one file that cannot be stamped:
+its name is the library's identity to the engine, so a rebuilt extension is only
+re-fetched when the browser revalidates it.
 
 ## The shell page
 
@@ -220,6 +228,43 @@ The page is the seam for two things:
 
 `?client=reference` selects the reference client (default: Godot).
 
+### The extension, and the 8 MB line
+
+The shell names the extension instead of preloading it:
+
+```js
+gdextensionLibs: ["goats_godot.wasm"],
+```
+
+That list is a correctness requirement. Emscripten loads its entries before
+`main` with `loadAsync`, so the module is fetched and compiled off the blocking
+path. The alternative -- `preloadFile` into the virtual FS, which is what the
+shell used to do so a stamped `client/` URL and the descriptor's name could
+differ -- leaves the engine to `dlopen` the bytes, and Emscripten compiles a side
+module with `new WebAssembly.Module` on the main thread. A browser refuses that
+above 8 MB:
+
+```
+RangeError: WebAssembly.Compile is disallowed on the main thread, if the buffer
+size is larger than 8MB.
+```
+
+The module crossed that line at 8.2 MiB, and the failure is total but quiet: the
+extension never loaded, the `Flight` class never registered, every script that
+names it failed to parse, and the client was a black frame whose console held
+little but parse errors. Three things follow from it:
+
+- The name must be exactly `goats_godot.wasm` at the *page's* root. The engine
+  `dlopen`s the descriptor's basename, and Emscripten registers a library under
+  the string it was handed -- `client/goats_godot.wasm` and
+  `goats_godot.wasm?v=...` both resolve to nothing. Hence the copy in
+  `package_web.sh`.
+- The standalone export is unaffected: its own bootstrap already ships
+  `gdextensionLibs: ["goats_godot.wasm"]`, which is where the pattern comes from.
+- Nothing fails at build time. A module that grows past the limit breaks the page
+  and leaves the packaging green, which is why `godot/tools/smoke_web.js` boots
+  the package in headless Chrome and the Web job runs it on every build.
+
 ### The reference client
 
 The second option is the raylib client's own WebAssembly build (`WASM.md`). It is
@@ -243,6 +288,35 @@ keeps the 854x480 column; the shell's canvas gets the stage size. Its mod
 loading and voice are the reference client's own story (`WASM.md`); its
 networking goes through the same `goatsd --gateway` WebSocket as the Godot
 client.
+
+## The smoke test
+
+`godot/tools/smoke_web.js` is the one check that answers "does the page run". It
+serves a packaged build (`target/godot-web` by default), opens the shell in
+headless Chrome or Edge over the DevTools protocol, and reads the console for:
+
+- **the extension loaded** -- `Initialize godot-rust`, printed by the extension
+  itself, so it survives a box with no renderer;
+- **the scene started** -- `play alone:`, from `main.gd`, which can only appear if
+  every script that names `Flight` parsed;
+- **nothing fatal** -- no `WebAssembly.Compile is disallowed`, no
+  `Could not find type "Flight"`, no `Failed to load script`, no uncaught
+  exception.
+
+```sh
+sh godot/tools/package_web.sh          # into target/godot-web
+node godot/tools/smoke_web.js          # -> target/godot-web-smoke.{png,log}
+node godot/tools/smoke_web.js dist-web # what the Web job runs
+```
+
+It exits 0 only on a pass, and it writes the screenshot and the whole console, so
+a red run comes with the frame it saw. The scene line is only *required* when the
+browser gave the page a renderer (`OpenGL API` appeared): a headless box without
+WebGL stops the engine before the scene runs, and the extension line is then all
+the test can honestly ask for.
+
+The Web job runs it after `package_web.sh`, so a Godot client that boots into a
+black frame cannot reach GitHub Pages again.
 
 ## Serving
 

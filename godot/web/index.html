@@ -834,9 +834,23 @@
 
       // The Godot export's own bootstrap, without its document: the same Engine
       // and progress screen, with the paths one directory deeper because the shell
-      // is the top-level page. The extension is preloaded into the virtual FS as
-      // `goats_godot.wasm` -- the name the pack's descriptor resolves -- from its
-      // stamped `client/` URL, so a rebuilt extension is a new URL too.
+      // is the top-level page.
+      //
+      // The extension is *named* below rather than preloaded into the virtual FS,
+      // and that is a correctness requirement, not a preference. Emscripten loads
+      // the entries of `gdextensionLibs` before `main` with `loadAsync`, so it
+      // fetches and compiles the module without blocking the main thread. A
+      // preloaded copy is instead `dlopen`ed by the engine, which compiles it with
+      // `new WebAssembly.Module` -- and a browser refuses that on the main thread
+      // above 8 MB. This module passed 8 MB at 8.5 MB, and the failure is total
+      // but quiet: no `Flight` class, so every script that names it fails to parse
+      // and the client is a black frame (`WEB.md`, "The Godot client").
+      //
+      // The URL has to be the bare file name at the shell's root. The engine
+      // `dlopen`s `goats_godot.wasm` (the basename of the descriptor's path) and
+      // Emscripten registers a dynamic library under the exact string it was
+      // given, so neither `client/goats_godot.wasm` nor a `?v=` stamp resolves.
+      // `package_web.sh` copies the extension up from `client/` for that reason.
       function bootGodot() {
         showStatus();
         // `canvasResizePolicy: 0` (none) and a canvas that is already the stage's
@@ -865,11 +879,10 @@
             experimentalVK: false,
             mainPack: "client/index.pck?v=" + BUILD,
             focusCanvas: true,
-            // Preloaded by hand below, so the stamped source and the descriptor's
-            // name can differ; an empty list also skips the exporter's own
-            // "extensions unsupported" check, which the `web_dlink` template
-            // passes anyway.
-            gdextensionLibs: [],
+            // Named, not preloaded: see the note above the function. An empty
+            // list would skip the exporter's "extensions unsupported" check and
+            // then fail at `dlopen`, which is how this broke the first time.
+            gdextensionLibs: ["goats_godot.wasm"],
             godotPoolSize: 4,
           };
           const missing = Engine.getMissingFeatures({ threads: false });
@@ -879,20 +892,17 @@
           }
           const engine = new Engine(config);
           engine
-            .preloadFile("client/goats_godot.wasm?v=" + BUILD, "goats_godot.wasm")
-            .then(() =>
-              engine.startGame({
-                onProgress: (current, total) => {
-                  if (current > 0 && total > 0) {
-                    statusProgress.value = current;
-                    statusProgress.max = total;
-                  } else {
-                    statusProgress.removeAttribute("value");
-                    statusProgress.removeAttribute("max");
-                  }
-                },
-              }),
-            )
+            .startGame({
+              onProgress: (current, total) => {
+                if (current > 0 && total > 0) {
+                  statusProgress.value = current;
+                  statusProgress.max = total;
+                } else {
+                  statusProgress.removeAttribute("value");
+                  statusProgress.removeAttribute("max");
+                }
+              },
+            })
             .then(() => {
               hideStatus();
               pullMods();

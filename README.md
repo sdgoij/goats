@@ -763,6 +763,11 @@ python tools/inspect_glb.py goat_animated.glb
 
 # The engine's raylib surface test (from the Slag checkout)
 cargo test -p runtime --features raylib --lib raylib
+
+# The Godot client in a browser (the Web job's own check: the extension loading
+# and the scene's scripts parsing are things only a browser can answer)
+GODOT=/path/to/Godot sh godot/tools/package_web.sh
+node godot/tools/smoke_web.js
 ```
 
 ## Troubleshooting

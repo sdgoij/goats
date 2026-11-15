@@ -96,6 +96,19 @@ else
     exit 1
 fi
 
+# The extension the shell boots the engine with. It cannot ride along inside
+# `client/` for that page: Emscripten registers a dynamic library under the exact
+# URL it was given, and the engine `dlopen`s the descriptor's basename
+# (`goats_godot.wasm`), so a path would not resolve. It also cannot be preloaded
+# instead of named -- the engine would compile it synchronously, and browsers
+# refuse that above 8 MB on the main thread (`godot/web/index.html`). So the
+# shell's root gets its own copy, alongside the exported page's.
+if [ -f "$out/client/goats_godot.wasm" ]; then
+    cp "$out/client/goats_godot.wasm" "$out/goats_godot.wasm"
+else
+    echo "package_web.sh: no client/goats_godot.wasm -- the Godot client will not boot" >&2
+fi
+
 cp "$godot_dir/web/index.html" "$out/index.html"
 # The shell's client URLs carry the same stamp, so a rebuilt client is a new URL
 # and the browser does not hand back yesterday's module.
