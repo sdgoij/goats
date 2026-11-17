@@ -95,6 +95,25 @@ case "${1:-client}" in
             mods_src="$ROOT/mods"
         fi
         export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=--preload-file=$mods_src@/mods"
+        # raylib-sys's build script configures cmake once, and cargo reuses that
+        # configure tree on every later build -- including one restored from a
+        # cache. The tree pins the absolute path of the `emcc` and the
+        # `Emscripten.cmake` it was configured against, and cmake reads those
+        # from the cache before it considers this run's command line: point a
+        # target directory built against one emsdk at another and the build
+        # script dies with "is not a full path to an existing compiler tool".
+        # CI hit exactly that when `setup-emsdk`'s own cache state moved the SDK
+        # between `$RUNNER_TEMP/<guid>` and `emsdk-cache`. Drop a configure tree
+        # that names a different SDK and let cmake rebuild it; a reconfigure is
+        # cheap next to the failure, and it only happens when the SDK moves.
+        for cache in "$ROOT/target/$TARGET/$PROFILE"/build/raylib-sys/*/out/build/CMakeCache.txt; do
+            [ -f "$cache" ] || continue
+            if ! grep -Fq "$EMSCRIPTEN_DIR/emcc" "$cache"; then
+                build="${cache%/CMakeCache.txt}"
+                echo "web: discarding raylib configure from another emsdk: ${build#"$ROOT"/}" >&2
+                rm -rf "$build"
+            fi
+        done
         cargo build --profile "$PROFILE" -p goats --target "$TARGET"
 
         # A static directory: the page, the glue and the module. `goats.js` is

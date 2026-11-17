@@ -293,12 +293,17 @@ jobs:
           targets: wasm32-unknown-emscripten
       - uses: Swatinem/rust-cache@v2
         with:
-          # `web-emsdk`: the cache that `web` used to hold a CMake tree configured
-          # against `setup-emsdk`'s old `_temp` folder, whose GUID path does not
-          # exist on the next run -- cmake then cannot find Emscripten.cmake or
-          # emcc and raylib-sys's build script panics. The folder is `emsdk-cache`
-          # now, inside the workspace and stable, so a fresh key is stable too.
-          key: web-emsdk
+          # `web-emsdk-v2`: `web` caches `target/`, and raylib-sys's cmake
+          # configure records the absolute path of the `emcc` it was configured
+          # with. `v1` was saved by a run whose `setup-emsdk` cache had missed:
+          # a miss installs under `$RUNNER_TEMP/<guid>/emsdk-main` and only
+          # copies the SDK into `emsdk-cache` at the end, so that run's cmake
+          # tree named a GUID path. The next run hit both caches, found the SDK
+          # at `emsdk-cache`, and cmake could not find Emscripten.cmake or emcc --
+          # raylib-sys's build script panicked. v2 abandons that tree; "Pin emsdk
+          # to the workspace" below saves every later one at a single path, so
+          # the configure is only redone when the pinned SDK itself moves.
+          key: web-emsdk-v2
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install build dependencies
         run: |
@@ -312,6 +317,44 @@ jobs:
         with:
           version: 5.0.7
           actions-cache-folder: emsdk-cache
+      # `setup-emsdk` installs to two different places depending on its own
+      # cache: a hit unpacks into `emsdk-cache/emsdk-main`, while a miss installs
+      # under `$RUNNER_TEMP/<guid>/emsdk-main` and only *copies* the finished SDK
+      # into `emsdk-cache` for the next run. Both trees are the same SDK, but
+      # `raylib-sys`'s cmake configure records the absolute path of `emcc`, and
+      # `rust-cache` archives that configure -- so a miss followed by a hit pairs
+      # a `_temp` path in the cache with an `emsdk-cache` SDK on disk, and cmake
+      # refuses to reconfigure ("not a full path to an existing compiler tool").
+      # Use the workspace copy either way and give every later step that path.
+      - name: Pin emsdk to the workspace
+        shell: bash
+        run: |
+          sdk="$GITHUB_WORKSPACE/emsdk-cache/emsdk-main"
+          if [ "$EMSDK" = "$sdk" ]; then
+            exit 0
+          fi
+          if [ ! -x "$sdk/emsdk" ]; then
+            echo "emsdk: no workspace copy at '$sdk' -- setup-emsdk left the SDK elsewhere" >&2
+            exit 1
+          fi
+          "$sdk/emsdk" activate 5.0.7
+          eval "$("$sdk/emsdk" construct_env 2>/dev/null | grep '^export ')"
+          if [ "$EMSDK" != "$sdk" ]; then
+            echo "emsdk: activate left EMSDK at '$EMSDK', wanted '$sdk'" >&2
+            exit 1
+          fi
+          case "$(command -v emcc)" in
+            "$sdk"/*) ;;
+            *)
+              echo "emsdk: emcc resolves to '$(command -v emcc)', not '$sdk/upstream/emscripten'" >&2
+              exit 1
+              ;;
+          esac
+          {
+            echo "EMSDK=$EMSDK"
+            echo "EMSDK_NODE=$EMSDK_NODE"
+            echo "PATH=$PATH"
+          } >> "$GITHUB_ENV"
       # `web/build.sh` hands bindgen the Emscripten sysroot, which a fresh SDK
       # populates on the first compile. Warming it here makes that path true
       # before the reference client's build script reaches for it.
