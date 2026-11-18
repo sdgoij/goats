@@ -1521,7 +1521,7 @@ function perfPureLoop(n) {
 // compile (§4b/§4c) -- so if a body allocates, the class it isolates is what the engine
 // is allocating for, and if `call` differs from the same arithmetic inlined, the call is
 // what costs. `new` is the calibration: one object literal is one box by definition.
-const PERF_LOOP = { kind: "none", n: 0, frames: 0, ns: 0, sink: 0 };
+const PERF_LOOP = { kind: "none", n: 0, frames: 0, ns: 0, best: Infinity, sink: 0 };
 const PERF_LOOP_KINDS = ["none", "arith", "arithinline", "global", "field", "fieldset", "index", "sqrt", "new", "call", "mapget", "maphas", "mapset"];
 const PERF_LOOP_OBJ = { v: 1 };
 const PERF_LOOP_ARR = [0, 1, 2, 3, 4, 5, 6, 7];
@@ -1625,9 +1625,11 @@ function perfLoopRun() {
     else if (kind === "mapget") s = perfLoopMapGet(n, PERF_LOOP_MAP);
     else if (kind === "maphas") s = perfLoopMapHas(n, PERF_LOOP_MAP);
     else if (kind === "mapset") s = perfLoopMapSet(n, PERF_LOOP_MAP);
+    const dt = rl.getTime() - t0;
     PERF_LOOP.sink += s;
     PERF_LOOP.frames += 1;
-    PERF_LOOP.ns += rl.getTime() - t0;
+    PERF_LOOP.ns += dt;
+    if (dt < PERF_LOOP.best) PERF_LOOP.best = dt;
 }
 
 function perfLoopSet(kind, n) {
@@ -1635,10 +1637,22 @@ function perfLoopSet(kind, n) {
     PERF_LOOP.n = n;
     PERF_LOOP.frames = 0;
     PERF_LOOP.ns = 0;
+    PERF_LOOP.best = Infinity;
     PERF_LOOP.sink = 0;
 }
 
 function perfLoopNs() {
     const iters = PERF_LOOP.frames * PERF_LOOP.n;
     return iters > 0 ? (PERF_LOOP.ns / iters) * 1e9 : 0;
+}
+
+// The fastest frame's per-iteration cost. `perfLoopNs` is a mean over the whole
+// window, so any one-off cost a frame carries that is not the loop -- a minor
+// GC, a texture upload -- lands in it divided by `frames * n`. At the console's
+// usual n=200 that term can exceed the loop itself and reads as the loop being
+// several times slower than it is; the minimum is the loop's own cost. Timer
+// resolution sets the floor, so read it above a few hundred ns.
+function perfLoopBestNs() {
+    if (PERF_LOOP.n <= 0 || PERF_LOOP.best === Infinity) return 0;
+    return (PERF_LOOP.best * 1e9) / PERF_LOOP.n;
 }

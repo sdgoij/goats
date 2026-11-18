@@ -598,7 +598,7 @@ function sceneCommand(line) {
                 if (parts[2] === undefined) {
                     return "ok " + JSON.stringify({
                         kind: PERF_LOOP.kind, n: PERF_LOOP.n, frames: PERF_LOOP.frames,
-                        nsPerIter: ctlRound(perfLoopNs()), sink: PERF_LOOP.sink
+                        nsPerIter: ctlRound(perfLoopNs()), bestNsPerIter: ctlRound(perfLoopBestNs()), sink: PERF_LOOP.sink
                     });
                 }
                 const kind = String(parts[2]);
