@@ -123,12 +123,14 @@ func _process(delta: float) -> bool:
 				return _finish()
 			return false
 		5:
-			# The watch starts when the peer gets up, and the dead window is compared on its own:
-			# the report was about the death and the respawn both, so a herd that stops for the one
-			# and resumes for the other must not be averaged into one passing number.
+			# The watch starts when the peer gets up, and the dead window is *reported* rather than
+			# asserted: this host's bots sleep for 5-11 s and idle/eat for 2-7 s (`bots.js`), so a herd
+			# that stands still for one three-second window is the simulation being a simulation. What
+			# is asserted is the pair -- across the death *and* the respawn -- plus the publishing
+			# clock below, which is this host's own obligation.
 			if _gait(peers) != "dead":
 				print("peer up:   ", _peer, " got up; watching")
-				_compare(_mid, _positions(bots), "while the peer's goat lay dead")
+				_observe(_mid, _positions(bots), "while the peer's goat lay dead")
 				_phase = 6
 				_timer = 0.0
 				return false
@@ -173,11 +175,9 @@ func _sample_gap() -> void:
 		_worst_gap = gap
 		_worst_at = "phase %d" % _phase
 
-## What the herd did across one window, and whether that counts as moving.
-func _compare(from: Dictionary, to: Dictionary, window: String) -> void:
-	if from.is_empty() or to.is_empty():
-		_failures.append("there was no herd to compare " + window)
-		return
+## What the herd did across one window, printed and not judged: a window is three seconds of this
+## host's own simulation, and a herd asleep in it is a herd asleep.
+func _motion(from: Dictionary, to: Dictionary) -> Dictionary:
 	var moved := 0
 	var most := 0.0
 	for index in from:
@@ -187,10 +187,26 @@ func _compare(from: Dictionary, to: Dictionary, window: String) -> void:
 		most = maxf(most, distance)
 		if distance > MOTION:
 			moved += 1
-	print("motion:    ", moved, " of ", from.size(), " goat(s) moved ", window,
-		", most %.3f m" % most)
-	if most <= MOTION:
-		_failures.append("this host's herd did not move %s (most was %.3f m)" % [window, most])
+	return {"moved": moved, "most": most, "count": from.size()}
+
+func _observe(from: Dictionary, to: Dictionary, window: String) -> void:
+	if from.is_empty() or to.is_empty():
+		print("motion:    no herd to compare ", window)
+		return
+	var motion := _motion(from, to)
+	print("motion:    ", motion["moved"], " of ", motion["count"], " goat(s) moved ", window,
+		", most %.3f m" % motion["most"])
+
+## What the herd did across one window, and whether that counts as moving.
+func _compare(from: Dictionary, to: Dictionary, window: String) -> void:
+	if from.is_empty() or to.is_empty():
+		_failures.append("there was no herd to compare " + window)
+		return
+	var motion := _motion(from, to)
+	print("motion:    ", motion["moved"], " of ", motion["count"], " goat(s) moved ", window,
+		", most %.3f m" % motion["most"])
+	if motion["most"] <= MOTION:
+		_failures.append("this host's herd did not move %s (most was %.3f m)" % [window, motion["most"]])
 
 func _finish() -> bool:
 	print("publishing: worst gap ", _worst_gap, " frame(s) at ", _worst_at)

@@ -7,9 +7,16 @@
 # once: whether the host is still publishing a herd that moves, and whether this end is still taking
 # it. Nothing here simulates anything: it joins, watches the mirror settle, dies the way a player
 # dies (the console's own `kill` and `restart`, which are `R` and a lethal bang's own paths), *lies
-# there* for a while -- a death is many frames, not one, and the report was about the death and the
-# respawn both, so each window is measured on its own -- and then asks whether the herd moved across
-# each of them.
+# there* for a while, gets up, and watches again.
+#
+# Two things are asserted, and the dead window is *reported* rather than asserted. The mirror owes the
+# session's snapshots while the goat lies dead -- a client that stops taking worlds is the bug this
+# was written for -- and it owes a herd that moves at all across the death and the respawn together.
+# It does not owe movement inside the dead window: the herd is the host's, a host's bots sleep for
+# 5-11 s and idle/eat for 2-7 s (`bots.js`), and seven of them standing still for three seconds is
+# the simulation being a simulation. Requiring it was a coin flip worth about one run in twenty, and
+# it read from the outside as a mirror bug (CI, preview.10: `0 of 7 goat(s) moved`, 0.000 m, with 29
+# snapshots applied during the window).
 #
 # The worlds this end has applied are printed beside every sample, because the two ways a herd stops
 # are different bugs: a mirror that is still being sent worlds is a host whose herd stood still, and
@@ -36,6 +43,10 @@ var _timer := 0.0
 var _phase := 0
 var _before := {}
 var _mid := {}
+## The session's own count of applied world snapshots at the two sample points, so the dead window
+## can be judged by whether the mirror kept receiving worlds.
+var _worlds_before := 0
+var _worlds_dead := 0
 var _failures: Array[String] = []
 
 func _initialize() -> void:
@@ -75,7 +86,8 @@ func _process(delta: float) -> bool:
 			if _timer < SETTLE:
 				return false
 			_before = _positions(herd)
-			print("before:  ", _before.size(), " goat(s), ", _worlds(), " world(s) applied")
+			_worlds_before = _worlds()
+			print("before:  ", _before.size(), " goat(s), ", _worlds_before, " world(s) applied")
 			var commands: Object = _main.get("commands")
 			print("kill ->    ", commands.call("run", "kill"))
 			_phase = 2
@@ -86,7 +98,8 @@ func _process(delta: float) -> bool:
 			if _timer < DEAD:
 				return false
 			_mid = _positions(herd)
-			print("dead:    ", _mid.size(), " goat(s), ", _worlds(), " world(s) applied")
+			_worlds_dead = _worlds()
+			print("dead:    ", _mid.size(), " goat(s), ", _worlds_dead, " world(s) applied")
 			var commands: Object = _main.get("commands")
 			print("restart -> ", commands.call("run", "restart"))
 			_phase = 3
@@ -96,8 +109,15 @@ func _process(delta: float) -> bool:
 				return false
 			var after := _positions(herd)
 			print("after:   ", after.size(), " goat(s), ", _worlds(), " world(s) applied")
-			_compare(_before, _mid, "while this client's goat lay dead", DEAD)
-			_compare(_mid, after, "after this client's goat got up", WATCH)
+			_observe(_before, _mid, "while this client's goat lay dead", DEAD)
+			_observe(_mid, after, "after this client's goat got up", WATCH)
+			_compare(_before, after, "across the death and the respawn", DEAD + WATCH)
+			# The mirror's half of the bargain, which is what a death could actually break: the
+			# session has to keep carrying the host's herd while this client's goat is not in it.
+			if _worlds_dead == _worlds_before:
+				_failures.append(
+					"no world snapshot arrived while this client's goat lay dead (still %d)"
+					% _worlds_before)
 			return _finish()
 	return false
 
@@ -114,11 +134,9 @@ func _positions(herd: Node) -> Dictionary:
 func _worlds() -> int:
 	return int(_main.get("_worlds"))
 
-## What the herd did across one window, and whether that counts as moving.
-func _compare(from: Dictionary, to: Dictionary, window: String, seconds: float) -> void:
-	if from.is_empty() or to.is_empty():
-		_failures.append("there was no herd to compare " + window)
-		return
+## What the herd did across one window, printed and *not* judged. A window is three seconds of a
+## host's simulation, and a herd that is asleep in it is a herd asleep.
+func _motion(from: Dictionary, to: Dictionary) -> Dictionary:
 	var moved := 0
 	var most := 0.0
 	for index in from:
@@ -128,11 +146,27 @@ func _compare(from: Dictionary, to: Dictionary, window: String, seconds: float) 
 		most = maxf(most, distance)
 		if distance > MOTION:
 			moved += 1
-	print("motion:  ", moved, " of ", from.size(), " goat(s) moved ", window,
-		", most %.3f m in %.1f s" % [most, seconds])
-	if most <= MOTION:
+	return {"moved": moved, "most": most, "count": from.size()}
+
+func _observe(from: Dictionary, to: Dictionary, window: String, seconds: float) -> void:
+	if from.is_empty() or to.is_empty():
+		print("motion:  no herd to compare ", window)
+		return
+	var motion := _motion(from, to)
+	print("motion:  ", motion["moved"], " of ", motion["count"], " goat(s) moved ", window,
+		", most %.3f m in %.1f s" % [motion["most"], seconds])
+
+## What the herd did across one window, and whether that counts as moving.
+func _compare(from: Dictionary, to: Dictionary, window: String, seconds: float) -> void:
+	if from.is_empty() or to.is_empty():
+		_failures.append("there was no herd to compare " + window)
+		return
+	var motion := _motion(from, to)
+	print("motion:  ", motion["moved"], " of ", motion["count"], " goat(s) moved ", window,
+		", most %.3f m in %.1f s" % [motion["most"], seconds])
+	if motion["most"] <= MOTION:
 		_failures.append("the mirrored herd did not move %s (most was %.3f m in %.1f s)"
-			% [window, most, seconds])
+			% [window, motion["most"], seconds])
 
 func _finish() -> bool:
 	if _failures.is_empty():
