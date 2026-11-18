@@ -8,13 +8,15 @@ Protocol, and prints what it finds.
 
     godot/tools/gdscript_warnings.py
 
-Set `GODOT_BIN` to the Godot executable (the same variable `gates.sh` reads)
-and `LSP_PORT` if the default port is taken. Exits 1 on any diagnostic and 2
-if the server never published a result for a script, so it can be a gate.
+Set `GODOT_BIN` to the Godot executable, or let `godot/tools/godot-bin.sh` find one -- this script
+asks it the same way `gates.sh` does, so `PATH` and the usual install locations are enough. Set
+`LSP_PORT` if the default port is taken. Exits 1 on any diagnostic and 2 if the server never
+published a result for a script, so it can be a gate.
 """
 import glob
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -22,8 +24,43 @@ import time
 from pathlib import Path
 from urllib.parse import unquote
 
-GODOT = os.environ.get(
-    "GODOT_BIN", r"C:\Users\T\bin\Godot_v4.7.2-stable_win64.exe")
+TOOLS = Path(__file__).resolve().parent
+
+
+def _native(path: str) -> str:
+    """A path `Popen` can run on this platform.
+
+    The resolver answers in the shell's own words, which on Windows is an MSYS
+    path (`/c/Users/…`) -- fine for `sh`, and not something `CreateProcess` can
+    find. `/X/rest` is the drive form, so it maps back to `X:\\rest`.
+    """
+    if os.name == "nt" and len(path) > 3 and path[0] == "/" and path[2] == "/" and path[1] != "/":
+        return f"{path[1].upper()}:{path[2:]}"
+    return path
+
+
+def resolve_godot() -> str:
+    """The engine to drive, from `godot-bin.sh`.
+
+    One search order for every tool here (`GODOT_BIN`, then `godot` on `PATH`,
+    then the usual install locations), so a machine is told once. The shell is
+    resolved to an absolute path first: `CreateProcess` does not search `PATH`
+    the way `shutil.which` does, so a bare `sh` fails on Windows even when the
+    shell is there.
+    """
+    shell = shutil.which("sh") or shutil.which("bash")
+    if shell is None:
+        sys.exit("gdscript_warnings.py: no sh on PATH; set GODOT_BIN to the 4.7.2 executable")
+    try:
+        completed = subprocess.run(
+            [shell, str(TOOLS / "godot-bin.sh")],
+            stdout=subprocess.PIPE, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        sys.exit(f"gdscript_warnings.py: no engine: {error}")
+    return _native(completed.stdout.strip())
+
+
+GODOT = resolve_godot()
 PROJECT = str(Path(__file__).resolve().parent.parent)
 PORT = int(os.environ.get("LSP_PORT", "6017"))
 

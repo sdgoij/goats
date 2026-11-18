@@ -53,7 +53,7 @@
 # joins, and no Godot-to-Godot run goes red. It needs a window, because the reference
 # client is a raylib app, like `shot`.
 #
-# Overrides: GODOT_BIN (the engine), GOATSD_BIN (the server), GOATS_BIN (the
+# Overrides: GODOT_BIN (the engine -- or let `godot-bin.sh` find it), GOATSD_BIN (the server), GOATS_BIN (the
 # reference client, `jsjoin`), GOATSD_HERD (the host's herd size -- `--herd`; the
 # `herd` mode at a large count is what shows the world datagram carries the larger
 # herd), and GOATSD_FLAGS (extra server flags, word-split -- e.g.
@@ -107,9 +107,9 @@ to_native() {
     fi
 }
 
-godot_bin=${GODOT_BIN:-/c/Users/T/bin/Godot_v4.7.2-stable_win64.exe}
+godot_bin=$(sh "$root/godot/tools/godot-bin.sh") || exit 1
 if [ ! -x "$godot_bin" ]; then
-    echo "interop.sh: $godot_bin is not executable; set GODOT_BIN" >&2
+    echo "interop.sh: $godot_bin is not executable" >&2
     exit 1
 fi
 

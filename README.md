@@ -742,8 +742,15 @@ cargo test --profile fast -p plugin -p server -p flight-js -p goats-godot
 
 # 4. The client's own cases (CI's `Build` job), and the port's gates.
 cargo test --release -p goats
-GODOT_BIN=<godot> sh godot/tools/gates.sh
+sh godot/tools/gates.sh
 ```
+
+`gates.sh` needs a Godot 4.7.2 and finds one itself: `GODOT_BIN` when it is
+set (a path or a command), then `godot` on `PATH`, then the repository's
+`godot-bin/`, then the usual places a downloaded editor is kept.
+`godot/tools/godot-bin.sh` prints what it would use and why, and setting
+`GODOT_BIN` overrides it for `interop.sh`, `package_web.sh` and
+`gdscript_warnings.py` as well.
 
 `--profile fast` is `release` minus the link it pays for its 13% (see
 `Cargo.toml`); it is what the scene job runs, and the shipped build's own tests

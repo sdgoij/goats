@@ -22,7 +22,7 @@ cargo test --profile fast -p plugin -p server -p flight-js -p goats-godot
 cargo test --release -p goats
 
 # 5. The port, when `godot/**/*.gd` or `godot/**/*.gdshader` changed.
-GODOT_BIN=<godot 4.7.2> sh godot/tools/gates.sh
+sh godot/tools/gates.sh
 ```
 
 `README.md`'s *Tests and tools* carries the same list with the reasoning; if the
@@ -55,8 +55,10 @@ So a change that is "only a mod" still needs command 1, not just command 2.
 A `godot/src/*.gd` edit is invisible to `cargo test`. `godot/tools/gates.sh` is
 the port's own conformance suite (42 gates, which parse every script), and
 `gdscript_warnings.py` is the one that fails on `INTEGER_DIVISION`,
-`SHADOWED_VARIABLE` and friends. Both need `GODOT_BIN` pointing at a 4.7.2
-binary.
+`SHADOWED_VARIABLE` and friends. Both need a 4.7.2 engine, and both ask
+`godot/tools/godot-bin.sh` for it: `GODOT_BIN` when set (a path or a command),
+then `godot` on `PATH`, then the repository's `godot-bin/`, then the usual
+install locations. Run that script alone to see which one a machine picks.
 
 ## The code is the documentation
 

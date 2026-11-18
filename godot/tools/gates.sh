@@ -5,6 +5,9 @@
 #   godot/tools/gates.sh              # every gate that needs no server
 #   GODOT_BIN=... godot/tools/gates.sh
 #
+# The engine is `godot-bin.sh`'s to find -- `GODOT_BIN`, then `godot` on `PATH`, then the usual
+# install locations -- and it says which one it picked.
+#
 # A gate is a `SceneTree` script that quits non-zero on failure and prints `FAIL: ...` lines with
 # the reason (and `OK: ...` when it has none), so this is a loop rather than a list: a new
 # `tools/verify_*.gd` is picked up by existing. The list it *cannot* discover is the five that need
@@ -31,7 +34,7 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 godot_dir=$root/godot
-godot_bin=${GODOT_BIN:-/c/Users/T/bin/Godot_v4.7.2-stable_win64.exe}
+godot_bin=$(sh "$here/godot-bin.sh") || exit 1
 timeout_secs=${GATE_TIMEOUT:-300}
 log_dir=$root/target/gate-logs
 
@@ -44,7 +47,7 @@ session_gate() {
 }
 
 if [ ! -x "$godot_bin" ]; then
-    echo "gates.sh: $godot_bin is not executable; set GODOT_BIN" >&2
+    echo "gates.sh: $godot_bin is not executable" >&2
     exit 1
 fi
 

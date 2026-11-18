@@ -5,6 +5,9 @@
 #
 #   GODOT=/path/to/Godot sh godot/tools/package_web.sh [out]
 #
+# The engine is `godot-bin.sh`'s to find (`GODOT_BIN`, or `godot` on `PATH`); `GODOT` is this
+# script's own older name for the override and still works.
+#
 # `out` defaults to `target/godot-web`. The shell (`godot/web/index.html`) is
 # plain, dependency-free HTML: it frames the client at a 16:9 stage, offers a
 # client switcher, and holds the mod editor's place in the page. The reference
@@ -15,7 +18,11 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 godot_dir=$root/godot
 out=${1:-$root/target/godot-web}
-godot=${GODOT:-${GODOT_BIN:-godot}}
+if [ -n "${GODOT:-}" ] && [ -z "${GODOT_BIN:-}" ]; then
+    GODOT_BIN=$GODOT
+    export GODOT_BIN
+fi
+godot=$(sh "$here/godot-bin.sh") || exit 1
 
 # A build stamp for cache busting (`?v=`). A normal reload revalidates the shell
 # but not the `.pck` underneath it, so the stamp is written into the shell's
