@@ -1329,6 +1329,7 @@ dependencies = [
  "pull",
  "raylib-sys",
  "scene",
+ "scene-snapshot",
  "serde",
  "serde_json",
  "session",
@@ -3819,6 +3820,14 @@ dependencies = [
 [[package]]
 name = "scene"
 version = "0.1.0"
+
+[[package]]
+name = "scene-snapshot"
+version = "0.1.0"
+dependencies = [
+ "scene",
+ "slag",
+]
 
 [[package]]
 name = "schannel"

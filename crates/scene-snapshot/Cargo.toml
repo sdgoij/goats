@@ -1,0 +1,18 @@
+[package]
+name = "scene-snapshot"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# The client's build-time scene snapshot: `crates/goats/build.rs` calls
+# `build()` and writes the bytes into its own `OUT_DIR`. This is a crate of its
+# own so the engine stays out of the client's build graph. Cargo's `dep/feature`
+# syntax in a crate's `[features]` names a dependency regardless of kind, so a
+# build-dependency named `slag` in `crates/goats` also receives
+# `gpu-skinning = ["slag/gpu-skinning"]` -- and raylib with it, in a *host*
+# build (a build script is a host binary). The web build then tries to configure
+# a desktop raylib on a runner with no wayland-scanner. Here `slag` is a plain
+# dependency and no feature in this crate names it.
+[dependencies]
+scene = { workspace = true }
+slag = { workspace = true }

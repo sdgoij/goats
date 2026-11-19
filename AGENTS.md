@@ -10,7 +10,8 @@ repository a CI round more than once. So run what CI runs
 ```sh
 # 1. The crates that need no engine (CI's `Crates` job).
 cargo test --workspace --exclude goats --exclude goats-android --exclude harness \
-    --exclude goats-godot --exclude plugin --exclude server --exclude flight-js
+    --exclude goats-godot --exclude plugin --exclude server --exclude flight-js \
+    --exclude scene-snapshot
 
 # 2. The whole scene on the engine, ignored cases included (CI's `Scene tests`).
 cargo test --profile fast -p harness -- --include-ignored --nocapture

@@ -741,7 +741,8 @@ So a change is green when all four are:
 # 1. The crates that need no engine (CI's `Crates` job). This is the one that
 #    reads the mod fixtures, and so the one that owns the digest pin.
 cargo test --workspace --exclude goats --exclude goats-android --exclude harness \
-    --exclude goats-godot --exclude plugin --exclude server --exclude flight-js
+    --exclude goats-godot --exclude plugin --exclude server --exclude flight-js \
+    --exclude scene-snapshot
 
 # 2. The scene on the engine, ignored cases included (CI's `Scene tests` job):
 #    gaits, stats, death, weather, the herd, the menu, the console, the mods,

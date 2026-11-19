@@ -41,7 +41,7 @@ jobs:
   # pass is the crates that are fast unoptimized, where debug's overflow and
   # `debug_assert` checks are worth having and cost nothing.
   #
-  # The four crates that link the engine -- `goats-godot`, `plugin`, `server`,
+  # The crates that link the engine -- `goats-godot`, `plugin`, `server`,
   # `flight-js` -- are left out as well, and that is what makes this job finish.
   # They are not slow in debug because of their own code: they pull in Slag with
   # the JIT (cranelift) and, through `goats-godot`, Godot's generated bindings,
@@ -50,7 +50,10 @@ jobs:
   # times what a four-core Windows runner can build and link in an hour, so the
   # job timed out, `cache-on-failure` never completed an entry, and the next run
   # paid the whole cold cost again. The `scene` job already builds Slag for that
-  # same graph at `--profile fast`, so it runs their tests instead.
+  # same graph at `--profile fast`, so it runs their tests instead. The client's
+  # snapshot writer (`scene-snapshot`) is left out for the same reason: it has no
+  # tests of its own, and naming it here would put the engine in this job's graph
+  # for nothing. Its only caller is the client's build script, in the build job.
   test:
     name: Crates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -89,7 +92,7 @@ jobs:
           # its budget -- evicting what main depends on. Only main saves.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Test the crates that need no engine
-        run: cargo test --workspace --exclude goats --exclude goats-android --exclude harness --exclude goats-godot --exclude plugin --exclude server --exclude flight-js
+        run: cargo test --workspace --exclude goats --exclude goats-android --exclude harness --exclude goats-godot --exclude plugin --exclude server --exclude flight-js --exclude scene-snapshot
 
   # The scene tests: `crates/harness` evaluates the client's exact scene on Slag
   # against a recording `rl` stub, so the suite needs no Node, no raylib and no

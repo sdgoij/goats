@@ -100,14 +100,13 @@ raylib-sys = { workspace = true, features = ["opengl_es_30"] }
 jni = { version = "0.21", features = ["invocation"] }
 ndk-context = "0.1"
 
-# The scene snapshot is written at build time (see `build.rs`): the script
-# evaluates `scene::SCENE` once and the client boots by restoring the realm it
-# leaves behind, the shape Deno's startup snapshot has. The engine is built for
-# the host with its defaults and none of the client's features -- raylib and the
-# JIT add host callbacks, which a snapshot cannot carry, so the writer leaves
-# them out and the reader (the client) installs them itself. `scene` is here as
-# well as above because a build script is compiled for the host, apart from the
-# target's dependency graph.
+# The scene snapshot is written at build time (see `build.rs`): the script calls
+# `scene-snapshot` to evaluate `scene::SCENE` once and the client boots by
+# restoring the realm it leaves behind, the shape Deno's startup snapshot has.
+# The engine is deliberately not named here: a build-dependency called `slag`
+# would also receive this crate's `gpu-skinning = ["slag/gpu-skinning"]` edge,
+# and with it a host raylib build (a build script is a host binary), which is
+# what broke the web build. `scene-snapshot` keeps the engine out of this
+# crate's build graph and exposes the parts list the script watches.
 [build-dependencies]
-scene = { workspace = true }
-slag = { workspace = true }
+scene-snapshot = { workspace = true }

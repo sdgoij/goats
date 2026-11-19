@@ -9,7 +9,7 @@ resolver = "3"
 # member here rather than a workspace of its own so it inherits the
 # `workspace = true` dependencies above and shares this one `Cargo.lock` -- which
 # is what lets it link `session`/`proto`/`plugin` unchanged. See `godot/PORT.md`.
-members = ["crates/goats", "crates/android", "crates/flight", "crates/flight-js", "crates/godot", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/server", "crates/session", "crates/voice"]
+members = ["crates/goats", "crates/android", "crates/flight", "crates/flight-js", "crates/godot", "crates/harness", "crates/mods", "crates/plugin", "crates/proto", "crates/pull", "crates/scene", "crates/scene-snapshot", "crates/server", "crates/session", "crates/voice"]
 # `cargo run` and a bare `cargo build` mean the client, so the README's
 # `cargo run --release` keeps working. Use `--workspace` to build or test all.
 default-members = ["crates/goats"]
@@ -26,6 +26,10 @@ exclude = ["slag"]
 session = { path = "crates/session" }
 mods = { path = "crates/mods" }
 scene = { path = "crates/scene" }
+# The client's build-time scene snapshot: evaluates the scene once and hands the
+# realm to `crates/goats`'s build script. A crate of its own because it needs
+# the engine, and the client must not (see `crates/scene-snapshot/Cargo.toml`).
+scene-snapshot = { path = "crates/scene-snapshot" }
 flight = { path = "crates/flight" }
 flight-js = { path = "crates/flight-js" }
 proto = { path = "crates/proto" }
