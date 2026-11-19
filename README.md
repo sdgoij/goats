@@ -8,9 +8,9 @@ is loaded and played back inside the [Slag](https://github.com/sdgoij/slag)
 JavaScript engine through its raylib host module (`rl`).
 
 Almost everything that moves is JavaScript: `crates/goats/src/main.rs` is a thin
-host that embeds the model and evaluates the scene from
-`crates/goats/src/game/`, which drives the gait state machine, camera, HUD and
-the heightfield terrain.
+host that embeds the model and boots the scene from `crates/goats/src/game/`
+(a build-time snapshot on desktop, the joined script in the browser), driving the
+gait state machine, camera, HUD and the heightfield terrain.
 
 Prebuilt binaries for Windows x86-64 and Linux x86-64/AArch64 are attached to
 each [release](https://github.com/sdgoij/goats/releases); to build it yourself:
@@ -387,12 +387,12 @@ event into a character — so only the on-screen keyboard reaches it.
 | Path | What it is |
 | --- | --- |
 | `Cargo.toml` | The workspace manifest: `crates/goats` (its `default-members`, so `cargo run` means the client) plus the networking, scene and harness crates |
-| `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, joins and evaluates the scene |
+| `crates/goats/src/main.rs` | Rust host: installs the JIT + raylib, registers the embedded assets, and restores the build-time scene snapshot (the browser target evaluates the joined script instead) |
 | `crates/goats/src/net.rs` | The network bridge: JSON lines between the frame loop and a tokio runtime thread |
 | `crates/goats/src/audio.rs` | Voice chat: `cpal` capture, the speech gate, Opus coding, and one raylib stream its callback fills |
 | `crates/goats/src/android.rs` | The phone's touch surface: `android.touchCount()`, `touchAt(i, out)` and `pinch(i, j)`, installed as a global only on Android (ANDROID.md D1) |
 | `crates/goats/src/game/*.js` | The scene, split into 18 parts (core, model, world, water, lighting, sky, audio, weather, food, bots, goat, ctl, menu, console, net, mods, explosions, touch) |
-| `crates/scene/` | The scene bundle: the ordered parts, the joined script and the two `rl` stubs (the null one for `goatsd`, the recording one for the harness) |
+| `crates/scene/` | The scene bundle: the ordered parts, the joined script and the three `rl` stubs (the null one for `goatsd`, the recording one for the harness, and the little one the client's build script evaluates) |
 | `crates/harness/` | The scene tests: the Rust harness that runs the scene on Slag, with no Node (M15) |
 | `crates/mods/` | The mod loader: discovery, manifest validation, ordering and asset reads (pure Rust, no engine) |
 | `crates/pull/` | Mod sync (M18): fetch a host's world mods over the fetch ALPN, verify each with the loader, and install it beside the player's own |
@@ -420,7 +420,7 @@ context.set_host_callbacks(callbacks);          // forwards console.log -> [js]
 slag::install_jit(&mut context).unwrap();
 context.install_raylib().unwrap();
 context.register_raylib_asset("goat_animated.glb", GOAT_GLB);
-context.eval(SCENE).unwrap();                    // the whole scene
+load_scene(&mut context);                        // the whole scene, from its snapshot
 ```
 
 The scene is split for readability but compiled as one script: `crates/scene`
@@ -430,6 +430,17 @@ thing, and the top-level `const`s run in file order). That list is the only plac
 the order lives — the client, the headless server and the Rust harness all read
 it — so adding a part is just adding the file to `crates/goats/src/game/` and one
 line to the list in `crates/scene/src/lib.rs`.
+
+On a 64-bit little-endian target the client does not evaluate that script at
+run time: `crates/goats/build.rs` evaluates it once, at build time, against a
+narrow `rl` stub (`crates/scene/src/snapshot_rl.js`) and embeds the realm it
+leaves behind. Startup restores the blob, the shape a Deno binary boots from,
+and the host surfaces installed first (`rl`, `__flight`, the console) are the
+ones the restored functions then use. The engine's format carries values, not
+Rust callbacks, which is why the build-time realm has none: the stub answers
+only what the scene's top level reads, and is deleted before the write. The
+browser target is 32-bit, which a snapshot cannot cross, so it keeps evaluating
+the joined script; `goatsd` and the harness do the same.
 
 `goatsd` evaluates the same scene, from the same list, against a stub `rl`
 (`crates/scene/src/null_rl.js`) instead of installing raylib: drawing and input

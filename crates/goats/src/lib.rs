@@ -6,8 +6,10 @@
 //! one with `register_raylib_asset`, and `rl.loadModel`/`rl.loadSound`/
 //! `rl.loadMusic` look the bytes up by name before falling back to the
 //! filesystem. The scene script is split across `crates/goats/src/game/*.js`
-//! and concatenated into one script here, so the parts share a single top-level
-//! scope.
+//! and concatenated into one script by `crates/scene`, so the parts share a
+//! single top-level scope. On a 64-bit little-endian target that script is not
+//! evaluated at startup: `build.rs` evaluates it once and embeds the realm it
+//! leaves behind, and a launch restores that (`load_scene`).
 //!
 //! The host owns the frame loop -- the scene exposes `sceneInit`/`sceneFrame`/
 //! `sceneShutdown` instead of running itself -- so it can interleave commands
@@ -225,7 +227,39 @@ static ASSETS: &[(&str, &[u8])] = &[
 /// `crates/scene` owns. The list lives there and nowhere else, so the client,
 /// the headless server and the test harness all evaluate the same script in the
 /// same order.
+///
+/// A build of this crate for a 64-bit little-endian target does not use the
+/// source at all: `build.rs` evaluates it once and embeds the realm it leaves
+/// behind (see `SCENE_SNAPSHOT`). The joined script stays for the browser build,
+/// whose pointer width a snapshot cannot cross, and as the thing the snapshot is
+/// made of.
+#[cfg(not(goats_scene_snapshot))]
 use scene::SCENE;
+
+/// The scene as `build.rs` left it: a realm evaluated once at build time, which
+/// startup restores instead of evaluating sixteen thousand lines of JavaScript.
+/// The engine's format is Deno's shape (a value graph, not a heap image), so the
+/// blob carries the scene's globals and functions while the host surfaces --
+/// `rl`, `__flight`, the console -- are the running realm's own.
+#[cfg(goats_scene_snapshot)]
+const SCENE_SNAPSHOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scene.snapshot"));
+
+/// Put the scene into `context`: the build-time snapshot where this target has
+/// one, the joined source otherwise.
+///
+/// The snapshot path is not a fallback -- `build.rs` restores the blob in a
+/// fresh realm before handing it over, so a blob that would fail here fails the
+/// build instead. The host surfaces must already be installed when this runs:
+/// the restored functions resolve `rl`, `__flight` and the rest by name against
+/// the realm they wake up in.
+fn load_scene(context: &mut Context) {
+    #[cfg(goats_scene_snapshot)]
+    context
+        .read_snapshot(SCENE_SNAPSHOT)
+        .unwrap_or_else(|error| panic!("embedded scene snapshot: {error}"));
+    #[cfg(not(goats_scene_snapshot))]
+    context.eval(SCENE).unwrap();
+}
 
 /// One of the scene's global functions, resolved by name.
 fn scene_function(context: &Context, name: &str) -> JsValue {
@@ -855,11 +889,10 @@ pub fn run() {
         }
     }
     // The flight controller, a native global the scene's `fly`/`fall` branches
-    // call. Installed before the eval, like `android`/`web`: the scene looks for
-    // it as it loads.
+    // call. Installed before the scene is loaded, like `android`/`web`.
     flight_js::install(&mut context);
     // The scene only defines its frame functions here; the loop below drives it.
-    context.eval(SCENE).unwrap();
+    load_scene(&mut context);
 
     // Hand the scene the metadata table, load every entry in order, then close
     // registration. A scene without the mod surface ignores all of this.
@@ -1360,4 +1393,38 @@ fn install_step(step: Box<dyn FnMut() -> bool>) {
 thread_local! {
     static FRAME: std::cell::RefCell<Option<Box<dyn FnMut() -> bool>>> =
         std::cell::RefCell::new(None);
+}
+
+// The embedded snapshot is the whole scene on this target, so its restore is the
+// startup path: a scene function the realm cannot see, or a palette constant
+// frozen to the build-time stub's idea of `rl.color`, would only surface as a
+// missing-function panic or a wrong colour at play time.
+#[cfg(all(test, goats_scene_snapshot))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_embedded_snapshot_restores_onto_the_hosts_realm() {
+        let mut context = Context::new().unwrap();
+        // The same order `run()` uses: the host surfaces first, the scene after.
+        context.install_raylib().unwrap();
+        flight_js::install(&mut context);
+        load_scene(&mut context);
+
+        // `FUR` was computed against the build-time `rl` stub and travelled as a
+        // number; the real `rl.color` must agree with it, or the snapshot froze
+        // the wrong palette. `sceneInit` and the flight global are the two the
+        // restore has to have made reachable. `FLIGHT` is still null here --
+        // `sceneInit` is what reads `__flight`.
+        let ok = context
+            .eval(
+                "typeof sceneInit === 'function' \
+                 && typeof sceneFrame === 'function' \
+                 && typeof __flight === 'object' \
+                 && FUR === rl.color(206, 186, 156) \
+                 && FLIGHT === null",
+            )
+            .unwrap();
+        assert_eq!(ok.as_boolean(), Some(true));
+    }
 }

@@ -23,7 +23,12 @@ let flingFlight = 0;
 // numbers are the client's; the crate is a pure step over them. `flightCapable`
 // is the captured bird's grant, set by the mod's `setFlight` and by the `flight`
 // console verb.
-const FLIGHT = typeof __flight !== "undefined" ? __flight : null;
+//
+// Resolved in `sceneInit`, not here: the Raylib client boots from a build-time
+// snapshot, and that realm was evaluated with no host, so a `__flight` captured
+// at load time would be frozen as null. Every host installs the real global
+// before init runs (the server and harness included), so the late read sees it.
+let FLIGHT = null;
 let flightCapable = false;
 let flightSpeed = 0;
 let flightVY = 0;
@@ -761,6 +766,8 @@ function drawLoading() {
 }
 
 function sceneInit() {
+    // The host's flight surface, installed before this runs (`flight_js::install`).
+    FLIGHT = typeof __flight !== "undefined" ? __flight : null;
     // A tab sizes the window like an embedded video; everywhere else it is the
     // desktop's window. The browser surface is installed before the scene runs,
     // so `typeof web` is a reliable way to tell (WASM.md W0).

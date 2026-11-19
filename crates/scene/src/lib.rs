@@ -54,6 +54,14 @@ pub const NULL_RL: &str = include_str!("null_rl.js");
 /// [`NULL_RL`], which it overlays rather than replacing.
 pub const HARNESS_RL: &str = include_str!("harness_rl.js");
 
+/// The `rl` a *build-time* scene snapshot is evaluated against, for the client
+/// that boots from one (`crates/goats/build.rs`). Unlike [`NULL_RL`] it is not a
+/// runtime stub: the engine's snapshot cannot carry raylib's Rust callbacks, so
+/// this only answers what the scene's top level reads while it loads, and it is
+/// deleted before the blob is written. See the file's own header for the
+/// three members and why they are the three.
+pub const SNAPSHOT_RL: &str = include_str!("snapshot_rl.js");
+
 #[cfg(test)]
 mod tests {
     use super::*;
