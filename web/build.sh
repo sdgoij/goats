@@ -69,8 +69,15 @@ SYSROOT="$EMSCRIPTEN_DIR/cache/sysroot"
 export EMCC_CFLAGS="${EMCC_CFLAGS:--O3 -sUSE_GLFW=3 -sWASM=1 -sGL_ENABLE_GET_PROC_ADDRESS=1 -sEXPORTED_RUNTIME_METHODS=ccall,requestFullscreen,FS -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 -sSTACK_SIZE=8388608 -sALLOW_MEMORY_GROWTH=1 -sFORCE_FILESYSTEM=1}"
 
 # bindgen has to be told the target's sysroot or `math.h` is not found at all --
-# the same note ANDROID.md carries for the NDK's headers.
-export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:---target=$TARGET --sysroot=$SYSROOT}"
+# the same note ANDROID.md carries for the NDK's headers. The SDK's path is
+# MSYS-shaped on Windows (`/c/...`), which clang does not resolve, so it goes
+# over in the native `-m` form, exactly as `mods_src` does below.
+if command -v cygpath >/dev/null 2>&1; then
+    bindgen_sysroot="$(cygpath -m "$SYSROOT")"
+else
+    bindgen_sysroot="$SYSROOT"
+fi
+export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:---target=$TARGET --sysroot=$bindgen_sysroot}"
 
 case "${1:-client}" in
     check)
